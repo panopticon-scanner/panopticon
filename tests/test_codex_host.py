@@ -1075,3 +1075,87 @@ def test_launch_cwd_refuses_an_unregistered_or_absent_scratch(tmp_path):
     for argv in ([], ["codex", "exec", "-"], ["codex", "exec", "--cd"]):
         with pytest.raises(ValueError, match="--cd"):
             codex_host.launch_cwd(argv)
+
+
+# #2879: the reasoning effort binds from the entry beside its model. The rows mirror what
+# `codex debug models --bundled` lists (codex-cli 0.166.0): luna stops at max, sol reaches ultra.
+_LEVELS = {"gpt-6-luna": ("low", "medium", "high", "xhigh", "max"),
+           "gpt-6-sol": ("low", "medium", "high", "xhigh", "max", "ultra")}
+_ROLES = {"scout": ("panopticon-scout", "gpt-6-luna", "medium"),
+          "advisor": ("panopticon-advisor", "gpt-6-sol", "high"),
+          "domain_panel": ("panopticon-domain-panel", "gpt-6-sol", "high"),
+          "domain_advisor": ("panopticon-domain-advisor", "gpt-6-sol", "high")}
+
+
+def _rows(levels=True):
+    return [dict(MODEL, slug=slug, **({"supported_reasoning_levels": [{"effort": e} for e in efforts]}
+                                      if levels else {}))
+            for slug, efforts in _LEVELS.items()]
+
+
+def _launch(tmp_path, shells, role, levels=True, **fields):
+    """The launch argv's `-c` config for `role`'s entry with `fields` on it (cleaned up)."""
+    root, _entry, env = _case(tmp_path)
+    agent, model, _effort = _ROLES[role]
+    entry = {"id": "review-%s" % role, "agent": agent, "model": model, "prompt": "p", **fields}
+    env["PANOPTICON_ENTRY_ID"] = entry["id"]
+    argv = codex_host.command(entry, env, root, root / "run", registration_dir=shells,
+                              catalog=lambda: _rows(levels))
+    try:
+        assert codex_host.validate_command(argv, env, root)
+        return _config(argv)
+    finally:
+        codex_host.cleanup_command(argv)
+
+
+@pytest.mark.parametrize("role", sorted(_ROLES))
+def test_the_entry_s_effort_binds_in_the_launch_argv_for_every_role(tmp_path, registered_shells, role):
+    assert _launch(tmp_path, registered_shells, role, model_reasoning_effort="low")[
+        "model_reasoning_effort"] == "low"
+
+
+@pytest.mark.parametrize("role", sorted(_ROLES))
+def test_an_override_s_effort_reaches_the_launch_argv_through_the_builder_s_policy(
+        tmp_path, registered_shells, role, monkeypatch):
+    import scripts.phases.requests as requests
+    agent, model, _effort = _ROLES[role]
+    monkeypatch.setenv("PANOPTICON_MODEL_%s" % role.upper(),
+                       json.dumps({"model": model, "model_reasoning_effort": "xhigh"}))
+    policy = requests.bound_policy("codex", role)
+    assert _launch(tmp_path, registered_shells, role, **policy)["model_reasoning_effort"] == "xhigh"
+
+
+@pytest.mark.parametrize("role", sorted(_ROLES))
+def test_an_entry_without_an_effort_keeps_the_shell_s(tmp_path, registered_shells, role):
+    assert _launch(tmp_path, registered_shells, role)["model_reasoning_effort"] == _ROLES[role][2]
+
+
+@pytest.mark.parametrize("levels", [True, False], ids=["row-lists-levels", "row-without-levels"])
+@pytest.mark.parametrize("forged", ["secret-sentinel", "HIGH", "", "low\nx", 7, None, ["low"]])
+def test_a_forged_entry_effort_that_is_not_a_word_is_refused_and_not_echoed(
+        tmp_path, registered_shells, levels, forged):
+    with pytest.raises(ValueError, match="must be a lowercase word") as caught:
+        _launch(tmp_path, registered_shells, "domain_panel", levels, model_reasoning_effort=forged)
+    assert "secret-sentinel" not in str(caught.value)
+
+
+def test_a_forged_shell_effort_that_is_not_a_word_is_refused_too(tmp_path):
+    shells = tmp_path / "shells"
+    shells.mkdir()
+    _register(shells, "panopticon-scout",
+              lambda config: config.update(model_reasoning_effort="secret-sentinel"))
+    with pytest.raises(ValueError, match="must be a lowercase word") as caught:
+        _launch(tmp_path, shells, "scout")
+    assert "secret-sentinel" not in str(caught.value)
+
+
+def test_an_effort_the_model_s_row_does_not_list_is_refused_naming_what_it_does(
+        tmp_path, registered_shells):
+    with pytest.raises(ValueError, match=r"'ultra' is not supported by model 'gpt-6-luna'.*"
+                                         r"supports: low, medium, high, xhigh, max"):
+        _launch(tmp_path, registered_shells, "scout", model_reasoning_effort="ultra")
+    assert _launch(tmp_path, registered_shells, "advisor",
+                   model_reasoning_effort="ultra")["model_reasoning_effort"] == "ultra"
+    # A row without the field (an older CLI) leaves a WORD to Codex's own --strict-config.
+    assert _launch(tmp_path, registered_shells, "scout", levels=False,
+                   model_reasoning_effort="ultra")["model_reasoning_effort"] == "ultra"

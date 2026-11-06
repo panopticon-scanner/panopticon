@@ -7,7 +7,7 @@ and what is stripped from it on the way out -- is `runners/kimi_home.py`.
 quote capabilities, never that directory.
 
 MODEL BINDING. Entry models are the primary/secondary TIERS
-(phases/requests.bound_model via model_resolver). Kimi agent files cannot bind
+(phases/requests.bound_policy via model_resolver). Kimi agent files cannot bind
 a model (unknown frontmatter fields are ignored), so the runner binds ``-m
 <alias>`` on every entry -- enforced or not -- resolving tier -> profile alias
 -> the full alias the installed config's [models] table defines (``k3`` ->

@@ -405,6 +405,9 @@ groups:
       - tests/test_orchestrate_pause.py
       - tests/test_rejected_retention.py
       - tests/test_persist_first_contact.py
+      # #2098: Orchestration:Core (agents/**, dispatch.py) is at the 48-file cap; this
+      # contract test drives requests._materialize_prompts and the rejected-reply retry.
+      - tests/test_prompt_integrity_contract.py
       - tests/test_orchestrate_recovery.py
       - tests/test_orchestrate_session.py
       - tests/test_orchestrate_session_edges.py
@@ -607,6 +610,7 @@ groups:
       tests:
       - tests/test_grouping_engine.py
       - tests/test_coverage_model.py
+      - tests/test_surface_signal_contract.py
       - tests/test_repo_config.py
       - tests/test_repo_config_literals.py
       - tests/test_config_schema.py
@@ -685,6 +689,7 @@ groups:
       - tests/test_score_gate.py
       - tests/test_redact.py
       - tests/test_findings_contract.py
+      - tests/test_artifact_schema_version.py
       - tests/test_reconcile.py
       - tests/test_label_catalog_parity.py
       - tests/test_schema.py

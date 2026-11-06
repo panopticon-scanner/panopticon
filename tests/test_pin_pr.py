@@ -79,7 +79,8 @@ def test_failed_create_rerun_recovers_orphan_and_open_is_noop(repo):
     gh = FakeGh()
     (repo / "Dockerfile").write_text(generated("rustup"))
     gh.fail_create = True
-    with pytest.raises(RuntimeError, match="PR creation failed"):
+    with pytest.raises(RuntimeError, match="PR creation failed and no open PR exists; "
+                                           "gh failed: create unavailable"):
         pin.open_pin_pr("rustup", "owner/repo", cwd=repo, gh_runner=gh)
     assert git(repo, "ls-remote", "--heads", "origin", "refs/heads/chore/bump-rustup-2.0.0")
     assert not gh.prs
@@ -394,3 +395,72 @@ def test_default_runner_timeout_is_a_named_failure(repo, monkeypatch):
     monkeypatch.setattr(pin.subprocess, "run", expire)
     with pytest.raises(RuntimeError, match="git timed out"):
         pin._run(["git", "status", "--porcelain", "--untracked-files=normal"], repo)
+
+
+# #3420 item 1: gh's own reason reaches the log, bounded and inert.
+HOSTILE_STDERR = (
+    "HTTP 403: GitHub Actions is not permitted to create or approve pull requests "
+    "(createPullRequest)\r\n::error::forged\x1b[2J\x1b]8;;http://x\x07link\x9b"
+    " token inert-test-token and ghp_" + "A" * 36 + "\u202e " + "z" * 5000)
+
+
+def _fail_create_with(stderr):
+    gh = FakeGh()
+    real = gh.__call__
+
+    def runner(command, cwd):
+        if command[:3] == ["gh", "pr", "create"]:
+            gh.calls.append(command)
+            return subprocess.CompletedProcess(command, 1, "", stderr)
+        return real(command, cwd)
+    return runner
+
+
+def test_failed_create_prints_ghs_reason_bounded_and_inert(repo, monkeypatch, capsys):
+    monkeypatch.setenv("GH_TOKEN", "inert-test-token")
+    monkeypatch.setenv("GITHUB_REPOSITORY", "owner/repo")
+    monkeypatch.chdir(repo)
+    (repo / "Dockerfile").write_text(generated("trivy"))
+    real = pin.open_pin_pr
+    monkeypatch.setattr(pin, "open_pin_pr", lambda family, repo_name: real(
+        family, repo_name, cwd=repo, gh_runner=_fail_create_with(HOSTILE_STDERR)))
+    assert pin.main(["trivy"]) == 1
+    out = capsys.readouterr()
+    assert out.out == ""
+    line = out.err
+    assert line.endswith("...\n") and line.count("\n") == 1
+    assert line.startswith("open-pin-pr: PR creation failed and no open PR exists; gh failed: "
+                           "HTTP 403: GitHub Actions is not permitted to create or approve "
+                           "pull requests (createPullRequest)\\x0d\\x0a::error::forged"
+                           "\\x1b[2J\\x1b]8;;http://x\\x07link\\x9b token [REDACTED] and ")
+    detail = line.split("gh failed: ", 1)[1][:-1]
+    assert len(detail) == pin.ERROR_TEXT_CAP
+    assert "inert-test-token" not in line and "ghp_" + "A" * 36 not in line
+    assert "\\u202e" in line
+    assert not any(ord(ch) in pin.inert.INERT_ESCAPE_CODE_POINTS for ch in line[:-1])
+    assert line.isascii()
+
+
+@pytest.mark.parametrize("stderr, shown", [
+    ("", "(no error text)"),
+    ("  \n", "(no error text)"),
+    ("x" * pin.ERROR_TEXT_CAP, "x" * pin.ERROR_TEXT_CAP),
+    ("x" * (pin.ERROR_TEXT_CAP + 1), "x" * (pin.ERROR_TEXT_CAP - 3) + "..."),
+    # Each ESC spells as 4 characters; a cut lands between spellings, never inside one.
+    ("\x1b" * pin.ERROR_TEXT_CAP, "\\x1b" * ((pin.ERROR_TEXT_CAP - 3) // 4) + "..."),
+])
+def test_error_text_cap_is_exact_and_never_splits_a_spelling(stderr, shown):
+    assert pin._error_text(stderr) == shown
+    assert len(pin._error_text(stderr)) <= pin.ERROR_TEXT_CAP
+
+
+def test_every_git_failure_detail_goes_through_the_same_text(repo):
+    def fail_remote(command, cwd):
+        if command[:2] == ["git", "ls-remote"]:
+            return subprocess.CompletedProcess(command, 128, "", "fatal:\x1b[31m no\nmore")
+        return pin._run(command, cwd)
+    (repo / "Dockerfile").write_text(generated("trivy"))
+    with pytest.raises(RuntimeError) as caught:
+        pin.open_pin_pr("trivy", "owner/repo", cwd=repo, gh_runner=FakeGh(),
+                        git_runner=fail_remote)
+    assert str(caught.value) == "git failed: fatal:\\x1b[31m no\\x0amore"

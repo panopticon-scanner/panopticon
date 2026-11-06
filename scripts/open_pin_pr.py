@@ -19,6 +19,8 @@ _SKILL_SCRIPTS = Path(__file__).resolve().parents[1] / "skill" / "scripts"
 if str(_SKILL_SCRIPTS) not in sys.path:
     sys.path.insert(0, str(_SKILL_SCRIPTS))
 from executable import resolve  # noqa: E402
+import inert  # noqa: E402
+import redact  # noqa: E402
 
 
 TRUSTED_PATH = "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
@@ -26,6 +28,9 @@ PROCESS_TIMEOUT = 120
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _BRANCH = re.compile(r"chore/bump-(rustup|trivy|rust-toolchain)-([0-9]+\.[0-9]+\.[0-9]+)\Z")
 _REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
+# The most of a git/gh error this script prints (#3420). The text is the
+# tool's, not ours, so it is redacted and made inert before it is cut.
+ERROR_TEXT_CAP = 600
 
 
 FAMILIES = {
@@ -167,10 +172,37 @@ def _run(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
         raise RuntimeError("%s timed out" % program) from None
 
 
+def _error_text(text: str | None) -> str:
+    """A git/gh error as one bounded, inert line (#3420).
+
+    The workflow token is masked by value and known secret shapes by
+    `redact`. Every control character, escape and line break is spelled
+    (`\\x1b`, `\\x0a`), so the text can't style the log or start a new
+    line, such as an Actions `::` command. The output is at most
+    ERROR_TEXT_CAP characters, and a cut never splits a spelling.
+    """
+    raw = (text or "").strip()
+    token = os.environ.get("GH_TOKEN", "")
+    if token:
+        raw = raw.replace(token, "[REDACTED]")
+    raw = redact.redact_diagnostic(raw, ERROR_TEXT_CAP + 1)
+    pieces = [inert.spelled(ord(ch)) if ord(ch) in inert.INERT_ESCAPE_CODE_POINTS
+              else ch for ch in raw]
+    if sum(map(len, pieces)) > ERROR_TEXT_CAP:
+        kept, used = [], 0
+        for piece in pieces:
+            if used + len(piece) > ERROR_TEXT_CAP - 3:
+                break
+            kept.append(piece)
+            used += len(piece)
+        pieces = kept + ["..."]
+    return "".join(pieces) or "(no error text)"
+
+
 def _checked(command: list[str], cwd: Path, runner) -> str:
     result = runner(command, cwd)
     if result.returncode:
-        raise RuntimeError("%s failed: %s" % (command[0], result.stderr.strip()))
+        raise RuntimeError("%s failed: %s" % (command[0], _error_text(result.stderr)))
     return result.stdout
 
 
@@ -306,7 +338,7 @@ def open_pin_pr(family: str, repo: str, *, cwd: Path = Path("."),
     if ancestor.returncode == 1:
         raise RuntimeError("orphan branch is not based on an ancestor of current main; recover manually")
     if ancestor.returncode:
-        raise RuntimeError("git ancestry lookup failed: %s" % ancestor.stderr.strip())
+        raise RuntimeError("git ancestry lookup failed: %s" % _error_text(ancestor.stderr))
     branch_commits = _checked(["git", "rev-list", baseline + ".." + fetched],
                               cwd, git_runner).splitlines()
     if branch_commits != [fetched]:
@@ -323,7 +355,8 @@ def open_pin_pr(family: str, repo: str, *, cwd: Path = Path("."),
     except RuntimeError as exc:
         if any(pr["state"] == "open" for pr in _prs(repo, branch, base, cwd, gh_runner)):
             return "open PR appeared during creation"
-        raise RuntimeError("PR creation failed and no open PR exists") from exc
+        # Say why (#3420): a bare "failed" left the weekly runs undiagnosable.
+        raise RuntimeError("PR creation failed and no open PR exists; %s" % exc) from exc
     return "created PR"
 
 

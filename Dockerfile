@@ -188,9 +188,9 @@ RUN arch="$(dpkg --print-architecture)" \
     && rm /tmp/gitleaks.tar.gz
 
 # Trivy release archive: pin both supported architectures and verify before extraction.
-ARG TRIVY_VERSION=0.74.0
-ARG TRIVY_SHA256_AMD64=2ae6fe3ee734b7fdf11335663e18c75ea12dccc76062f09f164a3b0f8be4371a
-ARG TRIVY_SHA256_ARM64=b94ce1976bbf3c15b514b605ee88be7c6d94a29be2302847ff01cb794d47aad5
+ARG TRIVY_VERSION=0.76.2
+ARG TRIVY_SHA256_AMD64=bc0fc726e017b8927a62b2d3531d7a84ee01769daf5c99ed866dced54089fdbf
+ARG TRIVY_SHA256_ARM64=ab9d51f86e6a5fb936f605faff6b593ac51bc378fff4d3e8b9d58358b9c367c3
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in amd64) trivy_arch="64bit"; sha256="${TRIVY_SHA256_AMD64}" ;; arm64) trivy_arch="ARM64"; sha256="${TRIVY_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
     && curl -sfL --connect-timeout 5 --max-time 120 "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-${trivy_arch}.tar.gz" \
@@ -328,11 +328,11 @@ ENV PATH="/usr/local/cargo/bin:${PATH}"
 # mismatch now means the artifact changed, which is what a checksum is FOR.
 # Bumping means changing RUSTUP_VERSION and both SHAs together; read them from
 # `rustup/archive/<version>/<triple>/rustup-init.sha256` -- do not guess.
-ARG RUSTUP_VERSION=1.29.1
-ARG RUSTUP_INIT_SHA256_AMD64=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
-ARG RUSTUP_INIT_SHA256_ARM64=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433
+ARG RUSTUP_VERSION=1.29.3
+ARG RUSTUP_INIT_SHA256_AMD64=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
+ARG RUSTUP_INIT_SHA256_ARM64=9f608c142e0e38a78957d0661ba1dfaf0b6fb37184cfaa4b9a0aa57af6184282
 # The bootstrapper and compiler have separate release cycles; pin each explicitly.
-ARG RUST_TOOLCHAIN_VERSION=1.98.1
+ARG RUST_TOOLCHAIN_VERSION=1.99.1
 RUN arch="$(dpkg --print-architecture)" \
     && case "$arch" in amd64) ru="x86_64-unknown-linux-gnu"; sha256="${RUSTUP_INIT_SHA256_AMD64}" ;; arm64) ru="aarch64-unknown-linux-gnu"; sha256="${RUSTUP_INIT_SHA256_ARM64}" ;; *) echo "unsupported arch: $arch" >&2; exit 1 ;; esac \
     && curl -sfL --connect-timeout 5 --max-time 60 "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${ru}/rustup-init" \

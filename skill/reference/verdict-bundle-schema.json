@@ -100,7 +100,8 @@
           },
           "schema_version": {
             "type": "integer",
-            "description": "Format/schema version of the advisor verdict."
+            "enum": [1],
+            "description": "Format/schema version of the advisor verdict. Exactly 1; absent reads as 1 (#2104)."
           },
           "evidence_scope": {
             "type": "object",
@@ -177,7 +178,8 @@
     },
     "schema_version": {
       "type": "integer",
-      "description": "Format/schema version of the verdict bundle."
+      "enum": [1],
+      "description": "Format/schema version of the verdict bundle. Exactly 1; absent reads as 1 (#2104)."
     }
   }
 }

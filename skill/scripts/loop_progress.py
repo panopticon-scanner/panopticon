@@ -6,9 +6,17 @@ Installed by the `loop` verb alone (`stamped_call`), and every other entry here 
 until then, so `driver run`, `driver persist` and an in-process caller are what they were.
 Stderr only: stdout's status JSON and every artifact are not touched from here.
 
+#2108: `--progress` (on `driver run` and `driver loop`, off by default) adds the
+`driver: progress: ` lines -- phases found already complete, checkpoint sizes, each settled
+entry's ok/failed count, a heartbeat while a batch waits, per-phase and terminal totals -- and
+under `run` installs this same wrapper. They carry static phase names, checkpoint kinds, status
+words and integers only, never an entry id, a path or a message.
+
 The memory is this process's. A resumed run is a new process, so it prints each repeat line
 once more, which is right for whoever is now watching, and there is no state to go stale.
 """
+import contextlib
+import json
 import re
 import subprocess
 import sys
@@ -18,6 +26,10 @@ import time
 from scripts.inert import INERT_ESCAPE_CODE_POINTS, spelled
 
 HEARTBEAT_SECONDS = 60
+PROGRESS_PREFIX = "driver: progress: "
+# #2108: the batch heartbeat thread and the main thread write, and update the tallies, under this.
+_PROGRESS_LOCK = threading.Lock()
+_STATUS_WORDS = ("complete", "checkpoint", "paused", "error")
 SUMMARY_LINES_MAX = 400
 SUMMARY_PREFIX = "summary: "
 
@@ -107,25 +119,31 @@ class _Stamped:
 
 
 class _Run:
-    """The installed wrapper and the phase it is in."""
+    """The installed wrapper and the phase it is in; with `progress`, this process's tallies."""
 
-    def __init__(self, stream):
+    def __init__(self, stream, progress=False):
         self.stream = stream
         self.phase = None
         self.since = 0.0
+        self.progress = progress
+        self.first_pass_seen = False
+        self.units = {}         # phase -> times executed in this process
+        self.entries = {}       # phase -> [ok, failed] settled in this process
+        self.total = [0, 0]
 
 
 _active = None
 
 
-def stamped_call(enabled, call, *args):
+def stamped_call(enabled, call, *args, progress=False):
     """`call(*args)` under the wrapper when `enabled`, always taking it down again: a partial
-    line is flushed first, so a traceback printed after this returns is whole."""
+    line is flushed first, so a traceback printed after this returns is whole. `progress` adds
+    the #2108 lines."""
     global _active
     if not enabled:
         return call(*args)
     stream = _Stamped(sys.stderr)
-    sys.stderr, _active = stream, _Run(stream)
+    sys.stderr, _active = stream, _Run(stream, progress)
     try:
         return call(*args)
     finally:
@@ -146,6 +164,14 @@ def phase(name):
     if run.phase is not None:
         print("driver: phase %s finished (%d s)" % (run.phase, time.monotonic() - run.since),
               file=sys.stderr, flush=True)
+        if run.progress:
+            with _PROGRESS_LOCK:
+                units = run.units.get(run.phase, 0)
+                ok, failed = run.entries.get(run.phase, (0, 0))
+                _emit("phase %s complete: %d unit(s), no entries" % (run.phase, units)
+                      if ok + failed == 0 else
+                      "phase %s complete: %d unit(s), %d entries (%d ok, %d failed)"
+                      % (run.phase, units, ok + failed, ok, failed))
     run.phase, run.since = name, time.monotonic()
     run.stream.new_phase()
     if name is not None:
@@ -187,3 +213,123 @@ def relay_summary(text):
         print("%s... %d more line(s) in the report" % (SUMMARY_PREFIX, len(lines) - SUMMARY_LINES_MAX),
               file=sys.stderr)
     sys.stderr.flush()
+
+
+def _progress_run():
+    run = _active
+    return run if run is not None and run.progress else None
+
+
+def _emit(text):
+    """One whole `driver: progress: ` line, flushed. The caller holds `_PROGRESS_LOCK`."""
+    sys.stderr.write(PROGRESS_PREFIX + text + "\n")
+    sys.stderr.flush()
+
+
+def first_pass(done_names):
+    """G1: the phases this process's FIRST engine pass found already done -- resumed, or finished
+    by an earlier invocation. Later passes (a loop re-entering after a checkpoint) say nothing."""
+    run = _progress_run()
+    if run is None:
+        return
+    with _PROGRESS_LOCK:
+        if run.first_pass_seen:
+            return
+        run.first_pass_seen = True
+        for name in done_names:
+            _emit("phase %s already complete" % name)
+
+
+def unit(name):
+    """One execution of `name`'s phase in this process."""
+    run = _progress_run()
+    if run is not None:
+        with _PROGRESS_LOCK:
+            run.units[name] = run.units.get(name, 0) + 1
+
+
+def checkpoint(name, kind, request_path):
+    """G2: how many of the request's entries are left, and how many an earlier run settled.
+    Counts only: the entries are read for their number and their out_file state, never printed."""
+    run = _progress_run()
+    if run is None:
+        return
+    counts = ""
+    try:
+        from scripts.phases import persist
+        with open(request_path, encoding="utf-8") as fh:
+            entries = [e for e in json.load(fh).get("entries") or [] if isinstance(e, dict)]
+        left = sum(1 for e in entries if not persist.is_done(e))
+        counts = ": %d to dispatch, %d already settled earlier" % (left, len(entries) - left)
+    except Exception:  # noqa: BLE001 -- a count we cannot take is left out, never guessed
+        pass
+    with _PROGRESS_LOCK:
+        _emit("phase %s checkpoint %s%s" % (name, kind, counts))
+
+
+def terminal(status):
+    """G6: the status this process ends on, and the entries it settled."""
+    run = _progress_run()
+    if run is None:
+        return
+    word = status if status in _STATUS_WORDS else "other"
+    with _PROGRESS_LOCK:
+        ok, failed = run.total
+        _emit("run %s: %d entries this process (%d ok, %d failed)" % (word, ok + failed, ok, failed))
+
+
+class _Batch:
+    """G3 and G4 for one batch: a line per settled entry, and a heartbeat thread that speaks
+    only when nothing has settled for `HEARTBEAT_SECONDS`."""
+
+    def __init__(self, run, total, clock):
+        self.run, self.total, self.clock = run, total, clock
+        self.settled_count = self.ok = self.failed = 0
+        self.last = clock()
+        self.stop = threading.Event()
+
+    def settled(self, ok):
+        with _PROGRESS_LOCK:
+            self.settled_count += 1
+            self.ok, self.failed = self.ok + bool(ok), self.failed + (not ok)
+            self.last = self.clock()
+            tally = self.run.entries.setdefault(self.run.phase, [0, 0])
+            tally[0 if ok else 1] += 1
+            self.run.total[0 if ok else 1] += 1
+            _emit("batch %d/%d settled: %d ok, %d failed"
+                  % (self.settled_count, self.total, self.ok, self.failed))
+
+    def tick(self):
+        """One heartbeat check; the thread calls it every `HEARTBEAT_SECONDS`."""
+        with _PROGRESS_LOCK:
+            since = self.clock() - self.last
+            if since >= HEARTBEAT_SECONDS and self.settled_count < self.total:
+                _emit("batch %d/%d settled, %d still to settle, %d s since the last"
+                      % (self.settled_count, self.total, self.total - self.settled_count, since))
+
+    def beat(self):
+        while not self.stop.wait(HEARTBEAT_SECONDS):
+            self.tick()
+
+
+class _NoBatch:
+    def settled(self, ok):
+        pass
+
+
+@contextlib.contextmanager
+def batch(total, clock=time.monotonic):
+    """`with batch(n) as b: ... b.settled(ok)` around one batch. The heartbeat thread is stopped
+    and joined however the block ends -- an exception, an interrupt, an abandoned generator."""
+    run = _progress_run()
+    if run is None:
+        yield _NoBatch()
+        return
+    watch = _Batch(run, total, clock)
+    thread = threading.Thread(target=watch.beat, name="driver-progress-heartbeat", daemon=True)
+    thread.start()
+    try:
+        yield watch
+    finally:
+        watch.stop.set()
+        thread.join()

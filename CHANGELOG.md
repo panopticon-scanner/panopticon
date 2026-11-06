@@ -7,6 +7,71 @@
   moved byte-identically to `discovery_catalog.py`; discovery, grouping, setup and tests now
   call that owner, with no compatibility aliases. The `discovery.py` flat-module pin falls from
   1956 to 1803 lines.
+- **Reviewer prompts' integrity instructions have a tested contract (#2098).** No prompt text
+  changes. `tests/test_prompt_integrity_contract.py` pins:
+  - the three sentences all five role templates share word for word;
+  - each role's own clauses;
+  - for every production builder on every host (claude, codex, kimi, gemini, generic), that the
+    prompt a host is handed carries its role's untrusted-content section whole, before any
+    untrusted payload, including with a retry note and a hostile payload that spells the heading.
+
+  Four wording gaps are pinned as they stand and wait on #3488.
+- **Docs: the guide no longer lists a global `--full` flag (#3486).** No parser has ever defined
+  it, and nothing replaced it. `tests/test_skill_md.py` now asserts its absence instead of its
+  presence.
+- **Discovery's and coverage's file signals have a written, tested contract (#2099).** No routing
+  changes.
+  - Only `coverage_model` decides a group's objective floor. Discovery's groups.json `panels`
+    schedule is read by nothing, and a test now proves deleting it or listing every domain in it
+    routes identically.
+  - `discovery.is_test_file` is the one shared predicate.
+  - Every other difference is pinned as required or accidental. The accidental ones that route are
+    `db/migrate/` getting no DAT, plus the bare `entity`, `seed`, `schema`, `test_` and `.spec.`
+    substrings. They wait on #3484.
+- **Agent findings and verdict records have a format-version policy (#2104).** A findings
+  envelope, a verdict bundle (and each verdict in it) or a tool verdict that declares a
+  `schema_version` other than the int `1` is refused, fail-closed:
+  - at receipt, and the retry runs;
+  - in the done predicates, and the cell is re-dispatched;
+  - at synthesis, where a findings file is malformed and the run isn't certified, and a verdict is
+    unloadable.
+  Before this, `2` and `1.0` were accepted everywhere, and on the self-write path any value was.
+  A record with **no** version still reads as version 1, a window open through 5.x (#3482 holds
+  closing it). The receipt schemas now say `"enum": [1]`. Claude receives them verbatim as
+  `--json-schema`, so **Claude's generation constraint changes**, though a reply with no version or
+  with `1` still validates. Retry prompts show `"schema_version": 1` in each role's shape.
+- **Trivy 0.76.2, Rust 1.99.1 and rustup 1.29.3 (#3420).** The pin-freshness workflow could not
+  open its PRs, so these were bumped by hand with `scripts/bump_pins.py <family> --write`, and
+  every checksum was verified against the downloaded artifacts. On the repo's vulnerable-python,
+  -node and -rust fixtures, with the same day's DB and the adapter's argv, Trivy 0.74.0 and 0.76.2
+  give the same 11 results, and the SARIF differs only in its version string. 0.76.2 still reads
+  the default `.trivyignore` from the working directory, and the scanner-owned `--ignorefile`
+  still replaces it.
+- **`driver run --progress` and `driver loop --progress` report phases and entries as they go
+  (#2108).** Off by default, with each verb's output unchanged without it. The flag adds
+  `driver: progress: ` lines on stderr:
+  - phases a resumed run finds already complete;
+  - each checkpoint's size, and how many entries an earlier run settled;
+  - each settled entry's ok/failed count;
+  - a heartbeat at most every 60 s while a batch waits;
+  - per-phase and terminal totals.
+
+  Counts and static names only. Under `run` the flag also installs the `loop` verb's stamped
+  stderr wrapper (#3232).
+
+- **The tools-image smoke gate reports each check as it runs (#1993).** `smoke_adapters.py`, the
+  Dockerfile's last build gate, printed nothing until the end, so a hanging probe sat silent under its
+  timeout. It now prints a flushed stderr line as each check starts and finishes, with its elapsed
+  time (`smoke-adapters: [ 2/19] semgrep ...`, then `... ok (1.8s)`), for the writable paths, every
+  probe and both SARIF scans. Lines carry the check's name only. The stdout summary and the failure
+  block are unchanged.
+
+- **Codex honours the reasoning effort of a `PANOPTICON_MODEL_<ROLE>` JSON override (#2879).** The
+  effort now binds from the entry beside its model (`requests.bound_policy`), as the model already
+  did; the registered shell's effort is the fallback for an entry without one. Whichever binds must
+  be a lowercase word (checked at launch, since the request file is target-writable, and at
+  `validate_env_overrides` for an override), and a launch refuses an effort the model's catalog row
+  does not list in `supported_reasoning_levels`. Emission and every other host are unchanged.
 
 - **synthesize names a writer's encoding failure for what it is (#3472).** The four writer sites
   caught `ValueError` for a raw confinement refusal, and a `UnicodeError` (also a `ValueError`) was

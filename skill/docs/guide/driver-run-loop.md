@@ -297,6 +297,9 @@ spells the tier differently, set `PANOPTICON_MODEL_<ROLE>` — e.g. `PANOPTICON_
 to a slug it lists, which is what the refusal itself names.
 Each override accepts either a plain model ID or a JSON object such as
 `{"model":"gpt-6-sol","model_reasoning_effort":"high"}`. Surrounding whitespace is allowed.
+On Codex the effort binds beside the model (#2879): it must be a lowercase word, and a launch
+refuses an effort the model's catalog row does not list in `supported_reasoning_levels`, naming
+the model and the levels it does list.
 An override beginning with `{` must be valid JSON; a malformed object stops `driver run` or
 `driver loop` before host work and the error names the environment key without printing its value.
 
@@ -320,6 +323,33 @@ After the controller stamps any omitted cell identity, `phases.persist.write_rep
 validates every returned role against the unmodified Draft-7 `role_schema(entry)` before writing it.
 The generation projection is an optimization and the broad receipt contract remains authoritative
 (#2923, #3241).
+
+**Format versions of agent records (#2104).** A findings envelope, a verdict bundle (and each
+verdict in it) and a tool verdict may declare `schema_version`. One rule,
+`findings_contract.schema_version_defect`, decides it everywhere such a record is admitted or read:
+
+- **Absent** reads as version 1. Verify and tool replies carry none today: their prompts ask for
+  none, and Codex's generation schemas leave no room for one. Old run folders are versionless too.
+  This window stays open through 5.x and has no date. Closing it is a separate ruling (#3482),
+  after the prompts and the Codex schemas emit the version and a forge-kit run shows every host
+  does.
+- **Exactly the int `1`** is supported. `true`, `1.0` and `"1"` are not versions, the same rule as
+  the diff-hunks loader (#2382).
+- **Anything else is refused, fail-closed,** with the fixed reason `unsupported schema_version`,
+  never the value.
+  - At receipt, `write_reply` refuses before the schema check (whose message would echo the
+    value), and the retry runs.
+  - In the done predicates, the cell is not done and is re-dispatched under its budget.
+  - A verdict bundle with one unknown verdict version is refused whole at both of those points.
+  - At synthesis, a findings file lands in `malformed_findings_files`, which sinks certification.
+    A bundle's own unknown version makes the file unloadable. A single verdict's makes only that
+    entry unloadable, so its finding stays unverified.
+
+The version is the writer's claim about its format, so the controller never fills it. It is
+checked beside the run/cell identity stamp, never inside it: a reply wrong on both is refused, and
+each check names its own reason. The receipt schemas pin `"enum": [1]`. Claude receives those
+files verbatim as `--json-schema`, so its generation is constrained the same way, and a reply with
+no version or with `1` still validates.
 
 Codex's JSONL envelope reports token usage but not measured dollars or the effective model identity.
 The runner therefore returns `cost_usd: null` and `model: null`; `model_binding` and `usage_ledger`
@@ -495,6 +525,23 @@ on Claude hooks, and always uses the return-persist path.
   resumed run prints each once more. On a usable report the synthesize summary follows, each line
   prefixed `summary: ` with its control characters spelled out, because it quotes text a reviewed
   repo can steer. Stdout's status JSON and every artifact are unchanged.
+- **`--progress` (#2108), on `driver run` and `driver loop`, off by default.** It adds stderr lines
+  that each begin `driver: progress: `, a prefix no other diagnostic uses:
+  - `phase <P> already complete`, for each phase this process's first pass found done;
+  - `phase <P> checkpoint <K>: <n> to dispatch, <m> already settled earlier`;
+  - `batch <k>/<n> settled: <ok> ok, <f> failed`, once per entry. An entry is ok when it returned
+    and its reply persisted;
+  - `batch <k>/<n> settled, <r> still to settle, <s> s since the last`, at most once every 60 s,
+    and only while nothing settles;
+  - `phase <P> complete: <u> unit(s), no entries`, or with `<e> entries (<ok> ok, <f> failed)`;
+  - `run <status>: <e> entries this process (<ok> ok, <f> failed)`.
+
+  The lines carry phase names, checkpoint kinds, status words and counts only, never an entry id,
+  a path or a message. **Under `driver run`, the flag also installs the `loop` verb's stderr
+  wrapper above,** so every stderr line of that run is UTC-stamped, gets the phase and heartbeat
+  lines, and has the once-per-phase repeats dropped. Without the flag, `driver run` is unchanged.
+  No child is told about the flag, and a child's captured stderr is what it was. `driver readiness`
+  accepts the flag, so one argv still serves both verbs, and ignores it.
 - **The loop ledgers** every launch in
   `runs/<tag>/dispatch-ledger.jsonl` (entry id, checkpoint, mode, model, usage, cost, `denials`,
   `error`, and on a FAILED row `stderr`: the
@@ -756,6 +803,14 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   recompute.
 - **`coverage`** — one batched `scout` checkpoint carrying every pending group's scout (below), then
   widens each group's floor panels by its scout's valid domains.
+  - **What decides the objective floor (#2099):** only `coverage_model`'s file signals (the gated
+    COD/DAT/TST/ARC floor and the SEC floor), with the one predicate it shares with discovery,
+    `discovery.is_test_file`.
+  - **What doesn't:** the `panels` list discovery writes into each `groups.json` entry is a
+    schedule no phase reads. Deleting it, or listing every domain in it, routes exactly the same,
+    and `tests/test_surface_signal_contract.py` pins that.
+  - **Where the two differ:** that test also lists every difference, labelled required or
+    accidental.
 - **`tools`** — deterministic, not discretionary: runs
   `python3 skill/scripts/run_tools.py --target . --out .panopticon/runs/<tag>/tools --deps` unless `--no-tools`
   was passed; a skip is never silent — it's always recorded in `tools-ran.json` and surfaced in the
@@ -851,7 +906,8 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   naming no advisory, staged the way bandit's ini is — one read-only FILE mount per launch, the
   scratch holding it left at its own 0700 because the container reads the bind target. That flag is
   **belt only**, in those words: the real-image round measured trivy 0.74.0 resolving the default
-  `.trivyignore` against the WORKING DIRECTORY, a per-launch scratch since #1877, so a
+  `.trivyignore` against the WORKING DIRECTORY (0.76.2 the same, re-measured for #3420), a
+  per-launch scratch since #1877, so a
   `.trivyignore` committed at the scan root was already not read on main either. The flag closes
   nothing that was open; it pins the posture explicitly against a version that reads the scan root.
   **osv-scanner** runs with
@@ -1322,3 +1378,17 @@ its other, non-driver callers, and confines every claim `location` to that root 
 driver rounds do (#1767): the root is `--review-root PATH` (an existing directory) when given, else
 the directory above the queue's own `.panopticon` segment, and it refuses to render when neither
 resolves rather than pinning the process cwd.
+
+**The integrity instructions travel in the task message, never in a shell (#2098).** A registered
+shell is a bare charter, and generic/gemini register none. So each role template's `## Untrusted
+content — non-negotiable` section must reach the agent inside the prompt it is handed, on every
+host.
+- **Shared by all five templates, word for word:** everything read from the target is untrusted
+  data; the only instructions come from the task message; the redaction sentence.
+- **Role-specific, deliberately:** which manipulations count as injection, and what judging on the
+  merits means. The panel alone reports a planted instruction as a `prompt-injection` finding, and
+  the two advisors alone frame the prior agent's claims as untrusted.
+- **What the test checks:** `tests/test_prompt_integrity_contract.py` drives every production
+  builder on every host through `requests._materialize_prompts`. Each delivered prompt must carry
+  its role's section whole, before its untrusted payload. The open wording gaps are pinned as they
+  stand, pending #3488.

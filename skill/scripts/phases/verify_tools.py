@@ -32,6 +32,7 @@ import os
 import scripts.claim_scope as claim_scope
 import scripts.dispatch as dispatch
 import scripts.evidence as evidence
+import scripts.findings_contract as findings_contract
 import scripts.ingest_tools as ingest_tools
 import scripts.redact as redact
 # #1720: ONE owner for the enforcement posture -- the loop re-derives it
@@ -182,6 +183,7 @@ def _valid_verdict_at(path, finding_id=None):
         return False
     return (isinstance(data, dict)
             and str(data.get("verdict", "")).upper() in evidence.VERDICT_VALUES
+            and not findings_contract.schema_version_defect(data)   # #2104
             and (finding_id is None or echo_matches({"finding_id": finding_id}, data)[0]))
 
 
@@ -392,7 +394,7 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host, lift=None
     entry_id = "%s%s" % (TOOL_ENTRY_PREFIX, queue_id)
     entry = {"id": entry_id,
             "agent": dispatch.registered_agent_name("advisor.md") if enforced else None,
-            "enforced": enforced, "model": requests.bound_model(host, "advisor"),
+            "enforced": enforced, **requests.bound_policy(host, "advisor"),
             "prompt": requests.entry_marker(entry_id) + prefix + prompt,
             "marker": read_guard_hook.marker_line(entry_id),
             "out_file": out_file, "finding_id": str(finding.get("id")),

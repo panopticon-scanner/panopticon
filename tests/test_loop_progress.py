@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import threading
 import unittest
 from unittest import mock
@@ -445,6 +446,355 @@ class StderrOnlyTest(_HeadlessLoopCase):
         self.assertTrue([x for x in summary if "**Grade:**" in x], err)
         self.assertLess(bare.index("driver: phase synthesize started"),
                         bare.index(next(x for x in summary if "**Grade:**" in x)))
+
+
+# --- #2108: `--progress` -------------------------------------------------------------------------
+
+PROGRESS = "driver: progress: "
+_tmpdir = tempfile.TemporaryDirectory
+
+
+class _Flushes(io.StringIO):
+    """The real stream under the wrapper, remembering what had been FLUSHED."""
+
+    def __init__(self):
+        super().__init__()
+        self.flushed = ""
+
+    def flush(self):
+        super().flush()
+        self.flushed = self.getvalue()
+
+
+class _WithProgress(unittest.TestCase):
+    """`loop_progress` installed with `progress`, around a fresh stderr whose flushes are seen."""
+
+    progress = True
+
+    def setUp(self):
+        super().setUp()
+        self.real = _Flushes()
+        self.stream = lp._Stamped(self.real)
+        redirect = contextlib.redirect_stderr(self.stream)
+        redirect.__enter__()
+        self.addCleanup(redirect.__exit__, None, None, None)
+        for target, value in ((("_active",), lp._Run(self.stream, self.progress)),
+                              (("time", "monotonic"), lambda: 100.0)):
+            patcher = (mock.patch.object(lp, target[0], value) if len(target) == 1
+                       else mock.patch.object(lp.time, target[1], value))
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def lines(self, text=None):
+        return re.sub(r"(?m)^" + STAMP, "", self.real.getvalue() if text is None else text).splitlines()
+
+    def progress_lines(self):
+        return [x[len(PROGRESS):] for x in self.lines() if x.startswith(PROGRESS)]
+
+
+def _phase(name, done, results):
+    calls = iter(results)
+    return engine.Phase(name, "deterministic", done, lambda *_a: next(calls))
+
+
+class TheEngineSaysWhatItFoundAndDidTest(_WithProgress):
+    def _request(self, ids):
+        d = self.enterContext(_tmpdir())
+        path = os.path.join(d, "dispatch-request.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"entries": [{"id": i, "out_file": os.path.join(d, i)} for i in ids]}, fh)
+        return path
+
+    def test_resumed_empty_checkpointed_and_completed_phases(self):
+        request = self._request(["review-SENTINEL-g-SEC", "review-SENTINEL-g-COD", "review-x-ARC"])
+        units = {"coverage": 0, "review": 0}
+
+        def counted(name, *results):
+            def execute(*_a):
+                units[name] += 1
+                return results[units[name] - 1]
+            return execute
+        phases = [
+            engine.Phase("readiness", "deterministic", lambda *_a: True, None),
+            engine.Phase("discovery", "deterministic", lambda *_a: True, None),
+            engine.Phase("coverage", "mixed", lambda *_a: units["coverage"] >= 2,
+                         counted("coverage", engine.PhaseResult(kind="advanced"),
+                                 engine.PhaseResult(kind="advanced"))),
+            engine.Phase("review", "checkpoint", lambda *_a: units["review"] >= 2,
+                         counted("review", engine.PhaseResult(kind="checkpoint", checkpoint="review",
+                                                              dispatch_request=request),
+                                 engine.PhaseResult(kind="advanced"))),
+        ]
+        with mock.patch("scripts.phases.persist.is_done", side_effect=lambda e: e["id"] == "review-x-ARC"):
+            self.assertEqual("checkpoint", engine.run_engine("root", {}, phases)["status"])
+        with lp.batch(2) as watch:
+            watch.settled(True)
+            watch.settled(False)
+        self.assertEqual("complete", engine.run_engine("root", {}, phases)["status"])  # a second pass
+        engine.emit_status({"status": "complete"}, stream=io.StringIO())
+        self.assertEqual([
+            "phase readiness already complete",
+            "phase discovery already complete",
+            "phase coverage complete: 2 unit(s), no entries",
+            "phase review checkpoint review: 2 to dispatch, 1 already settled earlier",
+            "batch 1/2 settled: 1 ok, 0 failed",
+            "batch 2/2 settled: 1 ok, 1 failed",
+            "phase review complete: 2 unit(s), 2 entries (1 ok, 1 failed)",
+            "run complete: 2 entries this process (1 ok, 1 failed)",
+        ], self.progress_lines())
+        # The name only: no entry id from the request reaches a progress line.
+        self.assertNotIn("SENTINEL", "\n".join(self.progress_lines()))
+
+    def test_a_request_it_cannot_count_still_names_the_checkpoint(self):
+        phases = [_phase("review", lambda *_a: False,
+                         [engine.PhaseResult(kind="checkpoint", checkpoint="review",
+                                             dispatch_request="/nonexistent/request.json")])]
+        engine.run_engine("root", {}, phases)
+        self.assertIn("phase review checkpoint review", self.progress_lines())
+
+    def test_every_line_is_flushed_before_the_work_after_it_runs(self):
+        seen = []
+
+        def execute(*_a):
+            seen.append(self.real.flushed)
+            return engine.PhaseResult(kind="advanced")
+        marks = iter((True, False, True, True))
+        phases = [engine.Phase("discovery", "deterministic", lambda *_a: next(marks), None),
+                  engine.Phase("coverage", "deterministic", lambda *_a: next(marks), execute)]
+        engine.run_engine("root", {}, phases)
+        self.assertIn(PROGRESS + "phase discovery already complete", seen[0])
+        self.assertIn("driver: phase coverage started", seen[0])
+
+    def test_an_unknown_status_word_is_not_echoed(self):
+        lp.terminal("planted\x1b[2J")
+        self.assertEqual(["run other: 0 entries this process (0 ok, 0 failed)"], self.progress_lines())
+
+
+class TheBatchHeartbeatTest(_WithProgress):
+    def test_it_speaks_only_when_nothing_has_settled_for_a_heartbeat(self):
+        now = [0.0]
+        with lp.batch(3, clock=lambda: now[0]) as watch:
+            watch.tick()                                   # 0 s: silent
+            now[0] = lp.HEARTBEAT_SECONDS
+            watch.tick()                                   # 60 s, nothing settled: speaks
+            watch.settled(True)
+            now[0] += lp.HEARTBEAT_SECONDS - 1
+            watch.tick()                                   # 59 s after a settle: silent
+            now[0] += 1
+            watch.tick()                                   # 60 s after it: speaks
+        self.assertEqual([
+            "batch 0/3 settled, 3 still to settle, 60 s since the last",
+            "batch 1/3 settled: 1 ok, 0 failed",
+            "batch 1/3 settled, 2 still to settle, 60 s since the last",
+        ], self.progress_lines())
+
+    def test_each_line_is_flushed_as_it_is_written(self):
+        # Nothing else flushes in between, so a line still buffered would not be the last flushed.
+        with lp.batch(2) as watch:
+            for k in (1, 2):
+                watch.settled(True)
+                self.assertTrue(self.real.flushed.endswith(
+                    PROGRESS + "batch %d/2 settled: %d ok, 0 failed\n" % (k, k)), ascii(self.real.flushed))
+        lp.first_pass(["discovery"])
+        self.assertTrue(self.real.flushed.endswith(PROGRESS + "phase discovery already complete\n"))
+
+    def test_a_finished_batch_never_beats(self):
+        now = [0.0]
+        with lp.batch(1, clock=lambda: now[0]) as watch:
+            watch.settled(True)
+            now[0] = 10 * lp.HEARTBEAT_SECONDS
+            watch.tick()
+        self.assertEqual(["batch 1/1 settled: 1 ok, 0 failed"], self.progress_lines())
+
+    def _heartbeat_threads(self):
+        return [t for t in threading.enumerate() if t.name == "driver-progress-heartbeat" and t.is_alive()]
+
+    def test_the_thread_is_joined_however_the_batch_ends(self):
+        for raised in (RuntimeError("planted"), KeyboardInterrupt(), GeneratorExit()):
+            with self.subTest(raised=type(raised).__name__):
+                with self.assertRaises(type(raised)):
+                    with lp.batch(2) as watch:
+                        self.assertEqual(1, len(self._heartbeat_threads()))
+                        watch.settled(True)
+                        raise raised
+                self.assertEqual([], self._heartbeat_threads())
+
+    def test_lines_from_the_thread_and_the_loop_never_tear(self):
+        now = [lp.HEARTBEAT_SECONDS]
+        with lp.batch(400, clock=lambda: now[0]) as watch:
+            ticker = threading.Thread(target=lambda: [watch.tick() for _ in range(200)])
+            ticker.start()
+            for _ in range(200):
+                watch.settled(True)
+                now[0] += lp.HEARTBEAT_SECONDS
+            ticker.join()
+        for line in self.lines():
+            self.assertRegex(line, r"^driver: progress: batch \d+/400 settled(: \d+ ok, 0 failed|, "
+                                   r"\d+ still to settle, \d+ s since the last)$")
+
+
+class WithoutTheFlagNothingChangesTest(_WithProgress):
+    progress = False
+
+    def test_no_progress_line_and_no_tally_without_it(self):
+        phases = [_phase("review", lambda *_a: False,
+                         [engine.PhaseResult(kind="checkpoint", checkpoint="review",
+                                             dispatch_request="/nonexistent")])]
+        engine.run_engine("root", {}, phases)
+        with lp.batch(2) as watch:
+            watch.settled(False)
+        engine.emit_status({"status": "complete"}, stream=io.StringIO())
+        self.assertEqual(["driver: phase review started"], self.lines())   # #3232's line, alone
+        self.assertEqual([], [t for t in threading.enumerate() if t.name == "driver-progress-heartbeat"])
+
+
+class TheFlagTest(unittest.TestCase):
+    def test_run_loop_and_readiness_take_it_and_it_defaults_off(self):
+        for verb in ("run", "loop", "readiness"):
+            with self.subTest(verb=verb):
+                self.assertIs(False, driver.parse_cli([verb]).progress)
+                self.assertIs(True, driver.parse_cli([verb, "--progress"]).progress)
+
+    def test_run_installs_the_wrapper_only_with_it(self):
+        seen = []
+
+        def run(_args):
+            seen.append((sys.stderr, lp._active and lp._active.progress))
+            return {"status": "complete"}
+        for argv, wrapped in ((["run"], False), (["run", "--progress"], True)):
+            with mock.patch.object(driver, "run", side_effect=run), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                driver.main(argv)
+            stream, progress = seen[-1]
+            self.assertIs(wrapped, isinstance(stream, lp._Stamped), argv)
+            self.assertIs(wrapped, bool(progress), argv)
+
+    def test_no_child_is_told_about_it(self):
+        # The flag is the driver's: no child argv or environment carries it.
+        self.assertFalse([k for k in child._child_env() if "PROGRESS" in k.upper()])
+        import ast
+        offenders = []
+        scripts = os.path.dirname(os.path.dirname(child.__file__))
+        for folder, _dirs, names in os.walk(scripts):
+            for name in names:
+                if name.endswith(".py") and name != "driver.py":
+                    path = os.path.join(folder, name)
+                    with open(path, encoding="utf-8") as fh:
+                        tree = ast.parse(fh.read())
+                    offenders += [os.path.relpath(path, scripts) for node in ast.walk(tree)
+                                  if isinstance(node, ast.Attribute) and node.attr == "progress"
+                                  and isinstance(node.value, ast.Name) and node.value.id == "args"]
+        self.assertEqual([], offenders)
+
+
+def _string_text(node):
+    """The text a literal, an f-string, a `%` format or a `+` chain of them spells, else None."""
+    import ast
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    if isinstance(node, ast.JoinedStr):
+        return "".join(v.value for v in node.values if isinstance(v, ast.Constant) and isinstance(v.value, str))
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+        left = _string_text(node.left)
+        right = _string_text(node.right) if isinstance(node.op, ast.Add) else ""
+        return None if left is None else left + (right or "")
+    if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == "format"):
+        return _string_text(node.func.value)
+    return None
+
+
+class TheProgressPrefixIsLoopProgressOwnTest(unittest.TestCase):
+    """#2108: no other module may spell `driver: progress:` -- literally, in an f-string, a `%`
+    format, a `.format` or a concatenation -- so the prefix cannot be borrowed by an error."""
+
+    def test_only_loop_progress_spells_it(self):
+        import ast
+        skill = os.path.dirname(os.path.dirname(child.__file__))
+        roots = [skill, os.path.join(os.path.dirname(os.path.dirname(skill)), "scripts")]
+        offenders = []
+        for root in roots:
+            for folder, _dirs, names in os.walk(root):
+                for name in names:
+                    path = os.path.join(folder, name)
+                    if not name.endswith(".py") or os.path.samefile(path, lp.__file__):
+                        continue
+                    with open(path, encoding="utf-8") as fh:
+                        tree = ast.parse(fh.read())
+                    for node in ast.walk(tree):
+                        text = _string_text(node)
+                        if text and "driver: progress" in text:
+                            offenders.append("%s:%d" % (os.path.relpath(path, root), node.lineno))
+        self.assertEqual([], offenders)
+
+    def test_the_reader_sees_every_construction(self):
+        import ast
+        for source in ('"driver: progress: x"', 'f"driver: progress: {n}"', '"driver: progress: %d" % n',
+                       '"driver: " + "progress: x"', '"driver: progress: {}".format(n)'):
+            with self.subTest(source=source):
+                self.assertIn("driver: progress", _string_text(ast.parse(source, mode="eval").body))
+
+
+class _FailsTheFirstOnce(FakeRunner):
+    def run_entry(self, entry, env):
+        if not self.launched:
+            self.fail_once.add(entry["id"])
+        return super().run_entry(entry, env)
+
+
+class AWholeLoopWithProgressTest(_HeadlessLoopCase):
+    """#2108 through the real engine, orchestrate and the synthesize child."""
+
+    def _loop(self, d, floor, runner, progress):
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            status = lp.stamped_call(True, lambda: engine.emit_status(self._run(d, floor, runner)) or 0,
+                                     progress=progress)
+        return status, [re.sub("^" + STAMP, "", x) for x in err.getvalue().splitlines() if x]
+
+    @staticmethod
+    def _bare(text):
+        return [re.sub("^" + STAMP, "", x) for x in text.splitlines() if x]
+
+    @staticmethod
+    def _normal(lines):
+        lines = [re.sub(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", "<ts>", x) for x in lines]
+        lines = [re.sub(r"\b\d{8}-[0-9a-f]{8}\b", "<tag>", x) for x in lines]     # the run's tag
+        return [re.sub(r"\(\d+(?: ms|s| s)?[,)]", "(<t>)", re.sub(r"\d+ ms", "<t> ms", x)) for x in lines]
+
+    def test_failed_entries_settled_entries_and_a_resumed_run(self):
+        d, floor = self._repo()
+        _status, lines = self._loop(d, floor, _FailsTheFirstOnce(), True)
+        progress = [x[len(PROGRESS):] for x in lines if x.startswith(PROGRESS)]
+        settled = [x for x in progress if re.fullmatch(r"batch \d+/\d+ settled: \d+ ok, \d+ failed", x)]
+        self.assertTrue(settled, lines)
+        self.assertIn(": 0 ok, 1 failed", settled[0])                # the first entry failed once
+        run_line = [x for x in progress if x.startswith("run complete: ")]
+        self.assertEqual(1, len(run_line), progress)
+        ok, failed = map(int, re.fullmatch(r"run complete: \d+ entries this process \((\d+) ok, (\d+) failed\)",
+                                           run_line[0]).groups())
+        self.assertEqual((len(settled) - 1, 1), (ok, failed))
+        self.assertTrue([x for x in progress if re.fullmatch(r"phase review complete: \d+ unit\(s\), "
+                                                             r"\d+ entries \(\d+ ok, 1 failed\)", x)], progress)
+        # The finished tree, in a new process: the real engine finds every phase done first.
+        import scripts.run_manifest as run_manifest
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            status = lp.stamped_call(True, engine.run_engine, d, run_manifest.load_manifest(d),
+                                     driver.PHASES, progress=True)
+        self.assertEqual("complete", status["status"])
+        found = [x[len(PROGRESS):] for x in self.__class__._bare(err.getvalue()) if x.startswith(PROGRESS)]
+        self.assertEqual(["phase %s already complete" % p.name for p in driver.PHASES],
+                         found[:len(driver.PHASES)])
+
+    def test_with_it_the_other_lines_are_what_they_are_without_it(self):
+        def run(progress):
+            d, floor = self._repo()
+            lines = self._loop(d, floor, FakeRunner(), progress)[1]
+            return self._normal([x.replace(os.path.realpath(d), "<root>").replace(d, "<root>")
+                                 .replace(os.path.basename(d), "<name>") for x in lines])
+        plain, lines = run(False), run(True)
+        self.assertFalse([x for x in plain if x.startswith(PROGRESS)])
+        self.assertEqual(plain, [x for x in lines if not x.startswith(PROGRESS)])
 
 
 if __name__ == "__main__":

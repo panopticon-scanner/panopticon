@@ -21,10 +21,13 @@ Exit 0 when every check passes; exit 1 with a report naming each failure.
 Stdlib plus project-local imports only — no third-party dependencies. This must
 run before anything else is proven to work.
 """
+import functools
 import os
 import subprocess
 import sys
 import threading
+import time
+from typing import Any, Callable
 
 from scripts.run_tools import recommendable_tools
 import scripts.tools.legacy_sarif as legacy_sarif
@@ -443,38 +446,46 @@ def check_bandit_sarif(entry_points=None, runtime_version=None, capture=None):
     return True, ""
 
 
+def _step(index, total, label, check):
+    """#1993: run one check between two flushed stderr lines, so a build log
+    shows which check is running and how long each took (BuildKit buffers a
+    step's output). The label is the check's NAME -- never its argv, never what
+    it printed, which stays under the #1576 cap and in the failure report."""
+    tag = "smoke-adapters: [%*d/%d] %s" % (len(str(total)), index, total, label)
+    print(tag + " ...", file=sys.stderr, flush=True)
+    started = time.monotonic()
+    ok, msg = check()
+    print("%s %s (%.1fs)" % (tag, "ok" if ok else "FAILED", time.monotonic() - started),
+          file=sys.stderr, flush=True)
+    return ok, msg
+
+
+def _check_required_writable(path, why):
+    if not os.path.isdir(path):
+        return False, "%s is missing — %s" % (path, why)
+    return check_writable(path, why)
+
+
 def main():
     failures = []
-
-    for path, why in sorted(REQUIRED_WRITABLE.items()):
-        if not os.path.isdir(path):
-            failures.append("%s is missing — %s" % (path, why))
-            continue
-        ok, msg = check_writable(path, why)
-        if not ok:
-            failures.append(msg)
-
+    steps: list[tuple[str, Callable[[], Any]]] = [
+        ("writable %s" % path, functools.partial(_check_required_writable, path, why))
+        for path, why in sorted(REQUIRED_WRITABLE.items())]
     for name in sorted(PROBES):
         probe = PROBES[name]
-        if callable(probe):
-            ok, msg = probe()
-        else:
-            ok, msg = run_probe(name, probe)
-        if not ok:
-            failures.append(msg)
-
+        steps.append((name, probe if callable(probe) else functools.partial(run_probe, name, probe)))
     # End-to-end gate: the liveness probe above only proves `semgrep --version`
     # runs; this proves `semgrep scan` produces real SARIF (#455).
-    ok, msg = check_semgrep_scan()
-    if not ok:
-        failures.append(msg)
-
+    steps.append(("semgrep SARIF scan", functools.partial(check_semgrep_scan)))
     # Formatter ownership and real emission are separate contracts: the first
     # rejects duplicate providers, while the scan proves the selected native
     # formatter reports the installed runtime version in raw SARIF.
-    ok, msg = check_bandit_sarif()
-    if not ok:
-        failures.append(msg)
+    steps.append(("bandit SARIF scan", functools.partial(check_bandit_sarif)))
+
+    for index, (label, check) in enumerate(steps, 1):
+        ok, msg = _step(index, len(steps), label, check)
+        if not ok:
+            failures.append(msg)
 
     if failures:
         print("smoke-adapters: %d check(s) FAILED as uid %d\n"

@@ -35,7 +35,9 @@ class TestSkillMd(unittest.TestCase):
             self.assertIn(ref, self.text, ref)
 
     def test_documents_bounded_floor_and_gate(self):
-        self.assertIn("--full", self.text)
+        # #3486: `--full` ("force all panels") was documented here but no parser
+        # in the tree has ever defined it, and nothing replaced it.
+        self.assertNotRegex(self.text, r"--full(?![-\w])")
         self.assertIn("--fail-on", self.text)
         self.assertIn("--severity", self.text)
 
