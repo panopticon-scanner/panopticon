@@ -214,7 +214,7 @@ RUN mkdir -p /opt/nuget-packages && chmod -R a+rX /opt/nuget-packages
 # #1641 (SEC-E2A): by version AND by digest. This install runs as root at image
 # build, so an unconstrained resolve executes an attacker-chosen release's
 # install-time code with full privileges inside the very image the scanner
-# adapters are validated against -- and pyproject.toml's `pytest>=9.1.1` floor
+# adapters are validated against -- and pyproject.toml's `pytest>=9.2.0` floor
 # does not reach this separate command. --require-hashes makes pip refuse any
 # artifact whose sha256 is not in the file, a missing transitive dependency
 # included; `scripts/bump_pins.py requirements --write` is what writes them.

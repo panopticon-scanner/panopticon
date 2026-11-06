@@ -686,11 +686,11 @@ Dependabot proposes version bumps: the root `pip` entry sees `requirements-fixtu
 `requirements-tools.txt`, and `pyproject.toml`; the `/.github` entry sees the gate file. The root
 entry groups routine Python version updates and filters proposals that would break the current
 pinned tools graph: all version updates for `mcp`, `opentelemetry-*`, and `pydantic-core` (Pydantic
-2.14.1 requires exactly pydantic-core 2.50.1); major updates for `peewee`, `boltons`, `protobuf`,
+2.14.2 requires exactly pydantic-core 2.50.2); major updates for `peewee`, `boltons`, `protobuf`,
 `pyjwt`, `wcmatch`, and `wrapt`; and major/minor updates for `click`, `jsonschema`,
-`exceptiongroup`, `importlib-metadata`, and `tomli`. Semgrep 1.182.1 (whose requirements are
-1.179.0's plus a `certifi>=2026.10.19` floor the pinned certifi meets) constrains `boltons`,
-`exceptiongroup`, `pyjwt` (to its major line: `<3,>=2.15.0`, where 1.178.0 held it to 2.13.x),
+`exceptiongroup`, `importlib-metadata`, and `tomli`. Semgrep 1.183.0 (whose requirements are
+1.182.1's, that is 1.179.0's plus a `certifi>=2026.10.19` floor the pinned certifi meets)
+constrains `boltons`, `exceptiongroup`, `pyjwt` (to its major line: `<3,>=2.15.0`, where 1.178.0 held it to 2.13.x),
 `tomli` (`~=2.4.0`), and `wcmatch`; pinned OpenTelemetry packages constrain `importlib-metadata`,
 `protobuf`, and `wrapt`. These filters match dependency names across the root entry, including the
 same name in `pyproject.toml`; they are not specific to the tools file. Revisit them when upgrading
