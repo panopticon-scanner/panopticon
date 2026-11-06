@@ -2,9 +2,9 @@
 
 #1985 hardened `validate.capture_tree_baseline`, `validate._tree_delta` and
 `runio.resolve_review_root` onto `safe_git.probe` and left three calls at the
-same trust boundary on the old path -- `discovery._git` (six call sites,
+same trust boundary on the old path -- `discovery_scope._git` (six call sites,
 including the `status --porcelain -z` that `_worktree_dirty` runs before
-dispatch), `discovery.resolve_base`'s `rev-parse --verify`, and
+dispatch), `discovery_scope.resolve_base`'s `rev-parse --verify`, and
 `run_manifest._target_provenance`'s `rev-parse HEAD` + `status`, the last with
 no `env=` at all. The reviewer executed the first one: a target that sets
 `core.fsmonitor` to a command got that command run during discovery.
@@ -31,6 +31,7 @@ from unittest import mock
 from tests._test_helpers import SKILL_ROOT
 import scripts.diff_map as diff_map
 import scripts.discovery as discovery
+import scripts.discovery_scope as discovery_scope
 import scripts.phases.runio as runio
 import scripts.phases.validate as validate_phase
 import scripts.run_manifest as run_manifest
@@ -87,7 +88,7 @@ class HostileFixturesAreLive(unittest.TestCase):
 
 
 class DiscoveryIsConfined(unittest.TestCase):
-    """`discovery._git` is the shared invocation for this module's git calls."""
+    """`discovery_scope._git` is the shared invocation for this module's git calls."""
 
     def _repo(self):
         repo = make_git_repo(test_case=self, panopticon=True,
@@ -119,14 +120,14 @@ class DiscoveryIsConfined(unittest.TestCase):
     def test_changed_files_and_listing_never_run_the_targets_fsmonitor(self):
         repo = self._repo()
         marker = plant_fsmonitor_command(repo)
-        self.assertEqual(discovery.collect_changed_files(repo, base="main"), [])
+        self.assertEqual(discovery_scope.collect_changed_files(repo, base="main"), [])
         self.assertIn("a.py", discovery._git_listed_files(repo))
         self.assertFalse(os.path.exists(marker))
 
     def test_resolve_base_never_runs_the_targets_fsmonitor(self):
         repo = self._repo()
         marker = plant_fsmonitor_command(repo)
-        self.assertEqual(discovery.resolve_base(repo), ("main", "fallback"))
+        self.assertEqual(discovery_scope.resolve_base(repo), ("main", "fallback"))
         self.assertFalse(os.path.exists(marker))
 
     def test_no_discovery_git_call_can_be_the_targets_own_git(self):
@@ -138,7 +139,7 @@ class DiscoveryIsConfined(unittest.TestCase):
         with mock.patch.dict(os.environ,
                              {"PATH": os.path.join(repo, "bin") + os.pathsep + os.environ["PATH"]}):
             for call in (lambda: discovery._worktree_dirty(repo, exclude=("bin",)),
-                         lambda: discovery.resolve_base(repo),
+                         lambda: discovery_scope.resolve_base(repo),
                          lambda: discovery._git_listed_files(repo)):
                 with self.assertRaisesRegex(ValueError, HALTS):
                     call()

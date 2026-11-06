@@ -1,5 +1,6 @@
 """Scope/delta orchestration tests: base resolution, changed-files parity,
 --scope-changed, and --scope-files behavior."""
+import ast
 import json
 import shutil
 import tempfile
@@ -9,6 +10,7 @@ from unittest import mock
 
 from scripts import executable
 from scripts import discovery_catalog
+from scripts import discovery_scope
 from scripts import groups_schema
 from tests.discovery_test_helpers import (
     orchestrator, FakeRun, repo_with_matrix, repo_with_exclude,
@@ -16,39 +18,88 @@ from tests.discovery_test_helpers import (
 )
 
 
+_SCOPE_OWNER_NAMES = {
+    "EXCLUDE_DIRS",
+    "EXCLUDE_DIR_GLOBS",
+    "FIXTURE_DIR_BASENAMES",
+    "FIXTURE_PARENT_DIRS",
+    "_git",
+    "_nul_separated_paths",
+    "_unreviewable_reason",
+    "collect_changed_files",
+    "test_candidates",
+    "related_tests",
+    "_is_excluded_dir",
+    "_is_fixture_dir",
+    "resolve_base",
+    "_ancestor_dirs",
+    "prune_fixture_files",
+    "resolve_base_or_die",
+    "DISCOVERED_FILES_MAX",
+    "_cap_discovered",
+    "_is_confined_regular",
+    "_PRUNE_CLASSES",
+    "_filter_reviewable",
+    "_norm_scope_path",
+    "_SCOPE_ECHO_LIMIT",
+    "_echo_scope_path",
+    "_confine_scope_path",
+    "_resolve_scope",
+}
+
+
+def _top_level_names(module):
+    with open(module.__file__, encoding="utf-8") as fh:
+        tree = ast.parse(fh.read(), module.__file__)
+    names = set()
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names.add(node.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            names.update(target.id for target in targets if isinstance(target, ast.Name))
+    return names
+
+
+def test_scope_family_has_one_owner():
+    """#3457: the extracted scope family has one source owner, not aliases."""
+    assert _SCOPE_OWNER_NAMES.isdisjoint(_top_level_names(orchestrator))
+    assert _SCOPE_OWNER_NAMES <= _top_level_names(discovery_scope)
+
+
 class TestDeltaOrchestration(unittest.TestCase):
     def test_resolve_base_precedence(self):
         # explicit wins even if others resolve
         self.assertEqual(
-            orchestrator.resolve_base(".", explicit="v1.0", pr_base="main",
+            discovery_scope.resolve_base(".", explicit="v1.0", pr_base="main",
                               runner=FakeRun({"v1.0^{commit}", "main^{commit}"})),
             ("v1.0", "explicit"))
         self.assertEqual(
-            orchestrator.resolve_base(".", pr_base="release",
+            discovery_scope.resolve_base(".", pr_base="release",
                               runner=FakeRun({"release^{commit}"}))[1],
             "pr-base")
 
     def test_resolve_base_bad_explicit_fails_loud_no_fallthrough(self):
         # explicit given but unresolvable -> (None,'unresolved'); NOT main.
         self.assertEqual(
-            orchestrator.resolve_base(".", explicit="nope",
+            discovery_scope.resolve_base(".", explicit="nope",
                               runner=FakeRun({"main^{commit}"})),
             (None, "unresolved"))
 
     def test_resolve_base_fallback_and_no_head1(self):
-        self.assertEqual(orchestrator.resolve_base(".", runner=FakeRun({"main^{commit}"})),
+        self.assertEqual(discovery_scope.resolve_base(".", runner=FakeRun({"main^{commit}"})),
                          ("main", "fallback"))
-        self.assertEqual(orchestrator.resolve_base(".", runner=FakeRun({"master^{commit}"})),
+        self.assertEqual(discovery_scope.resolve_base(".", runner=FakeRun({"master^{commit}"})),
                          ("master", "fallback"))
         # nothing resolves (no main/master, no HEAD~1 tried) -> unresolved
-        self.assertEqual(orchestrator.resolve_base(".", runner=FakeRun(set())),
+        self.assertEqual(discovery_scope.resolve_base(".", runner=FakeRun(set())),
                          (None, "unresolved"))
 
     def test_prune_fixture_files_standard_vs_redteam(self):
         paths = ["src/app.py", "tests/fixtures/vuln/main.rs"]
-        self.assertEqual(orchestrator.prune_fixture_files(paths, include_fixtures=False),
+        self.assertEqual(discovery_scope.prune_fixture_files(paths, include_fixtures=False),
                          ["src/app.py"])
-        self.assertEqual(orchestrator.prune_fixture_files(paths, include_fixtures=True), paths)
+        self.assertEqual(discovery_scope.prune_fixture_files(paths, include_fixtures=True), paths)
 
 
 class TestResolveBaseOriginFallback(unittest.TestCase):
@@ -89,17 +140,17 @@ class TestResolveBaseOriginFallback(unittest.TestCase):
         return run
 
     def test_pr_base_prefers_origin_ref(self):
-        base, src = orchestrator.resolve_base(self.repo, pr_base="main",
+        base, src = discovery_scope.resolve_base(self.repo, pr_base="main",
                                       runner=self._runner_resolving("origin/main", "main"))
         self.assertEqual((base, src), ("origin/main", "pr-base"))
 
     def test_pr_base_falls_back_to_local_when_origin_absent(self):
-        base, src = orchestrator.resolve_base(self.repo, pr_base="main",
+        base, src = discovery_scope.resolve_base(self.repo, pr_base="main",
                                       runner=self._runner_resolving("main"))
         self.assertEqual((base, src), ("main", "pr-base"))
 
     def test_explicit_base_never_tries_origin(self):
-        base, src = orchestrator.resolve_base(self.repo, explicit="release-2",
+        base, src = discovery_scope.resolve_base(self.repo, explicit="release-2",
                                       runner=self._runner_resolving("origin/release-2"))
         self.assertEqual((base, src), (None, "unresolved"))
 
@@ -119,12 +170,10 @@ class TestChangedFilesRenameParity(unittest.TestCase):
                 r.stdout = "abc123\n"
             return r
 
-        # orch IS discovery (import discovery as orch); patching orch._git
-        # patches discovery._git directly, which is also what
-        # discovery.collect_changed_files's bare _git(...) global lookup
-        # resolves through -- no cross-module duplication needed post-A2.
-        with mock.patch.object(orchestrator, "_git", side_effect=fake_git):
-            orchestrator.collect_changed_files("/tmp/x", base="main")
+        # Patch the extracted owner: collect_changed_files resolves its `_git`
+        # global in discovery_scope, not in the discovery entry point.
+        with mock.patch.object(discovery_scope, "_git", side_effect=fake_git):
+            discovery_scope.collect_changed_files("/tmp/x", base="main")
         diff_calls = [a for a in calls if "diff" in a]
         self.assertTrue(diff_calls, "no git diff invocation captured")
         for a in diff_calls:
@@ -669,7 +718,7 @@ _NUL_LS_FILES = "src/café.py\0".encode("utf-8")
 
 
 def _quoting_git(repo_root):
-    """A fake discovery._git that quotes exactly as git does unless asked for -z."""
+    """A fake discovery_scope._git that quotes exactly as git does unless asked for -z."""
     def fake_git(repo, args, timeout=30, text=True):
         if args and args[0] == "merge-base":
             return types.SimpleNamespace(stdout="deadbeef\n" if text else b"deadbeef\n")
@@ -688,8 +737,8 @@ def test_collect_changed_files_keeps_a_non_ascii_path(tmp_path):
     repo = tmp_path / "r"
     (repo / "src").mkdir(parents=True)
     (repo / "src" / "café.py").write_text("x = 1\n", encoding="utf-8")
-    with mock.patch.object(orchestrator, "_git", side_effect=_quoting_git(repo)):
-        got = orchestrator.collect_changed_files(str(repo), base="main")
+    with mock.patch.object(discovery_scope, "_git", side_effect=_quoting_git(repo)):
+        got = discovery_scope.collect_changed_files(str(repo), base="main")
     assert got == ["src/café.py"]
 
 
@@ -704,8 +753,8 @@ def test_collect_changed_files_asks_git_not_to_quote(tmp_path):
             return types.SimpleNamespace(stdout="deadbeef\n")
         return types.SimpleNamespace(stdout=b"")
 
-    with mock.patch.object(orchestrator, "_git", side_effect=fake_git):
-        orchestrator.collect_changed_files(str(tmp_path), base="main")
+    with mock.patch.object(discovery_scope, "_git", side_effect=fake_git):
+        discovery_scope.collect_changed_files(str(tmp_path), base="main")
     listings = [(a, t) for (a, t) in calls if a and a[0] != "merge-base"]
     assert listings, "no file-listing invocation captured"
     for args, text in listings:
@@ -728,8 +777,8 @@ def test_collect_changed_files_warns_instead_of_dropping_silently(tmp_path, caps
             stdout="kept.py\0vanished.py\0adir\0skipme.py\0".encode("utf-8"))
 
     (repo / "adir").mkdir()
-    with mock.patch.object(orchestrator, "_git", side_effect=fake_git):
-        got = orchestrator.collect_changed_files(str(repo), base="main",
+    with mock.patch.object(discovery_scope, "_git", side_effect=fake_git):
+        got = discovery_scope.collect_changed_files(str(repo), base="main",
                                                  exclude=("skipme.py",))
     err = capsys.readouterr().err
     assert got == ["kept.py"]
@@ -772,7 +821,7 @@ def test_reviewed_set_and_hunk_map_agree_on_quoted_names(tmp_path):
     _git_q(repo, "commit", "-qam", "change them all")
     (repo / "naïve.txt").write_text("untracked\n", encoding="utf-8")
 
-    changed = orchestrator.collect_changed_files(str(repo), base="main")
+    changed = discovery_scope.collect_changed_files(str(repo), base="main")
     hunks = diff_map.hunk_map(str(repo), "main")
     expected = set(committed) | {"naïve.txt"}
     assert set(changed) == expected, changed
@@ -912,7 +961,7 @@ def test_both_scope_flags_route_through_one_confinement_helper(tmp_path):
               "--scope-files", good]
     assert orchestrator.main(singular) == 0
     assert orchestrator.main(plural) == 0
-    with mock.patch.object(orchestrator, "_confine_scope_path",
+    with mock.patch.object(discovery_scope, "_confine_scope_path",
                            return_value=None):
         assert orchestrator.main(singular) == 2
         assert orchestrator.main(plural) == 2
@@ -936,11 +985,11 @@ def test_scope_files_refusal_echoes_a_bounded_repr_of_the_entry(tmp_path, capsys
     # string, so a control character cannot break the stderr line and an
     # absurd argv cannot make it unreadable. Both pinned here.
     repo = repo_with_matrix(tmp_path)
-    long_entry = "x" * (orchestrator._SCOPE_ECHO_LIMIT + 50) + ".py"
+    long_entry = "x" * (discovery_scope._SCOPE_ECHO_LIMIT + 50) + ".py"
     rc, _out = _scope_files_run(repo, long_entry)
     err = capsys.readouterr().err
     assert rc == 2
-    assert "x" * orchestrator._SCOPE_ECHO_LIMIT + "…" in err
+    assert "x" * discovery_scope._SCOPE_ECHO_LIMIT + "…" in err
     assert long_entry not in err
     rc, _out = _scope_files_run(repo, "src/\nnot-a-line.py")
     err = capsys.readouterr().err
@@ -977,10 +1026,10 @@ def test_confine_scope_path_does_not_double_join_a_relative_repo(tmp_path, capsy
     (repo / rel_repo / "escape.py").write_text("x = 1\n", encoding="utf-8")
     universe = {"escape.py", "src/checkout/pay.py"}
     # The in-tree file still confines under a relative root...
-    assert orchestrator._confine_scope_path(
+    assert discovery_scope._confine_scope_path(
         rel_repo, "src/checkout/pay.py", universe, "--scope-files") == "src/checkout/pay.py"
     # ...and the escaping symlink is still refused, decoy copy or not.
-    assert orchestrator._confine_scope_path(
+    assert discovery_scope._confine_scope_path(
         rel_repo, "escape.py", universe, "--scope-files") is None
     assert "resolves outside the repository root" in capsys.readouterr().err
 
@@ -997,8 +1046,8 @@ def test_is_confined_regular_refuses_a_file_behind_an_escaping_dir_symlink(tmp_p
     (repo / "dirlink").symlink_to(outside_dir, target_is_directory=True)
     (repo / rel_repo / "dirlink").mkdir()
     (repo / rel_repo / "dirlink" / "x.py").write_text("x = 1\n", encoding="utf-8")
-    assert not orchestrator._is_confined_regular(rel_repo, "dirlink/x.py")
-    assert orchestrator._is_confined_regular(rel_repo, "src/checkout/pay.py")
+    assert not discovery_scope._is_confined_regular(rel_repo, "dirlink/x.py")
+    assert discovery_scope._is_confined_regular(rel_repo, "src/checkout/pay.py")
 
 
 # --- #2272: the delta path asks the SAME policy --repo-scan asks -------------
@@ -1218,7 +1267,7 @@ def test_scope_changed_is_bounded_by_the_discovery_cap(tmp_path, capsys):
     repo = _repo_tracking(tmp_path, tree)
     _rewrite_and_commit(repo, tree)
     out = repo / ".panopticon" / "groups.json"
-    with mock.patch.object(orchestrator, "DISCOVERED_FILES_MAX", 2):
+    with mock.patch.object(discovery_scope, "DISCOVERED_FILES_MAX", 2):
         rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
                                 str(repo), "--out", str(out)])
     err = capsys.readouterr().err
@@ -1276,7 +1325,7 @@ def test_repo_scan_refuses_an_out_that_escapes_the_artifact_directory(tmp_path, 
 def test_repo_scan_scope_changed_without_a_changed_file_list_exits_2(tmp_path, capsys):
     repo = repo_with_matrix(tmp_path)
     out = repo / ".panopticon" / "groups.json"
-    with mock.patch.object(orchestrator, "collect_changed_files", return_value=None):
+    with mock.patch.object(discovery_scope, "collect_changed_files", return_value=None):
         rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD",
                                 str(repo), "--out", str(out)])
     assert rc == 2

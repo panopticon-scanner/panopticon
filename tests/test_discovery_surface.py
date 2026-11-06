@@ -2,6 +2,7 @@
 and test-candidate generation."""
 import unittest
 
+from scripts import discovery_scope
 from tests.discovery_test_helpers import orchestrator
 
 
@@ -69,24 +70,24 @@ class TestTestCandidates(unittest.TestCase):
 
     def test_python_candidates_cover_stem_and_dirs(self):
         # Use a nested path so the src/ -> test(s)/ remap branch is exercised.
-        cands = orchestrator.test_candidates("src/pkg/parser.py")
+        cands = discovery_scope.test_candidates("src/pkg/parser.py")
         self.assertIn("src/pkg/test_parser.py", cands)
         self.assertIn("src/pkg/parser_test.py", cands)
         self.assertIn("tests/pkg/test_parser.py", cands)  # src/ -> tests/ remap
         self.assertIn("test/pkg/test_parser.py", cands)   # src/ -> test/ remap
 
     def test_ruby_app_dir_maps_to_spec(self):
-        cands = orchestrator.test_candidates("app/models/user.rb")
+        cands = discovery_scope.test_candidates("app/models/user.rb")
         self.assertIn("spec/models/user_spec.rb", cands)  # app/ -> spec/ remap
 
     def test_language_specific_suffixes(self):
         self.assertIn("internal/svc/handler_test.go",
-                      orchestrator.test_candidates("internal/svc/handler.go"))
+                      discovery_scope.test_candidates("internal/svc/handler.go"))
         self.assertTrue(any(c.endswith("Button.test.tsx")
-                            for c in orchestrator.test_candidates("ui/Button.tsx")))
+                            for c in discovery_scope.test_candidates("ui/Button.tsx")))
         self.assertTrue(any(c.endswith("FooTest.java")
-                            for c in orchestrator.test_candidates("src/Foo.java")))
+                            for c in discovery_scope.test_candidates("src/Foo.java")))
 
     def test_unknown_extension_yields_no_names(self):
         # No language match -> no candidate filenames (dirs alone produce none).
-        self.assertEqual(orchestrator.test_candidates("notes.md"), [])
+        self.assertEqual(discovery_scope.test_candidates("notes.md"), [])

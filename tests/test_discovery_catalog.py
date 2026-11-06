@@ -15,6 +15,7 @@ import yaml
 
 import scripts.coverage_model as coverage_model
 import scripts.discovery_catalog as discovery_catalog
+import scripts.discovery_scope as discovery_scope
 import scripts.dot_paths as dot_paths
 import scripts.groups_schema as groups_schema
 
@@ -1219,7 +1220,7 @@ def _kept_by_both(paths):
             "the walk arm did not walk (method=%r): this comparison is the git "
             "path against itself, and every parity assertion below is vacuous"
             % info.get("method"))
-    listed = set(orchestrator._filter_reviewable(
+    listed = set(discovery_scope._filter_reviewable(
         sorted(paths), False, None, isfile=lambda rel: True))
     return walked, listed
 
@@ -1519,7 +1520,7 @@ class TestGitListingFailureIsNamed(unittest.TestCase):
                     failure = subprocess.CalledProcessError(
                         128, ["git", "ls-files"], stderr=message)
                     info, err = {}, io.StringIO()
-                    with mock.patch.object(orchestrator, "_git",
+                    with mock.patch.object(discovery_scope, "_git",
                                            side_effect=failure), \
                             contextlib.redirect_stderr(err):
                         self.assertIsNone(orchestrator._git_listed_files(d, info))

@@ -31,7 +31,7 @@ SCOPE_KEYS = ("files", "dirs", "reads")
 # them exhausts the caps below before a single reviewable file is reached,
 # which is what made list_files unusable on any real target.
 #
-# These MUST stay equal to discovery.EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS, which
+# These MUST stay equal to discovery_scope.EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS, which
 # say what the agentic scan prunes and carry the "single maintenance point"
 # comment: a name here that is not there means Codex and Claude cover the same
 # tree differently, silently. They are duplicated rather than imported because

@@ -9,7 +9,7 @@ over `tests/` returned zero hits, so the only guard on the #434 parity was the
 comment.
 
 Drift is silent and one-sided. The agentic review path prunes a fixture corpus
-in standard mode (`discovery.prune_fixture_files`); the tool scanners walk the
+in standard mode (`discovery_scope.prune_fixture_files`); the tool scanners walk the
 whole repo and report real fixture paths, and `ingest_tools` prunes them here.
 A basename added on one side only means the tool axis keeps reporting planted
 fixture vulnerabilities that the review axis drops -- run-3 measured 67 such
@@ -28,7 +28,7 @@ import tempfile
 import unittest
 from unittest import mock
 
-import scripts.discovery as discovery
+import scripts.discovery_scope as discovery_scope
 import scripts.ingest_tools as ingest
 import scripts.security_gate as gate
 import scripts.tools.sarif_utils as su
@@ -40,25 +40,25 @@ def _discovery_says(path):
     """`discovery`'s verdict on a FILE path, composed the way discovery asks it.
 
     The two predicates take different arguments. `su._is_fixture_path` takes the
-    file and walks its own ancestors; `discovery._is_fixture_dir` answers about
-    ONE directory, and `discovery.prune_fixture_files` is what walks the
+    file and walks its own ancestors; `discovery_scope._is_fixture_dir` answers about
+    ONE directory, and `discovery_scope.prune_fixture_files` is what walks the
     ancestors (`_ancestor_dirs`). Composing those two here asks the same
     question of the same definition, so a disagreement is drift and not a
     difference of calling convention.
     """
-    return any(discovery._is_fixture_dir(d) for d in discovery._ancestor_dirs(path))
+    return any(discovery_scope._is_fixture_dir(d) for d in discovery_scope._ancestor_dirs(path))
 
 
 class TestFixtureCorpusMirror(unittest.TestCase):
     def test_corpus_basenames_mirror_discovery(self):
         self.assertEqual(
-            su._FIXTURE_DIR_BASENAMES, discovery.FIXTURE_DIR_BASENAMES,
+            su._FIXTURE_DIR_BASENAMES, discovery_scope.FIXTURE_DIR_BASENAMES,
             "sarif_utils mirrors discovery's fixture-corpus basenames; they "
             "have drifted")
 
     def test_corpus_parent_dirs_mirror_discovery(self):
         self.assertEqual(
-            su._FIXTURE_PARENT_DIRS, discovery.FIXTURE_PARENT_DIRS,
+            su._FIXTURE_PARENT_DIRS, discovery_scope.FIXTURE_PARENT_DIRS,
             "sarif_utils mirrors discovery's fixture-corpus parent dirs; they "
             "have drifted")
 
@@ -78,7 +78,7 @@ class TestFixtureCorpusMirror(unittest.TestCase):
         # fixture to the tool path and ordinary code to the agentic path --
         # exactly the one-sided drift the mirror comment warns about, and the
         # table above goes red on it.
-        with mock.patch.object(discovery, "FIXTURE_PARENT_DIRS",
+        with mock.patch.object(discovery_scope, "FIXTURE_PARENT_DIRS",
                                frozenset({"tests", "test"})):
             self.assertTrue(su._is_fixture_path("spec/fixtures/x.py"))
             self.assertFalse(_discovery_says("spec/fixtures/x.py"))

@@ -6,6 +6,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+from scripts import discovery_scope
 from tests.discovery_test_helpers import orchestrator, touch, init_repo, git_cmd
 
 
@@ -42,7 +43,7 @@ class TestArtifactOutputGuard(unittest.TestCase):
             git_cmd(d, "commit", "-q", "-m", "init")
             out = os.path.join(d, ".panopticon", "changed.json")
             stderr = io.StringIO()
-            with mock.patch.object(orchestrator, "collect_changed_files", return_value=None) as collect, \
+            with mock.patch.object(discovery_scope, "collect_changed_files", return_value=None) as collect, \
                     contextlib.redirect_stderr(stderr):
                 rc = orchestrator.main(["--repo", d, "--repo-scan", "--scope-changed",
                                         "--base", "HEAD", "--out", out])

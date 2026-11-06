@@ -8,6 +8,7 @@ import pytest
 
 from tests._test_helpers import hard_link_or_skip
 from scripts import codex_read_tools as read_tools
+from scripts import discovery_scope
 
 
 @pytest.fixture
@@ -607,7 +608,7 @@ def test_a_symlinked_ancestor_is_refused_on_both_walks(tmp_path, monkeypatch, fl
 
 
 def test_the_exclusion_list_matches_the_one_discovery_prunes():
-    """The broker cannot IMPORT discovery.EXCLUDE_DIRS.
+    """The broker cannot IMPORT discovery_scope.EXCLUDE_DIRS.
 
     `codex_host.safety_config()` launches this module as
     `sys.executable -I <path>`, and `-I` implies `-P`: the script's directory
@@ -618,7 +619,6 @@ def test_the_exclusion_list_matches_the_one_discovery_prunes():
     prune the same names, or the two hosts cover the same tree differently.
     """
     from tests._test_helpers import REPO_ROOT
-    from scripts import discovery
 
     # The broker has no git, so it cannot read the target's .gitignore the way
     # discovery's `git ls-files --exclude-standard` surface does; these two
@@ -630,8 +630,8 @@ def test_the_exclusion_list_matches_the_one_discovery_prunes():
     # second half of the parity -- both names remain ignored for the tools that
     # do read it, so the broker's hard-coded pair cannot drift unnoticed.
     gitignore_parity = {".panopticon", ".worktrees"}
-    assert set(read_tools.EXCLUDED_DIRECTORIES) == set(discovery.EXCLUDE_DIRS) | gitignore_parity
-    assert read_tools.EXCLUDED_DIRECTORY_GLOBS == discovery.EXCLUDE_DIR_GLOBS
+    assert set(read_tools.EXCLUDED_DIRECTORIES) == set(discovery_scope.EXCLUDE_DIRS) | gitignore_parity
+    assert read_tools.EXCLUDED_DIRECTORY_GLOBS == discovery_scope.EXCLUDE_DIR_GLOBS
     with open(os.path.join(REPO_ROOT, ".gitignore"), encoding="utf-8") as fh:
         ignored = fh.read()
     for name in gitignore_parity:
