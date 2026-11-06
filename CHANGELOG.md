@@ -12,6 +12,16 @@
   `<run_home>/workspace/.git` (`cwd` on every launch and effective-loader probe), and arms a single
   wildcard `PreToolUse` hook (`"matcher": "*"`) enforcing a strict tool-name allowlist,
   `PANOPTICON_ENTRY_ID` binding, per-entry read scope and v2 write allowlist grants.
+- **Python dependency bumps, re-resolved (supersedes Dependabot #3491).** The tools closure:
+  - semgrep 1.182.1 -> 1.183.0, with the Dockerfile `SEMGREP_VERSION` moved to match;
+  - msgpack 1.2.3 -> 1.2.4; platformdirs 4.13.5 -> 4.14.0;
+  - pydantic 2.14.1 -> 2.14.2 and pydantic-settings 2.16.1 -> 2.16.2.
+
+  pydantic 2.14.2 requires exactly pydantic-core 2.50.2, so pydantic-core moves too (2.50.1 ->
+  2.50.2). It is the only package outside the eight that changes. The fixture image moves to
+  pytest 9.2.0. The pyproject floors are now pytest>=9.2.0, ruff>=0.17.3 and mypy>=2.4.1.
+  The closures were re-resolved with `uv pip compile` for Python 3.12 on both linux architectures,
+  and `bump_pins.py requirements --write` wrote the digests.
 - **Discovery surface filtering and scope resolution have one owner (#3457).** The
   exclusion/fixture policy, target-Git delta collection, related-test expansion, base
   resolution, reviewable-file filtering, scope-path confinement and five scope resolvers
