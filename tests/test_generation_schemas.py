@@ -26,7 +26,7 @@ VERSION = "schema_version"
 # key. Each row is its own ruling, so each flips, and reverts, alone; the
 # key-set parity below compares every OTHER root key.
 VERSION_ASKED_BY_PROMPT = {
-    "domain-advisor.md": False,   # #3482 P1
+    "domain-advisor.md": True,    # #3482 P1
     "domain-panel.md": True,      # #2104
     "advisor.md": False,          # #3482 P2
 }

@@ -129,6 +129,7 @@ any other round, and omit `missing_evidence` whenever nothing was out of reach.
 Write your verdicts to `{out_file}` as a single JSON object with this exact shape. The `_panopticon` block is REQUIRED — the run uses it to identify your cell and round, and a file that omits it (or carries a wrong `run_id`/`domain`/`group`/`stage`) is DISCARDED and your cell is treated as not done:
 
     {
+      "schema_version": 1,
       "verdicts": [ /* one object per claim, in the Verdict format above */ ],
       "_panopticon": {"run_id": "{run_id}", "role": "domain_advisor", "domain": "{domain}", "group": "{group}", "stage": "{stage}"}
     }
