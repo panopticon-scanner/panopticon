@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The advisors are asked for `schema_version: 1`, and Codex requires it (#3482, owner-approved).**
+  Each is its own commit:
+  - **P1:** domain-advisor's bundle example leads with `"schema_version": 1`.
+  - **P2:** advisor.md's verdict example does too.
+  - **P4:** Codex's verify-primary, verify-backup and tool-advisor generation schemas require a
+    top-level `schema_version` with `const: 1`, as review-cell's already did.
+
+  The #2104 window stays OPEN: admission still reads a versionless reply as v1. Closing it is
+  a separate ruling, after one minor release and a kit run showing every host emits the version.
 - **Reviewer prompts close the four integrity gaps #2098 found (#3488, owner-approved).** Each is
   its own commit:
   - **G1:** domain-advisor and advisor now redact in `reasoning`, `references` and every other
