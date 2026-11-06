@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **A `migrate/` directory now draws the DAT floor (#3484 R1, owner-approved).** Rails keeps
+  migrations in `db/migrate/` under names that contain no `migration`, so a group whose only database
+  surface was its migrations got no DAT cell. `coverage_model` now treats a `migrate` path SEGMENT
+  as a database hint. `immigrate.py`, `migrated_users.py` and a file named `migrate.rb` still don't
+  match. This is a routing change: it adds DAT and removes nothing. The other #3484 items (R2, R3)
+  stay pending.
 - **Discovery catalog matching has one owner (#3457).** `_glob_to_re`, `match_patterns`,
   `_decide`, `_VOCAB_PATH`, `_capability_aliases`, `assign_scoped` and `assign_by_catalog`
   moved byte-identically to `discovery_catalog.py`; discovery, grouping, setup and tests now
