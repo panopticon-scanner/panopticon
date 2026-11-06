@@ -12,6 +12,12 @@
   pytest 9.2.0. The pyproject floors are now pytest>=9.2.0, ruff>=0.17.3 and mypy>=2.4.1.
   The closures were re-resolved with `uv pip compile` for Python 3.12 on both linux architectures,
   and `bump_pins.py requirements --write` wrote the digests.
+- **Discovery surface filtering and scope resolution have one owner (#3457).** The
+  exclusion/fixture policy, target-Git delta collection, related-test expansion, base
+  resolution, reviewable-file filtering, scope-path confinement and five scope resolvers
+  moved to `discovery_scope.py`. Discovery and tests call that owner directly, every patch
+  target follows the runtime lookup, and there are no compatibility aliases. The
+  `discovery.py` flat-module pin falls from 1803 to 1273 lines.
 - **A `migrate/` directory now draws the DAT floor (#3484 R1, owner-approved).** Rails keeps
   migrations in `db/migrate/` under names that contain no `migration`, so a group whose only database
   surface was its migrations got no DAT cell. `coverage_model` now treats a `migrate` path SEGMENT

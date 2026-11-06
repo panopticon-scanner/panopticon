@@ -25,7 +25,7 @@ from scripts import codex_read_tools
 DEPTH_CAP = 12
 ENTRY_CAP = 20_000
 # Directory NAMES the walk prunes. `codex_read_tools.EXCLUDED_DIRECTORIES` is
-# `discovery.EXCLUDE_DIRS` plus `.panopticon` and `.worktrees`, pinned equal to
+# `discovery_scope.EXCLUDE_DIRS` plus `.panopticon` and `.worktrees`, pinned equal to
 # it by tests/test_codex_read_tools.py -- so this is the discovery list the
 # spec names, reached through the stdlib-only copy rather than through
 # `discovery.py`, which is a CLI-shaped module that rewrites `sys.path` on

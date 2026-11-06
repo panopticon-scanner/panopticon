@@ -546,7 +546,7 @@ def _guarded(root, args, runner, timeout, text, suppressed, mutating):
         reads text (it parses config and index records), so a `text=False`
         caller handed this object straight back got `str` where its own contract
         says bytes (#2006 concern 3). And its `args` were the PREFLIGHT's argv,
-        so `discovery._git` raised `CalledProcessError` naming `config --null
+        so `discovery_scope._git` raised `CalledProcessError` naming `config --null
         --list --includes` and the operator read "git diff failed: ... config"
         for a command they never issued (#2006 fix round 2, M5). The
         returncode and stderr stay the preflight's: that is the real cause.

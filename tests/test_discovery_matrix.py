@@ -12,6 +12,7 @@ from tests.discovery_test_helpers import (
 
 import scripts.discovery as discovery  # noqa: E402
 import scripts.discovery_catalog as discovery_catalog  # noqa: E402
+import scripts.discovery_scope as discovery_scope  # noqa: E402
 import scripts.groups_schema as groups_schema  # noqa: E402
 import scripts.setup_config as setup_config  # noqa: E402
 import scripts.setup_preflight as setup_preflight  # noqa: E402
@@ -466,9 +467,9 @@ def test_collect_changed_files_default_branch_fallback(available, selected, refs
 
     # No dot-path patch: `collect_changed_files` never asked that policy (the
     # arm was vestigial), and #1784 moved it to `dot_paths.allowed` anyway.
-    with patch("scripts.discovery._git", side_effect=git), \
+    with patch("scripts.discovery_scope._git", side_effect=git), \
          patch("os.path.isfile", return_value=True):
-        assert discovery.collect_changed_files("/tmp/x", base=None) == ["file1.py"]
+        assert discovery_scope.collect_changed_files("/tmp/x", base=None) == ["file1.py"]
     actual_refs = [argv[2] for argv, _ in calls if argv[:2] == ["merge-base", "HEAD"]]
     if "HEAD~1" in refs:
         actual_refs.append(next(argv[1] for argv, _ in calls if argv[0] == "rev-parse"))

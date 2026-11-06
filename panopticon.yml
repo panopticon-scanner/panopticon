@@ -170,6 +170,10 @@
 #     over both layered groups now, so a `RepoProfiling` leaf above 40 reds the
 #     same as a `ToolAdapters` one -- the fence this group reached the wall
 #     without.
+#   - 2026-11-06 (#3457): discovery's catalog matching and scope/filtering
+#     families moved to `discovery_catalog.py` and `discovery_scope.py`.
+#     Both stay on `RepoProfiling:Discovery`; measured on the current tree,
+#     that leaf is 27 of 48 files after the second extraction.
 #   - 2026-10-02 (#2521): `CI` reached all 48 slots when `shell_heredoc.py`
 #     joined the lexer surface. Split it into `Shell` (the shell reader and
 #     lexer, with their tests) and `Workflows` (the workflow guard and
@@ -560,6 +564,7 @@ groups:
       match:
       - skill/scripts/discovery.py
       - skill/scripts/discovery_catalog.py
+      - skill/scripts/discovery_scope.py
       - skill/scripts/dot_paths.py
       - skill/scripts/exclude_carve_out.py
       - skill/scripts/groups_schema.py

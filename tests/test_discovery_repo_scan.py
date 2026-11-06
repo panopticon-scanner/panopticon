@@ -8,7 +8,7 @@ import types
 import unittest
 import unittest.mock
 
-from scripts import diff_map
+from scripts import diff_map, discovery_scope
 
 from tests._test_helpers import adopt_panopticon
 from tests.discovery_test_helpers import (
@@ -327,7 +327,7 @@ class TestGitAwareDiscovery(unittest.TestCase):
     def test_nested_git_paths_never_reviewable(self):
         # A gitlink / nested-repo .git entry is never a reviewable file (#500
         # observed design-system/.git leaking into group lists on Kimi).
-        filtered = orchestrator._filter_reviewable(
+        filtered = discovery_scope._filter_reviewable(
             ["src/app.py", "design-system/.git", "vendor/lib/.git/config"],
             include_fixtures=True, pruned_fixtures=None,
             isfile=lambda rel: True)
@@ -340,7 +340,7 @@ class TestGitAwareDiscovery(unittest.TestCase):
         # the dot-path policy that would also refuse it: a path that could count
         # twice counts once.
         info = {}
-        kept = orchestrator._filter_reviewable(
+        kept = discovery_scope._filter_reviewable(
             [".git/config", "a/.git/x", ".hidden/x.py", "node_modules/y.js",
              "src/ok.py"],
             include_fixtures=True, pruned_fixtures=None,
@@ -354,11 +354,11 @@ class TestGitAwareDiscovery(unittest.TestCase):
         # publishes carries the changed set's counts and not the whole-repo
         # listing's added to them.
         info = {}
-        orchestrator._filter_reviewable(
+        discovery_scope._filter_reviewable(
             [".hidden/x.py"], include_fixtures=True, pruned_fixtures=None,
             isfile=lambda rel: True, info=info)
         self.assertEqual(info["pruned"]["dot_path"], 1)
-        orchestrator._filter_reviewable(
+        discovery_scope._filter_reviewable(
             ["src/ok.py"], include_fixtures=True, pruned_fixtures=None,
             isfile=lambda rel: True, info=info)
         self.assertEqual(info["pruned"],
@@ -406,7 +406,7 @@ class TestDiscoveryResultCap(unittest.TestCase):
             self._tree(d, 12)
             info = {}
             err = io.StringIO()
-            with unittest.mock.patch.object(discovery, "DISCOVERED_FILES_MAX", 5), \
+            with unittest.mock.patch.object(discovery_scope, "DISCOVERED_FILES_MAX", 5), \
                     contextlib.redirect_stderr(err):
                 files = discovery.discover_repo_files(d, info=info)
         self.assertEqual(len(files), 5)
@@ -424,7 +424,7 @@ class TestDiscoveryResultCap(unittest.TestCase):
             git_cmd(d, "commit", "-q", "-m", "init")
             info = {}
             err = io.StringIO()
-            with unittest.mock.patch.object(discovery, "DISCOVERED_FILES_MAX", 5), \
+            with unittest.mock.patch.object(discovery_scope, "DISCOVERED_FILES_MAX", 5), \
                     contextlib.redirect_stderr(err):
                 files = discovery.discover_repo_files(d, info=info)
         self.assertEqual(info["method"], "git-ls-files")
@@ -451,7 +451,7 @@ class TestDiscoveryResultCap(unittest.TestCase):
     def test_the_cap_clears_every_tree_the_corpus_has(self):
         # The largest repo in the calibration pool is ~35k files. A cap that a
         # real target could reach would silently shrink a review surface.
-        self.assertGreaterEqual(discovery.DISCOVERED_FILES_MAX, 200_000)
+        self.assertGreaterEqual(discovery_scope.DISCOVERED_FILES_MAX, 200_000)
 
 
 class TestWorktreeDirty(unittest.TestCase):
@@ -518,7 +518,7 @@ class TestWorktreeDirty(unittest.TestCase):
         # belong to one record; the next NUL is a separate status entry.
         status = b"C  panopticon.yml\0source.py\0?? other.py\0"
         with unittest.mock.patch.object(
-            discovery, "_git", return_value=types.SimpleNamespace(stdout=status)
+            discovery_scope, "_git", return_value=types.SimpleNamespace(stdout=status)
         ) as git:
             self.assertTrue(discovery._worktree_dirty("/unused", exclude=("panopticon.yml", "other.py")))
             self.assertTrue(discovery._worktree_dirty("/unused", exclude=("panopticon.yml", "source.py")))
@@ -540,7 +540,7 @@ class TestChangedSymlinks(unittest.TestCase):
                 fh.write("pass\n")
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
-                changed = discovery.collect_changed_files(repo, "HEAD")
+                changed = discovery_scope.collect_changed_files(repo, "HEAD")
             self.assertEqual(changed, ["regular.py"])
             self.assertIn("inside.py", err.getvalue())
             self.assertIn("outside.py", err.getvalue())
@@ -554,7 +554,7 @@ class TestChangedSymlinks(unittest.TestCase):
         git_cmd(repo, "commit", "-qm", "add link")
         os.unlink(os.path.join(repo, "link.py"))
         os.symlink("second.py", os.path.join(repo, "link.py"))
-        self.assertEqual(discovery.collect_changed_files(repo, "HEAD"), ["link.py"])
+        self.assertEqual(discovery_scope.collect_changed_files(repo, "HEAD"), ["link.py"])
         self.assertEqual(diff_map.hunk_map(repo, "HEAD"), {"link.py": [(1, 1)]})
 
 
