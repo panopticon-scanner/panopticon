@@ -28,7 +28,7 @@ VERSION = "schema_version"
 VERSION_ASKED_BY_PROMPT = {
     "domain-advisor.md": True,    # #3482 P1
     "domain-panel.md": True,      # #2104
-    "advisor.md": False,          # #3482 P2
+    "advisor.md": True,           # #3482 P2
 }
 # ...and which Codex generation projections REQUIRE it, as `const: 1`.
 VERSION_REQUIRED_BY_SCHEMA = {
