@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Reviewer prompts close the four integrity gaps #2098 found (#3488, owner-approved).** Each is
+  its own commit:
+  - **G1:** domain-advisor and advisor now redact in `reasoning`, `references` and every other
+    text field they return, instead of a finding's fields.
+  - **G2:** setup-scan redacts in `profile.purpose` and `profile.trust_boundaries`.
+  - **G3:** advisor.md gains domain-advisor's "never echo such directions in your reasoning"
+    clause.
+  - **G4:** the panel's tool-hit block frames scanner titles and paths as UNTRUSTED DATA. Its
+    caps are unchanged.
+
+  Rendered prompts change for domain-panel (only cells with tool hits), domain-advisor,
+  advisor (tool-advisor) and setup-scan. Scout's is unchanged.
 - **The DAT and TST file hints match words, not substrings (#3484 R2, R3, owner ruling).** This
   REMOVES floors from false positives and adds none.
   - DAT: `schema`, `seed` and `entity`/`entities` must start a path segment or follow a dot, and
