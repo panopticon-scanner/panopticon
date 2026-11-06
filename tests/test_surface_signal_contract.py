@@ -12,12 +12,15 @@ The two differ, and this file states how:
 - **Every other difference is labelled,** row by row, as required or
   accidental. The accidental ones assert TODAY's behaviour and name the issue
   that holds their ruling, so a later change flips a row visibly instead of
-  drifting silently.
+  drifting silently. The routing ones were ruled on in #3484 and are required
+  now; what remains accidental routes nothing (#3485).
 """
 import json
 import os
+import re
 import tempfile
 import unittest
+from unittest import mock
 
 from scripts import coverage_model, discovery, groups_schema, hosts
 import scripts.phases.coverage as coverage
@@ -27,7 +30,6 @@ from tests._test_helpers import write_host_evidence
 REQUIRED = "required"
 SHARED = "shared"            # both sides answer through the same predicate
 AGREE = "agree"
-ROUTING = "accidental (pending ruling, #3484)"
 NON_ROUTING = "accidental, non-routing (#3485)"
 
 # (path, discovery's (is_test_file, is_database_file, is_architecture_file),
@@ -65,18 +67,63 @@ SIGNALS = [
      "#3484 R1: a FILE named migrate is not the segment"),
     ("lib/immigrate/rules.rb", (False, False, False), ["COD", "SEC"], REQUIRED,
      "#3484 R1: a directory ending in `migrate` is not the segment"),
-    ("src/identity.py", (False, False, False), ["COD", "DAT", "SEC"], ROUTING,
-     "R2: the bare substring `entity` matches inside `identity`"),
-    ("src/random_seed.py", (False, False, False), ["COD", "DAT", "SEC"], ROUTING,
-     "R2: the bare substring `seed`"),
-    ("src/jsonschema_util.py", (False, False, False), ["COD", "DAT", "SEC"], ROUTING,
-     "R2: the bare substring `schema`"),
-    ("src/latest_version.py", (False, False, False), ["COD", "SEC", "TST"], ROUTING,
-     "R3: the hint `test_` matches inside `latest_`"),
-    ("src/contest_results.py", (False, False, False), ["COD", "SEC", "TST"], ROUTING,
-     "R3: inside `contest_`"),
-    ("api/openapi.spec.yaml", (False, False, False), ["COD", "SEC", "TST"], ROUTING,
-     "R3: the hint `.spec.` on an API spec"),
+    # #3484 R2: `schema`, `seed` and `entity` are words. They must start a path
+    # segment or follow a dot and end at a separator, or be a CamelCase `Entity`.
+    ("src/identity.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R2: `entity` inside `identity` is not the word"),
+    ("src/identities.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R2: nor is `entities` inside `identities`"),
+    ("config/initializers/html_entities.rb", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R2: railsgoat's HTML entities; an `_` compound is not the word"),
+    ("src/random_seed.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R2: `seed` after `random_` is not the word"),
+    ("lib/seedling.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R2: the word must END at a separator"),
+    ("src/jsonschema_util.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R2: `schema` inside `jsonschema` is not the word"),
+    ("src/config_schema.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R2: a JSON-Schema module, an `_` compound"),
+    ("src/schematics/index.ts", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R2: Angular schematics; the word must END at a separator"),
+    ("db/schema.rb", (False, False, False), ["COD", "DAT", "SEC"], REQUIRED,
+     "#3484 R2: Rails' schema; only the `schema` word draws its DAT"),
+    ("schema.sql", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED, "#3484 R2 keeps"),
+    ("prisma/schema.prisma", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED,
+     "#3484 R2 keeps"),
+    ("src/cats/cat.schema.ts", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED,
+     "#3484 R2: Mongoose's `.schema.` suffix, a dot-led word"),
+    ("db/seeds.rb", (False, False, False), ["COD", "DAT", "SEC"], REQUIRED,
+     "#3484 R2: Rails' seeds; only the `seed` word draws its DAT"),
+    ("seeds/001.sql", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED, "#3484 R2 keeps"),
+    ("db/seed_users.rb", (False, False, False), ["COD", "DAT", "SEC"], REQUIRED,
+     "#3484 R2: a word may END at `_`; only the `seed` word draws its DAT"),
+    ("src/entities/user.ts", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED,
+     "#3484 R2 keeps"),
+    ("app/entity/Order.java", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED,
+     "#3484 R2 keeps"),
+    ("src/user.entity.ts", (False, False, False), ["COD", "DAT", "SEC"], REQUIRED,
+     "#3484 R2: TypeORM's `.entity.` suffix, a dot-led word"),
+    ("UserEntity.java", (False, False, False), ["COD", "DAT", "SEC"], REQUIRED,
+     "#3484 R2: a CamelCase `Entity`, matched case-sensitively"),
+    # #3484 R3: `/test_` starts a path segment; `.spec.` skips yaml/yml/json.
+    ("src/latest_version.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R3: `test_` inside `latest_` does not start a segment"),
+    ("src/contest_results.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R3: nor inside `contest_`"),
+    ("api/openapi.spec.yaml", (False, False, False), ["COD", "SEC"], REQUIRED,
+     "#3484 R3: an API description, not a test"),
+    ("api/openapi.spec.yml", (False, False, False), ["COD", "SEC"], REQUIRED, "#3484 R3: as .yaml"),
+    ("api/user.spec.json", (False, False, False), ["COD", "SEC"], REQUIRED, "#3484 R3: as .yaml"),
+    ("tests/test_api.py", (True, False, False), ["COD", "SEC", "TST"], REQUIRED, "#3484 R3 keeps"),
+    ("test_api.py", (True, False, False), ["COD", "SEC", "TST"], REQUIRED,
+     "#3484 R3 keeps, at the top level too"),
+    ("src/test_main.c", (False, False, False), ["COD", "SEC", "TST"], REQUIRED,
+     "#3484 R3: only the `/test_` hint draws its TST"),
+    ("src/foo.spec.ts", (True, False, False), ["COD", "SEC", "TST"], REQUIRED,
+     "#3484 R3 keeps; the naming rule decides it"),
+    ("foo.spec.js", (True, False, False), ["COD", "SEC", "TST"], REQUIRED, "as src/foo.spec.ts"),
+    ("src/__snapshots__/foo.spec.ts.snap", (False, False, False), ["COD", "SEC", "TST"], REQUIRED,
+     "#3484 R3: only `.spec.` draws its TST"),
     ("src/db.query.py", (False, False, False), ["COD", "DAT", "SEC"], NON_ROUTING,
      "discovery's DAT is narrower (no `/db.`); only coverage's answer routes"),
     ("app/Models/User.cs", (False, False, False), ["COD", "DAT", "SEC"], NON_ROUTING,
@@ -107,11 +154,26 @@ class TheSignalsTest(unittest.TestCase):
                 self.assertTrue(discovery.is_test_file(path))
                 self.assertIn("TST", coverage_model.applicable_global_floor([path], None))
 
+    def test_which_half_of_the_tst_signal_decides_a_spec_file(self):
+        # #3484 R3. The TST signal is `discovery.is_test_file` OR the hints, and
+        # the naming rule decides first. Narrowing `.spec.` therefore cannot
+        # drop a JS/TS spec test: with the `.spec.` hint switched off entirely,
+        # the naming rule alone still draws TST for every one. The hint is what
+        # carries the spec files that rule does not know.
+        never = re.compile(r"(?!)")
+        with mock.patch.object(coverage_model, "_SPEC_HINT", never):
+            for path in ("src/foo.spec.ts", "foo.spec.js", "a/b.spec.mjs", "c.spec.tsx"):
+                with self.subTest(path=path, half="naming rule"):
+                    self.assertIn("TST", coverage_model.applicable_global_floor([path], None))
+            with self.subTest(half="hint"):
+                self.assertNotIn("TST", coverage_model.applicable_global_floor(
+                    ["src/__snapshots__/foo.spec.ts.snap"], None))
+
     def test_every_row_is_labelled_and_every_accidental_row_names_its_issue(self):
         labels = {label for _p, _d, _f, label, _w in SIGNALS}
-        self.assertEqual({REQUIRED, SHARED, AGREE, ROUTING, NON_ROUTING}, labels)
+        self.assertEqual({REQUIRED, SHARED, AGREE, NON_ROUTING}, labels)
         for path, _d, _f, label, why in SIGNALS:
-            if label in (REQUIRED, ROUTING, NON_ROUTING):
+            if label in (REQUIRED, NON_ROUTING):
                 self.assertTrue(why, path)
 
 
@@ -124,6 +186,8 @@ GROUPS = {
     "Rails": ["db/migrate/001_init.rb"],
     "Conftest": ["tests/conftest.py"],
     "Ident": ["src/identity.py"],
+    "Latest": ["src/latest_version.py"],
+    "ApiSpec": ["api/openapi.spec.yaml"],
     "Committed": ["src/a.py"],
     "Widened": ["src/b.py"],
     "Excl": ["src/c.py", "tests/test_c.py"],
@@ -200,7 +264,9 @@ class RoutingThroughTheEffectiveMatrixTest(_Phase):
         "DbQuery": (["COD", "DAT", "SEC"], [], [], ["COD", "DAT", "SEC"], None),
         "Rails": (["COD", "DAT", "SEC"], [], [], ["COD", "DAT", "SEC"], None),  # #3484 R1
         "Conftest": (["COD", "SEC", "TST"], [], [], ["COD", "SEC", "TST"], None),
-        "Ident": (["COD", "DAT", "SEC"], [], [], ["COD", "DAT", "SEC"], None),  # R2, #3484
+        "Ident": (["COD", "SEC"], [], [], ["COD", "SEC"], None),        # #3484 R2
+        "Latest": (["COD", "SEC"], [], [], ["COD", "SEC"], None),       # #3484 R3
+        "ApiSpec": (["COD", "SEC"], [], [], ["COD", "SEC"], None),      # #3484 R3
         "Committed": (["COD", "DAT", "SEC"], [], [], ["COD", "DAT", "SEC"], None),
         "Widened": (["COD", "SEC"], ["AGT"], [], ["AGT", "COD", "SEC"], None),
         "Excl": (["ARC", "COD", "SEC", "TST"], [], ["TST"], ["ARC", "COD", "SEC"], ["SEC"]),

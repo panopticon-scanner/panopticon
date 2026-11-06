@@ -275,7 +275,12 @@ class TestMatrixCoverage(unittest.TestCase):
         before, old_groups = matrix(legacy_sec)
         after, new_groups = matrix(current_sec)
         paid = {name for name in files if old_groups[name] != new_groups[name]}
-        self.assertEqual((before, after, after - before), (111, 115, 4))   # #3233: less the sink
+        # #3233: less the sink. #3484 R2 took 7 off both sides: `schema` is a word
+        # now, and this repo's JSON-Schema files (`*-schema.json`, `*_schema.py`)
+        # no longer draw DAT for ToolAdapters:Core, Orchestration:Hosts,
+        # RepoProfiling:Discovery, RepoProfiling:Profiling, Reporting:Synth,
+        # Reporting:Core and Reporting:Outputs. The SEC difference is unchanged.
+        self.assertEqual((before, after, after - before), (104, 108, 4))
         self.assertEqual(paid, {
             "Orchestration:Docs", "Reporting:Report", "Reporting:Outputs", "Tests",
         })

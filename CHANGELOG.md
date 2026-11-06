@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **The DAT and TST file hints match words, not substrings (#3484 R2, R3, owner ruling).** This
+  REMOVES floors from false positives and adds none.
+  - DAT: `schema`, `seed` and `entity`/`entities` must start a path segment or follow a dot, and
+    end at `/`, `.` or `_`. A CamelCase `Entity` also counts.
+    - Kept: `db/schema.rb`, `db/seeds.rb`, `src/entities/`, `user.entity.ts`, `UserEntity.java`.
+    - Dropped: `identity.py`, `random_seed.py`, `jsonschema_util.py`, and JSON-Schema files such
+      as `report-schema.json`.
+  - TST: `test_` must start a path segment, which drops `latest_version.py` and
+    `contest_results.py`. `.spec.` no longer matches yaml, yml or json, which drops
+    `openapi.spec.yaml`. JS/TS spec tests are unaffected: `discovery.TEST_PATTERNS` decides
+    them first.
+  - Corpus: railsgoat's `config/initializers/html_entities.rb` loses DAT. This repo's
+    JSON-Schema files take DAT off 7 of its own groups, so the matrix pin drops from 111/115 to
+    104/108. WebGoat, AspGoat, vulnerable-rust and hostile-csproj are unchanged.
 - **Python dependency bumps, re-resolved (supersedes Dependabot #3491).** The tools closure:
   - semgrep 1.182.1 -> 1.183.0, with the Dockerfile `SEMGREP_VERSION` moved to match;
   - msgpack 1.2.3 -> 1.2.4; platformdirs 4.13.5 -> 4.14.0;
