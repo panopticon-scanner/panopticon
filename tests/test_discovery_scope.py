@@ -8,6 +8,7 @@ import unittest
 from unittest import mock
 
 from scripts import executable
+from scripts import discovery_catalog
 from scripts import groups_schema
 from tests.discovery_test_helpers import (
     orchestrator, FakeRun, repo_with_matrix, repo_with_exclude,
@@ -620,7 +621,7 @@ _PARITY_PATHS = ("tests/test_a.py",          # direct child: both exclude it
 
 def _discovery_excludes(path, globs):
     """Exactly what `discovery`'s `_apply_exclude` asks of a file."""
-    return any(orchestrator._glob_to_re(g).match(path) for g in globs)
+    return any(discovery_catalog._glob_to_re(g).match(path) for g in globs)
 
 
 def test_the_tool_exclusion_agrees_with_discovery_on_every_path():

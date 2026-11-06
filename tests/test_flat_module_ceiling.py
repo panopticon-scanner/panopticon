@@ -59,8 +59,8 @@ PENDING: dict[str, int] = {
     "scripts/bump_pins.py": 871,
     "scripts/reconcile_apply.py": 813,
     "skill/scripts/diff_map.py": 1215,
-    # #3395: one-time raise for the _repo_scan split (4 helpers, +30 def/call lines); ruled by coordinator 2026-11-04
-    "skill/scripts/discovery.py": 1956,
+    # #3457: catalog assignment moved to discovery_catalog.py; exact post-move pin
+    "skill/scripts/discovery.py": 1803,
     "skill/scripts/evidence.py": 982,
     "skill/scripts/html_report.py": 1568,
     "skill/scripts/ingest_tools.py": 1100,

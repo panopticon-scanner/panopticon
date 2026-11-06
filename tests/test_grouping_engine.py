@@ -4,6 +4,7 @@ import unittest
 import yaml
 
 import scripts.discovery as discovery
+import scripts.discovery_catalog as discovery_catalog
 import scripts.groups_schema as groups_schema
 import scripts.grouping_engine as ge
 import scripts.setup_proposal as sp
@@ -186,7 +187,7 @@ class TestLayerBodies(unittest.TestCase):
         vertical = {"match": ["src/auth/**"], "tests": [], "panels": []}
         layers = ge.plan_layers(AUTH, LAYERS, cap=48, all_files=ALL)[0]
         flat = sp.flatten_groups({"Auth": ge.layer_bodies(vertical, layers)})
-        assigned, leftovers, _ = discovery.assign_scoped(ALL, flat, aliases={})
+        assigned, leftovers, _ = discovery_catalog.assign_scoped(ALL, flat, aliases={})
         self.assertEqual(leftovers, SEARCH)
         for ly in layers:
             self.assertEqual(assigned["Auth:" + ly["layer"]], ly["files"])
@@ -199,7 +200,7 @@ class TestLayerBodies(unittest.TestCase):
         self.assertEqual(body["subgroups"]["Service"]["match"],
                          ["src/auth/**", "!src/auth/http/**", "!src/auth/jobs/**"])
         flat = sp.flatten_groups({"Auth": body})
-        assigned, _, _ = discovery.assign_scoped(ALL, flat, aliases={})
+        assigned, _, _ = discovery_catalog.assign_scoped(ALL, flat, aliases={})
         self.assertEqual(len(assigned["Auth:Service"]), 40)
 
 
@@ -416,7 +417,8 @@ class TestPlanGroups(unittest.TestCase):
         parsed, errors = groups_schema.parse_groups(yaml.safe_load(sp.dump_config_yaml(merged)))
         self.assertEqual(errors, [])
         catalog = {n: {"match": b["match"], "tests": b["tests"]} for n, b in parsed.items()}
-        assigned, leftovers, warnings = discovery.assign_scoped(REPO, catalog, aliases={})
+        assigned, leftovers, warnings = discovery_catalog.assign_scoped(
+            REPO, catalog, aliases={})
         self.assertEqual(warnings, [])
         promised = {lf["name"]: lf["files"] for lf in res["report"]["leaves"]
                     if lf["kind"] in ("committed", "vertical", "layer")}

@@ -644,7 +644,7 @@ def merge_additive(committed, assembled, claims):
     {"match", "tests", "panels"[, "exclude"]} or a parent
     {"subgroups": {sub: leaf}} (layers, 5.2). claims: {name: [file]} -- the
     assembled groups that claimed previously-unassigned files (from
-    discovery.assign_by_catalog). A group that claims nothing new is dropped
+    discovery_catalog.assign_by_catalog). A group that claims nothing new is dropped
     as redundant. Committed entries are never rewritten:
 
     - new name           -> adopted as proposed (leaf or parent); `new_groups`

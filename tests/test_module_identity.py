@@ -84,7 +84,8 @@ _CENSUS_PROGRAM = (_CENSUS_PREAMBLE + "import scripts.driver\n"
 # Five of the seven sites that reach `setup_proposal` from a FUNCTION body run
 # here: `load_bundled_layers`, `load_bundled_vocabulary` and `build_spine` in
 # `setup_spine`, `setup_config.migrate_config` (whose import runs before it
-# refuses a tree with nothing to migrate), and `discovery._capability_aliases`. The two left out --
+# refuses a tree with nothing to migrate), and
+# `discovery_catalog._capability_aliases`. The two left out --
 # `_seed_groups_manifest` and `ingest_proposal` -- WRITE config artifacts, which
 # a census has no business doing; they import the package the same way as these.
 # The cwd is a fresh empty directory, so `build_spine` sees an empty repo and
@@ -98,7 +99,7 @@ _CALL_TIME_PROGRAM = (_CENSUS_PREAMBLE + "import scripts.driver\n"
                       "    scripts.setup_config.migrate_config('.')\n"
                       "except ValueError:\n"
                       "    pass\n"
-                      "scripts.discovery._capability_aliases()\n" + _CENSUS_TAIL)
+                      "scripts.discovery_catalog._capability_aliases()\n" + _CENSUS_TAIL)
 
 # The same detection over a deliberately doubled import, for the mechanics test:
 # both roots on the path and one file imported under both of its names.
@@ -126,12 +127,12 @@ _PLANTED_PROGRAM = (_CENSUS_PREAMBLE + "import scripts.plan_contract\n"
 # debt: a flat `import x` inside a FUNCTION body mints its second copy when that
 # function is first called. #2256 measured that -- qualifying `grouping_engine`'s
 # `import setup_proposal` took the call-time census from 3 to 4, because the six
-# lazy sites in `setup_flow` and `discovery._capability_aliases`'s one reached it
+# lazy sites in `setup_flow` and `discovery_catalog._capability_aliases`'s one reached it
 # flat. #2413 pointed all seven at the package, still lazy: setup's six (since
 # #3405 three in `setup_spine`, two in `setup_config`, one in `setup_flow`)
 # import it plainly, because those modules bind every sibling package-first and
-# so have no flat mode of their own, while `discovery`'s keeps the guarded fallback its
-# own flat mode needs. The test below CALLS five of them, so the class is
+# so have no flat mode of their own, while `discovery_catalog` keeps the guarded
+# fallback its own flat mode needs. The test below CALLS five of them, so the class is
 # measured here rather than only described (#1516).
 #
 # This is an equality, not a subset: a residual that goes away must fail here

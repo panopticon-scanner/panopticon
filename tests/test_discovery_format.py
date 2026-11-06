@@ -5,6 +5,7 @@ import textwrap
 import unittest
 
 from tests.discovery_test_helpers import orchestrator
+import scripts.discovery_catalog as discovery_catalog
 import scripts.setup_config as setup_config
 
 
@@ -54,13 +55,13 @@ class TestGroupsFormatReconciliation(unittest.TestCase):
     def test_assignment_identical_across_forms(self):
         files = ["src/a.py", "tests/b.py", "docs/c.md"]
         mapping = {"src": {"match": ["src/**"]}, "tests": {"match": ["tests/**"]}}
-        assigned, leftovers = orchestrator.assign_by_catalog(files, mapping)
+        assigned, leftovers = discovery_catalog.assign_by_catalog(files, mapping)
         self.assertEqual(assigned, {"src": ["src/a.py"], "tests": ["tests/b.py"]})
         self.assertEqual(leftovers, ["docs/c.md"])
 
     def test_tests_globs_claim_files_into_their_group(self):
         catalog = {"Auth": {"match": ["src/auth/**"], "tests": ["tests/auth/**"]}}
-        assigned, leftovers = orchestrator.assign_by_catalog(
+        assigned, leftovers = discovery_catalog.assign_by_catalog(
             ["src/auth/login.py", "tests/auth/test_login.py", "misc/x.py"], catalog)
         self.assertIn("src/auth/login.py", assigned["Auth"])
         self.assertIn("tests/auth/test_login.py", assigned["Auth"])   # was a leftover before

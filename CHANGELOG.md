@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Discovery catalog matching has one owner (#3457).** `_glob_to_re`, `match_patterns`,
+  `_decide`, `_VOCAB_PATH`, `_capability_aliases`, `assign_scoped` and `assign_by_catalog`
+  moved byte-identically to `discovery_catalog.py`; discovery, grouping, setup and tests now
+  call that owner, with no compatibility aliases. The `discovery.py` flat-module pin falls from
+  1956 to 1803 lines.
 - **Reviewer prompts' integrity instructions have a tested contract (#2098).** No prompt text
   changes. `tests/test_prompt_integrity_contract.py` pins:
   - the three sentences all five role templates share word for word;

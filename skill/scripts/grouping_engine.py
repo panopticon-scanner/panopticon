@@ -39,6 +39,7 @@ import re
 # a flat mode.
 from scripts import coverage_model
 from scripts import discovery
+from scripts import discovery_catalog
 from scripts import repo_config
 # #2413: qualified too. Every path to `setup_proposal` is package-first now,
 # the seven LAZY sites in `setup_flow` and `discovery` function bodies
@@ -101,11 +102,11 @@ def classify_files(files):
     seeds = (discovery.tests_catalog().get(discovery.TESTS_GROUP) or {}).get("match") or []
     kinds = {}
     for f in files:
-        if discovery.match_patterns(f, seeds):
+        if discovery_catalog.match_patterns(f, seeds):
             kinds[f] = "tests"
             continue
         for cat, globs in commons:
-            if discovery.match_patterns(f, globs):
+            if discovery_catalog.match_patterns(f, globs):
                 kinds[f] = "commons:" + cat
                 break
         else:
@@ -162,12 +163,12 @@ def plan_layers(vertical_files, layer_specs, cap, all_files, floor=FLOOR):
     for spec in layer_specs:
         name = spec["layer"]
         globs = list(spec.get("match") or [])
-        leaked = [f for f in outside if discovery.match_patterns(f, globs)]
+        leaked = [f for f in outside if discovery_catalog.match_patterns(f, globs)]
         if leaked:
             notes.append("layer %s dropped: its globs match %d file(s) outside the "
                          "vertical (e.g. %s)" % (name, len(leaked), _clean(leaked[0], token=True)))
             continue
-        mine = [f for f in unclaimed if discovery.match_patterns(f, globs)]
+        mine = [f for f in unclaimed if discovery_catalog.match_patterns(f, globs)]
         taken = set(mine)
         unclaimed = [f for f in unclaimed if f not in taken]
         layers.append({"layer": name, "files": mine, "match": globs,
@@ -290,7 +291,8 @@ def layer_bodies(vertical, layers):
 # ---------------------------------------------------------------------------
 
 def _leaf_view(groups):
-    """`{flat id: {"match", "tests"}}` -- what `discovery.assign_scoped` reads."""
+    """`{flat id: {"match", "tests"}}` -- what
+    `discovery_catalog.assign_scoped` reads."""
     return {n: {"match": list(b.get("match") or []), "tests": list(b.get("tests") or [])}
             for n, b in setup_proposal.flatten_groups(groups).items()}
 
@@ -360,12 +362,12 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
         else:
             full_view[n] = v
     prefixes = tests_axis.distinguishing_prefixes(full_view)
-    c_assigned, leftovers, warnings = discovery.assign_scoped(
+    c_assigned, leftovers, warnings = discovery_catalog.assign_scoped(
         files, committed_view, aliases=aliases, prefixes=prefixes)
-    parent_claims = discovery.assign_scoped(
+    parent_claims = discovery_catalog.assign_scoped(
         leftovers, _leaf_view({n: assembled[n] for n in parents}),
         aliases=aliases, prefixes=prefixes)[0]
-    a_assigned, leftovers, more = discovery.assign_scoped(
+    a_assigned, leftovers, more = discovery_catalog.assign_scoped(
         leftovers, active_view, aliases=aliases, prefixes=prefixes)
     warnings = list(warnings) + list(more)
     claims = {n: list(fs) for n, fs in sorted({**a_assigned, **parent_claims}.items())}
@@ -385,7 +387,7 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
     tops = {_top(n) for n in landing_view}
     commons_cat = {n: g for n, g in discovery.commons_catalog().items()
                    if n not in landing_view and n not in tops}
-    commons_named, residual = discovery.assign_by_catalog(leftovers, commons_cat)
+    commons_named, residual = discovery_catalog.assign_by_catalog(leftovers, commons_cat)
     commons_named = discovery.fold_tiny_commons(commons_named, landing_view)
 
     code_files, n_commons, n_tests = count_code_files(files)

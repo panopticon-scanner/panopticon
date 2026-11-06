@@ -613,7 +613,7 @@ class TestAGroupWithNoFilesGetsNoBackupEntry(TestBackupCellFixture):
     guarantee was conditional on that list being non-empty. A group carrying
     `files: []` fell back to nothing and an entry shipped a deny-all fence.
 
-    Unreachable through the pipeline (`discovery.assign_scoped` never writes an
+    Unreachable through the pipeline (`discovery_catalog.assign_scoped` never writes an
     empty group), so this is defence in depth. The invariant is made
     unconditional at the layer it is about: a group with no files has nothing to
     verify, so no backup entry is BUILT for it -- and the done-predicate agrees,
