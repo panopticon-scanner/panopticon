@@ -33,9 +33,9 @@ VERSION_ASKED_BY_PROMPT = {
 # ...and which Codex generation projections REQUIRE it, as `const: 1`.
 VERSION_REQUIRED_BY_SCHEMA = {
     "review": True,               # #2104
-    "primary": False,             # #3482 P4
-    "backup": False,              # #3482 P4
-    "tool": False,                # #3482 P4
+    "primary": True,              # #3482 P4
+    "backup": True,               # #3482 P4
+    "tool": True,                 # #3482 P4
 }
 
 
