@@ -59,8 +59,8 @@ PENDING: dict[str, int] = {
     "scripts/bump_pins.py": 871,
     "scripts/reconcile_apply.py": 813,
     "skill/scripts/diff_map.py": 1215,
-    # #3457: catalog and scope families moved to dedicated owners; exact post-move pin
-    "skill/scripts/discovery.py": 1273,
+    # #3457/#3485: catalog/scope moved out, then the dead panel schedule was deleted
+    "skill/scripts/discovery.py": 1209,
     "skill/scripts/evidence.py": 982,
     "skill/scripts/html_report.py": 1568,
     "skill/scripts/ingest_tools.py": 1100,

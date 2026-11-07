@@ -1,5 +1,4 @@
-"""Surface classification tests: test-file detection, surface classifiers,
-and test-candidate generation."""
+"""Test-file detection and test-candidate generation."""
 import unittest
 
 from scripts import discovery_scope
@@ -22,7 +21,7 @@ class TestIsTestFile(unittest.TestCase):
 
     def test_recognizes_additional_test_conventions(self):
         # #676: these widely-used conventions were unmatched, so such files were
-        # miscounted as impl and never scheduled the 'test' panel.
+        # miscounted as implementation and never reached the test inventory.
         for path in [
             "web/__tests__/button.js",          # Jest suite by directory
             "web/components/Button.test.mjs",   # ESM test
@@ -44,26 +43,6 @@ class TestIsTestFile(unittest.TestCase):
             "app/tests_helper.py",              # 'tests' not as a stem suffix
         ]:
             self.assertFalse(orchestrator.is_test_file(path), path)
-
-
-class TestSurfaceClassifiers(unittest.TestCase):
-    """#668/#669: direct coverage for the surface classifiers that feed panel
-    scheduling and depth."""
-
-    def test_is_architecture_file(self):
-        for p in ["Dockerfile", "svc/Dockerfile.prod", "docker-compose.yml",
-                  ".github/workflows/ci.yml", "k8s/deploy.yaml", "README.md",
-                  ".gitignore", "helm/chart/values.yaml"]:
-            self.assertTrue(orchestrator.is_architecture_file(p), p)
-        for p in ["src/app.py", "lib/user.rb", "main.go"]:
-            self.assertFalse(orchestrator.is_architecture_file(p), p)
-
-    def test_is_database_file(self):
-        for p in ["db/schema.sql", "migrations/0001_init.py",
-                  "app/db/user.migration.rb"]:
-            self.assertTrue(orchestrator.is_database_file(p), p)
-        for p in ["src/app.py", "README.md", "Dockerfile"]:
-            self.assertFalse(orchestrator.is_database_file(p), p)
 
 class TestTestCandidates(unittest.TestCase):
     """#670: direct coverage for test_candidates() name/dir generation."""

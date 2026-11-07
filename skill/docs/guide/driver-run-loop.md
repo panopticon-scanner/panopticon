@@ -806,11 +806,12 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   - **What decides the objective floor (#2099):** only `coverage_model`'s file signals (the gated
     COD/DAT/TST/ARC floor and the SEC floor), with the one predicate it shares with discovery,
     `discovery.is_test_file`.
-  - **What doesn't:** the `panels` list discovery writes into each `groups.json` entry is a
-    schedule no phase reads. Deleting it, or listing every domain in it, routes exactly the same,
-    and `tests/test_surface_signal_contract.py` pins that.
-  - **Where the two differ:** that test also lists every difference, labelled required or
-    accidental.
+  - **What doesn't (#3485):** discovery no longer writes the dead per-group `panels` schedule to
+    `groups.json`. Older artifacts that carry it remain valid and the field is ignored; the legacy
+    schedule, its omission and a list of every domain route byte-identically in
+    `tests/test_surface_signal_contract.py`.
+  - **Where signals live:** that test pins coverage's routing signals and the single naming
+    predicate it shares with discovery.
 - **`tools`** — deterministic, not discretionary: runs
   `python3 skill/scripts/run_tools.py --target . --out .panopticon/runs/<tag>/tools --deps` unless `--no-tools`
   was passed; a skip is never silent — it's always recorded in `tools-ran.json` and surfaced in the

@@ -109,15 +109,6 @@ DEFAULT_MAX_PER_GROUP = 48
 # a leading dot made them all hidden files.
 UNGROUPED_SINK = "Ungrouped"
 
-PANEL_PRIORITY = ["security", "redteam", "architecture", "database", "code", "test"]
-
-
-def panels_in_priority_order(panels):
-    """Sort panel names by PANEL_PRIORITY; unknown panels sort last (stable)."""
-    return sorted(panels, key=lambda p: PANEL_PRIORITY.index(p)
-                  if p in PANEL_PRIORITY else len(PANEL_PRIORITY))
-
-
 TEST_PATTERNS = [
     r"_spec\.rb$",
     r"_test\.rb$",
@@ -133,27 +124,6 @@ TEST_PATTERNS = [
     r"_test\.exs$",              # Elixir ExUnit
 ]
 
-ARCHITECTURE_PATTERNS = [
-    r"(^|/)(\.github|\.circleci|\.gitlab)/",
-    r"(^|/)Dockerfile",
-    r"(^|/)docker-compose",
-    r"(^|/)(k8s|kubernetes|helm|charts)/",
-    r"(^|/)\.dockerignore$",
-    r"(^|/)\.editorconfig$",
-    r"(^|/)\.gitignore$",
-    r"(^|/)(README|CONTRIBUTING|LICENSE)",
-]
-
-DATABASE_PATTERNS = [
-    r"\.sql$",
-    r"(^|/)(migrations|migrate)/",
-    r"(_migration|\.migration)\.",
-    r"(^|/)schema\.prisma$",
-    r"\.prisma$",
-    r"(^|/)(models|model|entities|entity|repository)/",
-    r"(\.schema|\.orm)\.",
-]
-
 def is_test_file(path):
     """Return True if path matches any test file pattern."""
     return any(re.search(p, path) for p in TEST_PATTERNS)
@@ -164,41 +134,6 @@ def partition_test_files(files):
     impl = [f for f in files if not is_test_file(f)]
     tests = [f for f in files if is_test_file(f)]
     return impl, tests
-
-def is_architecture_file(path):
-    """Return True if path matches any architecture/infrastructure pattern."""
-    return any(re.search(p, path) for p in ARCHITECTURE_PATTERNS)
-
-def is_database_file(path):
-    """Return True if path matches any database/migration pattern."""
-    return any(re.search(p, path) for p in DATABASE_PATTERNS)
-
-# #run10: compute_group_surfaces lived here, stamping a `surfaces` label list
-# onto every groups.json entry "so the scout and the dispatch template can
-# reason about repo-scope / data surfaces". Neither ever read it: coverage_model
-# documents at length that the floor deliberately does NOT consult surfaces
-# (#1193), the dispatch templates never referenced it, and #1440 removed
-# `surfaces` from the scout contract too -- leaving a field with a producer and
-# no consumer anywhere in the tree.
-
-def compute_group_panels(files, security_mode="standard"):
-    """Return default panel schedule for a group.
-
-    Panels are a starting plan; the scout may refine them based on the actual
-    code surfaces. In redteam mode the security panel is replaced by redteam."""
-    panels = ["code"]
-    if any(is_test_file(f) for f in files):
-        panels.append("test")
-    if security_mode == "redteam":
-        panels.append("redteam")
-    else:
-        panels.append("security")
-    if any(is_architecture_file(f) for f in files):
-        panels.append("architecture")
-    if any(is_database_file(f) for f in files):
-        panels.append("database")
-    return panels_in_priority_order(panels)
-
 
 def _refused(exc):
     """The operator-facing line for a REFUSED target-git probe (#2006).
@@ -514,7 +449,6 @@ def discover_repo_files(repo, include_fixtures=False, pruned_fixtures=None,
 
 # #run10: _looks_risky / _compute_depth stamped a shallow/standard/deep `depth` on
 # every groups.json entry for the 4.x plan contract retired in #1444.
-# is_architecture_file / is_database_file survive: they feed group panels.
 
 def _discovery_block(info):
     """The `discovery` block of groups.json: how the surface was found, how much
@@ -548,8 +482,8 @@ def _say_pruned(pruned, surface):
                  surface), file=sys.stderr)
 
 
-def _group_obj(name, files, security_mode, parent=None, chunk_of=None):
-    """Build one group entry: panels, parent and chunk_of for a file set.
+def _group_obj(name, files, parent=None, chunk_of=None):
+    """Build one group entry with parent and chunk_of for a file set.
 
     Two roll-up axes, deliberately separate. `parent` is the AUTHORED axis -- the
     review unit this group rolls up to, at most one level deep (`groups_schema`:
@@ -567,12 +501,14 @@ def _group_obj(name, files, security_mode, parent=None, chunk_of=None):
     chunks carry ``chunk_of="Product:API"`` and ``parent="Product"``, so the
     fold is two hops -- chunks to their review unit, then the unit to its
     authored parent -- and "subgroups cannot nest" stays literally true.
-    Both axes self-reference at the top, so either walk terminates."""
-    panels = compute_group_panels(files, security_mode)
+    Both axes self-reference at the top, so either walk terminates.
+
+    #3485: no `panels` schedule. Nothing consumed it, and effective domains do
+    not exist until coverage composes file signals, committed floors, scout
+    widening and excludes. Older artifacts that carry the key remain readable."""
     return {
         "name": name,
         "files": files,
-        "panels": panels,
         "parent": parent or name,
         "chunk_of": chunk_of or name,
     }
@@ -596,7 +532,7 @@ def commons_catalog():
         doc = yaml.safe_load(fh) or {}
     return doc.get("groups") or {}
 
-def _emit_named_groups(named, max_per_group, security_mode, parent_lookup=None):
+def _emit_named_groups(named, max_per_group, parent_lookup=None):
     """Chunk+wrap each ``{name: files}`` catalog assignment into
     ``_group_obj``(s), keeping the ``<name>_<i>`` oversize-chunk naming.
     ``parent_lookup(name)``, when given, supplies a subgroup's declared
@@ -607,9 +543,9 @@ def _emit_named_groups(named, max_per_group, security_mode, parent_lookup=None):
         parent = parent_lookup(name) if parent_lookup else None
         chunks = chunk_files(fs, max_per_group)
         if len(chunks) == 1:
-            groups.append(_group_obj(name, chunks[0], security_mode, parent=parent))
+            groups.append(_group_obj(name, chunks[0], parent=parent))
         else:
-            groups.extend(_group_obj("%s_%d" % (name, i + 1), c, security_mode,
+            groups.extend(_group_obj("%s_%d" % (name, i + 1), c,
                                      parent=parent, chunk_of=name)
                           for i, c in enumerate(chunks))
     return groups
@@ -762,7 +698,7 @@ def sweep_tests(leftovers, homes, catalog=None):
     return sorted(unattached), attached, remaining
 
 
-def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
+def catalog_groups(files, catalog, max_per_group, warnings=None):
     """Build stable, catalog-named groups for --repo-scan (#499).
 
     Files are assigned by ``discovery_catalog.assign_scoped``; a matched group larger than
@@ -808,7 +744,7 @@ def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
         if tests:
             named[TESTS_GROUP] = tests
     groups = _emit_named_groups(
-        named, max_per_group, security_mode,
+        named, max_per_group,
         parent_lookup=lambda n: (TESTS_GROUP if n == TESTS_GROUP
                                  else (catalog.get(n) or {}).get("parent")))
     # A committed PARENT (`Docs` with subgroups) is only present as `Docs:*`
@@ -820,13 +756,13 @@ def catalog_groups(files, catalog, max_per_group, security_mode, warnings=None):
                if n.casefold() not in tops}
     commons_named, residual = discovery_catalog.assign_by_catalog(leftovers, commons)
     commons_named = fold_tiny_commons(commons_named, catalog)
-    groups.extend(_emit_named_groups(commons_named, max_per_group, security_mode))
+    groups.extend(_emit_named_groups(commons_named, max_per_group))
     # run-9 A5: the sink used to be named `._N`; a leading dot made every derived
     # artifact a hidden dotfile, and the group name in the report meaningless, so
     # it is `Ungrouped_N` now. Both axes point at the sink itself: chunks fold to
     # the `Ungrouped` review unit, which self-parents like any other top-level
     # unit. A self-parenting CHUNK would leak the chunk name into the report.
-    groups.extend(_group_obj(UNGROUPED_SINK + "_%d" % (i + 1), c, security_mode,
+    groups.extend(_group_obj(UNGROUPED_SINK + "_%d" % (i + 1), c,
                              parent=UNGROUPED_SINK, chunk_of=UNGROUPED_SINK)
                   for i, c in enumerate(chunk_files(residual, max_per_group)))
     _assert_unique_names(groups)
@@ -869,7 +805,7 @@ def build_result(repo, mode, target, facet, impl, tests,
     base = groups_schema.derived_group_base(os.path.join(repo, target))
     # Non-catalog path: the target itself is the review unit and every group is
     # a chunk of it, so `chunk_of` is the base name even when there is one chunk.
-    groups = [_group_obj("%s_%d" % (base, i + 1), c, security_mode,
+    groups = [_group_obj("%s_%d" % (base, i + 1), c,
                          chunk_of=base)
               for i, c in enumerate(chunks)]
     return {
@@ -1081,8 +1017,8 @@ def _group_by_catalog(result, allf, catalog, args, carved_files):
     """The committed matrix's groups, then the #1757 SEC carve-out, into `result` (#3395)."""
     if any(g.get("match") for g in catalog.values()):
         scoped_warnings: list[str] = []
-        groups, leftovers = catalog_groups(allf, catalog, args.max_per_group,
-                                           args.security, warnings=scoped_warnings)
+        groups, leftovers = catalog_groups(
+            allf, catalog, args.max_per_group, warnings=scoped_warnings)
         if scoped_warnings:
             # stderr is captured by the driver's child runner; the resolved
             # output is what it reads, so the "your tests: glob credited

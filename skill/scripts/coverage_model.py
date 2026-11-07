@@ -3,29 +3,28 @@
 importing it pulls in `discovery` for the TST naming rule (#1770), which touches
 `sys.path` as it always has. See spec §5.
 
-**The file-signal contract with discovery (#2099).** This module owns every
-OBJECTIVE routing signal: the gated global floor and the SEC floor below, which
-`phases.coverage` composes with committed `panels:`, scout widening and
-`exclude`.
-- **Discovery's schedule routes nothing.** `discovery.compute_group_panels`
-  writes groups.json `panels` from its own test/database/architecture patterns,
-  and no phase reads it.
+**The file-signal contract with discovery (#2099, #3485).** This module owns
+every OBJECTIVE routing signal: the gated global floor and the SEC floor below,
+which `phases.coverage` composes with committed-config `panels:`, scout widening
+and `exclude`.
+- **groups.json carries no schedule.** #3485 removed its dead per-group `panels`
+  key and the unused database/architecture classifiers that produced it. Older
+  artifacts may still carry the key; consumers deliberately ignore it.
 - **One predicate is shared:** `discovery.is_test_file`, which the TST signal
   unions in.
-- **Required divergences:**
-  - ARC here is structural (>= 2 directories), not a file kind;
-  - COD and SEC skip assets and documentation (#1489, #3338) where the schedule
-    is unconditional;
+- **The objective signals stay distinct from naming:**
+  - ARC is structural (>= 2 directories), not a file kind;
+  - COD and SEC skip assets and documentation (#1489, #3338);
   - the TST surface hints (conftest, /tests/, .feature) stay OUT of the naming
     rule, because that rule also moves files between groups
     (`discovery.partition_test_files`).
-- **Routing divergences were ruled on in #3484** and are required now:
+- **Routing signal definitions ruled on in #3484:**
   - R1: `/migrate/` is a DAT segment hint.
   - R2: `schema`, `seed` and `entity` are DAT words, not substrings.
   - R3: `/test_` starts a segment, and `.spec.` skips yaml/yml/json.
-- **Accidental divergences** that remain are pinned at today's behaviour in
-  tests/test_surface_signal_contract.py. They are the schedule's own, which
-  route nothing, and wait on #3485.
+
+tests/test_surface_signal_contract.py pins those signals and proves that a
+legacy groups.json schedule and its omission route byte-identically.
 """
 
 from typing import TYPE_CHECKING

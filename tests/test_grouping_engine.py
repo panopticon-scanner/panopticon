@@ -424,8 +424,7 @@ class TestPlanGroups(unittest.TestCase):
                     if lf["kind"] in ("committed", "vertical", "layer")}
         self.assertEqual({n: len(fs) for n, fs in assigned.items()}, promised)
         self.assertEqual(len(leftovers), 20)          # 5 tests + 9 commons + 6 ungrouped
-        groups, residual = discovery.catalog_groups(REPO, catalog, max_per_group=48,
-                                                    security_mode="standard")
+        groups, residual = discovery.catalog_groups(REPO, catalog, max_per_group=48)
         by_name = {g["name"]: len(g["files"]) for g in groups}
         self.assertEqual(by_name, {**promised, "Tests": 5, "Commons": 9, "Ungrouped_1": 6})
         self.assertEqual(residual, res["report"]["ungrouped"])

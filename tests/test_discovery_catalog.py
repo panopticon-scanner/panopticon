@@ -301,7 +301,7 @@ class TestCatalogMatchGroups(unittest.TestCase):
             sink = groups_schema.SEC_CARVE_OUT_SINK
             by_name = {g["name"]: g for g in out["groups"]}
             self.assertEqual(by_name[sink]["files"], ["deploy/k8s/x.yaml"])
-            self.assertEqual(by_name[sink]["panels"], ["SEC"])
+            self.assertNotIn("panels", by_name[sink])
             self.assertEqual(by_name[sink]["parent"], sink)
             self.assertEqual(by_name[sink]["chunk_of"], sink)
             self.assertIs(by_name[sink][groups_schema.SEC_CARVE_OUT_MARKER], True)
@@ -384,11 +384,11 @@ class TestGroupObjParent(unittest.TestCase):
     a leaf/leftover group self-parents (parent == name)."""
 
     def test_group_obj_defaults_to_self_parent(self):
-        g = orchestrator._group_obj("leaf", ["a.py"], "standard")
+        g = orchestrator._group_obj("leaf", ["a.py"])
         self.assertEqual(g["parent"], "leaf")
 
     def test_group_obj_uses_explicit_parent(self):
-        g = orchestrator._group_obj("UI:Admin", ["a.py"], "standard", parent="UI")
+        g = orchestrator._group_obj("UI:Admin", ["a.py"], parent="UI")
         self.assertEqual(g["parent"], "UI")
 
     def test_catalog_groups_subgroup_carries_parent(self):
@@ -401,7 +401,7 @@ class TestGroupObjParent(unittest.TestCase):
                     "exclude": set(), "parent": "docs"},
         }
         files = ["ui/admin/panel.py", "README.md", "orphan.py"]
-        groups, leftovers = orchestrator.catalog_groups(files, catalog, 15, "standard")
+        groups, leftovers = orchestrator.catalog_groups(files, catalog, 15)
         by_name = {g["name"]: g for g in groups}
         self.assertEqual(by_name["UI:Admin"]["parent"], "UI")
         # leaf group self-parents
@@ -425,7 +425,7 @@ class TestGroupObjParent(unittest.TestCase):
                          "exclude": set(), "parent": "UI"},
         }
         files = ["ui/admin/m%02d.py" % i for i in range(20)]
-        groups, _leftovers = orchestrator.catalog_groups(files, catalog, 15, "standard")
+        groups, _leftovers = orchestrator.catalog_groups(files, catalog, 15)
         names = sorted(g["name"] for g in groups)
         self.assertEqual(names, ["UI:Admin_1", "UI:Admin_2"])
         self.assertTrue(all(g["parent"] == "UI" for g in groups))
@@ -445,7 +445,7 @@ class TestCommonsCatalog(unittest.TestCase):
         catalog = {"App": {"match": ["src/**"]}}
         groups, leftovers = orchestrator.catalog_groups(
             ["src/app.py", "README.md", "Dockerfile", "weird.xyz"],
-            catalog, max_per_group=50, security_mode="standard")
+            catalog, max_per_group=50)
         by_name = {g["name"]: g for g in groups}
         self.assertIn("Commons", by_name)
         self.assertEqual(sorted(by_name["Commons"]["files"]),
@@ -463,7 +463,7 @@ class TestCommonsCatalog(unittest.TestCase):
                  + ["Dockerfile", "Makefile", "pom.xml", "go.mod",
                     "Gemfile", "Rakefile"])
         groups, _leftovers = orchestrator.catalog_groups(
-            files, {}, max_per_group=50, security_mode="standard")
+            files, {}, max_per_group=50)
         names = {g["name"] for g in groups}
         self.assertEqual(names, {"Docs", "Build"})
         self.assertNotIn("Commons", names)
@@ -473,7 +473,7 @@ class TestCommonsCatalog(unittest.TestCase):
         # same one cell, less information. The fold requires >=2 tiny
         # categories, so it must not fire here.
         groups, _leftovers = orchestrator.catalog_groups(
-            ["README.md"], {}, max_per_group=50, security_mode="standard")
+            ["README.md"], {}, max_per_group=50)
         names = {g["name"] for g in groups}
         self.assertEqual(names, {"Docs"})
 
@@ -492,7 +492,7 @@ class TestCommonsCatalog(unittest.TestCase):
         catalog = {"Commons": {"match": ["shared/**"]}}
         groups, _leftovers = orchestrator.catalog_groups(
             ["shared/util.py", "README.md", "Dockerfile"],
-            catalog, max_per_group=50, security_mode="standard")
+            catalog, max_per_group=50)
         names = [g["name"] for g in groups]
         self.assertEqual(names.count("Commons"), 1)
         self.assertEqual(next(g["files"] for g in groups if g["name"] == "Commons"),
@@ -507,10 +507,12 @@ class TestCommonsCatalog(unittest.TestCase):
         # (#1072 / run-10 SEC-G2A).
         groups, _leftovers = orchestrator.catalog_groups(
             [".env", "package-lock.json"], {},
-            max_per_group=50, security_mode="standard")
+            max_per_group=50)
         by_name = {g["name"]: g for g in groups}
         self.assertIn("Commons", by_name)
-        self.assertIn("security", by_name["Commons"]["panels"])
+        self.assertNotIn("panels", by_name["Commons"])
+        self.assertEqual(coverage_model.applicable_sec_floor(by_name["Commons"]["files"]),
+                         {"SEC"})
 
     def test_lone_tiny_category_absorbed_by_smallest_normal_sibling(self):
         # The most common tiny universal group in the calibration pool is a
@@ -521,7 +523,7 @@ class TestCommonsCatalog(unittest.TestCase):
         # would be a silent mislabel.
         files = ["doc%d.md" % i for i in range(8)] + ["yarn.lock"]
         groups, _leftovers = orchestrator.catalog_groups(
-            files, {}, max_per_group=50, security_mode="standard")
+            files, {}, max_per_group=50)
         names = {g["name"] for g in groups}
         self.assertEqual(names, {"Commons"})          # one cell, not two
         self.assertIn("yarn.lock",
@@ -531,13 +533,13 @@ class TestCommonsCatalog(unittest.TestCase):
         # A committed `src/**` group claims src/app.py -- Commons never sees it.
         catalog = {"App": {"match": ["src/**"]}}
         groups, _leftovers = orchestrator.catalog_groups(
-            ["src/app.py"], catalog, max_per_group=50, security_mode="standard")
+            ["src/app.py"], catalog, max_per_group=50)
         names = {g["name"] for g in groups}
         self.assertEqual(names, {"App"})
 
     def test_commons_group_self_parents(self):
         groups, _leftovers = orchestrator.catalog_groups(
-            ["README.md"], {}, max_per_group=50, security_mode="standard")
+            ["README.md"], {}, max_per_group=50)
         by_name = {g["name"]: g for g in groups}
         self.assertEqual(by_name["Docs"]["parent"], "Docs")
 
@@ -551,7 +553,7 @@ class TestCommonsCatalog(unittest.TestCase):
         catalog = {"Docs": {"match": ["docs/**", "README.md"]}}
         groups, _leftovers = orchestrator.catalog_groups(
             ["docs/guide.md", "README.md"],
-            catalog, max_per_group=50, security_mode="standard")
+            catalog, max_per_group=50)
         docs_groups = [g for g in groups if g["name"] == "Docs"]
         self.assertEqual(len(docs_groups), 1)              # no duplicate node
         self.assertEqual(sorted(docs_groups[0]["files"]),
@@ -576,14 +578,14 @@ class TestChunkOfAxis(unittest.TestCase):
     def test_an_unsplit_group_is_its_own_whole(self):
         groups, _ = orchestrator.catalog_groups(
             ["src/a.py"], {"App": {"match": ["src/**"]}},
-            max_per_group=50, security_mode="standard")
+            max_per_group=50)
         self.assertEqual(self._by_name(groups)["App"]["chunk_of"], "App")
 
     def test_chunks_name_the_unit_they_came_from(self):
         groups, _ = orchestrator.catalog_groups(
             ["src/f%02d.py" % i for i in range(10)],
             {"App": {"match": ["src/**"]}},
-            max_per_group=4, security_mode="standard")
+            max_per_group=4)
         chunks = [g for g in groups if g["name"].startswith("App_")]
         self.assertEqual(len(chunks), 3)
         self.assertEqual({g["chunk_of"] for g in chunks}, {"App"})
@@ -596,7 +598,7 @@ class TestChunkOfAxis(unittest.TestCase):
         catalog = {"Product:API": {"match": ["app/api/**"], "parent": "Product"}}
         groups, _ = orchestrator.catalog_groups(
             ["app/api/f%02d.py" % i for i in range(10)], catalog,
-            max_per_group=4, security_mode="standard")
+            max_per_group=4)
         for g in groups:
             self.assertEqual(g["chunk_of"], "Product:API")   # machine axis
             self.assertEqual(g["parent"], "Product")         # authored axis
@@ -605,7 +607,7 @@ class TestChunkOfAxis(unittest.TestCase):
         # A self-parenting sink CHUNK would make `Ungrouped_1` a report node,
         # which is the chunk name leaking into the output all over again.
         groups, _ = orchestrator.catalog_groups(
-            ["a.xyz", "b.xyz"], {}, max_per_group=1, security_mode="standard")
+            ["a.xyz", "b.xyz"], {}, max_per_group=1)
         sink = [g for g in groups if g["name"].startswith("Ungrouped_")]
         self.assertEqual(len(sink), 2)
         for g in sink:
@@ -618,7 +620,7 @@ class TestChunkOfAxis(unittest.TestCase):
         files = ["src/f%02d.py" % i for i in range(10)] + ["README.md", "odd.xyz"]
         groups, _ = orchestrator.catalog_groups(
             files, {"App": {"match": ["src/**"]}},
-            max_per_group=4, security_mode="standard")
+            max_per_group=4)
         names = {g["name"] for g in groups}
         for g in groups:
             for axis in ("chunk_of", "parent"):
@@ -631,7 +633,7 @@ class TestChunkOfAxis(unittest.TestCase):
         files = ["app/api/f%03d.py" % i for i in range(150)]
         catalog = {"Product:API": {"match": ["app/api/**"], "parent": "Product"}}
         groups, _ = orchestrator.catalog_groups(
-            files, catalog, max_per_group=32, security_mode="standard")
+            files, catalog, max_per_group=32)
         folded = []
         for g in groups:
             if g["chunk_of"] == "Product:API":
@@ -654,7 +656,7 @@ class TestGroupNameUniqueness(unittest.TestCase):
         files = ["src/d%d/f%03d.py" % (i // 10, i) for i in range(60)]
         files += ["README.md", "Dockerfile", "weird.xyz"]
         groups, _residual = orchestrator.catalog_groups(
-            files, catalog, max_per_group=16, security_mode="standard")
+            files, catalog, max_per_group=16)
         names = [g["name"] for g in groups]
         self.assertGreater(len(names), 4, "expected chunking to have happened")
         self.assertEqual(len(names), len(set(names)))
@@ -946,8 +948,7 @@ class TestTestsSweep(unittest.TestCase):
         files = (["src/auth/login.py", "tests/auth/test_login.py"]
                  + ["tests/test_%d.py" % i for i in range(orchestrator.TESTS_MIN_FILES)]
                  + ["src/other.py"])
-        groups, leftovers = orchestrator.catalog_groups(files, catalog, max_per_group=50,
-                                                        security_mode="standard")
+        groups, leftovers = orchestrator.catalog_groups(files, catalog, max_per_group=50)
         by = self._names(groups)
         self.assertEqual(by["Auth"]["files"], ["src/auth/login.py", "tests/auth/test_login.py"],
                          "scoped tests: still credits the vertical")
@@ -960,7 +961,7 @@ class TestTestsSweep(unittest.TestCase):
 
     def test_catalog_groups_tests_chunks_keep_chunk_of(self):
         files = ["tests/test_%d.py" % i for i in range(6)]
-        groups, _ = orchestrator.catalog_groups(files, {}, max_per_group=2, security_mode="standard")
+        groups, _ = orchestrator.catalog_groups(files, {}, max_per_group=2)
         names = [g["name"] for g in groups]
         self.assertEqual(names, ["Tests_1", "Tests_2", "Tests_3"])
         self.assertTrue(all(g["chunk_of"] == "Tests" and g["parent"] == "Tests" for g in groups))
@@ -969,7 +970,7 @@ class TestTestsSweep(unittest.TestCase):
         catalog = {"Core": {"match": ["src/core/*.ts"]}}     # `*` stays in-segment
         groups, leftovers = orchestrator.catalog_groups(
             ["src/core/lib.ts", "src/core/__tests__/a.test.ts", "tests/b.ts"],
-            catalog, max_per_group=50, security_mode="standard")
+            catalog, max_per_group=50)
         by = self._names(groups)
         self.assertEqual(sorted(by["Core"]["files"]),
                          ["src/core/__tests__/a.test.ts", "src/core/lib.ts"])
@@ -979,8 +980,7 @@ class TestTestsSweep(unittest.TestCase):
     def test_committed_tests_group_suppresses_the_sweep(self):
         catalog = {"Tests": {"match": ["tests/**"]}, "App": {"match": ["src/**"]}}
         files = ["src/a.py", "tests/test_a.py", "e2e/flow.spec.ts"]
-        groups, leftovers = orchestrator.catalog_groups(files, catalog, max_per_group=50,
-                                                        security_mode="standard")
+        groups, leftovers = orchestrator.catalog_groups(files, catalog, max_per_group=50)
         by = self._names(groups)
         self.assertEqual(by["Tests"]["files"], ["tests/test_a.py"])
         self.assertEqual(leftovers, ["e2e/flow.spec.ts"], "no sweep: e2e stays a disclosed leftover")
@@ -991,8 +991,7 @@ class TestTestsSweep(unittest.TestCase):
         catalog = {"Auth": {"match": ["src/auth/**"], "tests": ["tests/**"]}}
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            orchestrator.catalog_groups(["tests/test_cart.py"], catalog, max_per_group=50,
-                                        security_mode="standard")
+            orchestrator.catalog_groups(["tests/test_cart.py"], catalog, max_per_group=50)
         self.assertIn("Auth: tests glob 'tests/**' matched 1 file(s) but credited none", err.getvalue())
 
     def test_scoped_warnings_are_collected_for_the_caller(self):
@@ -1003,8 +1002,8 @@ class TestTestsSweep(unittest.TestCase):
         catalog = {"Auth": {"match": ["src/auth/**"], "tests": ["tests/**"]}}
         got = []
         with contextlib.redirect_stderr(io.StringIO()):
-            orchestrator.catalog_groups(["tests/test_cart.py"], catalog, max_per_group=50,
-                                        security_mode="standard", warnings=got)
+            orchestrator.catalog_groups(
+                ["tests/test_cart.py"], catalog, max_per_group=50, warnings=got)
         self.assertEqual(len(got), 1)
         self.assertIn("credited none", got[0])
 
@@ -1012,7 +1011,7 @@ class TestTestsSweep(unittest.TestCase):
         catalog = {"Core": {"match": ["src/core/*.ts", "!src/core/__tests__/**"]}}
         groups, leftovers = orchestrator.catalog_groups(
             ["src/core/lib.ts", "src/core/__tests__/a.test.ts"],
-            catalog, max_per_group=50, security_mode="standard")
+            catalog, max_per_group=50)
         by = self._names(groups)
         self.assertEqual(by["Core"]["files"], ["src/core/lib.ts"])
         self.assertEqual(by["Tests"]["files"], ["src/core/__tests__/a.test.ts"])
@@ -1025,7 +1024,7 @@ class TestTestsSweep(unittest.TestCase):
         catalog = {"Docs:Guides": {"match": ["docs/guides/**"], "parent": "Docs"}}
         groups, leftovers = orchestrator.catalog_groups(
             ["docs/guides/a.md", "docs/other.md", "README.md"],
-            catalog, max_per_group=50, security_mode="standard")
+            catalog, max_per_group=50)
         names = [g["name"] for g in groups]
         self.assertIn("Docs:Guides", names)
         self.assertNotIn("Docs", names)

@@ -1,19 +1,13 @@
-"""#2099: the contract between discovery's and coverage's file signals.
+"""#2099/#3485: the file-signal and retired-schedule contracts.
 
-Discovery classifies files to seed the `panels` schedule it writes into
-groups.json (`discovery.compute_group_panels`). Coverage classifies them to
-decide the objective floor: `coverage_model.applicable_global_floor` plus
-`applicable_sec_floor`, then committed `panels:`, scout widening and `exclude`.
-The two differ, and this file states how:
+Coverage owns the objective floor: `coverage_model.applicable_global_floor`
+plus `applicable_sec_floor`, then committed `panels:`, scout widening and
+`exclude`. Discovery shares only the test-file naming predicate (#1770); its
+unread legacy `panels` schedule was deleted in #3485.
 
-- **Only coverage's answer routes.** Nothing reads groups.json `panels`.
-  `TheScheduleRoutesNothingTest` makes that an enforced fact.
-- **One predicate is shared,** `discovery.is_test_file` (#1770).
-- **Every other difference is labelled,** row by row, as required or
-  accidental. The accidental ones assert TODAY's behaviour and name the issue
-  that holds their ruling, so a later change flips a row visibly instead of
-  drifting silently. The routing ones were ruled on in #3484 and are required
-  now; what remains accidental routes nothing (#3485).
+The coverage rows below pin every signal calibrated in #2099/#3484. The legacy
+schedule survives only as fixture data proving that an old groups.json still
+loads and routes byte-identically to a new artifact that omits the field.
 """
 import json
 import os
@@ -24,124 +18,121 @@ from unittest import mock
 
 from scripts import coverage_model, discovery, groups_schema, hosts
 import scripts.phases.coverage as coverage
+import scripts.phases.discovery as discovery_phase
 import scripts.phases.runio as runio
 from tests._test_helpers import write_host_evidence
 
-REQUIRED = "required"
-SHARED = "shared"            # both sides answer through the same predicate
-AGREE = "agree"
-NON_ROUTING = "accidental, non-routing (#3485)"
+COVERAGE = "coverage"
+SHARED = "shared"            # coverage calls discovery.is_test_file
 
-# (path, discovery's (is_test_file, is_database_file, is_architecture_file),
+# (path, discovery's shared is_test_file answer,
 #  coverage's objective floor for a group of just this file, label, why)
 SIGNALS = [
-    ("README.md", (False, False, True), ["COD"], REQUIRED,
-     "ARC: discovery asks 'infra/doc file?', coverage asks '>= 2 directories?'; "
-     "a README is not SEC code (#3338)"),
-    ("LICENSE", (False, False, True), ["COD"], REQUIRED, "as README.md"),
-    ("docs/guide.md", (False, False, False), ["COD"], REQUIRED,
+    ("README.md", False, ["COD"], COVERAGE,
+     "ARC requires at least two directories; a README is not SEC code (#3338)"),
+    ("LICENSE", False, ["COD"], COVERAGE, "as README.md"),
+    ("docs/guide.md", False, ["COD"], COVERAGE,
      "documentation is not SEC code (#3338)"),
-    ("assets/logo.png", (False, False, False), [], REQUIRED,
-     "an asset has no COD or SEC surface (#1489, #3338); discovery schedules both"),
-    ("Dockerfile", (False, False, True), ["COD", "SEC"], REQUIRED,
-     "ARC is structural in coverage, a file kind in discovery"),
-    ("tests/conftest.py", (False, False, False), ["COD", "SEC", "TST"], REQUIRED,
+    ("assets/logo.png", False, [], COVERAGE,
+     "an asset has no COD or SEC surface (#1489, #3338)"),
+    ("Dockerfile", False, ["COD", "SEC"], COVERAGE,
+     "ARC is structural, so one Dockerfile alone does not draw it"),
+    ("tests/conftest.py", False, ["COD", "SEC", "TST"], COVERAGE,
      "test SURFACE, not a test file: the naming rule also routes files between "
      "groups (partition_test_files), so the surface hints must not leak into it"),
-    ("features/login.feature", (False, False, False), ["COD", "SEC", "TST"], REQUIRED,
+    ("features/login.feature", False, ["COD", "SEC", "TST"], COVERAGE,
      "as tests/conftest.py"),
-    ("tests/fixtures/data.json", (False, False, False), ["COD", "SEC", "TST"], REQUIRED,
+    ("tests/fixtures/data.json", False, ["COD", "SEC", "TST"], COVERAGE,
      "as tests/conftest.py"),
-    ("src/AppTest.java", (True, False, False), ["COD", "SEC", "TST"], SHARED,
+    ("src/AppTest.java", True, ["COD", "SEC", "TST"], SHARED,
      "discovery.is_test_file, which coverage's TST signal unions in (#1770)"),
-    ("app/models/user.py", (False, True, False), ["COD", "DAT", "SEC"], AGREE, ""),
-    ("db/migrate/001_init.rb", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED,
+    ("app/models/user.py", False, ["COD", "DAT", "SEC"], COVERAGE,
+     "a models directory is a DAT surface"),
+    ("db/migrate/001_init.rb", False, ["COD", "DAT", "SEC"], COVERAGE,
      "#3484 R1: a `migrate/` directory segment is a DB surface (Rails' db/migrate)"),
-    ("migrate/002_users.rb", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED,
+    ("migrate/002_users.rb", False, ["COD", "DAT", "SEC"], COVERAGE,
      "#3484 R1: a top-level migrate/ segment too"),
-    ("src/immigrate.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("src/immigrate.py", False, ["COD", "SEC"], COVERAGE,
      "#3484 R1: a segment, not a substring"),
-    ("src/migrated_users.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("src/migrated_users.py", False, ["COD", "SEC"], COVERAGE,
      "#3484 R1: a segment, not a substring"),
-    ("bin/migrate.rb", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("bin/migrate.rb", False, ["COD", "SEC"], COVERAGE,
      "#3484 R1: a FILE named migrate is not the segment"),
-    ("lib/immigrate/rules.rb", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("lib/immigrate/rules.rb", False, ["COD", "SEC"], COVERAGE,
      "#3484 R1: a directory ending in `migrate` is not the segment"),
     # #3484 R2: `schema`, `seed` and `entity` are words. They must start a path
     # segment or follow a dot and end at a separator, or be a CamelCase `Entity`.
-    ("src/identity.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("src/identity.py", False, ["COD", "SEC"], COVERAGE,
      "#3484 R2: `entity` inside `identity` is not the word"),
-    ("src/identities.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("src/identities.py", False, ["COD", "SEC"], COVERAGE,
      "#3484 R2: nor is `entities` inside `identities`"),
-    ("config/initializers/html_entities.rb", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("config/initializers/html_entities.rb", False, ["COD", "SEC"], COVERAGE,
      "#3484 R2: railsgoat's HTML entities; an `_` compound is not the word"),
-    ("src/random_seed.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("src/random_seed.py", False, ["COD", "SEC"], COVERAGE,
      "#3484 R2: `seed` after `random_` is not the word"),
-    ("lib/seedling.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("lib/seedling.py", False, ["COD", "SEC"], COVERAGE,
      "#3484 R2: the word must END at a separator"),
-    ("src/jsonschema_util.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("src/jsonschema_util.py", False, ["COD", "SEC"], COVERAGE,
      "#3484 R2: `schema` inside `jsonschema` is not the word"),
-    ("src/config_schema.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("src/config_schema.py", False, ["COD", "SEC"], COVERAGE,
      "#3484 R2: a JSON-Schema module, an `_` compound"),
-    ("src/schematics/index.ts", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("src/schematics/index.ts", False, ["COD", "SEC"], COVERAGE,
      "#3484 R2: Angular schematics; the word must END at a separator"),
-    ("db/schema.rb", (False, False, False), ["COD", "DAT", "SEC"], REQUIRED,
+    ("db/schema.rb", False, ["COD", "DAT", "SEC"], COVERAGE,
      "#3484 R2: Rails' schema; only the `schema` word draws its DAT"),
-    ("schema.sql", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED, "#3484 R2 keeps"),
-    ("prisma/schema.prisma", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED,
+    ("schema.sql", False, ["COD", "DAT", "SEC"], COVERAGE, "#3484 R2 keeps"),
+    ("prisma/schema.prisma", False, ["COD", "DAT", "SEC"], COVERAGE,
      "#3484 R2 keeps"),
-    ("src/cats/cat.schema.ts", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED,
+    ("src/cats/cat.schema.ts", False, ["COD", "DAT", "SEC"], COVERAGE,
      "#3484 R2: Mongoose's `.schema.` suffix, a dot-led word"),
-    ("db/seeds.rb", (False, False, False), ["COD", "DAT", "SEC"], REQUIRED,
+    ("db/seeds.rb", False, ["COD", "DAT", "SEC"], COVERAGE,
      "#3484 R2: Rails' seeds; only the `seed` word draws its DAT"),
-    ("seeds/001.sql", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED, "#3484 R2 keeps"),
-    ("db/seed_users.rb", (False, False, False), ["COD", "DAT", "SEC"], REQUIRED,
+    ("seeds/001.sql", False, ["COD", "DAT", "SEC"], COVERAGE, "#3484 R2 keeps"),
+    ("db/seed_users.rb", False, ["COD", "DAT", "SEC"], COVERAGE,
      "#3484 R2: a word may END at `_`; only the `seed` word draws its DAT"),
-    ("src/entities/user.ts", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED,
+    ("src/entities/user.ts", False, ["COD", "DAT", "SEC"], COVERAGE,
      "#3484 R2 keeps"),
-    ("app/entity/Order.java", (False, True, False), ["COD", "DAT", "SEC"], REQUIRED,
+    ("app/entity/Order.java", False, ["COD", "DAT", "SEC"], COVERAGE,
      "#3484 R2 keeps"),
-    ("src/user.entity.ts", (False, False, False), ["COD", "DAT", "SEC"], REQUIRED,
+    ("src/user.entity.ts", False, ["COD", "DAT", "SEC"], COVERAGE,
      "#3484 R2: TypeORM's `.entity.` suffix, a dot-led word"),
-    ("UserEntity.java", (False, False, False), ["COD", "DAT", "SEC"], REQUIRED,
+    ("UserEntity.java", False, ["COD", "DAT", "SEC"], COVERAGE,
      "#3484 R2: a CamelCase `Entity`, matched case-sensitively"),
     # #3484 R3: `/test_` starts a path segment; `.spec.` skips yaml/yml/json.
-    ("src/latest_version.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("src/latest_version.py", False, ["COD", "SEC"], COVERAGE,
      "#3484 R3: `test_` inside `latest_` does not start a segment"),
-    ("src/contest_results.py", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("src/contest_results.py", False, ["COD", "SEC"], COVERAGE,
      "#3484 R3: nor inside `contest_`"),
-    ("api/openapi.spec.yaml", (False, False, False), ["COD", "SEC"], REQUIRED,
+    ("api/openapi.spec.yaml", False, ["COD", "SEC"], COVERAGE,
      "#3484 R3: an API description, not a test"),
-    ("api/openapi.spec.yml", (False, False, False), ["COD", "SEC"], REQUIRED, "#3484 R3: as .yaml"),
-    ("api/user.spec.json", (False, False, False), ["COD", "SEC"], REQUIRED, "#3484 R3: as .yaml"),
-    ("tests/test_api.py", (True, False, False), ["COD", "SEC", "TST"], REQUIRED, "#3484 R3 keeps"),
-    ("test_api.py", (True, False, False), ["COD", "SEC", "TST"], REQUIRED,
+    ("api/openapi.spec.yml", False, ["COD", "SEC"], COVERAGE, "#3484 R3: as .yaml"),
+    ("api/user.spec.json", False, ["COD", "SEC"], COVERAGE, "#3484 R3: as .yaml"),
+    ("tests/test_api.py", True, ["COD", "SEC", "TST"], COVERAGE, "#3484 R3 keeps"),
+    ("test_api.py", True, ["COD", "SEC", "TST"], COVERAGE,
      "#3484 R3 keeps, at the top level too"),
-    ("src/test_main.c", (False, False, False), ["COD", "SEC", "TST"], REQUIRED,
+    ("src/test_main.c", False, ["COD", "SEC", "TST"], COVERAGE,
      "#3484 R3: only the `/test_` hint draws its TST"),
-    ("src/foo.spec.ts", (True, False, False), ["COD", "SEC", "TST"], REQUIRED,
+    ("src/foo.spec.ts", True, ["COD", "SEC", "TST"], COVERAGE,
      "#3484 R3 keeps; the naming rule decides it"),
-    ("foo.spec.js", (True, False, False), ["COD", "SEC", "TST"], REQUIRED, "as src/foo.spec.ts"),
-    ("src/__snapshots__/foo.spec.ts.snap", (False, False, False), ["COD", "SEC", "TST"], REQUIRED,
+    ("foo.spec.js", True, ["COD", "SEC", "TST"], COVERAGE, "as src/foo.spec.ts"),
+    ("src/__snapshots__/foo.spec.ts.snap", False, ["COD", "SEC", "TST"], COVERAGE,
      "#3484 R3: only `.spec.` draws its TST"),
-    ("src/db.query.py", (False, False, False), ["COD", "DAT", "SEC"], NON_ROUTING,
-     "discovery's DAT is narrower (no `/db.`); only coverage's answer routes"),
-    ("app/Models/User.cs", (False, False, False), ["COD", "DAT", "SEC"], NON_ROUTING,
-     "discovery's patterns are case-sensitive"),
-    ("src/repository.py", (False, False, False), ["COD", "DAT", "SEC"], NON_ROUTING,
-     "discovery matches only a repository/ directory"),
-    ("data/app.sqlite", (False, False, False), ["COD", "DAT", "SEC"], NON_ROUTING,
-     "discovery matches only `.sql$`"),
+    ("src/db.query.py", False, ["COD", "DAT", "SEC"], COVERAGE,
+     "the `/db.` hint draws DAT"),
+    ("app/Models/User.cs", False, ["COD", "DAT", "SEC"], COVERAGE,
+     "the model-directory hint is case-insensitive"),
+    ("src/repository.py", False, ["COD", "DAT", "SEC"], COVERAGE,
+     "the repository filename hint draws DAT"),
+    ("data/app.sqlite", False, ["COD", "DAT", "SEC"], COVERAGE,
+     "a database extension draws DAT"),
 ]
 
 
 class TheSignalsTest(unittest.TestCase):
-    def test_each_row_is_todays_answer_on_both_sides(self):
-        for path, disc, floor, label, why in SIGNALS:
+    def test_each_row_is_todays_coverage_answer(self):
+        for path, is_test, floor, label, why in SIGNALS:
             with self.subTest(path=path, label=label):
-                self.assertEqual(disc, (discovery.is_test_file(path),
-                                        discovery.is_database_file(path),
-                                        discovery.is_architecture_file(path)), why)
+                self.assertEqual(is_test, discovery.is_test_file(path), why)
                 self.assertEqual(floor, sorted(coverage_model.applicable_global_floor([path], None)
                                                | coverage_model.applicable_sec_floor([path])), why)
 
@@ -169,12 +160,11 @@ class TheSignalsTest(unittest.TestCase):
                 self.assertNotIn("TST", coverage_model.applicable_global_floor(
                     ["src/__snapshots__/foo.spec.ts.snap"], None))
 
-    def test_every_row_is_labelled_and_every_accidental_row_names_its_issue(self):
+    def test_every_row_is_labelled_and_explained(self):
         labels = {label for _p, _d, _f, label, _w in SIGNALS}
-        self.assertEqual({REQUIRED, SHARED, AGREE, NON_ROUTING}, labels)
-        for path, _d, _f, label, why in SIGNALS:
-            if label in (REQUIRED, NON_ROUTING):
-                self.assertTrue(why, path)
+        self.assertEqual({COVERAGE, SHARED}, labels)
+        for path, _d, _f, _label, why in SIGNALS:
+            self.assertTrue(why, path)
 
 
 # Representative groups, routed through the real coverage phase.
@@ -195,6 +185,25 @@ GROUPS = {
 COMMITTED = {"Committed": "    panels: [DAT]\n", "Excl": "    exclude: [TST, SEC]\n"}
 SCOUT = {"Widened": ["AGT"]}
 
+# Exact output of the retired discovery.compute_group_panels over GROUPS on the
+# #3485 parent. Fixture data, not a second derivation: it exists only to prove
+# old run folders keep loading and route like new schedule-free artifacts.
+LEGACY_GROUP_PANELS = {
+    "Readme": ["security", "architecture", "code"],
+    "Assets": ["security", "code"],
+    "Docs": ["security", "architecture", "code"],
+    "DbQuery": ["security", "code"],
+    "Rails": ["security", "database", "code"],
+    "Conftest": ["security", "code"],
+    "Ident": ["security", "code"],
+    "Latest": ["security", "code"],
+    "ApiSpec": ["security", "code"],
+    "Committed": ["security", "code"],
+    "Widened": ["security", "code"],
+    "Excl": ["security", "code", "test"],
+}
+LEGACY_PANEL_NAMES = ["security", "redteam", "architecture", "database", "code", "test"]
+
 
 class _Phase(unittest.TestCase):
     def setUp(self):
@@ -213,13 +222,13 @@ class _Phase(unittest.TestCase):
                               {"group": name, "domains": SCOUT.get(name, [])})
 
     def _route(self, panels):
-        """Write groups.json with `panels(files)` on each entry (None: no key),
+        """Write groups.json with `panels(name, files)` per entry (None: omit),
         run the coverage phase to completion and return every coverage file's
         bytes."""
         groups = []
         for name, files in GROUPS.items():
             entry = {"name": name, "files": files}
-            value = panels(files)
+            value = panels(name, files)
             if value is not None:
                 entry["panels"] = value
             groups.append(entry)
@@ -241,15 +250,22 @@ class _Phase(unittest.TestCase):
 
 
 class TheScheduleRoutesNothingTest(_Phase):
-    """Discovery's `panels` is a schedule nothing routes on. Deleting it, or
-    claiming every domain and every legacy panel name, leaves every coverage
-    file byte-identical to the one discovery's real schedule produces."""
+    """The retired groups.json `panels` schedule routes nothing (#3485)."""
 
-    def test_deleted_or_everything_routes_exactly_like_discoverys_own(self):
-        everything = sorted(groups_schema.DOMAINS) + list(discovery.PANEL_PRIORITY)
-        baseline = self._route(lambda files: discovery.compute_group_panels(files))
-        self.assertEqual(baseline, self._route(lambda files: None))
-        self.assertEqual(baseline, self._route(lambda files: everything))
+    def test_old_artifact_loads_and_routes_exactly_like_omission(self):
+        legacy_groups = [
+            {"name": name, "files": files, "panels": LEGACY_GROUP_PANELS[name]}
+            for name, files in GROUPS.items()
+        ]
+        legacy_doc = {"run_id": self.manifest["run_id"], "groups": legacy_groups}
+        self.assertEqual(discovery_phase.groups_artifact_errors(
+            legacy_doc, self.manifest), [])
+
+        legacy = self._route(lambda name, _files: LEGACY_GROUP_PANELS[name])
+        omitted = self._route(lambda _name, _files: None)
+        everything = sorted(groups_schema.DOMAINS) + LEGACY_PANEL_NAMES
+        self.assertEqual(legacy, omitted)
+        self.assertEqual(legacy, self._route(lambda _name, _files: everything))
 
 
 class RoutingThroughTheEffectiveMatrixTest(_Phase):
@@ -273,7 +289,7 @@ class RoutingThroughTheEffectiveMatrixTest(_Phase):
     }
 
     def test_representative_groups(self):
-        routed = self._route(lambda files: discovery.compute_group_panels(files))
+        routed = self._route(lambda _name, _files: None)
         for name, expected in self.EXPECTED.items():
             with self.subTest(group=name):
                 cov = json.loads(routed[name])
