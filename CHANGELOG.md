@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **CI test sharding, phase 2: the tooling (#2933).** The workflow change lands separately, through
+  the coordinator, because dev tokens cannot push `.github/workflows`. This part is:
+  - `scripts/ci_shards.py`, with three commands:
+    - `check` proves from every job's manifest that each collected test ran exactly once per
+      Python version, and that every version collected the same tests;
+    - `coverage-files` refuses a partial coverage combine;
+    - `merge-durations` builds this run's profile from the 3.12 coverage shards, and warns
+      (never fails) when the committed `.test_durations` is stale.
+  - `tests/ci_shard_manifest.py`, the pytest plugin that writes those manifests. It is loaded
+    only by CI (`-p tests.ci_shard_manifest --shard-manifest PATH`) and is inert otherwise.
+  - A refreshed `.test_durations`: 12,860 tests from the 3.12 parallel pass of main run
+    42284360964, measured with coverage. Its source changes from #3085's 3.11 profile, and the
+    325 stale entries are dropped.
 - **The advisors are asked for `schema_version: 1`, and Codex requires it (#3482, owner-approved).**
   Each is its own commit:
   - **P1:** domain-advisor's bundle example leads with `"schema_version": 1`.
