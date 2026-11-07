@@ -38,6 +38,11 @@ __pycache__/
 .coverage
 .coverage.*
 coverage.xml
+# CI data dirs (#2933): each job's shard manifest, coverage data and durations,
+# and the merged profile, written in the checkout while the suite runs; discovery
+# must not list them as repo files.
+/shards/
+/merged/
 htmlcov/
 groups.json
 CodeReviewReport_*.json

@@ -19,8 +19,10 @@
     42284360964, measured with coverage. Its source changes from #3085's 3.11 profile, and the
     325 stale entries are dropped.
   - Guard tests in `tests/test_ci_shards.py` on the job graph: `tests-passed` needs all five test
-    jobs and always reports, only `coverage` holds a nonzero floor, and every `--cov` leg disables
-    pyproject's.
+    jobs and always reports, only `coverage` holds a nonzero floor, every `--cov` leg disables
+    pyproject's, and every directory the workflow creates is gitignored.
+  - `.gitignore` gains `/shards/` and `/merged/`: the jobs write them in the checkout while the
+    suite runs, and discovery would otherwise list them as repo files.
 - **Google Antigravity CLI (`agy`) is a 5/5 first-class host (#3493).** `HOSTS["agy"]` is
   driver-selectable with `self_write_delivery = True`, backed by `skill/scripts/runners/agy.py`,
   `skill/scripts/runners/agy_home.py`, `skill/scripts/agy_guard_hook.py` and five capability probes

@@ -326,7 +326,7 @@ class ThePluginTest(unittest.TestCase):
 
 
 TEST_JOBS = {"test-cov", "test", "test-serial", "coverage", "shard-check"}
-_COV_FLAG = re.compile(r"--cov(?=[\s'\"]|$)")
+_COV_FLAG = re.compile(r"--cov(?=[\s'\"=]|$)")
 _FAIL_UNDER = re.compile(r"fail[-_]under[= ]+([0-9.]+)")
 
 
@@ -375,6 +375,26 @@ class TheWorkflowJobGraphTest(unittest.TestCase):
                     legs.append(name)
                     self.assertIn("--cov-fail-under=0", text, name)
         self.assertEqual(["test-cov", "test-serial"], sorted(legs))
+
+    def test_the_coverage_flag_pattern(self):
+        for on in ("--cov", "--cov ", "--cov=skill/scripts", "'--cov --cov-report='"):
+            self.assertTrue(_COV_FLAG.search(on), on)
+        for off in ("--cov-report=", "--cov-fail-under=0", "--cov-config=x"):
+            self.assertFalse(_COV_FLAG.search(off), off)
+
+    def test_every_directory_the_workflow_creates_is_gitignored(self):
+        # The jobs write shards/ in the checkout BEFORE the tests run (the
+        # manifest at collection time). Discovery lists untracked files that
+        # .gitignore does not exclude, so an unignored data dir adds a group
+        # and fails test_matrix_coverage's group count, in CI only (#3501).
+        made = set()
+        for job in self.jobs.values():
+            for text in _job_strings(job):
+                made.update(re.findall(r"mkdir -p ([\w.-]+)", text))
+        self.assertEqual({"shards", "merged"}, made)
+        with open(os.path.join(ROOT, ".gitignore"), encoding="utf-8") as fh:
+            ignored = {line.strip() for line in fh}
+        self.assertEqual(set(), {"/%s/" % d for d in made} - ignored)
 
     def test_shard_check_runs_after_a_red_leg(self):
         self.assertEqual("${{ !cancelled() }}", str(self.jobs["shard-check"].get("if", "")).strip())
