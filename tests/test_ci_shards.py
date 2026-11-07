@@ -2,15 +2,19 @@
 manifest plugin in `tests/ci_shard_manifest.py`.
 
 Synthetic manifests only: no subprocess and no collection. The real proof is
-the `shard-check` job reading the 13 manifests of an actual run.
+the `shard-check` job reading the 13 manifests of an actual run. The last
+class guards the job graph in `.github/workflows/ci.yml` itself.
 """
 import contextlib
 import io
 import json
 import os
+import re
 import tempfile
 import types
 import unittest
+
+import yaml
 
 import ci_shards
 from tests import ci_shard_manifest as plugin
@@ -319,6 +323,61 @@ class ThePluginTest(unittest.TestCase):
     def test_the_collection_hook_runs_first(self):
         # Ahead of the `-m` filter and pytest-split, so `collected` is everything.
         self.assertTrue(plugin.pytest_collection_modifyitems.pytest_impl["tryfirst"])
+
+
+TEST_JOBS = {"test-cov", "test", "test-serial", "coverage", "shard-check"}
+_COV_FLAG = re.compile(r"--cov(?=[\s'\"]|$)")
+_FAIL_UNDER = re.compile(r"fail[-_]under[= ]+([0-9.]+)")
+
+
+def _job_strings(job):
+    """Every `run` script and env value of one job: where a pytest or coverage
+    command line, or a piece of one, can live."""
+    out = [str(v) for v in (job.get("env") or {}).values()]
+    for step in job.get("steps") or []:
+        out.append(str(step.get("run") or ""))
+        out.extend(str(v) for v in (step.get("env") or {}).values())
+    return out
+
+
+class TheWorkflowJobGraphTest(unittest.TestCase):
+    """#2933 phase 2: the shape `ci.yml` must keep for the combined coverage gate
+    and the single required check to mean what they say."""
+
+    @classmethod
+    def setUpClass(cls):
+        with open(os.path.join(ROOT, ".github", "workflows", "ci.yml"), encoding="utf-8") as fh:
+            cls.jobs = yaml.safe_load(fh)["jobs"]
+
+    def test_tests_passed_needs_every_test_job_and_always_reports(self):
+        gate = self.jobs["tests-passed"]
+        self.assertEqual(TEST_JOBS, set(gate["needs"]))
+        self.assertEqual("always()", str(gate.get("if", "")).strip())
+
+    def test_only_the_coverage_job_gates_on_a_coverage_floor(self):
+        floors = {}
+        for name, job in self.jobs.items():
+            for text in _job_strings(job):
+                for value in _FAIL_UNDER.findall(text):
+                    if float(value) != 0:
+                        floors.setdefault(name, []).append(value)
+        self.assertEqual({"coverage": ["90"]}, floors)
+
+    def test_every_coverage_leg_disables_the_pyproject_floor(self):
+        # pytest-cov falls back to pyproject's `fail_under = 90` when
+        # --cov-fail-under is absent, failing each partial leg before its
+        # .coverage file is saved. So any string that turns --cov on must also
+        # pass --cov-fail-under=0.
+        legs = []
+        for name, job in self.jobs.items():
+            for text in _job_strings(job):
+                if _COV_FLAG.search(text):
+                    legs.append(name)
+                    self.assertIn("--cov-fail-under=0", text, name)
+        self.assertEqual(["test-cov", "test-serial"], sorted(legs))
+
+    def test_shard_check_runs_after_a_red_leg(self):
+        self.assertEqual("${{ !cancelled() }}", str(self.jobs["shard-check"].get("if", "")).strip())
 
 
 if __name__ == "__main__":

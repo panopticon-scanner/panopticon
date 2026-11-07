@@ -2,8 +2,11 @@
 
 ## Unreleased
 
-- **CI test sharding, phase 2: the tooling (#2933).** The workflow change lands separately, through
-  the coordinator, because dev tokens cannot push `.github/workflows`. This part is:
+- **CI test sharding, phase 2 (#2933).** `ci.yml` now shards the 3.12 coverage run into three
+  `test-cov` groups plus the serial leg, combines their data in a `coverage` job that holds the one
+  90% gate (every `--cov` leg passes `--cov-fail-under=0`, overriding pyproject's floor), and checks
+  the whole partition in `shard-check`. The workflow commit is the coordinator's, because dev tokens
+  cannot push `.github/workflows`. The tooling is:
   - `scripts/ci_shards.py`, with three commands:
     - `check` proves from every job's manifest that each collected test ran exactly once per
       Python version, and that every version collected the same tests;
@@ -15,6 +18,9 @@
   - A refreshed `.test_durations`: 12,860 tests from the 3.12 parallel pass of main run
     42284360964, measured with coverage. Its source changes from #3085's 3.11 profile, and the
     325 stale entries are dropped.
+  - Guard tests in `tests/test_ci_shards.py` on the job graph: `tests-passed` needs all five test
+    jobs and always reports, only `coverage` holds a nonzero floor, and every `--cov` leg disables
+    pyproject's.
 - **Google Antigravity CLI (`agy`) is a 5/5 first-class host (#3493).** `HOSTS["agy"]` is
   driver-selectable with `self_write_delivery = True`, backed by `skill/scripts/runners/agy.py`,
   `skill/scripts/runners/agy_home.py`, `skill/scripts/agy_guard_hook.py` and five capability probes
