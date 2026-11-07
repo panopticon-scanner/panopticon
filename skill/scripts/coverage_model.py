@@ -19,16 +19,19 @@ OBJECTIVE routing signal: the gated global floor and the SEC floor below, which
   - the TST surface hints (conftest, /tests/, .feature) stay OUT of the naming
     rule, because that rule also moves files between groups
     (`discovery.partition_test_files`).
-- **Accidental divergences** are pinned at today's behaviour in
-  tests/test_surface_signal_contract.py. The routing ones (the bare
-  `entity`/`seed`/`schema`/`test_`/`.spec.` substrings) wait on #3484. Its R1,
-  the `migrate/` miss, is fixed: `/migrate/` is a DAT segment hint.
-  The schedule's own, which routes nothing, wait on #3485.
+- **Routing divergences were ruled on in #3484** and are required now:
+  - R1: `/migrate/` is a DAT segment hint.
+  - R2: `schema`, `seed` and `entity` are DAT words, not substrings.
+  - R3: `/test_` starts a segment, and `.spec.` skips yaml/yml/json.
+- **Accidental divergences** that remain are pinned at today's behaviour in
+  tests/test_surface_signal_contract.py. They are the schedule's own, which
+  route nothing, and wait on #3485.
 """
 
 from typing import TYPE_CHECKING
 
 import os
+import re
 
 # #1770 ARC-3682668884: the TST floor's test-file signal is the UNION of
 # discovery's naming rule and the local hints, so `discovery.TEST_PATTERNS` is a
@@ -82,13 +85,42 @@ NON_EXCLUDABLE = frozenset({"SEC"})
 # file named `migrate.rb` stay unmatched. `_any_hint` adds the leading slash for
 # a top-level `migrate/`.
 _DB_FILE_HINTS = ("schema.prisma", ".prisma", ".sql", "migration", "/migrate/",
-                  "/models/", "/model/", "schema", "entity", "entities", ".orm",
-                  "seed", "repository", "database", "/db.")
+                  "/models/", "/model/", ".orm", "repository", "database", "/db.")
+# #3484 R2 (owner ruling): `schema`, `seed` and `entity` are WORDS, not
+# substrings. As bare substrings they drew DAT for `jsonschema_util.py`,
+# `random_seed.py`, `identity.py`, `identities.py` and Rails'
+# `html_entities.rb`. A word must START a path segment or follow a dot, and END
+# at `/`, `.` or `_`. That keeps:
+# - `db/schema.rb` and `prisma/schema.prisma`;
+# - `db/seeds.rb`, `seeds/001.sql` and `db/seed_users.rb`;
+# - `src/entities/`, `app/entity/` and TypeORM's `user.entity.ts`;
+# - Mongoose's `cat.schema.ts`.
+# It drops compounds such as `config_schema.py` and `report-schema.json`:
+# JSON-Schema files, not database ones. Matched against `_any_hint`'s
+# lowercased, slash-led path.
+_DB_WORDS = re.compile(r"[/.](?:schema|seeds?|entit(?:y|ies))(?=[/._])")
+# Java and C# name entities in CamelCase (`UserEntity.java`), which the
+# lowercased word rule cannot see, so this one is case-SENSITIVE on the path as
+# given. `Identity` carries no capital E and stays out.
+_DB_CAMEL = re.compile(r"Entity")
 # These are HALF of the TST signal; `_has_test_surface` unions them with
 # discovery's naming rule. Do not add a naming convention here that belongs in
 # `discovery.TEST_PATTERNS` -- the union already picks that one up everywhere.
-_TEST_FILE_HINTS = (".test.", ".spec.", "_test.", "_spec.", "/__tests__/",
-                    "/tests/", "/test/", ".feature", "conftest", "test_")
+# #3484 R3 (owner ruling):
+# - `/test_` must START a path segment. A bare `test_` matched inside
+#   `latest_version.py` and `contest_results.py`.
+# - `.spec.` moved to `_SPEC_HINT` below.
+_TEST_FILE_HINTS = (".test.", "_test.", "_spec.", "/__tests__/",
+                    "/tests/", "/test/", ".feature", "conftest", "/test_")
+# #3484 R3: `.spec.` no longer matches a yaml/yml/json file such as
+# `openapi.spec.yaml`, which is an API description, not a test.
+# - Spec TESTS in JS/TS (`foo.spec.ts`, `.spec.mjs`) never depended on this
+#   hint: `discovery.TEST_PATTERNS` (`\.spec\.[cm]?[jt]sx?$`) decides them first
+#   in `_has_test_surface`.
+# - This hint is what catches the spec files that rule does not know, e.g. a
+#   Jest snapshot `foo.spec.ts.snap`, and case variants the case-sensitive rule
+#   misses.
+_SPEC_HINT = re.compile(r"\.spec\.(?!ya?ml|json)")
 
 # #1489: extensions with no code surface for COD to review. Deliberately a
 # DENYLIST, so the gate fails OPEN: an unrecognized extension counts as source
@@ -223,14 +255,28 @@ def with_asset_skip_note(note, assets):
     return "; ".join(filter(None, (note, ASSET_SKIP_NOTE % assets if assets else None))) or None
 
 
+def _slash_led(f):
+    """`f` lowercased with one leading slash. A repository-relative root then
+    counts as a directory boundary like every nested one. Slash-delimited hints
+    such as /tests/ still require both separators."""
+    return "/" + str(f).lower().lstrip("/")
+
+
 def _any_hint(files, hints):
     for f in files or ():
-        # Treat a repository-relative root like every nested directory boundary.
-        # Slash-delimited hints such as /tests/ still require both path separators.
-        low = "/" + str(f).lower().lstrip("/")
+        low = _slash_led(f)
         if any(h in low for h in hints):
             return True
     return False
+
+
+def _has_db_surface(files):
+    """The DAT floor's signal: a substring hint, a DB word (#3484 R2), or a
+    CamelCase `Entity`."""
+    for f in files or ():
+        if _DB_WORDS.search(_slash_led(f)) or _DB_CAMEL.search(str(f)):
+            return True
+    return _any_hint(files, _DB_FILE_HINTS)
 
 
 def _has_test_surface(files):
@@ -245,9 +291,16 @@ def _has_test_surface(files):
 
     The path is passed to `is_test_file` AS GIVEN, because those patterns are
     anchored and case-SENSITIVE (`Test\\.java$`); `_any_hint` lowercases instead.
+
+    Order (#3484 R3): per file, the naming rule is asked first, then
+    `_SPEC_HINT`; the substring hints are asked only after every file has failed
+    both. Either half's yes is final, so narrowing a hint can only drop a file
+    the naming rule ALSO rejects. That is why `.spec.` could skip yaml without
+    touching `foo.spec.ts`: `TEST_PATTERNS` decides every JS/TS spec, and
+    tests/test_surface_signal_contract.py proves it with the hint switched off.
     """
     for f in files or ():
-        if discovery.is_test_file(str(f)):
+        if discovery.is_test_file(str(f)) or _SPEC_HINT.search(_slash_led(f)):
             return True
     return _any_hint(files, _TEST_FILE_HINTS)
 
@@ -270,7 +323,7 @@ def applicable_global_floor(files, scout, global_floor=GLOBAL_FLOOR):
       produces reliably, because it packs by directory -- still drew a COD cell.
       Across 7 calibration runs those cells returned 0 findings in every
       instance, against a 2.71-5.83 corpus baseline.
-    - DAT: any db/schema/model/migration/seed file.
+    - DAT: any db/schema/model/migration/seed file, per `_has_db_surface`.
     - TST: any test-file signal, per `_has_test_surface`.
     - ARC: the group spans >= 2 distinct file directories (real cross-module
       structure).
@@ -279,7 +332,7 @@ def applicable_global_floor(files, scout, global_floor=GLOBAL_FLOOR):
     keep = set()
     if "COD" in global_floor and has_code_surface(files):
         keep.add("COD")
-    if "DAT" in global_floor and _any_hint(files, _DB_FILE_HINTS):
+    if "DAT" in global_floor and _has_db_surface(files):
         keep.add("DAT")
     if "TST" in global_floor and _has_test_surface(files):
         keep.add("TST")

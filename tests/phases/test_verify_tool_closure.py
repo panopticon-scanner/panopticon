@@ -336,7 +336,8 @@ class StrictGenerationTest(_Tree):
                              persist.generation_schema(self._entry(finding))))
 
         def reply(verdict, missing):
-            body = {"finding_id": "SG-1", "verdict": verdict, "confidence": "LIKELY",
+            body = {"schema_version": 1,      # #3482 P4: the projection requires it
+                    "finding_id": "SG-1", "verdict": verdict, "confidence": "LIKELY",
                     "reasoning": "r", "explored": [], "references": [],
                     "citations": {"cwe": [], "owasp": [], "cve": []},
                     "missing_evidence": missing}

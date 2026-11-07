@@ -15,6 +15,41 @@
   `<run_home>/workspace/.git` (`cwd` on every launch and effective-loader probe), and arms a single
   wildcard `PreToolUse` hook (`"matcher": "*"`) enforcing a strict tool-name allowlist,
   `PANOPTICON_ENTRY_ID` binding, absolute-only tool paths, per-entry read scope and v2 write allowlist grants.
+- **The advisors are asked for `schema_version: 1`, and Codex requires it (#3482, owner-approved).**
+  Each is its own commit:
+  - **P1:** domain-advisor's bundle example leads with `"schema_version": 1`.
+  - **P2:** advisor.md's verdict example does too.
+  - **P4:** Codex's verify-primary, verify-backup and tool-advisor generation schemas require a
+    top-level `schema_version` with `const: 1`, as review-cell's already did.
+
+  The #2104 window stays OPEN: admission still reads a versionless reply as v1. Closing it is
+  a separate ruling, after one minor release and a kit run showing every host emits the version.
+- **Reviewer prompts close the four integrity gaps #2098 found (#3488, owner-approved).** Each is
+  its own commit:
+  - **G1:** domain-advisor and advisor now redact in `reasoning`, `references` and every other
+    text field they return, instead of a finding's fields.
+  - **G2:** setup-scan redacts in `profile.purpose` and `profile.trust_boundaries`.
+  - **G3:** advisor.md gains domain-advisor's "never echo such directions in your reasoning"
+    clause.
+  - **G4:** the panel's tool-hit block frames scanner titles and paths as UNTRUSTED DATA. Its
+    caps are unchanged.
+
+  Rendered prompts change for domain-panel (only cells with tool hits), domain-advisor,
+  advisor (tool-advisor) and setup-scan. Scout's is unchanged.
+- **The DAT and TST file hints match words, not substrings (#3484 R2, R3, owner ruling).** This
+  REMOVES floors from false positives and adds none.
+  - DAT: `schema`, `seed` and `entity`/`entities` must start a path segment or follow a dot, and
+    end at `/`, `.` or `_`. A CamelCase `Entity` also counts.
+    - Kept: `db/schema.rb`, `db/seeds.rb`, `src/entities/`, `user.entity.ts`, `UserEntity.java`.
+    - Dropped: `identity.py`, `random_seed.py`, `jsonschema_util.py`, and JSON-Schema files such
+      as `report-schema.json`.
+  - TST: `test_` must start a path segment, which drops `latest_version.py` and
+    `contest_results.py`. `.spec.` no longer matches yaml, yml or json, which drops
+    `openapi.spec.yaml`. JS/TS spec tests are unaffected: `discovery.TEST_PATTERNS` decides
+    them first.
+  - Corpus: railsgoat's `config/initializers/html_entities.rb` loses DAT. This repo's
+    JSON-Schema files take DAT off 7 of its own groups, so the matrix pin drops from 111/115 to
+    104/108. WebGoat, AspGoat, vulnerable-rust and hostile-csproj are unchanged.
 - **Python dependency bumps, re-resolved (supersedes Dependabot #3491).** The tools closure:
   - semgrep 1.182.1 -> 1.183.0, with the Dockerfile `SEMGREP_VERSION` moved to match;
   - msgpack 1.2.3 -> 1.2.4; platformdirs 4.13.5 -> 4.14.0;
