@@ -40,28 +40,45 @@ jobs:
       - name: Type check
         run: python -m mypy skill/scripts scripts
 
-  # #2933, the rough shard. One job per Python version used to run both passes,
-  # and the 3.11 leg took 18 to 56 minutes depending on runner contention and
-  # was cancelled at the job limit more than once. Now:
-  #   test-cov     3.12 only, UNSHARDED, both passes: the one coverage gate
-  #                (coverage is interpreter-independent here -- no
-  #                sys.version_info branches, no version-conditional skips) and
-  #                the one complete `.test_durations` profile per run.
-  #   test         3.11/3.13/3.14 x 2 groups, the parallel pass only, split by
-  #                the committed `.test_durations` (pytest-split, least_duration)
-  #                so each group carries half the measured time; no coverage.
-  #   test-serial  3.11/3.13/3.14, the `serial`-marked timing tests alone on a
-  #                fresh runner, so their wall-clock bounds are not read after a
-  #                long parallel pass has heated the box; no coverage.
-  #   tests-passed one always-reporting gate over the three -- the single
-  #                required check, so reshaping the matrix again never touches
-  #                branch protection.
+  # #2933. Phase 1 (#3085) split the suite by measured duration; phase 2 shards
+  # the coverage run too and gates on the COMBINED data:
+  #   test-cov     3.12 x 3 groups, the parallel pass with coverage data and
+  #                per-test durations but NO gate (a per-shard gate fails
+  #                spuriously). Coverage is interpreter-independent here -- no
+  #                sys.version_info branches, no version-conditional skips, and
+  #                shard-check proves every version collects the same tests.
+  #   test         3.11/3.13/3.14 x 2 groups, the parallel pass; no coverage.
+  #   test-serial  all four versions, the `serial`-marked timing tests alone on
+  #                a fresh runner, so their wall-clock bounds are not read after
+  #                a long parallel pass has heated the box; 3.12 adds coverage.
+  #   coverage     combines the 4 data files (3 shards + serial) and holds the
+  #                ONE --fail-under=90; publishes coverage.xml and the merged
+  #                .test_durations profile. Every --cov leg passes
+  #                --cov-fail-under=0: pytest-cov otherwise falls back to
+  #                pyproject's fail_under = 90 and fails each partial leg
+  #                (~10-30% alone) before its .coverage is saved.
+  #   shard-check  proves, from every job's manifest, that each collected test
+  #                ran exactly once per version (scripts/ci_shards.py check).
+  #                It runs unless cancelled, so a red leg still gets partition
+  #                evidence; tests-passed still requires every job to succeed.
+  #   tests-passed one always-reporting gate over all five -- the single
+  #                required check, so reshaping the matrix never touches branch
+  #                protection.
+  # The split profile `.test_durations` is, since phase 2, a 3.12 parallel pass
+  # measured WITH coverage, merged by the coverage job and refreshed by a normal
+  # PR from its artifact (`scripts/ci_shards.py merge-durations` warns when the
+  # committed copy is stale). Its relative weights balance every version.
   # Why two passes at all: `serial`-marked time-bound tests red-fail under xdist
   # because parallel workers inflate even `time.process_time()` on large inputs
   # (CPU/memory/cache contention) against tight bounds like `assert_linear_growth`.
+  # Timeouts are 3x the measured p95, rounded up to 5 minutes (#2933).
   test-cov:
     runs-on: ubuntu-latest
-    timeout-minutes: 90  # tighten once the shard timings settle (#2933)
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        group: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Set up Python 3.12
@@ -72,14 +89,128 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[test]"
-      # The parallel pass writes coverage data with no report and no gate; the
-      # serial pass appends to it and the COMBINED total is what `--cov-fail-under`
-      # judges and what `coverage.xml` carries. The parallel pass also records the
-      # complete per-test duration profile the sharded legs balance against.
-      - name: Test (parallel, not serial)
-        run: python -m pytest tests/ -q -n auto -m "not serial" --cov --cov-report= --store-durations --durations-path .test_durations
+      - name: Runner
+        run: echo "nproc=$(nproc); $(lscpu | grep -m1 'Model name')"
+      - name: Test (parallel, not serial, group ${{ matrix.group }} of 3, coverage data)
+        run: |
+          mkdir -p shards
+          python -m pytest tests/ -q -n auto -m "not serial" --splits 3 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .test_durations --store-durations --cov --cov-report= --cov-fail-under=0 -p tests.ci_shard_manifest --shard-manifest shards/manifest-3.12-cov-g${{ matrix.group }}.json
+          mv .coverage shards/.coverage.cov-g${{ matrix.group }}
+          cp .test_durations shards/durations-3.12-cov-g${{ matrix.group }}.json
+      - name: Upload shard data
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shard-3.12-cov-g${{ matrix.group }}
+          path: shards/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.13", "3.14"]
+        group: [1, 2]
+    env:
+      PY: ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+      - name: Runner
+        run: echo "nproc=$(nproc); $(lscpu | grep -m1 'Model name')"
+      # The committed `.test_durations` drives the split; a test it does not
+      # know gets the average duration, so a new test lands in a group rather
+      # than failing the split.
+      - name: Test (parallel, not serial, group ${{ matrix.group }} of 2)
+        run: |
+          mkdir -p shards
+          python -m pytest tests/ -q -n auto -m "not serial" --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .test_durations -p tests.ci_shard_manifest --shard-manifest "shards/manifest-$PY-g${{ matrix.group }}.json"
+      - name: Upload shard manifest
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shard-${{ matrix.python-version }}-g${{ matrix.group }}
+          path: shards/
+          if-no-files-found: error
+
+  test-serial:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    env:
+      PY: ${{ matrix.python-version }}
+      COV_ARGS: ${{ matrix.python-version == '3.12' && '--cov --cov-report= --cov-fail-under=0' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+      - name: Runner
+        run: echo "nproc=$(nproc); $(lscpu | grep -m1 'Model name')"
       - name: Test (serial timing/performance)
-        run: python -m pytest tests/ -q -m "serial" --cov --cov-append --cov-report=term-missing --cov-report=xml:coverage.xml --cov-fail-under=90
+        run: |
+          mkdir -p shards
+          python -m pytest tests/ -q -m "serial" $COV_ARGS -p tests.ci_shard_manifest --shard-manifest "shards/manifest-$PY-serial.json"
+          if [ -n "$COV_ARGS" ]; then mv .coverage shards/.coverage.serial; fi
+      - name: Upload shard data
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shard-${{ matrix.python-version }}-serial
+          path: shards/
+          include-hidden-files: true
+          if-no-files-found: error
+
+  coverage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    needs: [test-cov, test-serial]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[test]"
+      - name: Download the 3.12 shard data
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: shard-3.12-*
+          path: shards
+          merge-multiple: true
+      # The ONE coverage gate, on the combined data of all four 3.12 legs; it
+      # refuses to judge a partial combine.
+      - name: Combine coverage and gate at 90%
+        run: |
+          python scripts/ci_shards.py coverage-files shards --expect 4
+          python -m coverage combine shards
+          python -m coverage report --fail-under=90
+          python -m coverage xml -o coverage.xml
+      - name: Merge the durations profile
+        run: |
+          mkdir -p merged
+          python scripts/ci_shards.py merge-durations shards --committed .test_durations -o merged/.test_durations
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -92,65 +223,43 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: test-durations-python-3.12
-          path: .test_durations
+          path: merged/.test_durations
           include-hidden-files: true
           if-no-files-found: warn
 
-  test:
+  shard-check:
     runs-on: ubuntu-latest
-    timeout-minutes: 90  # tighten once the shard timings settle (#2933)
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.13", "3.14"]
-        group: [1, 2]
+    timeout-minutes: 5
+    needs: [test-cov, test, test-serial]
+    if: ${{ !cancelled() }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.12
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[test]"
-      # The committed `.test_durations` (a full 3.11 profile) drives the split; a
-      # test it does not know gets the average duration, so a new test lands in
-      # a group rather than failing the split.
-      - name: Test (parallel, not serial, group ${{ matrix.group }} of 2)
-        run: python -m pytest tests/ -q -n auto -m "not serial" --splits 2 --group ${{ matrix.group }} --splitting-algorithm least_duration --durations-path .test_durations
-
-  test-serial:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.13", "3.14"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+          python-version: "3.12"
+      - name: Download every shard manifest
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          python-version: ${{ matrix.python-version }}
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -e ".[test]"
-      - name: Test (serial timing/performance)
-        run: python -m pytest tests/ -q -m "serial"
+          pattern: shard-*
+          path: shards
+          merge-multiple: true
+      - name: Every collected test ran exactly once per version
+        run: python scripts/ci_shards.py check shards --expect 3.11=3 --expect 3.12=4 --expect 3.13=3 --expect 3.14=3
 
   tests-passed:
     runs-on: ubuntu-latest
     timeout-minutes: 5
-    needs: [test-cov, test, test-serial]
+    needs: [test-cov, test, test-serial, coverage, shard-check]
     if: always()
     env:
       COV: ${{ needs.test-cov.result }}
       SHARDS: ${{ needs.test.result }}
       SERIAL: ${{ needs.test-serial.result }}
+      COMBINE: ${{ needs.coverage.result }}
+      CHECK: ${{ needs.shard-check.result }}
     steps:
       - name: Every test job succeeded
         run: |
-          echo "test-cov=$COV test=$SHARDS test-serial=$SERIAL"
-          test "$COV" = success && test "$SHARDS" = success && test "$SERIAL" = success
+          echo "test-cov=$COV test=$SHARDS test-serial=$SERIAL coverage=$COMBINE shard-check=$CHECK"
+          test "$COV" = success && test "$SHARDS" = success && test "$SERIAL" = success && test "$COMBINE" = success && test "$CHECK" = success
