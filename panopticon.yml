@@ -875,9 +875,13 @@ groups:
       - SEC
     Workflows:
       # #2521: `.github/**` stays with the tests that read those workflows.
+      # #2933: and with the shard bookkeeping ci.yml runs.
       match:
       - .github/**
+      - scripts/ci_shards.py
       tests:
+      - tests/test_ci_shards.py
+      - tests/ci_shard_manifest.py
       - tests/test_apply_labels.py
       - tests/test_security_workflow.py
       - tests/test_security_backstop.py
