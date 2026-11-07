@@ -33,6 +33,7 @@ import os
 from typing import Any, Callable
 
 from scripts import app_trace, hosts, probe_cache, run_manifest
+import scripts.probes.agy as agy_probes
 import scripts.probes.claude as claude_probes
 import scripts.probes.claude_write_canary as claude_write_canary
 import scripts.probes.codex as codex_probes
@@ -52,7 +53,10 @@ PROBE_IDS = (probes_common.REGISTERED_SHELL_TOOLS,
             codex_probes.CODEX_WRITE_SURFACE_ABSENT,
             kimi_probes.KIMI_SHELL_SURFACE, kimi_probes.KIMI_READ_GUARD,
             kimi_probes.KIMI_WRITE_GUARD, kimi_probes.KIMI_MODEL_ALIAS,
-            kimi_probes.KIMI_USAGE_WIRE)
+            kimi_probes.KIMI_USAGE_WIRE,
+            agy_probes.AGY_SHELL_SURFACE, agy_probes.AGY_READ_GUARD,
+            agy_probes.AGY_WRITE_GUARD, agy_probes.AGY_MODEL_BOUND,
+            agy_probes.AGY_USAGE_ENVELOPE)
 
 # Which capability each shipped probe MEASURES. The retirement bar reads this
 # so a row cannot satisfy spec 8.1 by mapping a security capability to a
@@ -71,7 +75,12 @@ PROBE_CAPABILITY = {probes_common.REGISTERED_SHELL_TOOLS: hosts.TOOL_POLICY_ENFO
                     kimi_probes.KIMI_READ_GUARD: hosts.READ_SCOPE_CONFINED,
                     kimi_probes.KIMI_WRITE_GUARD: hosts.ARTIFACT_WRITE_GUARD,
                     kimi_probes.KIMI_MODEL_ALIAS: hosts.MODEL_BINDING,
-                    kimi_probes.KIMI_USAGE_WIRE: hosts.USAGE_LEDGER}
+                    kimi_probes.KIMI_USAGE_WIRE: hosts.USAGE_LEDGER,
+                    agy_probes.AGY_SHELL_SURFACE: hosts.TOOL_POLICY_ENFORCED,
+                    agy_probes.AGY_READ_GUARD: hosts.READ_SCOPE_CONFINED,
+                    agy_probes.AGY_WRITE_GUARD: hosts.ARTIFACT_WRITE_GUARD,
+                    agy_probes.AGY_MODEL_BOUND: hosts.MODEL_BINDING,
+                    agy_probes.AGY_USAGE_ENVELOPE: hosts.USAGE_LEDGER}
 
 
 _ProbeResult = tuple[str, str | None, str]
@@ -158,6 +167,19 @@ _PROBE_RUNNERS: dict[str, Callable[[_ProbeContext], _ProbeResult]] = {
         lambda context: kimi_probes.probe_kimi_model_alias(context.host),
     kimi_probes.KIMI_USAGE_WIRE:
         lambda context: kimi_probes.probe_kimi_usage_wire(context.host),
+    agy_probes.AGY_SHELL_SURFACE:
+        lambda context: agy_probes.probe_agy_shell_surface(
+            context.host, context.registration_dir),
+    agy_probes.AGY_READ_GUARD:
+        lambda context: agy_probes.probe_agy_read_guard(context.host),
+    agy_probes.AGY_WRITE_GUARD:
+        lambda context: agy_probes.probe_agy_write_guard(context.host),
+    agy_probes.AGY_MODEL_BOUND:
+        lambda context: agy_probes.probe_agy_model_bound(
+            context.host, context.registration_dir),
+    agy_probes.AGY_USAGE_ENVELOPE:
+        lambda context: agy_probes.probe_agy_usage_envelope(
+            context.host, settings_path=context.settings_path),
 }
 
 

@@ -107,6 +107,13 @@ _CODEX_FALLBACK = {
     "domain_advisor": {"model": "gpt-6-sol", "model_reasoning_effort": "high"},
     "setup_scan": {"model": None},
 }
+_AGY_FALLBACK: dict[str, dict[str, Any]] = {
+    "scout": {"model": "gemini-3.8-flash-medium", "tier": "flash"},
+    "advisor": {"model": "gemini-3.8-flash-medium", "tier": "flash"},
+    "domain_panel": {"model": "gemini-4-argon-high", "tier": "pro"},
+    "domain_advisor": {"model": "gemini-4-argon-high", "tier": "pro"},
+    "setup_scan": {"model": None},
+}
 
 
 def _hardcoded_fallback(host, role):
@@ -129,6 +136,9 @@ def _hardcoded_fallback(host, role):
     if host == "codex":
         return _CODEX_FALLBACK.get(role, {"model": "gpt-6-sol",
                                           "model_reasoning_effort": "medium"})
+    if host == "agy":
+        return _AGY_FALLBACK.get(role, {"model": "gemini-4-argon-high",
+                                         "tier": "pro"})
     return {"model": None}
 
 

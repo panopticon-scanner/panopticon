@@ -748,6 +748,25 @@ class TestEmitHostAgents(unittest.TestCase):
             self.assertIn("disallowedTools:", text)
             self.assertIn("- Bash", text)
 
+    def test_agy_dialect_emits_tools_and_tier_without_command_execution_policy(self):
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.emit_host_agents("agy", d)
+            with open(os.path.join(d, "panopticon-domain-panel.md"), encoding="utf-8") as fh:
+                panel = fh.read()
+            self.assertIn("name: panopticon-domain-panel", panel)
+            self.assertIn("model: pro", panel)
+            for tool in ("  - read_file", "  - grep_search", "  - find_by_name",
+                         "  - list_dir", "  - write_file", "  - finish"):
+                self.assertIn(tool, panel)
+            self.assertNotIn("commandExecutionPolicy", panel)
+            with open(os.path.join(d, "panopticon-scout.md"), encoding="utf-8") as fh:
+                scout = fh.read()
+            self.assertIn("model: flash", scout)
+            self.assertNotIn("write_file", scout)
+            with open(os.path.join(d, "panopticon-setup-scan.md"), encoding="utf-8") as fh:
+                setup = fh.read()
+            self.assertNotIn("model:", setup)
+
     def test_codex_toml_agents_are_read_only(self):
         with tempfile.TemporaryDirectory() as d:
             written = dispatch.emit_host_agents("codex", d)
@@ -814,7 +833,7 @@ class TestEmitHostAgents(unittest.TestCase):
         # separators the old write spelled inline are theirs now. A markdown
         # shell is frontmatter, ONE blank line, then the charter; a codex shell
         # ends on exactly one newline.
-        for host in ("claude", "kimi", "codex"):
+        for host in ("claude", "kimi", "codex", "agy"):
             with tempfile.TemporaryDirectory() as d:
                 for path in dispatch.emit_host_agents(host, d):
                     with self.subTest(host=host, path=os.path.basename(path)), \
@@ -1243,7 +1262,7 @@ class TestDispatchReadsTheHostRegistry(unittest.TestCase):
     """#1344 F2: dispatch stops carrying its own idea of which hosts exist."""
 
     def test_registration_dir_comes_from_the_registry(self):
-        for name in ("claude", "kimi", "codex"):
+        for name in ("claude", "kimi", "codex", "agy"):
             with self.subTest(host=name):
                 self.assertEqual(hosts.spec(name).registration_dir,
                                  dispatch._registration_dir(name, None))
@@ -1276,6 +1295,7 @@ class TestDispatchReadsTheHostRegistry(unittest.TestCase):
         for env, expected in (({"CODEX_SANDBOX": "1"}, "codex"),
                               ({"KIMI_SESSION_ID": "x"}, "kimi"),
                               ({"CLAUDECODE": "1"}, "claude"),
+                              ({"ANTIGRAVITY_CLI": "1"}, "agy"),
                               ({}, "generic")):
             with self.subTest(env=env):
                 with mock.patch.dict(os.environ, env, clear=True):

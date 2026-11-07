@@ -368,6 +368,11 @@ groups:
       match:
       - skill/scripts/driver.py
       - skill/scripts/host_posture.py
+      # #3493: Orchestration:Hosts and Orchestration:Runners are at the 48-file
+      # cap; keeping the agy guard hook and probe harness here keeps both
+      # sibling leaves below the cap without adding a 27th leaf.
+      - skill/scripts/agy_guard_hook.py
+      - skill/scripts/probes/agy.py
       tests:
       - tests/test_driver.py
       - tests/test_driver_cli.py
@@ -380,6 +385,7 @@ groups:
       # it from Hosts keeps the surface harness beside its direct tests while
       # both leaves stay below the cap.
       - tests/test_host_evidence_wiring.py
+      - tests/probes/test_agy.py
       - tests/driver_helpers.py
       panels:
       - ARC
@@ -500,6 +506,7 @@ groups:
       - skill/scripts/read_guard_hook.py
       - skill/scripts/guard_rules.py
       - skill/scripts/probes/**
+      - '!skill/scripts/probes/agy.py'
       - skill/reference/probe-output-schema.json
       - skill/workflows/**
       tests:

@@ -222,7 +222,9 @@ class TestEverySeamThatCanStartAHostCliIsCovered(unittest.TestCase):
         that found everything would demand a launcher from data modules."""
         found = sorted(relative for _, relative, _ in _seams())
         self.assertEqual(found, sorted(["codex_host.py", "setup_preflight.py",
+                                        os.path.join("probes", "agy.py"),
                                         os.path.join("probes", "kimi.py"),
+                                        os.path.join("runners", "agy.py"),
                                         os.path.join("runners", "claude.py"),
                                         os.path.join("runners", "codex.py"),
                                         os.path.join("runners", "kimi.py")]))
@@ -519,12 +521,14 @@ class TestNoProbeLaunchesOutsideTheHardenedLauncher(unittest.TestCase):
 
     def test_the_probe_launchers_are_the_hardened_one(self):
         import scripts.app_trace as app_trace
+        import scripts.probes.agy as agy_probes
         import scripts.probes.claude_write_canary as canary
         import scripts.probes.kimi as kimi_probes
         from scripts.runners import children
         # The conftest guard swaps DEFAULT_RUNNER for its refusal; the shipped
         # values are read off the source, where the guard cannot reach.
         for module, name in ((codex_host, "DEFAULT_RUNNER"), (kimi_probes, "DEFAULT_RUNNER"),
+                             (agy_probes, "DEFAULT_RUNNER"),
                              (app_trace, "DEFAULT_RUNNER"), (canary, "_launch")):
             with open(module.__file__, encoding="utf-8") as fh:
                 tree = ast.parse(fh.read())
