@@ -446,68 +446,27 @@ def probe_agy_write_guard(host, *, runner=None, hooks_runner=None,
         bound_env = {"PANOPTICON_ENTRY_ID": "writer-1"}
         prompt = "<!-- panopticon-entry: writer-1 -->\nWrite findings."
 
-        ok, reason = _invoke_hook(
-            argv,
-            {"lastUserInput": prompt,
-             "toolCall": {"name": "write_file",
-                          "args": {"Path": own_out, "Content": "{}"}}},
-            bound_env)
+        def _wcall(path, entry_prompt=prompt, name="write_file"):
+            args = {"Path": path} if name != "write_file" else {"Path": path, "Content": "{}"}
+            return {"lastUserInput": entry_prompt, "toolCall": {"name": name, "args": args}}
+
+        ok, reason = _invoke_hook(argv, _wcall(own_out), bound_env)
         if ok is not True:
             return (hosts.REFUTED, AGY_WRITE_GUARD_ARMED,
                     "write guard denied own declared out_file: %s" % reason)
 
         deny_cases = (
-            ("peer_out_file", argv,
-             {"lastUserInput": prompt,
-              "toolCall": {"name": "write_file",
-                           "args": {"Path": peer_out, "Content": "{}"}}},
-             bound_env),
-            ("relative_path", argv,
-             {"lastUserInput": prompt,
-              "toolCall": {"name": "write_file",
-                           "args": {"Path": "findings-g1-COD.json", "Content": "{}"}}},
-             bound_env),
-            ("dotdot_relative", argv,
-             {"lastUserInput": prompt,
-              "toolCall": {"name": "write_file",
-                           "args": {"Path": "../workspace/findings-g1-COD.json", "Content": "{}"}}},
-             bound_env),
-            ("outside_file", argv,
-             {"lastUserInput": prompt,
-              "toolCall": {"name": "write_file",
-                           "args": {"Path": outside_out, "Content": "{}"}}},
-             bound_env),
-            ("symlink_target", argv,
-             {"lastUserInput": prompt,
-              "toolCall": {"name": "write_file",
-                           "args": {"Path": symlink_out, "Content": "{}"}}},
-             bound_env),
-            ("dotdot_traversal", argv,
-             {"lastUserInput": prompt,
-              "toolCall": {"name": "write_file",
-                           "args": {"Path": os.path.join(run_dir, "..", "escape.json"),
-                                    "Content": "{}"}}},
-             bound_env),
-            ("unbound_session", argv,
-             {"lastUserInput": prompt,
-              "toolCall": {"name": "write_file",
-                           "args": {"Path": own_out, "Content": "{}"}}},
-             {"PANOPTICON_ENTRY_ID": ""}),
-            ("unknown_entry", argv,
-             {"lastUserInput": "<!-- panopticon-entry: ghost -->\nWrite.",
-              "toolCall": {"name": "write_file",
-                           "args": {"Path": own_out, "Content": "{}"}}},
+            ("peer_out_file", argv, _wcall(peer_out), bound_env),
+            ("relative_path", argv, _wcall("findings-g1-COD.json"), bound_env),
+            ("dotdot_relative", argv, _wcall("../workspace/findings-g1-COD.json"), bound_env),
+            ("outside_file", argv, _wcall(outside_out), bound_env),
+            ("symlink_target", argv, _wcall(symlink_out), bound_env),
+            ("dotdot_traversal", argv, _wcall(os.path.join(run_dir, "..", "escape.json")), bound_env),
+            ("unbound_session", argv, _wcall(own_out), {"PANOPTICON_ENTRY_ID": ""}),
+            ("unknown_entry", argv, _wcall(own_out, "<!-- panopticon-entry: ghost -->\nWrite."),
              {"PANOPTICON_ENTRY_ID": "ghost"}),
-            ("v1_flat_allowlist", [scope_path, v1_path],
-             {"lastUserInput": prompt,
-              "toolCall": {"name": "write_file",
-                           "args": {"Path": own_out, "Content": "{}"}}},
-             bound_env),
-            ("unlisted_tool(edit_file)", argv,
-             {"lastUserInput": prompt,
-              "toolCall": {"name": "edit_file",
-                           "args": {"Path": own_out}}},
-             bound_env),
+            ("v1_flat_allowlist", [scope_path, v1_path], _wcall(own_out), bound_env),
+            ("unlisted_tool(edit_file)", argv, _wcall(own_out, name="edit_file"), bound_env),
         )
         for label, case_argv, payload, env in deny_cases:
             ok, reason = _invoke_hook(case_argv, payload, env)
