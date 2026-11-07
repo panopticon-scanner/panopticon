@@ -1,4 +1,4 @@
-"""Chunking, depth, and panel-priority tests."""
+"""Chunking and group-entry tests."""
 import unittest
 
 from tests.discovery_test_helpers import orchestrator
@@ -28,24 +28,11 @@ class TestChunkFiles(unittest.TestCase):
         self.assertIn("max_per must be >= 1", str(cm.exception))
 
 
-class TestPanelPriority(unittest.TestCase):
-    def test_compute_group_panels_emits_priority_order(self):
-        # Whatever panels are present, they must appear in PANEL_PRIORITY order.
-        files = ["app.py", "models.py", "schema.sql", "infra/main.tf", "tests/test_app.py"]
-        panels = orchestrator.compute_group_panels(files, "standard")
-        assert panels == [p for p in orchestrator.PANEL_PRIORITY if p in panels]
-        # security must precede code; code must precede test
-        assert panels.index("security") < panels.index("code")
-        assert panels.index("code") < panels.index("test")
-
-    def test_compute_group_panels_redteam_mode_ordered(self):
-        panels = orchestrator.compute_group_panels(["app.py", "tests/test_app.py"], "redteam")
-        if "redteam" not in panels or "security" in panels: raise AssertionError()
-        if panels != [p for p in orchestrator.PANEL_PRIORITY if p in panels]: raise AssertionError()
-
-    def test_panels_in_priority_order_puts_unknown_last(self):
-        assert orchestrator.panels_in_priority_order(
-            ["test", "zzz", "security"]) == ["security", "test", "zzz"]
+class TestGroupEntry(unittest.TestCase):
+    def test_groups_json_row_omits_the_dead_panel_schedule(self):
+        """#3485: routing is computed later; discovery publishes no stale schedule."""
+        group = orchestrator._group_obj("Core", ["src/app.py"])
+        self.assertNotIn("panels", group)
 
 
 class TestChunkBalance(unittest.TestCase):

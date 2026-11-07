@@ -243,7 +243,7 @@ class TestMatrixCoverage(unittest.TestCase):
             "CI:WorkflowForms", "CI:WorkflowFetch", "CI:WorkflowPrograms", "Tests",
         }
         groups, _residual = discovery.catalog_groups(
-            self.files, self.catalog, discovery.DEFAULT_MAX_PER_GROUP, "standard")
+            self.files, self.catalog, discovery.DEFAULT_MAX_PER_GROUP)
         files = {group["name"]: group["files"] for group in groups}
         current_sec = {name for name, group_files in files.items()
                        if coverage_model.applicable_sec_floor(group_files)}
