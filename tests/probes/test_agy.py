@@ -1,4 +1,6 @@
 """Unit tests for the `agy` host capability probes (`scripts/probes/agy.py`)."""
+import contextlib
+import io
 import json
 import os
 import subprocess
@@ -6,9 +8,12 @@ import tempfile
 import unittest
 from unittest import mock
 
+import scripts.agy_guard_hook as agy_guard_hook
 from scripts import dispatch, hosts
+import scripts.model_resolver as model_resolver
 import scripts.probes.agy as agy_probes
 import scripts.probes.common as probes_common
+import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.agy as agy_runner
 import scripts.runners.agy_home as agy_home
 import scripts.runners.base as runners_base
@@ -30,7 +35,10 @@ AGENTS_STDOUT = """Available subagents:
 
 HOOKS_STDOUT = json.dumps({
     "session_id": "s-hooks",
-    "response": "**Configured Hooks**\n\n**PreToolUse** (`*`)\n  - `command`: `/usr/bin/python3 -I /x/agy_guard_hook.py`\n",
+    "response": (
+        "**Configured Hooks**\n\n**PreToolUse** (`*`)\n  - `command`: "
+        "`/usr/bin/python3 -I %s`\n" % os.path.abspath(agy_guard_hook.__file__)
+    ),
 })
 
 
@@ -134,7 +142,8 @@ class TestAgyShellSurfaceProbe(unittest.TestCase):
 
 
 class TestAgyReadAndWriteGuardProbes(unittest.TestCase):
-    def _hooks_and_canary_runner(self, hooks_out=HOOKS_STDOUT, record_denials=True):
+    def _hooks_and_canary_runner(self, hooks_out=HOOKS_STDOUT, record_denials=True,
+                                 canary_response="DONE"):
         def fake(cmd, **kw):
             if "/hooks" in cmd:
                 return subprocess.CompletedProcess(cmd, 0, stdout=hooks_out, stderr="")
@@ -145,7 +154,7 @@ class TestAgyReadAndWriteGuardProbes(unittest.TestCase):
                         fh.write(json.dumps({"tool": "run_command", "reason": "not allowed"}) + "\n")
                         fh.write(json.dumps({"tool": "read_file", "reason": "outside.txt not in scope"}) + "\n")
                 return subprocess.CompletedProcess(
-                    cmd, 0, stdout=json.dumps({"response": "DONE"}), stderr="")
+                    cmd, 0, stdout=json.dumps({"response": canary_response}), stderr="")
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         return fake
@@ -155,7 +164,7 @@ class TestAgyReadAndWriteGuardProbes(unittest.TestCase):
             "agy", hooks_runner=self._hooks_and_canary_runner())
         self.assertEqual(hosts.PROVEN, state, detail)
         self.assertEqual(agy_probes.AGY_READ_GUARD, by)
-        self.assertIn("15/15 payloads", detail)
+        self.assertIn("18/18 payloads", detail)
         self.assertIn("PreToolUse (*)", detail)
         self.assertIn("live canary", detail)
 
@@ -169,18 +178,35 @@ class TestAgyReadAndWriteGuardProbes(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("did not report wildcard PreToolUse (*)", detail)
 
+    def test_hooks_text_fallback_refutes_when_script_path_differs(self):
+        foreign_hook = json.dumps({
+            "response": "**PreToolUse** (`*`)\n  - `command`: `/usr/bin/python3 -I /other/hook.py`\n"
+        })
+        state, _by, detail = agy_probes.probe_agy_read_guard(
+            "agy", hooks_runner=self._hooks_and_canary_runner(hooks_out=foreign_hook))
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("did not report wildcard PreToolUse (*) invoking", detail)
+
     def test_read_guard_refutes_when_live_canary_misses_denials(self):
         state, _by, detail = agy_probes.probe_agy_read_guard(
             "agy", hooks_runner=self._hooks_and_canary_runner(record_denials=False))
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("did not record both hook denials", detail)
 
+    def test_read_guard_refutes_when_canary_output_contains_outside_sentinel(self):
+        state, _by, detail = agy_probes.probe_agy_read_guard(
+            "agy",
+            hooks_runner=self._hooks_and_canary_runner(
+                canary_response="leaked PANOPTICON_READ_CANARY_OUTSIDE_SECRET_9f8e7d"))
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("leaked outside file sentinel", detail)
+
     def test_write_guard_proven_with_wildcard_matcher(self):
         state, by, detail = agy_probes.probe_agy_write_guard(
             "agy", hooks_runner=self._hooks_and_canary_runner())
         self.assertEqual(hosts.PROVEN, state, detail)
         self.assertEqual(agy_probes.AGY_WRITE_GUARD, by)
-        self.assertIn("9/9 payloads", detail)
+        self.assertIn("11/11 payloads", detail)
         self.assertIn("PreToolUse (*)", detail)
 
     def test_write_guard_refutes_when_matcher_narrowed_from_wildcard(self):
@@ -201,14 +227,142 @@ class TestAgyReadAndWriteGuardProbes(unittest.TestCase):
             self.assertEqual(hosts.UNKNOWN, state)
             self.assertIn("FileNotFoundError", detail)
 
+    def test_relative_and_dotdot_paths_are_denied_before_resolution(self):
+        with tempfile.TemporaryDirectory() as sandbox:
+            real_box = os.path.realpath(sandbox)
+            ws_dir = os.path.join(real_box, "workspace")
+            cfg_dir = os.path.join(real_box, "config")
+            os.makedirs(ws_dir, exist_ok=True)
+            os.makedirs(cfg_dir, exist_ok=True)
+            in_file = os.path.join(ws_dir, "allowed.py")
+            out_json = os.path.join(ws_dir, "findings.json")
+            with open(in_file, "w", encoding="utf-8") as fh:
+                fh.write("x = 1\n")
+            scope_path = os.path.join(real_box, "read-scope.json")
+            allowlist_path = os.path.join(real_box, "write-allowlist.json")
+            scopes = read_guard_hook.scope_from_plan([
+                {"id": "e1", "scope": {"files": [in_file], "dirs": [ws_dir], "reads": []}}
+            ])
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump(read_guard_hook.stamp_rows(scopes), fh)
+            with open(allowlist_path, "w", encoding="utf-8") as fh:
+                json.dump({"version": 2, "entries": {"e1": [out_json]}, "paths": [out_json]}, fh)
+
+            env = {"PANOPTICON_ENTRY_ID": "e1"}
+            prompt = "<!-- panopticon-entry: e1 -->\nReview."
+            # Even when the hook's cwd would resolve `../workspace/allowed.py` to
+            # the granted `in_file`, relative and `../` paths must be denied.
+            old_cwd = os.getcwd()
+            try:
+                os.chdir(cfg_dir)
+                cases = (
+                    ("read_file", {"Path": "allowed.py"}),
+                    ("read_file", {"Path": "../workspace/allowed.py"}),
+                    ("grep_search", {"SearchPath": "allowed.py", "Query": "x"}),
+                    ("grep_search", {"SearchPath": "../workspace/allowed.py", "Query": "x"}),
+                    ("list_dir", {"DirectoryPath": "."}),
+                    ("list_dir", {"DirectoryPath": "../workspace"}),
+                    ("find_by_name", {"SearchDirectory": ".", "Pattern": "*.py"}),
+                    ("find_by_name", {"SearchDirectory": "../workspace", "Pattern": "*.py"}),
+                    ("write_file", {"Path": "findings.json", "Content": "{}"}),
+                    ("write_file", {"Path": "../workspace/findings.json", "Content": "{}"}),
+                )
+                for tool_name, args in cases:
+                    with self.subTest(tool=tool_name, args=args):
+                        allow, reason = agy_guard_hook.adjudicate(
+                            {"lastUserInput": prompt,
+                             "toolCall": {"name": tool_name, "args": args}},
+                            scope_path, allowlist_path, env=env)
+                        self.assertFalse(allow, reason)
+                        self.assertIn("absolute", reason)
+            finally:
+                os.chdir(old_cwd)
+
+    def test_grep_search_on_ungranted_directory_is_denied(self):
+        with tempfile.TemporaryDirectory() as sandbox:
+            real_box = os.path.realpath(sandbox)
+            in_file = os.path.join(real_box, "allowed.py")
+            with open(in_file, "w", encoding="utf-8") as fh:
+                fh.write("x = 1\n")
+            scope_path = os.path.join(real_box, "read-scope.json")
+            allowlist_path = os.path.join(real_box, "write-allowlist.json")
+            scopes = read_guard_hook.scope_from_plan([
+                {"id": "e1", "scope": {"files": [in_file], "dirs": [], "reads": []}}
+            ])
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump(read_guard_hook.stamp_rows(scopes), fh)
+            with open(allowlist_path, "w", encoding="utf-8") as fh:
+                json.dump({"version": 2, "entries": {}, "paths": []}, fh)
+            allow, reason = agy_guard_hook.adjudicate(
+                {"lastUserInput": "<!-- panopticon-entry: e1 -->\nReview.",
+                 "toolCall": {"name": "grep_search",
+                              "args": {"SearchPath": real_box, "Query": "x"}}},
+                scope_path, allowlist_path,
+                env={"PANOPTICON_ENTRY_ID": "e1"})
+            self.assertFalse(allow)
+            self.assertIn("grep_search over a directory is denied", reason)
+
+    def test_main_crash_handler_denies_fail_closed(self):
+        stdin = io.StringIO(json.dumps({
+            "lastUserInput": "<!-- panopticon-entry: e1 -->\nReview.",
+            "toolCall": {"name": "read_file", "args": {"Path": "/abs/a.py"}},
+        }))
+        stdout = io.StringIO()
+        with mock.patch("sys.stdin", stdin), \
+                contextlib.redirect_stdout(stdout), \
+                mock.patch.object(agy_guard_hook, "adjudicate",
+                                  side_effect=RuntimeError("unexpected crash")):
+            rc = agy_guard_hook.main(["/s.json", "/w.json"],
+                                     env={"PANOPTICON_ENTRY_ID": "e1"})
+        self.assertEqual(0, rc)
+        verdict = json.loads(stdout.getvalue())
+        self.assertEqual("deny", verdict["decision"])
+        self.assertIn("agy guard crashed: unexpected crash", verdict["reason"])
+
+    def test_denial_log_drops_write_file_content_and_logs_path_and_length_only(self):
+        with tempfile.TemporaryDirectory() as sandbox:
+            real_box = os.path.realpath(sandbox)
+            scope_path = os.path.join(real_box, "read-scope.json")
+            allowlist_path = os.path.join(real_box, "write-allowlist.json")
+            denial_log = os.path.join(real_box, "denials.jsonl")
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump({}, fh)
+            with open(allowlist_path, "w", encoding="utf-8") as fh:
+                json.dump({"version": 2, "entries": {"e1": ["/abs/allowed.json"]},
+                           "paths": ["/abs/allowed.json"]}, fh)
+            secret_body = "SECRET_WRITE_CONTENT_PAYLOAD_999"
+            stdin = io.StringIO(json.dumps({
+                "lastUserInput": "<!-- panopticon-entry: e1 -->\nWrite.",
+                "toolCall": {"name": "write_file",
+                             "args": {"Path": "/abs/forbidden.json",
+                                      "Content": secret_body}},
+            }))
+            stdout = io.StringIO()
+            with mock.patch("sys.stdin", stdin), contextlib.redirect_stdout(stdout):
+                rc = agy_guard_hook.main(
+                    [scope_path, allowlist_path],
+                    env={"PANOPTICON_ENTRY_ID": "e1",
+                         agy_guard_hook.ENV_DENIAL_LOG: denial_log})
+            self.assertEqual(0, rc)
+            with open(denial_log, encoding="utf-8") as fh:
+                raw_log = fh.read()
+            self.assertNotIn(secret_body, raw_log)
+            rec = json.loads(raw_log.strip())
+            self.assertEqual("write_file", rec["tool"])
+            self.assertEqual(
+                {"Path": "/abs/forbidden.json", "content_length": len(secret_body)},
+                rec["args"])
+
 
 class TestAgyModelBoundProbe(unittest.TestCase):
-    def _model_runner(self, override_slug=None):
+    def _model_runner(self, override_slug=None, structured=True):
         def fake(cmd, **kw):
             idx = cmd.index("--model")
             slug = override_slug or cmd[idx + 1]
-            out = json.dumps({"response": "Current model: %s (tier: pro)" % slug})
-            return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+            payload = {"response": "Current model: %s (tier: pro)" % slug}
+            if structured:
+                payload["command"] = {"name": "model", "data": {"id": slug}}
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
         return fake
 
     def test_emitted_tiers_and_runtime_model_prove_binding(self):
@@ -243,6 +397,34 @@ class TestAgyModelBoundProbe(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("did not report effective model", detail)
 
+    def test_response_text_without_structured_model_field_refutes(self):
+        with tempfile.TemporaryDirectory() as d:
+            _emit_agy_shells(d)
+            state, _by, detail = agy_probes.probe_agy_model_bound(
+                "agy", registration_dir=d,
+                runner=self._model_runner(structured=False))
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("in command.data.id", detail)
+
+    def test_all_roles_unbound_returns_unknown(self):
+        with tempfile.TemporaryDirectory() as d:
+            _emit_agy_shells(d)
+            for name in os.listdir(d):
+                p = os.path.join(d, name)
+                with open(p, encoding="utf-8") as fh:
+                    lines = [ln for ln in fh.read().splitlines()
+                             if not ln.startswith("model:")]
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write("\n".join(lines) + "\n")
+            with mock.patch.object(model_resolver, "registration_config",
+                                   return_value={"tier": None}), \
+                    mock.patch.object(model_resolver, "resolve_model",
+                                      return_value={"model": None, "tier": None}):
+                state, _by, detail = agy_probes.probe_agy_model_bound(
+                    "agy", registration_dir=d, runner=self._model_runner())
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn("no role carries an entry model", detail)
+
 
 class TestAgyUsageEnvelopeProbe(unittest.TestCase):
     def _help_runner(self, text="Usage: agy -p --output-format json --json-schema\n", rc=0):
@@ -250,29 +432,63 @@ class TestAgyUsageEnvelopeProbe(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, rc, stdout=text, stderr="")
         return fake
 
-    def test_help_flags_and_envelope_parser_prove_usage(self):
+    def test_no_ledger_is_unknown(self):
         state, by, detail = agy_probes.probe_agy_usage_envelope(
             "agy", runner=self._help_runner())
-        self.assertEqual(hosts.PROVEN, state, detail)
+        self.assertEqual(hosts.UNKNOWN, state, detail)
         self.assertEqual(agy_probes.AGY_USAGE_ENVELOPE, by)
-        self.assertIn("parse_envelope", detail)
+        self.assertIn("no run ledger path", detail)
 
-    def test_ledger_with_usage_proves_and_empty_ledger_refutes(self):
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "host-settings.json")
+            state, _by, detail = agy_probes.probe_agy_usage_envelope(
+                "agy", settings_path=settings, runner=self._help_runner())
+            self.assertEqual(hosts.UNKNOWN, state, detail)
+            self.assertIn("no dispatch-ledger.jsonl exists", detail)
+
+    def test_empty_ledger_is_unknown(self):
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "host-settings.json")
+            ledger = os.path.join(d, runners_base.LEDGER_FILE)
+            with open(ledger, "w", encoding="utf-8") as fh:
+                fh.write("")
+            state, _by, detail = agy_probes.probe_agy_usage_envelope(
+                "agy", settings_path=settings, runner=self._help_runner())
+            self.assertEqual(hosts.UNKNOWN, state, detail)
+            self.assertIn("no completed agy entries yet", detail)
+
+    def test_non_agy_rows_only_is_unknown(self):
         with tempfile.TemporaryDirectory() as d:
             settings = os.path.join(d, "host-settings.json")
             ledger = os.path.join(d, runners_base.LEDGER_FILE)
             with open(ledger, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps({
-                    "entry_id": "e1", "ok": True,
+                    "entry_id": "e1", "host": "claude", "ok": True,
+                    "usage": {"input_tokens": 100, "output_tokens": 20},
+                }) + "\n")
+            state, _by, detail = agy_probes.probe_agy_usage_envelope(
+                "agy", settings_path=settings, runner=self._help_runner())
+            self.assertEqual(hosts.UNKNOWN, state, detail)
+            self.assertIn("no completed agy entries yet", detail)
+
+    def test_agy_row_with_usage_proves_and_one_agy_row_without_usage_refutes(self):
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "host-settings.json")
+            ledger = os.path.join(d, runners_base.LEDGER_FILE)
+            with open(ledger, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "entry_id": "e1", "host": "agy", "ok": True,
                     "usage": {"input_tokens": 10, "output_tokens": 5},
                 }) + "\n")
             state, _by, detail = agy_probes.probe_agy_usage_envelope(
                 "agy", settings_path=settings, runner=self._help_runner())
             self.assertEqual(hosts.PROVEN, state, detail)
-            self.assertIn("dispatch-ledger.jsonl", detail)
+            self.assertIn("1 agy entries carry usage", detail)
 
             with open(ledger, "w", encoding="utf-8") as fh:
-                fh.write(json.dumps({"entry_id": "e1", "ok": True, "usage": {}}) + "\n")
+                fh.write(json.dumps({
+                    "entry_id": "e1", "host": "agy", "ok": True, "usage": {},
+                }) + "\n")
             state, _by, detail = agy_probes.probe_agy_usage_envelope(
                 "agy", settings_path=settings, runner=self._help_runner())
             self.assertEqual(hosts.REFUTED, state)

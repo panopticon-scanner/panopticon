@@ -513,10 +513,13 @@ CONTROLS = {
     "agy:cwd-outside-target": Control(
         "agy", (),
         "`runners.agy.Runner.run_entry` runs the child in `<agy_home>/workspace` "
-        "(pinned with a `.git` ceiling), outside the review root"),
+        "(pinned with a `.git` ceiling), outside the review root, so the CLI's "
+        "project walk never reaches the target's rules, skills, workflows, "
+        "agents, settings or hooks"),
     "agy:disable-slash-commands": Control(
         "agy", ("--disable-slash-commands",),
-        "`--disable-slash-commands` disables workspace skills and workflows"),
+        "`--disable-slash-commands` stops `/skill` and slash-command expansion "
+        "of the `-p` prompt (`agy changelog` 1.1.9)"),
 }
 
 

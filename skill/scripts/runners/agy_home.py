@@ -16,9 +16,13 @@ servers, rules, skills, or `.gemini/agents/` shadow shells leak into the review:
    is symlinked from the operator's `~/.gemini/antigravity-cli/` (never `mcp/`,
    `brain/`, `knowledge/`, `implicit/`, `annotations/`, or the operator's
    `settings.json`), plus a minimal `settings.json` with
-   `{"allowNonWorkspaceAccess": true}` so `agy` can access `review_root` when
-   `cwd` is `<run_home>/workspace` while our `PreToolUse` hook enforces the
-   exact per-entry read/write scope.
+   `{"agentMode": "accept-edits", "allowNonWorkspaceAccess": true}`. Setting
+   `agentMode: "accept-edits"` allows `write_file` to execute non-interactively
+   in headless `-p` mode once our `PreToolUse` hook allows the entry's declared
+   `out_file`. Setting `allowNonWorkspaceAccess: true` turns off `agy`'s own
+   workspace sandbox so the child (running in `<run_home>/workspace`) can reach
+   `review_root`, making our `PreToolUse` hook (`agy_guard_hook.py`) the only
+   read/write boundary.
 3. Inside `<run_home>/.gemini/config/`, `agents` is symlinked to the emitted
    `~/.gemini/config/agents` directory, and `hooks.json` registers a single
    `PreToolUse` hook with `"matcher": "*"` invoking `agy_guard_hook.py`.
@@ -48,7 +52,7 @@ TOOL_VOCABULARY = {
 }
 
 HOOK_MATCHER = "*"
-HOOK_TIMEOUT_SECONDS = 5
+HOOK_TIMEOUT_SECONDS = 30
 OAUTH_TOKEN_FILE = "antigravity-oauth-token"
 SETTINGS_FILE = "settings.json"
 HOOKS_FILE = "hooks.json"

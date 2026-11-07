@@ -3,7 +3,7 @@
 Launches each review entry in a dedicated `agy -p` subprocess with:
 - `HOME` pointed at the isolated per-run home built by `runners.agy_home`
 - `cwd` pointed at `<agy_home>/workspace` (which carries a `.git` ceiling)
-- `--disable-slash-commands` to block workspace skills and workflows
+- `--disable-slash-commands` to stop `/skill` and slash-command expansion of the `-p` prompt
 - `--agent <shell>` for enforced entries
 - `--model <slug>` for role-resolved model binding
 - `--json-schema <inline_json>` for structured JSON output when advertised
@@ -370,8 +370,6 @@ class Runner(base.HostRunner):
                 entry_id, getattr(proc, "stdout", ""),
                 getattr(proc, "returncode", 1),
                 stderr=getattr(proc, "stderr", None))
-        if result.model is None and eff_model is not None:
-            result.model = eff_model
         if hook_denials:
             result.denials = list(result.denials or []) + hook_denials
         return result

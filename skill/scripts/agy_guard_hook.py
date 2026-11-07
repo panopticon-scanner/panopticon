@@ -153,6 +153,8 @@ def _decide_read(tool_name, tool_input, scope):
         return False, "%s is denied: malformed tool input" % tool_name
     if tool_name == "read_file":
         raw = tool_input.get("Path")
+        if not isinstance(raw, str) or not os.path.isabs(raw):
+            return False, "read_file is denied: Path %r must be an absolute path" % (raw,)
         target = guard_rules._resolve_path(raw)
         if target is None:
             return False, "read_file is denied: unresolvable Path %r" % (raw,)
@@ -165,6 +167,9 @@ def _decide_read(tool_name, tool_input, scope):
                        "you may read are listed in your prompt" % raw)
     if tool_name == "grep_search":
         raw = tool_input.get("SearchPath")
+        if not isinstance(raw, str) or not os.path.isabs(raw):
+            return False, ("grep_search is denied: pass an absolute `SearchPath` "
+                           "from the list in your prompt (got %r)" % (raw,))
         target = guard_rules._resolve_path(raw)
         if target is None:
             return False, ("grep_search is denied: pass `SearchPath` explicitly -- "
@@ -181,6 +186,9 @@ def _decide_read(tool_name, tool_input, scope):
                        "you may search are listed in your prompt" % raw)
     if tool_name == "list_dir":
         raw = tool_input.get("DirectoryPath")
+        if not isinstance(raw, str) or not os.path.isabs(raw):
+            return False, ("list_dir is denied: pass an absolute `DirectoryPath` "
+                           "(got %r)" % (raw,))
         target = guard_rules._resolve_path(raw)
         if target is None:
             return False, "list_dir is denied: pass `DirectoryPath` explicitly"
@@ -191,6 +199,9 @@ def _decide_read(tool_name, tool_input, scope):
                        "list is in your prompt")
     if tool_name == "find_by_name":
         raw = tool_input.get("SearchDirectory")
+        if not isinstance(raw, str) or not os.path.isabs(raw):
+            return False, ("find_by_name is denied: pass an absolute `SearchDirectory` "
+                           "(got %r)" % (raw,))
         target = guard_rules._resolve_path(raw)
         if target is None:
             return False, "find_by_name is denied: pass `SearchDirectory` explicitly"
@@ -214,8 +225,8 @@ def _decide_write(tool_name, tool_input, allowlist, entry_id):
     if not isinstance(tool_input, dict):
         return False, "%s is denied: malformed tool input" % tool_name
     raw = tool_input.get("Path")
-    if not isinstance(raw, str) or not raw:
-        return False, "%s is denied: unresolvable Path %r" % (tool_name, raw)
+    if not isinstance(raw, str) or not os.path.isabs(raw):
+        return False, "%s is denied: Path %r must be an absolute path" % (tool_name, raw)
     try:
         absolute = os.path.abspath(raw)
         if os.path.islink(absolute):
@@ -301,6 +312,25 @@ def adjudicate(payload, read_scope_path="", write_allowlist_path="", *,
     return allow, reason
 
 
+def _sanitize_denial_args(args):
+    """Drop `Content` (logging only `Path` and `content_length`) and bound string values."""
+    if not isinstance(args, dict):
+        return {}
+    if "Content" in args or "content" in args:
+        content = args.get("Content") if "Content" in args else args.get("content")
+        return {
+            "Path": args.get("Path") if "Path" in args else args.get("path"),
+            "content_length": len(content) if isinstance(content, str) else 0,
+        }
+    sanitized = {}
+    for key, value in args.items():
+        if isinstance(value, str) and len(value) > 200:
+            sanitized[key] = value[:200]
+        else:
+            sanitized[key] = value
+    return sanitized
+
+
 def _record_agy_denial(payload, reason, env):
     """Append a structured denial record to `PANOPTICON_AGY_DENIAL_LOG` when set."""
     log_path = (env.get(ENV_DENIAL_LOG) or "").strip()
@@ -309,7 +339,10 @@ def _record_agy_denial(payload, reason, env):
     try:
         tool_call = payload.get("toolCall") if isinstance(payload, dict) else None
         tool_name = tool_call.get("name", "") if isinstance(tool_call, dict) else ""
-        args = tool_call.get("args") if isinstance(tool_call, dict) else {}
+        raw_args = tool_call.get("args") if isinstance(tool_call, dict) else {}
+        if not isinstance(raw_args, dict) and isinstance(tool_call, dict):
+            raw_args = tool_call.get("arguments")
+        args = _sanitize_denial_args(raw_args)
         line = json.dumps({"tool": str(tool_name), "args": args,
                            "reason": str(reason)}) + "\n"
         with open(log_path, "a", encoding="utf-8") as fh:

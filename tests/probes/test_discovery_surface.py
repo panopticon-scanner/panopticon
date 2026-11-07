@@ -35,10 +35,11 @@ _TABLE = (
      hosts.CONTROLLED, "agy:cwd-outside-target", "AG-1"),
     ("agy", (".agents/skills/*/SKILL.md", ".gemini/skills/*/SKILL.md",
              ".agents/workflows/*", ".gemini/workflows/*"),
-     hosts.CONTROLLED, "agy:disable-slash-commands", "AG-2/AG-4"),
+     hosts.CONTROLLED, "agy:cwd-outside-target", "AG-2/AG-4"),
     ("agy", (".agents/agents/*", ".gemini/agents/*"),
      hosts.CONTROLLED, "agy:cwd-outside-target", "AG-3"),
-    ("agy", (".gemini/settings.json", ".gemini/hooks.json"),
+    ("agy", (".gemini/settings.json", ".gemini/hooks.json",
+             ".agents/hooks.json"),
      hosts.CONTROLLED, "agy:cwd-outside-target", "AG-5"),
     ("claude", ("CLAUDE.md", "**/CLAUDE.md"), hosts.OPEN, None, "CL-1"),
     ("claude", (".claude/settings.json", ".claude/settings.local.json"),
@@ -341,7 +342,8 @@ class TestTheScan(unittest.TestCase):
 
     def test_agy_controlled_files_are_disclosed_not_refuted(self):
         for controlled, control in (("GEMINI.md", "agy:cwd-outside-target"),
-                                    (".gemini/workflows/deploy.md", "agy:disable-slash-commands")):
+                                    (".gemini/workflows/deploy.md", "agy:cwd-outside-target"),
+                                    (".agents/hooks.json", "agy:cwd-outside-target")):
             with self.subTest(controlled=controlled), tempfile.TemporaryDirectory() as root:
                 _plant(root, controlled)
                 state, _by, detail = probes_common.probe_discovery_surface("agy", root)

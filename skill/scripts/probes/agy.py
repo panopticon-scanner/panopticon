@@ -118,10 +118,11 @@ def _check_hooks_registered(home, probe_id, *, runner=None):
                     "(a narrowed matcher skips the hook for unlisted tools)" % (matchers,))
         return None
     resp = str(doc.get("response") or "")
-    if "PreToolUse\t*\t" in resp or "**PreToolUse** (`*`)" in resp:
+    if ("PreToolUse\t*\t" in resp or "**PreToolUse** (`*`)" in resp) and script_path in resp:
         return None
     return (hosts.REFUTED, probe_id,
-            "`agy -p /hooks` did not report wildcard PreToolUse (*): %r" % (resp[:200],))
+            "`agy -p /hooks` did not report wildcard PreToolUse (*) invoking %s: %r"
+            % (script_path, resp[:200]))
 
 
 def _invoke_hook(argv, payload, env):
@@ -266,7 +267,8 @@ def probe_agy_read_guard(host, *, runner=None, hooks_runner=None,
         os.makedirs(in_dir, exist_ok=True)
         in_file = os.path.join(in_dir, "allowed.py")
         out_file = os.path.join(sandbox, "outside.py")
-        for p, text in ((in_file, "x = 1\n"), (out_file, "secret = 2\n")):
+        sentinel = "PANOPTICON_READ_CANARY_OUTSIDE_SECRET_9f8e7d"
+        for p, text in ((in_file, "x = 1\n"), (out_file, "secret = %r\n" % sentinel)):
             with open(p, "w", encoding="utf-8") as fh:
                 fh.write(text)
         escape_link = os.path.join(in_dir, "escape.py")
@@ -322,8 +324,11 @@ def probe_agy_read_guard(host, *, runner=None, hooks_runner=None,
 
         deny_cases = (
             ("read_file(outside)", {"lastUserInput": prompt, "toolCall": {"name": "read_file", "args": {"Path": out_file}}}, bound_env),
+            ("read_file(relative)", {"lastUserInput": prompt, "toolCall": {"name": "read_file", "args": {"Path": "allowed.py"}}}, bound_env),
+            ("read_file(dotdot_relative)", {"lastUserInput": prompt, "toolCall": {"name": "read_file", "args": {"Path": "../workspace/allowed.py"}}}, bound_env),
             ("read_file(symlink_escape)", {"lastUserInput": prompt, "toolCall": {"name": "read_file", "args": {"Path": escape_link}}}, bound_env),
             ("grep_search(outside)", {"lastUserInput": prompt, "toolCall": {"name": "grep_search", "args": {"SearchPath": out_file, "Query": "secret"}}}, bound_env),
+            ("grep_search(ungranted_dir)", {"lastUserInput": prompt, "toolCall": {"name": "grep_search", "args": {"SearchPath": sandbox, "Query": "secret"}}}, bound_env),
             ("list_dir(sandbox)", {"lastUserInput": prompt, "toolCall": {"name": "list_dir", "args": {"DirectoryPath": sandbox}}}, bound_env),
             ("find_by_name(climb)", {"lastUserInput": prompt, "toolCall": {"name": "find_by_name", "args": {"SearchDirectory": in_dir, "Pattern": "../outside.py"}}}, bound_env),
             ("find_by_name(.git)", {"lastUserInput": prompt, "toolCall": {"name": "find_by_name", "args": {"SearchDirectory": in_dir, "Pattern": ".git/config"}}}, bound_env),
@@ -382,6 +387,10 @@ def probe_agy_read_guard(host, *, runner=None, hooks_runner=None,
             return (hosts.REFUTED, AGY_READ_GUARD_ARMED,
                     "live agy read-guard canary did not record both hook denials "
                     "(recorded: %s)" % sorted(denied_tools))
+        canary_stdout = getattr(canary_proc, "stdout", "") or ""
+        if sentinel in canary_stdout:
+            return (hosts.REFUTED, AGY_READ_GUARD_ARMED,
+                    "live agy read-guard canary leaked outside file sentinel in output")
 
         total = len(allow_cases) + len(deny_cases)
         return (hosts.PROVEN, AGY_READ_GUARD_ARMED,
@@ -452,6 +461,16 @@ def probe_agy_write_guard(host, *, runner=None, hooks_runner=None,
              {"lastUserInput": prompt,
               "toolCall": {"name": "write_file",
                            "args": {"Path": peer_out, "Content": "{}"}}},
+             bound_env),
+            ("relative_path", argv,
+             {"lastUserInput": prompt,
+              "toolCall": {"name": "write_file",
+                           "args": {"Path": "findings-g1-COD.json", "Content": "{}"}}},
+             bound_env),
+            ("dotdot_relative", argv,
+             {"lastUserInput": prompt,
+              "toolCall": {"name": "write_file",
+                           "args": {"Path": "../workspace/findings-g1-COD.json", "Content": "{}"}}},
              bound_env),
             ("outside_file", argv,
              {"lastUserInput": prompt,
@@ -542,6 +561,9 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
             runtime_checks.append((role, agent_name, resolved_model))
     if faults:
         return (hosts.REFUTED, AGY_MODEL_BOUND, "; ".join(faults))
+    if not runtime_checks:
+        return (hosts.UNKNOWN, AGY_MODEL_BOUND,
+                "no role carries an entry model, so no model binding could be measured")
 
     home = None
     try:
@@ -566,16 +588,9 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
             cmd_block = doc.get("command") if isinstance(doc, dict) else None
             data_block = cmd_block.get("data") if isinstance(cmd_block, dict) else None
             actual_slug = data_block.get("id") if isinstance(data_block, dict) else None
-            resp = str((doc or {}).get("response") or "")
-            if actual_slug is None and resp:
-                first_tok = resp.split()[0] if resp.split() else ""
-                if resolved_model in resp:
-                    actual_slug = resolved_model
-                elif first_tok:
-                    actual_slug = first_tok
-            if actual_slug != resolved_model:
+            if not isinstance(actual_slug, str) or actual_slug != resolved_model:
                 faults.append("%s: `agy -p /model` did not report effective model %r "
-                              "(got %r)" % (role, resolved_model, actual_slug))
+                              "in command.data.id (got %r)" % (role, resolved_model, actual_slug))
     except runners_base.LaunchRefused:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -594,7 +609,7 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
 
 
 def _ledger_carries_usage(ledger_path):
-    """Verify every `ok` entry in `dispatch-ledger.jsonl` carries token usage."""
+    """Verify every `ok` `agy` entry in `dispatch-ledger.jsonl` carries token usage."""
     checked = 0
     try:
         with open(ledger_path, encoding="utf-8") as fh:
@@ -602,7 +617,9 @@ def _ledger_carries_usage(ledger_path):
                 if not line.strip():
                     continue
                 rec = json.loads(line)
-                if not isinstance(rec, dict) or not rec.get("ok"):
+                if (not isinstance(rec, dict)
+                        or not rec.get("ok")
+                        or rec.get("host") != "agy"):
                     continue
                 checked += 1
                 usage = rec.get("usage")
@@ -614,7 +631,9 @@ def _ledger_carries_usage(ledger_path):
                                    "token counts: %r" % (rec.get("entry_id") or rec.get("id"), idx, usage))
     except (OSError, ValueError) as exc:
         return False, "cannot read ledger %s: %s" % (ledger_path, exc)
-    return True, "dispatch-ledger.jsonl (%d entries carry usage)" % checked
+    if checked == 0:
+        return None, "dispatch-ledger.jsonl at %s has no completed agy entries yet" % ledger_path
+    return True, "dispatch-ledger.jsonl (%d agy entries carry usage)" % checked
 
 
 def probe_agy_usage_envelope(host, settings_path=None, *, runner=None):
@@ -666,19 +685,27 @@ def probe_agy_usage_envelope(host, settings_path=None, *, runner=None):
                 "runners.agy.Runner.parse_envelope failed to extract usage block: %r"
                 % (usage,))
 
-    if settings_path:
-        ledger_path = os.path.join(
-            os.path.dirname(os.path.abspath(settings_path)),
-            runners_base.LEDGER_FILE)
-        if os.path.isfile(ledger_path):
-            ok, detail = _ledger_carries_usage(ledger_path)
-            if not ok:
-                return (hosts.REFUTED, AGY_USAGE_ENVELOPE, detail)
-            return (hosts.PROVEN, AGY_USAGE_ENVELOPE,
-                    "`agy --help` advertises %s, parse_envelope maps usage, "
-                    "and %s"
-                    % (", ".join(agy_runner.Runner.ENVELOPE_FLAGS), detail))
+    if not settings_path:
+        return (hosts.UNKNOWN, AGY_USAGE_ENVELOPE,
+                "`agy --help` advertises %s and parse_envelope maps usage fields, "
+                "but no run ledger path was provided to verify real agy usage"
+                % ", ".join(agy_runner.Runner.ENVELOPE_FLAGS))
 
+    ledger_path = os.path.join(
+        os.path.dirname(os.path.abspath(settings_path)),
+        runners_base.LEDGER_FILE)
+    if not os.path.isfile(ledger_path):
+        return (hosts.UNKNOWN, AGY_USAGE_ENVELOPE,
+                "`agy --help` advertises %s and parse_envelope maps usage fields, "
+                "but no dispatch-ledger.jsonl exists at %s yet"
+                % (", ".join(agy_runner.Runner.ENVELOPE_FLAGS), ledger_path))
+
+    ok, detail = _ledger_carries_usage(ledger_path)
+    if ok is False:
+        return (hosts.REFUTED, AGY_USAGE_ENVELOPE, detail)
+    if ok is None:
+        return (hosts.UNKNOWN, AGY_USAGE_ENVELOPE, detail)
     return (hosts.PROVEN, AGY_USAGE_ENVELOPE,
-            "`agy --help` advertises %s and parse_envelope maps usage fields"
-            % ", ".join(agy_runner.Runner.ENVELOPE_FLAGS))
+            "`agy --help` advertises %s, parse_envelope maps usage, "
+            "and %s"
+            % (", ".join(agy_runner.Runner.ENVELOPE_FLAGS), detail))

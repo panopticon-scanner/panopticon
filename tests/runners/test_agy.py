@@ -89,6 +89,7 @@ class TestAgyHomeIsolationAndGitCeiling(unittest.TestCase):
             pre = hooks_doc["panopticon-guard"]["PreToolUse"]
             self.assertEqual(len(pre), 1)
             self.assertEqual(pre[0]["matcher"], "*")
+            self.assertEqual(pre[0]["hooks"][0]["timeout"], 30)
 
             git_dir = os.path.join(workspace_dir, ".git")
             self.assertTrue(os.path.isdir(os.path.join(git_dir, "objects")))
@@ -259,6 +260,29 @@ class TestRunEntry(unittest.TestCase):
         self.assertIn("timed out after", res.error)
         self.assertEqual("partial reply", res.text)
         self.assertIn("timeout err", res.stderr)
+        self.assertIsNone(res.model)
+
+    def test_run_entry_leaves_model_none_when_envelope_reports_no_model(self):
+        no_model_envelope = json.dumps({
+            "conversation_id": "conv-no-model",
+            "status": "SUCCESS",
+            "response": "ok",
+            "usage": {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+        })
+
+        def fake(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout=no_model_envelope, stderr="")
+
+        with tempfile.TemporaryDirectory() as d:
+            user_home, agents_dir = _fixture_user_home(d)
+            with mock.patch.dict(os.environ, {"HOME": user_home}):
+                r = agy_runner.Runner("agy", runner=fake)
+                r.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
+                self.addCleanup(r.teardown, "complete")
+                res = r.run_entry(_entry(True, model="gemini-4-argon-high"), self._env())
+        self.assertTrue(res.ok)
+        self.assertIsNone(res.model)
+        self.assertEqual(res.usage["total_tokens"], 15)
 
 
 if __name__ == "__main__":

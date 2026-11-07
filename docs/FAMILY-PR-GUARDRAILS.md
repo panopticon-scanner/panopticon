@@ -390,18 +390,24 @@ sets `CLI = "agy"`, `ENVELOPE_FLAGS = ("-p", "--output-format")`,
 `~/.gemini/antigravity-cli/antigravity-oauth-token` and the registered shells
 at `~/.gemini/config/agents`, writes an isolated
 `<run_home>/.gemini/antigravity-cli/settings.json`
-(`{"allowNonWorkspaceAccess": true}`) and `<run_home>/.gemini/config/hooks.json`,
-and seeds a minimal Git ceiling `<run_home>/workspace/.git/{HEAD,objects,refs}`
-so `agy` stops its ancestor walk at `<run_home>/workspace` (`cwd` on every
-launch and effective-loader probe). Confinement is one wildcard `PreToolUse`
-hook (`"matcher": "*"`) invoking `skill/scripts/agy_guard_hook.py`, which
-enforces a strict tool-name allowlist (`read_file`, `grep_search`,
+(`{"agentMode": "accept-edits", "allowNonWorkspaceAccess": true}`) and
+`<run_home>/.gemini/config/hooks.json`, and seeds a minimal Git ceiling
+`<run_home>/workspace/.git/{HEAD,objects,refs}` so `agy` stops its ancestor
+walk at `<run_home>/workspace` (`cwd` on every launch and effective-loader
+probe). Setting `agentMode: "accept-edits"` allows `write_file` to execute
+non-interactively in headless `-p` mode once the guard hook allows an entry's
+declared `out_file`, and setting `allowNonWorkspaceAccess: true` turns off
+`agy`'s own workspace sandbox so the child in `<run_home>/workspace` can reach
+`review_root` -- making the wildcard `PreToolUse` hook (`"matcher": "*"`)
+invoking `skill/scripts/agy_guard_hook.py` the only read/write boundary. That
+hook enforces a strict tool-name allowlist (`read_file`, `grep_search`,
 `find_by_name`, `list_dir`, `finish`, `write_file`), `PANOPTICON_ENTRY_ID`
-binding, per-entry read scope, and v2 write allowlist grants (`self_write_delivery = True`).
-Because `agy` also scans `~/.gemini/agents/` as a secondary user agent root,
-`probe_shadow_shells` treats `~/.gemini/agents/` as a shadow location for
-`agy`, and the Gemini CLI re-attempt (#3494) must not register shells where
-`agy` looks (`~/.gemini/agents/` or `~/.gemini/config/agents/`).
+binding, absolute-only tool paths, per-entry read scope, and v2 write allowlist
+grants (`self_write_delivery = True`). Because `agy` also scans
+`~/.gemini/agents/` as a secondary user agent root, `probe_shadow_shells`
+treats `~/.gemini/agents/` as a shadow location for `agy`, and the Gemini CLI
+re-attempt (#3494) must not register shells where `agy` looks
+(`~/.gemini/agents/` or `~/.gemini/config/agents/`).
 
 **Gemini** is registered and **not** driver-selectable (#1621, retired
 2026-09-13 by #1625). The row stays, so the name still resolves everywhere and
