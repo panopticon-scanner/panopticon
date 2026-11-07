@@ -250,9 +250,13 @@ class _Config:
         self._path = path
         if worker is not None:
             self.workerinput = {"workerid": worker}
-        self.pluginmanager = types.SimpleNamespace(
-            has_plugin=lambda name: controller and name == "dsession")
+        self._controller = controller
+        self.pluginmanager = self
         self.invocation_params = types.SimpleNamespace(args=("tests/", "-m", "not serial"))
+
+    def has_plugin(self, name):
+        """`pluginmanager.has_plugin`: xdist's controller registers "dsession"."""
+        return self._controller and name == "dsession"
 
     def getoption(self, name, default=None):
         assert name == "shard_manifest", name
