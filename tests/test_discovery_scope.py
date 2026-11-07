@@ -462,7 +462,7 @@ def test_redteam_exclude_paths_keeps_fixture_code_for_sec_only(tmp_path):
     sink = next(g for g in doc["groups"]
                 if g["name"] == groups_schema.SEC_CARVE_OUT_SINK)
     assert sink["files"] == ["tests/fixtures/vuln/app.py"]
-    assert sink["panels"] == ["SEC"]
+    assert "panels" not in sink
     assert doc["exclude_paths"] == ["tests/fixtures/**"]
     assert doc["excluded_count"] == 0
     assert doc["exclude_paths_sec_carve_out"]["files"] == [

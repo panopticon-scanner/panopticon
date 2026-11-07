@@ -15,6 +15,12 @@
   `<run_home>/workspace/.git` (`cwd` on every launch and effective-loader probe), and arms a single
   wildcard `PreToolUse` hook (`"matcher": "*"`) enforcing a strict tool-name allowlist,
   `PANOPTICON_ENTRY_ID` binding, absolute-only tool paths, per-entry read scope and v2 write allowlist grants.
+- **Discovery no longer publishes a dead per-group `panels` schedule (#3485).** Normal groups and
+  the reserved SEC carve-out now omit the key; the carve-out's `sec_carve_out` marker still pins
+  its effective domains to SEC only. Old `groups.json` artifacts carrying `panels` remain valid
+  and route byte-identically because consumers have always ignored the field. The unused schedule
+  derivation and its duplicate database/architecture classifiers are deleted; coverage remains the
+  sole owner of objective routing signals.
 - **The advisors are asked for `schema_version: 1`, and Codex requires it (#3482, owner-approved).**
   Each is its own commit:
   - **P1:** domain-advisor's bundle example leads with `"schema_version": 1`.
@@ -91,13 +97,12 @@
   presence.
 - **Discovery's and coverage's file signals have a written, tested contract (#2099).** No routing
   changes.
-  - Only `coverage_model` decides a group's objective floor. Discovery's groups.json `panels`
-    schedule is read by nothing, and a test now proves deleting it or listing every domain in it
-    routes identically.
+  - Only `coverage_model` decides a group's objective floor. The now-retired groups.json `panels`
+    schedule was read by nothing, and a test proves omitting it or listing every domain in it routes
+    identically (#3485).
   - `discovery.is_test_file` is the one shared predicate.
-  - Every other difference is pinned as required or accidental. The accidental ones that route are
-    `db/migrate/` getting no DAT, plus the bare `entity`, `seed`, `schema`, `test_` and `.spec.`
-    substrings. They wait on #3484.
+  - Coverage's routing signals are pinned directly, including the #3484 word and segment rules; the
+    retired schedule remains only as legacy fixture data.
 - **Agent findings and verdict records have a format-version policy (#2104).** A findings
   envelope, a verdict bundle (and each verdict in it) or a tool verdict that declares a
   `schema_version` other than the int `1` is refused, fail-closed:

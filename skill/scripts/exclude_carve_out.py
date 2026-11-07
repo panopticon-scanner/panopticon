@@ -88,18 +88,14 @@ def install(result, carved, max_per_group, chunker):
     Chunked by `max_per_group` through the caller's `chunker` (discovery's
     `chunk_files`, which packs by directory) like any other oversize group, and
     `counts["groups"]` is refreshed so the group list and the count cannot
-    disagree. No `security_mode`: every other group's panel schedule is computed
-    from its files and differs by mode, and this one is the POLICY -- one domain,
-    the same in `standard` and `redteam`.
+    disagree. No `security_mode`: this group is the POLICY -- one domain, the
+    same in `standard` and `redteam`.
 
-    The group entry is `_group_obj`'s shape with two deliberate differences.
-    `panels` is `["SEC"]`: the files are here for one domain, and running
-    `compute_group_panels` over them would advertise a code panel this group does
-    not get. And it carries the marker field, which is how the coverage phase
-    knows to pin this cell narrow rather than widen it off the files' own
-    signals. Chunks take the sink name as both `parent` and `chunk_of`, the way
-    the residual sink's chunks do: a self-parenting chunk would leak a machine
-    name into the report's roll-up.
+    The group entry is `_group_obj`'s shape plus the marker field, which is how
+    the coverage phase pins this cell to SEC rather than widening it off the
+    files' own signals (#3485). Chunks take the sink name as both `parent` and
+    `chunk_of`, the way the residual sink's chunks do: a self-parenting chunk
+    would leak a machine name into the report's roll-up.
     """
     if not carved:
         return
@@ -115,11 +111,10 @@ def install(result, carved, max_per_group, chunker):
 
 
 def _entry(name, files, unit):
-    """One carve-out group entry: `_group_obj`'s fields, SEC-only panels, marker."""
+    """One carve-out group entry: `_group_obj`'s fields plus its SEC-only marker."""
     return {
         "name": name,
         "files": files,
-        "panels": ["SEC"],
         "parent": unit,
         "chunk_of": unit,
         groups_schema.SEC_CARVE_OUT_MARKER: True,
