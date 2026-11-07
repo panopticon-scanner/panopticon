@@ -97,14 +97,15 @@ class TestDriverHostCapabilities(unittest.TestCase):
     """
 
     def test_the_driver_accepts_exactly_the_hosts_it_accepts_today(self):
-        # codex and kimi joined the selectable set in their own family PRs
-        # (#1619, #1620), each shipping its probes and runner in the same PR.
+        # codex, kimi, and agy joined the selectable set in their own family
+        # PRs (#1619, #1620, #3493), each shipping its probes and runner in the
+        # same PR.
         # gemini went the other way: #1621 retired it (2026-09-13) because its
         # family PR failed the gate twice, so the row stays REGISTERED --
         # known_hosts() lists it, spec() resolves it, it still claims nothing
         # -- and only `driver_selectable` flipped. A Gemini operator runs
         # `--host generic`.
-        self.assertEqual(("claude", "codex", "generic", "kimi"),
+        self.assertEqual(("agy", "claude", "codex", "generic", "kimi"),
                          tuple(sorted(hosts.driver_hosts())))
         self.assertIn("gemini", hosts.known_hosts())
         self.assertIsNotNone(hosts.spec("gemini"))
@@ -112,25 +113,26 @@ class TestDriverHostCapabilities(unittest.TestCase):
 
     def test_claude_codex_and_kimi_declare_tool_policy_enforcement(self):
         # F3 routes enforcement through proven posture, not a bare claim;
-        # Codex and Kimi each now supply their own tool-surface probe.
+        # Codex, Kimi, and Agy each now supply their own tool-surface probe.
         enforcing = [h for h in hosts.driver_hosts()
                      if hosts.declares(h, hosts.TOOL_POLICY_ENFORCED)]
         # codex declares it since its family PR proved the effective V8 tool
         # surface (codex-effective-tools); kimi since its family PR proved the
-        # shells on the effective surface (kimi-shell-surface).
-        self.assertEqual(["claude", "codex", "kimi"], enforcing)
+        # shells on the effective surface (kimi-shell-surface); agy since #3493.
+        self.assertEqual(["agy", "claude", "codex", "kimi"], enforcing)
 
     def test_claude_and_kimi_declare_a_usage_ledger_among_driver_hosts(self):
         # phases/synthesize.py:35 -- `if manifest.get("host") != "claude"`.
         ledgered = [h for h in hosts.driver_hosts()
                     if hosts.declares(h, hosts.USAGE_LEDGER)]
-        # kimi's ledger is the per-child wire file (kimi-usage-wire probe).
-        self.assertEqual(["claude", "kimi"], ledgered)
+        # kimi's ledger is the per-child wire file (kimi-usage-wire probe);
+        # agy's ledger is the headless JSON envelope (agy-usage-envelope probe).
+        self.assertEqual(["agy", "claude", "kimi"], ledgered)
 
     def test_only_claude_and_kimi_have_self_write_delivery(self):
         # #1622 owner ruling: this is transport, not a capability claim.
         self.assertEqual(
-            ["claude", "kimi"],
+            ["agy", "claude", "kimi"],
             sorted(name for name, row in hosts.HOSTS.items()
                    if row.self_write_delivery))
 
@@ -138,7 +140,7 @@ class TestDriverHostCapabilities(unittest.TestCase):
         partial = {hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN,
                    hosts.TOOL_POLICY_ENFORCED: hosts.REFUTED}
         complete = dict(partial, **{hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
-        for host in ("claude", "kimi"):
+        for host in ("agy", "claude", "kimi"):
             with self.subTest(host=host):
                 self.assertEqual(
                     (hosts.BASH_PATH_ARTIFACT_WRITE_GAP,),
@@ -151,9 +153,9 @@ class TestDriverHostCapabilities(unittest.TestCase):
         # emit their shells while driver.py's --host refused to pick them, and
         # preserving that split is what kept F2 behavior-free. Each family PR
         # then earned the flip with the probes to back it -- Codex in #1619,
-        # Kimi in #1620 -- so the split is closed on both rows and this pin
+        # Kimi in #1620, Agy in #3493 -- so the split is closed and this pin
         # records the state it closed into rather than the state before.
-        for name in ("kimi", "codex"):
+        for name in ("agy", "kimi", "codex"):
             with self.subTest(host=name):
                 self.assertTrue(hosts.spec(name).registration_dir)
                 self.assertIn(name, hosts.driver_hosts())
@@ -161,10 +163,30 @@ class TestDriverHostCapabilities(unittest.TestCase):
     def test_claude_codex_and_kimi_claim_read_scope_confinement(self):
         # Spec §7.2 / plan 5: claude ships the read guard; every other host's
         # family PR must bring its own primitive before claiming this. The
-        # kimi family PR (#1344) brought the per-run-home hook and its probe.
+        # kimi (#1620) and agy (#3493) family PRs brought their per-run-home
+        # hooks and probes.
         claiming = [h for h in hosts.known_hosts()
                     if hosts.declares(h, hosts.READ_SCOPE_CONFINED)]
-        self.assertEqual(["claude", "codex", "kimi"], claiming)
+        self.assertEqual(["agy", "claude", "codex", "kimi"], claiming)
+
+    def test_agy_is_selectable_with_all_five_probed_claims(self):
+        row = hosts.spec("agy")
+        expected = {
+            hosts.TOOL_POLICY_ENFORCED: "agy-shell-surface",
+            hosts.READ_SCOPE_CONFINED: "agy-read-guard-armed",
+            hosts.ARTIFACT_WRITE_GUARD: "agy-write-guard-armed",
+            hosts.MODEL_BINDING: "agy-model-bound",
+            hosts.USAGE_LEDGER: "agy-usage-envelope",
+        }
+        self.assertTrue(row.registration_dir)
+        self.assertTrue(row.driver_selectable)
+        self.assertIn("agy", hosts.driver_hosts())
+        self.assertEqual(frozenset(expected), row.claims)
+        self.assertEqual(expected, row.probes)
+        for capability, probe_id in expected.items():
+            with self.subTest(capability=capability):
+                self.assertIn(probe_id, host_probes.PROBE_IDS)
+                self.assertEqual(capability, host_probes.PROBE_CAPABILITY[probe_id])
 
     def test_codex_is_selectable_with_exactly_its_probed_security_claims(self):
         row = hosts.spec("codex")

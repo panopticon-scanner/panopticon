@@ -30,6 +30,17 @@ from tests.probes.helpers import _shell
 # copies is a table nobody can read the document against. A row here moves
 # only with the spec it came from.
 _TABLE = (
+    ("agy", ("GEMINI.md", "**/GEMINI.md", "AGENTS.md", "**/AGENTS.md",
+             ".agents/rules/*", ".gemini/rules/*"),
+     hosts.CONTROLLED, "agy:cwd-outside-target", "AG-1"),
+    ("agy", (".agents/skills/*/SKILL.md", ".gemini/skills/*/SKILL.md",
+             ".agents/workflows/*", ".gemini/workflows/*"),
+     hosts.CONTROLLED, "agy:cwd-outside-target", "AG-2/AG-4"),
+    ("agy", (".agents/agents/*", ".gemini/agents/*"),
+     hosts.CONTROLLED, "agy:cwd-outside-target", "AG-3"),
+    ("agy", (".gemini/settings.json", ".gemini/hooks.json",
+             ".agents/hooks.json"),
+     hosts.CONTROLLED, "agy:cwd-outside-target", "AG-5"),
     ("claude", ("CLAUDE.md", "**/CLAUDE.md"), hosts.OPEN, None, "CL-1"),
     ("claude", (".claude/settings.json", ".claude/settings.local.json"),
      hosts.CONTROLLED, "claude:setting-sources-user", "CL-2/CL-4"),
@@ -129,7 +140,8 @@ class TestTheControlsAreLive(unittest.TestCase):
                "claude:disable-slash-commands", "codex:cwd-outside-target",
                "codex:ignore-user-config-and-rules", "kimi:workspace-trust-gate",
                "kimi:skills-dir", "claude:unenforced-tools-allow-list",
-               "claude:unenforced-tool-deny-list"}
+               "claude:unenforced-tool-deny-list", "agy:cwd-outside-target",
+               "agy:disable-slash-commands"}
 
     def test_the_claude_tool_controls_are_on_every_unenforced_launch(self):
         import scripts.runners.claude as claude_runner
@@ -222,6 +234,28 @@ class TestTheControlsAreLive(unittest.TestCase):
             finally:
                 codex_host.cleanup_command(argv)
 
+    def test_the_agy_controls_are_on_the_agy_launch(self):
+        import scripts.runners.agy as agy_runner
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as reg:
+            root = os.path.realpath(target)
+            runner = agy_runner.Runner("agy")
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                runner.prepare(root, os.path.join(root, "run"), registration_dir=reg)
+            try:
+                argv = runner.command({"id": "e", "agent": "panopticon-domain-panel",
+                                       "enforced": True, "prompt": "review"},
+                                      "gemini-4-argon-high")
+                self.assertTrue(probes_common.control_is_on(
+                    "agy:disable-slash-commands", argv), argv)
+                self.assertTrue(os.path.isdir(os.path.join(runner.workspace_dir, ".git")))
+                self.assertFalse(
+                    os.path.realpath(runner.workspace_dir).startswith(root + os.sep),
+                    "agy:cwd-outside-target: %s is under %s" % (runner.workspace_dir, root))
+            finally:
+                runner.teardown()
+
 
 _HAZARDS = frozenset(chr(o) for o in
                      list(range(0x00, 0x20)) + [0x7f]
@@ -302,6 +336,17 @@ class TestTheScan(unittest.TestCase):
             with self.subTest(host=host), tempfile.TemporaryDirectory() as root:
                 _plant(root, controlled)
                 state, _by, detail = probes_common.probe_discovery_surface(host, root)
+                self.assertEqual(hosts.UNKNOWN, state)
+                self.assertIn(controlled, detail)
+                self.assertIn("closed by %s" % control, detail)
+
+    def test_agy_controlled_files_are_disclosed_not_refuted(self):
+        for controlled, control in (("GEMINI.md", "agy:cwd-outside-target"),
+                                    (".gemini/workflows/deploy.md", "agy:cwd-outside-target"),
+                                    (".agents/hooks.json", "agy:cwd-outside-target")):
+            with self.subTest(controlled=controlled), tempfile.TemporaryDirectory() as root:
+                _plant(root, controlled)
+                state, _by, detail = probes_common.probe_discovery_surface("agy", root)
                 self.assertEqual(hosts.UNKNOWN, state)
                 self.assertIn(controlled, detail)
                 self.assertIn("closed by %s" % control, detail)

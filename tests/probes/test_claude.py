@@ -10,6 +10,7 @@ import unittest
 from unittest import mock
 
 from scripts import dispatch, host_probes, hosts, model_resolver, write_guard_hook
+import scripts.probes.agy as agy_probes
 import scripts.probes.claude as claude_probes
 import scripts.probes.codex as codex_probes
 import scripts.probes.common as probes_common
@@ -285,7 +286,12 @@ class TestEntryModelBoundProbe(unittest.TestCase):
                                  kimi_probes.KIMI_READ_GUARD,
                                  kimi_probes.KIMI_WRITE_GUARD,
                                  kimi_probes.KIMI_MODEL_ALIAS,
-                                 kimi_probes.KIMI_USAGE_WIRE}))
+                                 kimi_probes.KIMI_USAGE_WIRE,
+                                 agy_probes.AGY_SHELL_SURFACE,
+                                 agy_probes.AGY_READ_GUARD,
+                                 agy_probes.AGY_WRITE_GUARD,
+                                 agy_probes.AGY_MODEL_BOUND,
+                                 agy_probes.AGY_USAGE_ENVELOPE}))
         with tempfile.TemporaryDirectory() as reg, \
              tempfile.TemporaryDirectory() as target, \
              tempfile.TemporaryDirectory() as home:

@@ -27,7 +27,7 @@ class TestFallbackMatchesProfiles(unittest.TestCase):
     """
 
     _TABLES = {"kimi": mr._KIMI_FALLBACK, "claude": mr._CLAUDE_FALLBACK,
-               "codex": mr._CODEX_FALLBACK}
+               "codex": mr._CODEX_FALLBACK, "agy": mr._AGY_FALLBACK}
 
     def test_every_live_role_is_in_every_fallback_table(self):
         for host, table in self._TABLES.items():
@@ -59,8 +59,21 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(mr._hardcoded_fallback("claude", "banana")["model"], "sonnet")
         self.assertEqual(mr._hardcoded_fallback("codex", "banana"),
                          {"model": "gpt-6-sol", "model_reasoning_effort": "medium"})
+        self.assertEqual(mr._hardcoded_fallback("agy", "banana"),
+                         {"model": "gemini-4-argon-high", "tier": "pro"})
         # an unknown HOST still resolves to None (inherit session), never kimi
         self.assertIsNone(mr._hardcoded_fallback("bogus", "banana")["model"])
+
+    def test_agy_defaults(self):
+        for role in ("scout", "advisor"):
+            cfg = mr.resolve_model("agy", role)
+            self.assertEqual(cfg["model"], "gemini-3.8-flash-medium")
+            self.assertEqual(cfg["tier"], "flash")
+        for role in ("domain_panel", "domain_advisor"):
+            cfg = mr.resolve_model("agy", role)
+            self.assertEqual(cfg["model"], "gemini-4-argon-high")
+            self.assertEqual(cfg["tier"], "pro")
+        self.assertIsNone(mr.resolve_model("agy", "setup_scan")["model"])
 
     def test_kimi_defaults(self):
         cfg = mr.resolve_model("kimi", "scout")

@@ -108,6 +108,8 @@ STATES = (PROVEN, REFUTED, UNKNOWN)
 # `spec(host).registration_dir`.
 CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
 KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
+AGY_AGENTS_DIR = os.path.join(
+    os.path.expanduser("~"), ".gemini", "config", "agents")
 
 
 def codex_home(value):
@@ -403,6 +405,37 @@ HOSTS = {
                 ARTIFACT_WRITE_GUARD: "codex-write-surface-absent"},
         cli_flag_facts=(OUTPUT_SCHEMA,),
         cli_binary="codex"),
+    "agy": HostSpec(
+        name="agy",
+        claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
+                          ARTIFACT_WRITE_GUARD, MODEL_BINDING, USAGE_LEDGER}),
+        self_write_delivery=True,
+        registration_dir=AGY_AGENTS_DIR,
+        shell_format="md",
+        project_scope_dirs=(os.path.join(".agents", "agents"),
+                            os.path.join(".gemini", "agents")),
+        discovery_surface=(
+            Surface(("GEMINI.md", "**/GEMINI.md", "AGENTS.md", "**/AGENTS.md",
+                     ".agents/rules/*", ".gemini/rules/*"), CONTROLLED,
+                    "agy:cwd-outside-target", "AG-1"),
+            Surface((".agents/skills/*/SKILL.md", ".gemini/skills/*/SKILL.md",
+                     ".agents/workflows/*", ".gemini/workflows/*"), CONTROLLED,
+                    "agy:cwd-outside-target", "AG-2/AG-4"),
+            Surface((".agents/agents/*", ".gemini/agents/*"), CONTROLLED,
+                    "agy:cwd-outside-target", "AG-3"),
+            Surface((".gemini/settings.json", ".gemini/hooks.json",
+                     ".agents/hooks.json"),
+                    CONTROLLED, "agy:cwd-outside-target", "AG-5"),
+        ),
+        detect_env=("ANTIGRAVITY_CLI", "ANTIGRAVITY_CLI_ALIAS"),
+        driver_selectable=True,
+        probes={TOOL_POLICY_ENFORCED: "agy-shell-surface",
+                READ_SCOPE_CONFINED: "agy-read-guard-armed",
+                ARTIFACT_WRITE_GUARD: "agy-write-guard-armed",
+                MODEL_BINDING: "agy-model-bound",
+                USAGE_LEDGER: "agy-usage-envelope"},
+        cli_flag_facts=(OUTPUT_SCHEMA,),
+        cli_binary="agy"),
     # Registered, not selectable: its family PR did not clear the gate (#1621,
     # retired 2026-09-13). The row STAYS so the registry still knows the name
     # -- `known_hosts()` lists it, `spec("gemini")` resolves, it still claims

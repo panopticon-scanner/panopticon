@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Google Antigravity CLI (`agy`) is a 5/5 first-class host (#3493).** `HOSTS["agy"]` is
+  driver-selectable with `self_write_delivery = True`, backed by `skill/scripts/runners/agy.py`,
+  `skill/scripts/runners/agy_home.py`, `skill/scripts/agy_guard_hook.py` and five capability probes
+  in `skill/scripts/probes/agy.py` (`agy-shell-surface`, `agy-read-guard-armed`,
+  `agy-write-guard-armed`, `agy-model-bound`, `agy-usage-envelope`). Each headless run builds an
+  isolated per-run home that links only `~/.gemini/antigravity-cli/antigravity-oauth-token` and the
+  registered shells at `~/.gemini/config/agents`, writes `<run_home>/.gemini/antigravity-cli/settings.json`
+  with `{"agentMode": "accept-edits", "allowNonWorkspaceAccess": true}` (`allowNonWorkspaceAccess: true`
+  turns off `agy`'s own workspace sandbox so the child in `<run_home>/workspace` can reach `review_root`,
+  making the `PreToolUse` hook the only read/write boundary), seeds a minimal Git ceiling at
+  `<run_home>/workspace/.git` (`cwd` on every launch and effective-loader probe), and arms a single
+  wildcard `PreToolUse` hook (`"matcher": "*"`) enforcing a strict tool-name allowlist,
+  `PANOPTICON_ENTRY_ID` binding, absolute-only tool paths, per-entry read scope and v2 write allowlist grants.
 - **The advisors are asked for `schema_version: 1`, and Codex requires it (#3482, owner-approved).**
   Each is its own commit:
   - **P1:** domain-advisor's bundle example leads with `"schema_version": 1`.

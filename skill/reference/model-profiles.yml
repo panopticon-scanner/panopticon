@@ -50,6 +50,21 @@ hosts:
       model_reasoning_effort: high
     setup_scan:
       model: null
+  agy:
+    scout:
+      model: gemini-3.8-flash-medium
+      tier: flash
+    advisor:
+      model: gemini-3.8-flash-medium
+      tier: flash
+    domain_panel:
+      model: gemini-4-argon-high
+      tier: pro
+    domain_advisor:
+      model: gemini-4-argon-high
+      tier: pro
+    setup_scan:
+      model: null
   openrouter:
     scout:
       model: openai/gpt-4o-mini
