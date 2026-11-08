@@ -178,8 +178,23 @@ role's shell frontmatter tier matches its profile and `agy --agent <shell> --mod
 (`agy --help` advertises `-p` and `--output-format`, `parse_envelope` maps token usage, and any
 existing `dispatch-ledger.jsonl` carries token counts on every `ok` row).
 
-`self_write_delivery` is true only for Claude, Kimi and Agy. A write-template role self-writes only when
-that static mechanism fact and a proven `artifact_write_guard` both hold; Codex, generic and Gemini
+Gemini claims all five (#3494, restoring the row #1621 had retired), measured under an isolated
+per-run home (`runners/gemini_home.py`, copying only `oauth_creds.json` and `google_accounts.json`)
+with `cwd` pinned at `<run_home>/workspace`: `gemini-shell-surface` (the registered TOML policy
+shells in `~/.gemini/cli-agents` verified against the installed CLI's versioned `0.55` tool
+vocabulary with no shadow in the target tree or `~/.gemini/agents`), `gemini-read-guard-armed` and
+`gemini-write-guard-armed` (isolated `settings.json` disables MCP/extensions/skills/subagents/plan
+mode/folder trust, sets `context.fileName = ".panopticon-no-context.md"` and
+`context.loadMemoryFromIncludeDirectories = false`, and registers a single `"matcher": "*"`
+`BeforeTool` hook invoking `skill/scripts/gemini_guard_hook.py`, proven by 0-quota hook subprocess
+round-trips plus a shared live `gemini` canary launch), `gemini-model-bound` (every role's resolved
+model in `skill/reference/model-profiles.yml` belongs to `Runner.KNOWN_MODELS` and `gemini -m <slug>`
+is advertised by `gemini --help`), and `gemini-usage-envelope` (`gemini --help` advertises `-p` and
+`--output-format`, `parse_envelope` maps standard and cache-read-only `stats.models` token usage,
+and any existing `dispatch-ledger.jsonl` carries token counts on every `ok` row).
+
+`self_write_delivery` is true only for Claude, Kimi, Agy and Gemini. A write-template role self-writes only when
+that static mechanism fact and a proven `artifact_write_guard` both hold; Codex and generic
 remain return-persist. Delivery is never evidence for the gate, so generic still refuses without
 `--allow-unenforced`. Codex's proof by omission covers the complete reviewer write surface, so it
 carries no Bash-path gap while remaining return-persist.
@@ -267,9 +282,9 @@ Four surfaces carry it, and all four are mandatory:
    capability the same invocation just proved, and the whole-tree shadow and discovery scans stay at
    one per invocation. Readiness runs on **every** `driver setup` — the normal scan→ingest path as
    well as the vocab-absent fallback — and the rows are kept in that run's setup artifact, so the
-   disclosure survives the line scrolling past. Registering no enforcement shells (`generic`, and
-   `gemini`'s registry row) is not an exemption: those hosts claim nothing, so five-of-five-unproven
-   is their entire story and they get the entire disclosure.
+   disclosure survives the line scrolling past. Registering no enforcement shells (`generic`) is not
+   an exemption: that host claims nothing, so five-of-five-unproven is its entire story and it gets
+   the entire disclosure.
 
 All four render from one module, `skill/scripts/host_disclosure.py`, which formats and never reads.
 Four hand-written copies of §5.1's wording rule — *name the capability, the host, the probe, and the
@@ -277,16 +292,16 @@ remedy; "unenforced" alone is not a disclosure, it is a mood* — drift within a
 surface's own test keeps passing, which is the failure the disclosure exists to prevent, reproduced
 inside the fix for it.
 
-**`gemini` is registered but not driver-selectable (#1621, 2026-09-13).** Its family PR did not
-clear the gate, so the row stays in the registry — the name resolves, it still claims nothing, and
-every surface above still answers for it honestly — while `--host gemini` is refused with the remedy
-rather than a word list. A Gemini operator runs `--host generic`, the same path as any host whose
-family has not shipped a runner. A run *started* under gemini before the retirement is refused by
-**both** `driver loop` and `driver run`, in the same sentence — the manifest is authoritative on a
-resume, so neither entrypoint may dispatch for it, and the refusal names `--host generic --reset`
-because it is the manifest that has to change (#1624). The sentence is written once, in the registry
-(`hosts.unselectable_host_message`), so the two cannot drift. A manifest naming a host with **no**
-registry row at all is a different case and is settled one layer earlier:
+**`gemini` was retired by #1621 and restored by #3494.** When #1621 (2026-09-13) retired `gemini` from
+`driver_selectable`, its row stayed in the registry while `--host gemini` was refused with
+`--host generic` as the remedy, and any run started under an unselectable host in its manifest is
+refused by **both** `driver loop` and `driver run`, in the same sentence — the manifest is
+authoritative on a resume, so neither entrypoint may dispatch for it, and the refusal names
+`--host generic --reset` because it is the manifest that has to change (#1624). That sentence is
+written once, in the registry (`hosts.unselectable_host_message`), so the two cannot drift. #3494
+restored `gemini` as a 5/5 first-class selectable host with its own headless runner, TOML policy
+shells in `~/.gemini/cli-agents`, `BeforeTool` guard hook and five capability probes. A manifest
+naming a host with **no** registry row at all is a different case and is settled one layer earlier:
 `run_manifest.load_manifest` discards it as unusable — exactly as it treats a corrupt manifest —
 says so on stderr, and the driver rebuilds the run from the CLI args, so such a name reaches neither
 refusal and is never probed or dispatched for (#1344).
@@ -298,8 +313,8 @@ later evidence can reopen. It claims nothing, so every run under it is unenforce
 exactly as described above, and it prints a one-line `NOTICE` to stderr — once per `driver run`
 invocation and once per `driver setup` invocation, from the *resolved* host, so a resumed run that
 omits `--host` prints it too. It is a notice, not a gate: no flag, exit code, grade or gate changes
-because of it. **It remains the path for any host without a family runner** — Gemini among them —
-which is why it is kept. Spec 8.1's bar (every remaining driver-selectable host has
+because of it. **It remains the path for any host without a family runner**, which is why it is kept.
+Spec 8.1's bar (every remaining driver-selectable host has
 `tool_policy_enforced` and `read_scope_confined` PROVEN; `artifact_write_guard` bridged by
 construction, since a write-capable entry self-writes only when its host has both the static
 transport mechanism and a proven boundary, and is otherwise return-persist) survives D1 as a
@@ -307,8 +322,8 @@ NO-REGRESSION GUARD rather than an entry criterion.
 `test_generic_retirement_bar` states that criterion as a test and
 `test_todays_shortfall_is_pinned_so_it_moves_consciously` pins today's shortfall at `{}` (the pin is
 what a regressing family PR fails; the criterion is enforced only once the fallback row is gone),
-and on this base it is **met**: gemini left the selectable set at #1621, leaving claude, codex and
-kimi — claude cleared by its own read guard (#1070, plan 5), codex (#1619) and kimi (#1620) each by
+and on this base it is **met**: every selectable family host — claude (#1070, plan 5), codex (#1619),
+kimi (#1620), agy (#3493) and gemini (#3494, restoring the row #1621 had retired) — clears it by
 the probes its family PR shipped. Met no longer implies due: D1 settled the question the bar could
-never answer on its own — whether a Gemini operator, or any host without a family runner, has
-anywhere else to go — by keeping the row for good.
+never answer on its own — whether any host without a family runner has anywhere else to go — by
+keeping the row for good.

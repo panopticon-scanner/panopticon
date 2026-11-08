@@ -286,9 +286,10 @@ class TestUnknownHostsStayUnknown(unittest.TestCase):
                          mr._hardcoded_fallback("no-such-host", "scout"))
 
     def test_a_known_host_with_no_fallback_table_also_resolves_to_no_model(self):
-        # gemini and generic are in the registry and have no table. Falling
+        # generic is in the registry and has no table (#3494 gave gemini its
+        # own fallback table, restoring the row #1621 had retired). Falling
         # through to another host's table would be the bug this guards.
-        for name in ("gemini", "generic"):
+        for name in ("generic",):
             with self.subTest(host=name):
                 self.assertEqual({"model": None},
                                  mr._hardcoded_fallback(name, "scout"))

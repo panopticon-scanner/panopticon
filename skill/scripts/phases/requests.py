@@ -534,8 +534,9 @@ def require_unenforced_ack(review_root, manifest, entries):
     delivery or self_write_delivery; the ack records the latter and keys gaps on it.
 
     On a host that does not declare it -- `--host generic`, the one
-    claim-nothing value the CLI still accepts since #1621 retired gemini from
-    the selectable set -- a domain-panel or domain-advisor `Write` has
+    claim-nothing value in the selectable set (#1621 retired gemini on
+    2026-09-13, and #3494 restored gemini with all 5 capabilities proven) --
+    a domain-panel or domain-advisor `Write` has
     NO mediation whatsoever: no hook, nothing but the advisory prose
     `_tool_policy_line` appends. And a write that lands OUTSIDE review_root is
     invisible to every integrity check here, because validate's clean-tree diff

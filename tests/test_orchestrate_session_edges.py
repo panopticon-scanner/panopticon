@@ -88,27 +88,30 @@ class TestHostAndModeResolution(LoopCase):
 
     def test_a_resume_whose_host_is_no_longer_selectable_is_an_error(self):
         # #1621: a run STARTED under a host the driver has since retired --
-        # gemini here, and the same holds for any row a family PR has not
-        # earned back -- resumes off its own manifest, which `driver.run`
-        # treats as authoritative. `_resolve_host` handed that name straight
-        # to `runner_for`, which builds a SessionRunner for any string at all,
-        # so the loop went on dispatching for a host `--host` would now refuse
-        # to name. The remedy is the same one the parser gives, plus --reset,
-        # because the manifest is what has to change.
+        # as gemini was between #1621 and #3494, and as holds for any row
+        # with `driver_selectable=False` -- resumes off its own manifest, which
+        # `driver.run` treats as authoritative. `_resolve_host` handed that
+        # name straight to `runner_for`, which builds a SessionRunner for any
+        # string at all, so the loop went on dispatching for a host `--host`
+        # would now refuse to name. The remedy is the same one the parser
+        # gives, plus --reset, because the manifest is what has to change.
         d, _ = self._repo(); s = self._session_root(d)
         self._claim_nothing_run(d, s)
         path = driver.run_manifest.manifest_path(d)
         manifest = runio._load_json(path)
-        manifest["host"] = "gemini"
+        manifest["host"] = "retiredhost"
         runio._write_json(path, manifest)
         self.assertFalse(runio._foreign_manifest(manifest, d, path),
                          "fixture precondition: this manifest is the run's own")
+        retired_row = hosts.HostSpec(name="retiredhost", claims=frozenset(),
+                                     driver_selectable=False)
         calls = []
-        with self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
+        with mock.patch.dict(hosts.HOSTS, {"retiredhost": retired_row}), \
+             self._spy(calls), contextlib.redirect_stdout(io.StringIO()), \
              contextlib.redirect_stderr(io.StringIO()):
             status = orchestrate.loop(self._args(d, "--mode", "session", "--session-dir", s))
         self.assertEqual(status["status"], "error", status)
-        self.assertIn("gemini", status["message"])
+        self.assertIn("retiredhost", status["message"])
         self.assertIn("--host generic --reset", status["message"])
         self.assertEqual([], calls, "nothing may be dispatched for it")
 

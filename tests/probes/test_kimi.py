@@ -142,7 +142,7 @@ class TestKimiShellSurfaceProbe(unittest.TestCase):
             ["kimi", "--version"], capture_output=True, text=True, timeout=15)
 
     def test_a_host_that_registers_no_shells_is_unknown(self):
-        state, by, _detail = kimi_probes.probe_kimi_shell_surface("gemini", version="0.42")
+        state, by, _detail = kimi_probes.probe_kimi_shell_surface("generic", version="0.42")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
 
@@ -331,7 +331,7 @@ class TestKimiReadGuardProbe(unittest.TestCase):
         self.assertIn("ALLOWED", detail)
 
     def test_a_host_that_claims_no_read_confinement_is_unknown(self):
-        state, by, _detail = kimi_probes.probe_kimi_read_guard("gemini")
+        state, by, _detail = kimi_probes.probe_kimi_read_guard("generic")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
 
@@ -360,7 +360,7 @@ class TestKimiWriteGuardProbe(unittest.TestCase):
         self.assertIn("ALLOWED", detail)
 
     def test_a_host_that_claims_no_write_guard_is_unknown(self):
-        state, by, _detail = kimi_probes.probe_kimi_write_guard("gemini")
+        state, by, _detail = kimi_probes.probe_kimi_write_guard("generic")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
 
@@ -465,7 +465,7 @@ class TestKimiModelAliasProbe(unittest.TestCase):
         self.assertIn("Permission denied", detail)
 
     def test_a_host_that_claims_no_model_binding_is_unknown(self):
-        state, by, _detail = kimi_probes.probe_kimi_model_alias("gemini")
+        state, by, _detail = kimi_probes.probe_kimi_model_alias("generic")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
 
@@ -560,7 +560,7 @@ class TestKimiUsageWireProbe(unittest.TestCase):
         self.assertIn("expected", detail)
 
     def test_a_host_that_claims_no_usage_ledger_is_unknown(self):
-        state, by, _detail = kimi_probes.probe_kimi_usage_wire("gemini")
+        state, by, _detail = kimi_probes.probe_kimi_usage_wire("generic")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
 

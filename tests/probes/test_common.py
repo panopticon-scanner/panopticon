@@ -156,9 +156,10 @@ class TestRegisteredShellToolsProbe(unittest.TestCase):
             self.assertEqual(hosts.REFUTED, state)
 
     def test_a_host_that_registers_no_shells_is_unknown_not_refuted(self):
-        # gemini registers nothing. "Not applicable" is unknown; refuted would
-        # claim we looked and found the control broken.
-        state, by, _detail = probes_common.probe_registered_shell_tools("gemini")
+        # generic registers nothing (#3494 gave gemini its TOML policy shells,
+        # restoring the row #1621 had retired). "Not applicable" is unknown;
+        # refuted would claim we looked and found the control broken.
+        state, by, _detail = probes_common.probe_registered_shell_tools("generic")
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIsNone(by)
 

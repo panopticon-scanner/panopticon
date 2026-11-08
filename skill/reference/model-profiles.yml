@@ -65,6 +65,17 @@ hosts:
       tier: pro
     setup_scan:
       model: null
+  gemini:
+    scout:
+      model: gemini-2.5-flash
+    advisor:
+      model: gemini-2.5-flash
+    domain_panel:
+      model: gemini-2.5-pro
+    domain_advisor:
+      model: gemini-2.5-pro
+    setup_scan:
+      model: null
   openrouter:
     scout:
       model: openai/gpt-4o-mini

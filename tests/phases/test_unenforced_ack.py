@@ -126,15 +126,16 @@ class TestGate(unittest.TestCase):
         self.assertNotIn("or use one of", str(caught.exception))
 
     def test_a_second_claim_nothing_host_refuses_on_identical_terms(self):
-        # The gate is keyed on the CLAIM, never on the name "generic". `gemini`
-        # is the registry's other claim-nothing row -- registered but no longer
-        # driver-selectable (#1621, 2026-09-13) -- and it is kept here for
-        # exactly that reason: rewriting this case to `generic` would make it a
-        # strict subset of the test above and delete the only coverage that the
-        # refusal is not spelled against one host name.
+        # The gate is keyed on the CLAIM, never on the name "generic". (#3494
+        # restored `gemini` as a 5/5 host after its #1621 retirement, so
+        # patch a second claim-nothing row to keep the proof that the refusal
+        # is not spelled against one host name.)
         root = self._root()
-        with self.assertRaises(runio.DriverError):
-            requests.require_unenforced_ack(root, _manifest("gemini"), ENTRIES)
+        claim_nothing = hosts.HostSpec(name="other-fallback", claims=frozenset())
+        with mock.patch.dict(hosts.HOSTS, {"other-fallback": claim_nothing}):
+            with self.assertRaises(runio.DriverError):
+                requests.require_unenforced_ack(
+                    root, _manifest("other-fallback"), ENTRIES)
 
     def test_refusing_writes_no_ack(self):
         # A refusal must not leave an artifact claiming the risk was accepted.

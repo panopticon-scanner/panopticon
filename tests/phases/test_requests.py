@@ -146,10 +146,11 @@ class TestBoundModel(unittest.TestCase):
         rm.assert_called_once_with("claude", "domain_panel")
 
     def test_a_host_with_no_model_policy_binds_none(self):
-        # gemini/generic: registry row, no profile table, no fallback table.
-        # None means "inherit the session's model" and is what those hosts
-        # dispatch with today -- unchanged by this plan (R-F4-1).
-        for host in ("gemini", "generic"):
+        # generic: registry row, no profile table, no fallback table (#3494
+        # gave gemini its profile and fallback tables, restoring the row #1621
+        # had retired). None means "inherit the session's model" and is what
+        # generic dispatches with today -- unchanged by this plan (R-F4-1).
+        for host in ("generic",):
             with self.subTest(host=host):
                 self.assertEqual({"model": None}, requests.bound_policy(host, "domain_panel"))
 
@@ -283,9 +284,9 @@ class TestDelivery(unittest.TestCase):
                 self.assertEqual(("return_json", ""), (mode, prefix))
 
     def test_a_host_that_claims_no_guard_is_bridged(self):
-        # gemini/generic: the registry's two claim-nothing rows -- generic
-        # selectable, gemini registered-only since #1621. R-F4-4.
-        for host in ("gemini", "generic"):
+        # generic: the registry's claim-nothing row (#3494 restored gemini as a
+        # 5/5 host after its #1621 retirement). R-F4-4.
+        for host in ("generic",):
             with self.subTest(host=host):
                 mode, _prefix = requests.delivery(host, {}, "domain-advisor.md", "/abs/o")
                 self.assertEqual("return_json", mode)

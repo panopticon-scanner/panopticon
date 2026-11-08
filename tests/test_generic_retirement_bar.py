@@ -96,8 +96,10 @@ class TestGenericRetirementBar(unittest.TestCase):
         # security clauses. claude clears it on read-guard-armed (#1070, plan
         # 5); codex's family PR (#1619) flipped its row with
         # codex-effective-tools and codex-read-scope; kimi's (#1620) flipped
-        # its row with all five kimi-* probes; gemini left the selectable set
-        # entirely (#1621, retired 2026-09-13). So the shortfall is {}.
+        # its row with all five kimi-* probes; agy's (#3493) flipped its row
+        # with all five agy-* probes; gemini (retired by #1621 on 2026-09-13)
+        # flipped its row back in #3494 with all five gemini-* probes. So the
+        # shortfall is {}.
         #
         # This `{}` used to be F5's ENTRY CRITERION. `test_the_bar_would_
         # refuse_the_deletion_today` used to sit beside this pin and simulate

@@ -191,7 +191,7 @@ class TestSkillMd(unittest.TestCase):
         # never said WHICH claim the doc was making. Pin the claim itself,
         # and pin the retired one as absent so the doc cannot drift back to a
         # `driver run` that proceeds.
-        retired = _section(caps, "`gemini` is registered but not driver-selectable",
+        retired = _section(caps, "`gemini` was retired by #1621 and restored by #3494",
                            "\n\n")
         self.assertIn("`--host generic`", retired)
         self.assertIn("driver loop", retired)

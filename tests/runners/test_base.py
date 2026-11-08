@@ -18,11 +18,13 @@ class TestRunnerFor(unittest.TestCase):
         self.assertEqual(r.mode, "session")
 
     def test_headless_resolves_the_host_module_or_refuses(self):
-        self.assertTrue(base.headless_available("claude"))
-        self.assertEqual(base.runner_for("claude", "headless").mode, "headless")
-        self.assertFalse(base.headless_available("gemini"))
+        for host in ("claude", "gemini"):
+            with self.subTest(host=host):
+                self.assertTrue(base.headless_available(host))
+                self.assertEqual(base.runner_for(host, "headless").mode, "headless")
+        self.assertFalse(base.headless_available("generic"))
         with self.assertRaises(ValueError) as cm:
-            base.runner_for("gemini", "headless")
+            base.runner_for("generic", "headless")
         self.assertIn("--mode session", str(cm.exception))
 
     def test_unknown_mode_is_refused(self):

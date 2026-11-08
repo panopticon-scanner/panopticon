@@ -148,12 +148,10 @@ class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
     which would otherwise assert unconditional parity that no longer exists --
     exactly the lie spec section 7.1 exists to end.
 
-    The `("generic", "gemini")` pairs below are the registry's two
-    claim-nothing ROWS, not two selectable hosts -- #1621 left gemini
-    registered-only, and the three tests are named for the row property they
-    actually assert (a capability the host does not CLAIM can never read
-    `proven`) rather than for what the driver accepts, which is a different
-    question and no longer the same set."""
+    The `"generic"` row below is the registry's claim-nothing row (#3494
+    restored `gemini` as a 5/5 first-class host after its #1621 retirement),
+    and the three tests are named for the row property they actually assert
+    (a capability the host does not CLAIM can never read `proven`)."""
 
     @staticmethod
     def _proof(**states):
@@ -166,7 +164,7 @@ class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
         self.assertEqual(
             hosts.PROVEN,
             hosts.posture("claude", proof)[hosts.TOOL_POLICY_ENFORCED])
-        for name in ("generic", "gemini"):
+        for name in ("generic",):
             with self.subTest(host=name):
                 self.assertNotEqual(
                     hosts.PROVEN,
@@ -176,7 +174,7 @@ class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
         proof = self._proof(**{hosts.USAGE_LEDGER: hosts.PROVEN})
         self.assertEqual(
             hosts.PROVEN, hosts.posture("claude", proof)[hosts.USAGE_LEDGER])
-        for name in ("generic", "gemini"):
+        for name in ("generic",):
             with self.subTest(host=name):
                 self.assertNotEqual(
                     hosts.PROVEN, hosts.posture(name, proof)[hosts.USAGE_LEDGER])
@@ -198,7 +196,7 @@ class TestTheAnswersAreUnchangedGivenProof(unittest.TestCase):
         self.assertEqual(
             hosts.PROVEN,
             hosts.posture("claude", proof)[hosts.ARTIFACT_WRITE_GUARD])
-        for name in ("generic", "gemini"):
+        for name in ("generic",):
             with self.subTest(host=name):
                 self.assertNotEqual(
                     hosts.PROVEN,
@@ -455,12 +453,14 @@ class TestTheEntryVariesWithTheHostOnlyWhereF4SaysItDoes(unittest.TestCase):
         req = runio._load_json(runio._pano(root, "dispatch-request.json"))
         return req["entries"]
 
-    def test_claude_and_gemini_differ_only_in_the_host_fields(self):
+    def test_claude_and_generic_differ_only_in_the_host_fields(self):
+        # #3494 restored gemini as a 5/5 host with a profile model after its
+        # #1621 retirement; generic remains the claim-nothing, model-less row.
         claude = self._entries("claude", {c: hosts.PROVEN for c in hosts.CAPABILITIES})
-        gemini = self._entries("gemini", {})                    # claims nothing
-        self.assertEqual(len(claude), len(gemini))
+        generic = self._entries("generic", {})                  # claims nothing
+        self.assertEqual(len(claude), len(generic))
         for c, g in zip(sorted(claude, key=lambda e: e["id"]),
-                        sorted(gemini, key=lambda e: e["id"])):
+                        sorted(generic, key=lambda e: e["id"])):
             with self.subTest(entry=c["id"]):
                 cell_c = {k: v for k, v in c.items() if k not in self._HOST_FIELDS | {"prompt"}}
                 cell_g = {k: v for k, v in g.items() if k not in self._HOST_FIELDS | {"prompt"}}
@@ -476,7 +476,7 @@ class TestTheEntryVariesWithTheHostOnlyWhereF4SaysItDoes(unittest.TestCase):
                 self.assertEqual("return_json", g["delivery"])
                 self.assertNotIn("output_schema", c)          # self-writes: no constrained reply
                 self.assertTrue(g["output_schema"].endswith("findings-envelope-schema.json"))
-                # and the prompt BODY is identical once gemini's preamble is stripped
+                # and the prompt BODY is identical once generic's preamble is stripped
                 prefix = requests.RETURN_PERSIST_PREAMBLE % {"out_file": g["out_file"]}
                 marker = requests.entry_marker(c["id"])
                 self.assertEqual(marker, requests.entry_marker(g["id"]))

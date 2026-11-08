@@ -553,14 +553,14 @@ class TestItLaunchesNothingAndWritesNothing(_VerbCase):
                          "driver readiness launched a binary: %s"
                          % (open(log).read() if os.path.exists(log) else ""))
         rows = {r["host"]: r for r in body["cli"]}
-        self.assertEqual(sorted(rows), ["agy", "claude", "codex", "kimi"])
+        self.assertEqual(sorted(rows), ["agy", "claude", "codex", "gemini", "kimi"])
         for host, row in rows.items():
             with self.subTest(host=host):
                 self.assertIs(True, row["on_path"])
                 self.assertEqual(os.path.join(bin_dir, host), row["path"])
 
     def test_every_cli_is_reported_absent_and_only_the_selected_one_gates(self):
-        """A real `shutil.which` against an empty PATH. All four rows report
+        """A real `shutil.which` against an empty PATH. All five rows report
         `on_path: false`; only the host this invocation resolved to carries a
         remedy, and only it moves the exit code (fix round 2 -- a bare
         invocation resolves one, so this case exits 1 now where round 1
@@ -568,7 +568,7 @@ class TestItLaunchesNothingAndWritesNothing(_VerbCase):
         d = self._repo(groups_yml=GROUPS_YML)
         code, body = self._json(d, stub_which=False)
         self.assertEqual(1, code)
-        self.assertEqual([False, False, False, False],
+        self.assertEqual([False, False, False, False, False],
                          [r["on_path"] for r in body["cli"]])
         self.assertEqual(["claude"],
                          [r["host"] for r in body["cli"] if r["remedy"]])
@@ -774,10 +774,10 @@ class TestTheSelectedHostsBinaryIsGating(_VerbCase):
 
     def test_an_unselected_hosts_missing_binary_is_still_informational(self):
         d = self._repo(groups_yml=GROUPS_YML)
-        # codex, kimi and agy absent
+        # codex, kimi, agy and gemini absent
         code, body = self._json(d, "--host", "claude", which=READY_CLI)
         self.assertEqual(0, code)
-        self.assertEqual([False, False, False],
+        self.assertEqual([False, False, False, False],
                          [r["on_path"] for r in body["cli"] if not r["selected"]])
 
     def test_a_selected_host_with_no_cli_of_ours_still_gets_a_row(self):
@@ -881,16 +881,22 @@ class TestTheAssumedHost(_VerbCase):
         self.assertEqual("/opt/bin/kimi", body["cli"][0]["path"])
 
     def test_a_retired_manifest_host_is_refused_with_the_loops_remedy(self):
+        # #3494 restored gemini as a 5/5 selectable host after its #1621
+        # retirement; exercise the unselectable-manifest refusal on a patched
+        # unselectable row.
         d = self._repo(groups_yml=GROUPS_YML)
-        git = self._manifest(d, "gemini")
-        code, body = self._json(d, which=dict(READY_CLI, git=git),
-                                path=os.path.dirname(git))
+        git = self._manifest(d, "retired-host")
+        retired = hosts.HostSpec(name="retired-host", claims=frozenset(),
+                                 driver_selectable=False)
+        with mock.patch.dict(hosts.HOSTS, {"retired-host": retired}):
+            code, body = self._json(d, which=dict(READY_CLI, git=git),
+                                    path=os.path.dirname(git))
+            expected_remedy = hosts.unselectable_host_message("retired-host", "loop")
         self.assertEqual(1, code)
         self.assertEqual(["cli"], body["failed"])
         self.assertEqual("manifest", body["selected_from"])
-        self.assertEqual("gemini", body["cli"][0]["host"])
-        self.assertEqual(hosts.unselectable_host_message("gemini", "loop"),
-                         body["cli"][0]["remedy"])
+        self.assertEqual("retired-host", body["cli"][0]["host"])
+        self.assertEqual(expected_remedy, body["cli"][0]["remedy"])
 
     def test_an_explicit_host_beats_the_manifest(self):
         d = self._repo(groups_yml=GROUPS_YML)
