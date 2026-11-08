@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **R2 affinity floors (#1133).** `skill/data/capability_affinity.yml` gains three floor domains from
+  the R2 calibration (a three-family panel on the thin capabilities, corroborated against the bulk
+  sweep, owner ruling 2026-11-08): Catalog now floors ACC and LNG, and Reporting floors LNG.
+  Checkout keeps ACC; Fulfillment is unchanged. The scout already selected these domains on
+  about 9 in 10 such targets, so the floor guards against a scout miss rather than adding coverage.
 - **CI test sharding, phase 2 (#2933).** `ci.yml` now shards the 3.12 coverage run into three
   `test-cov` groups plus the serial leg, combines their data in a `coverage` job that holds the one
   90% gate (every `--cov` leg passes `--cov-fail-under=0`, overriding pyproject's floor), and checks
