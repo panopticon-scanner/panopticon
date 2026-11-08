@@ -99,7 +99,12 @@ scoped allowed and denied accesses; and `codex-write-surface-absent` proves
 and the shell-less setup fallback. These are real offline CLI checks, not paid reviewer turns, and
 their details name the inspected registration/runtime surfaces. Removing a tool restriction,
 widening a tested read grant or exposing one write route on one role refutes the corresponding
-probe. The
+probe. The import proof attempts every curated filesystem/process/network module, a real `file:`
+URL, and the otherwise-unlisted `node:http2` builtin; every route must fail as an unsupported
+import. Its exact host-global inventory also records the six classifications established by live
+function-body inspection: `store`/`load` are ephemeral state under `history.persistence="none"`,
+`exit`/`notify` are output/control channels, and `as_settled`/`stream_settled` are Promise-settlement
+iterators. The
 reviewer prompt's own tool-policy paragraph is **rendered from that same surface** rather than
 written beside it (#1639 P14): it names `panopticon_scope`'s `read_file`, `search` and `list_files`
 with the descriptions the broker publishes and states that there is no shell — run-13 found it

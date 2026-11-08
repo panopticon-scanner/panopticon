@@ -13,6 +13,7 @@ import threading
 
 from scripts import codex_read_tools
 from scripts.codex_host import (
+    BLANKET_IMPORT_CANARY,
     DEFAULT_RUNNER,
     MAX_BYTES,
     PROBE_TIMEOUT,
@@ -40,7 +41,7 @@ def _probe_script(probe_paths, probe_module="file:///panopticon-probe.mjs"):
         raise ValueError("probe_module must be a file URL")
     server_key = codex_read_tools.MCP_SERVER_KEY
     read_tool = "mcp__%s__read_file" % server_key
-    imports = (*WRITE_SURFACE_IMPORTS, probe_module)
+    imports = (*WRITE_SURFACE_IMPORTS, BLANKET_IMPORT_CANARY, probe_module)
     return ("const attempt = async call => { try { return {ok: true, value: await call()}; } "
             "catch (error) { return {ok: false, error: String(error)}; } }; "
             "const result = {tools: ALL_TOOLS.map(t => t.name), globals: "

@@ -42,16 +42,24 @@ encodeURIComponent escape eval globalThis isFinite isNaN parseFloat parseInt
 undefined unescape
 """.split())
 
-# The COMPLETE non-ECMAScript set measured on the live Code Mode host.  These
-# are output/state helpers only; none accepts a filesystem or network path.
-# Codex 0.162.1 added `as_settled` (an async settlement iterator) and
-# `stream_settled` (that iterator forwarded to a callback); their live function
-# bodies expose only Promise/iteration mechanics, with no host primitive.
+# Author-asserted from live Codex 0.162.1 function-body inspection, rather than
+# inferred from names: store/load are in-memory state under the launch's
+# history.persistence="none"; exit/notify are output/control channels; and
+# as_settled/stream_settled expose Promise-settlement iteration only.  The
+# complete-set check below still REFUTES any new or renamed host global.
+_AUTHOR_ASSERTED_LIVE_HOST_GLOBAL_CLASSES = {
+    "ephemeral-store": frozenset({"store", "load"}),
+    "output-control": frozenset({"exit", "notify"}),
+    "promise-settlement": frozenset({"as_settled", "stream_settled"}),
+}
+
+# The COMPLETE non-ECMAScript set measured on the live Code Mode host.  The
+# remaining names are output/state helpers only; none accepts a filesystem or
+# network path.
 CODE_MODE_HOST_GLOBALS = frozenset({
-    "ALL_TOOLS", "as_settled", "audio", "clearTimeout", "exit", "generatedImage",
-    "image", "load", "notify", "setTimeout", "store", "stream_settled", "text",
-    "tools", "yield_control",
-})
+    "ALL_TOOLS", "audio", "clearTimeout", "generatedImage", "image", "setTimeout",
+    "text", "tools", "yield_control",
+}) | frozenset().union(*_AUTHOR_ASSERTED_LIVE_HOST_GLOBAL_CLASSES.values())
 _SHELLLESS_SETUP = "setup-scan (native default model and directory scope)"
 
 
@@ -250,8 +258,10 @@ def _codex_write_surface_problem(surface, shell):
         return "Code Mode import measurement is absent or malformed"
     file_imports = [name for name in imports if name.startswith("file:")]
     module_imports = set(imports) - set(file_imports)
+    expected_module_imports = set(codex_host.WRITE_SURFACE_IMPORTS) | {
+        codex_host.BLANKET_IMPORT_CANARY}
     if (len(file_imports) != 1
-            or module_imports != set(codex_host.WRITE_SURFACE_IMPORTS)):
+            or module_imports != expected_module_imports):
         return "Code Mode filesystem/process/network import set was not measured exactly"
     for name, result in imports.items():
         if (not isinstance(result, dict) or result.get("ok") is not False
