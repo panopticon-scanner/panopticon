@@ -47,6 +47,11 @@
   and route byte-identically because consumers have always ignored the field. The unused schedule
   derivation and its duplicate database/architecture classifiers are deleted; coverage remains the
   sole owner of objective routing signals.
+- **The Codex write-surface omission proof now tests blanket import denial (#3056).** Beside its
+  curated filesystem/process/network modules and real `file:` URL, every measured role attempts
+  the otherwise-unlisted `node:http2` builtin and must receive the same `unsupported import`
+  refusal. The six host globals whose non-write status rests on live function-body inspection are
+  now classified explicitly as ephemeral store, output/control, or Promise settlement helpers.
 - **The advisors are asked for `schema_version: 1`, and Codex requires it (#3482, owner-approved).**
   Each is its own commit:
   - **P1:** domain-advisor's bundle example leads with `"schema_version": 1`.
