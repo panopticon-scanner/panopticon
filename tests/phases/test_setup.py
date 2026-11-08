@@ -1870,7 +1870,7 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
         # keeps passing -- the failure §5.1's four-surface rule exists to
         # prevent.
         # BOTH halves (M4): a second copy of the clean verdict drifts from
-        # the gap one just as silently, and `scripts/` at the repo root is
+        # the gap one just as silently, and `devtools/` at the repo root is
         # production code too.
         for fingerprint in ("(fix before running a review)", "readiness OK"):
             owners = []

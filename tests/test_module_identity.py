@@ -17,14 +17,15 @@ Four assertions, each pinning one half of the architecture:
   apart from the residual named in `RESIDUAL`, which the flat-import mode owns.
   It measures IMPORT time only; see `RESIDUAL`'s comment for the call-time class;
 * the BOOTSTRAP CEILING -- every `sys.path` write site under `skill/scripts/` and
-  `scripts/` belongs to an enumerated module, and no module carries more sites
+  `devtools/` belongs to an enumerated module, and no module carries more sites
   than `PERMITTED_BOOTSTRAPS` records. Shrink-only, at SITE granularity: a third
   insert in an already-permitted file is the way the census grows back, so it has
   to be a visible decision too. Each site is reported with the ROOT it adds,
   because the two roots are not the same hazard;
-* the two `scripts` PORTIONS are name-disjoint -- `scripts/` and `skill/scripts/`
-  are two portions of one namespace package, so a basename in both would resolve
-  to whichever portion came first on `sys.path`, silently;
+* the two flat import ROOTS are name-disjoint -- `devtools/` and `skill/scripts/`
+  are both on `sys.path` in several live paths (#3504 took `devtools/` out of the
+  `scripts` namespace), so a bare basename in both would resolve to whichever root
+  came first, silently;
 * no PACKAGE module carries an import FALLBACK -- a module under `synth/`,
   `phases/`, `runners/` or `probes/` can only be reached as `scripts.<pkg>.<mod>`,
   so `scripts` has already resolved and a `except ModuleNotFoundError: from x
@@ -760,11 +761,11 @@ class BootstrapCeilingTest(unittest.TestCase):
 
 
 class ScriptsPortionsTest(unittest.TestCase):
-    """`scripts/` and `skill/scripts/` are two portions of one namespace
-    package. Nothing declares a precedence between them, and the entry scripts
-    that put `skill/` on `sys.path` do it conditionally, so a basename carried
-    by both portions would resolve to whichever one came first -- with no error
-    and no way for a caller to tell which it got."""
+    """`devtools/` and `skill/scripts/` are both flat import roots (#3504
+    renamed the first out of the `scripts` namespace). Nothing declares a
+    precedence between them, so a bare basename carried by both would resolve
+    to whichever root came first -- with no error and no way for a caller to
+    tell which it got."""
 
     def test_the_two_portions_share_no_module_name(self):
         shared = sorted(_module_names(os.path.join(SKILL_ROOT, "scripts"))

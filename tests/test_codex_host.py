@@ -39,7 +39,7 @@ class TestCodexSurfaceOwnership:
     def test_no_source_reaches_a_moved_name_through_codex_host(self):
         root = Path(REPO_ROOT)
         offenders = []
-        for surface in (root / "skill" / "scripts", root / "scripts", root / "tests"):
+        for surface in (root / "skill" / "scripts", root / "devtools", root / "tests"):
             for path in sorted(surface.rglob("*.py")):
                 tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
                 aliases = {"scripts.codex_host"}
@@ -115,7 +115,7 @@ class TestCodexScopeServerKey:
     def test_runtime_has_no_second_spelling(self):
         root = Path(REPO_ROOT)
         found = {}
-        for top in ("skill/scripts", "scripts"):
+        for top in ("skill/scripts", "devtools"):
             for path in sorted((root / top).rglob("*.py")):
                 relative = path.relative_to(root).as_posix()
                 hits = _hard_coded_scope_server(

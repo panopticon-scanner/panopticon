@@ -59,7 +59,7 @@ spawn in any module turns that test red until it has its own. Tests mirror the p
 `tests/probes/test_<module>.py`, with `tests/test_host_probes.py` keeping the registry.
 
 The 700-line ceiling is not only the packages'. `tests/test_flat_module_ceiling.py` applies rule 5's
-`LINE_CEILING` to every `*.py` directly under `skill/scripts/`, under the repo-root `scripts`
+`LINE_CEILING` to every `*.py` directly under `skill/scripts/`, under the repo-root `devtools`
 directory and under the `tools` adapter package too — the entry scripts, the flat modules they
 share, the repo-root CLIs and the scanner adapters — as a SHRINK-ONLY allowlist: its `PENDING` map
 pins each module that was already over the ceiling at the count it had, a pinned module may only get

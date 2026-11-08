@@ -25,7 +25,7 @@ MOVED = ("Opaque", "_EDGE", "_NAME", "_SHELL_STRING", "_added_strings", "_after_
 # `-c` cluster, a loop over the words that may be it (`_after_dash_c`), and #3042's reading of the words
 # with each one `uncovered` beside them as written (`_also`, `_added`).
 ADDED = ("_added", "_also", "_clusters", "_strings")
-# Every name a file under `scripts/`, `tests/` or `skill/` read through `workflow_programs` on `main`
+# Every name a file under `devtools/`, `tests/` or `skill/` read through `workflow_programs` on `main`
 # when the half moved (5c4d00bd): by a `from` import, as an attribute, as a `patch.object` target, or
 # by `getattr` over a list of names -- the pins of the two earlier moves out of this module, the option
 # grammar's (PR #2850) and the printers' (PR #2699), whose every name it re-exports.

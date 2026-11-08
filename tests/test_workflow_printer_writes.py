@@ -18,7 +18,7 @@ import workflow_programs
 
 MOVED = ("_CONVERSION", "_COUNT", "_ESCAPE", "_ESCAPES", "_KNOWN", "_LONG", "_OCTAL", "_PAD", "_PLAIN",
          "_WRITERS", "_decoded", "_echoed", "_formatted", "_written")
-# Every name a file under `scripts/`, `tests/` or `skill/` read through `workflow_printers` on `main`
+# Every name a file under `devtools/`, `tests/` or `skill/` read through `workflow_printers` on `main`
 # when the half moved (ddeadc0f): by a `from` import or as an attribute. Nothing reads one by `getattr`
 # over a list or patches one by a table (checked by running every module that imports it, and by
 # reading each for both shapes: the lesson of #3011's first head).
