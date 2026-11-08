@@ -237,7 +237,7 @@ class TestRegistryClosuresArePinned(unittest.TestCase):
             self.assertEqual(
                 pinned.get(name), m.group(1),
                 "ARG %s says %s but requirements-tools.txt pins %s==%s; bump "
-                "both, and re-run `python3 scripts/bump_pins.py requirements "
+                "both, and re-run `python3 devtools/bump_pins.py requirements "
                 "--file requirements-tools.txt --write`"
                 % (arg, m.group(1), name, pinned.get(name)))
 

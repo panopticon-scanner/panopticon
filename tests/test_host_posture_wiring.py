@@ -98,7 +98,7 @@ def _offenders():
                     os.path.join(PHASES, name)))
     found.extend("replay_report.py:%d %s" % (lineno, text)
                  for lineno, text in _host_name_comparisons(
-                     os.path.join(REPO_ROOT, "scripts", "replay_report.py")))
+                     os.path.join(REPO_ROOT, "devtools", "replay_report.py")))
     return sorted(found)
 
 

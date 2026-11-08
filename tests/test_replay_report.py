@@ -1,4 +1,4 @@
-"""`scripts/replay_report.py` -- the WS-0 behaviour-preservation oracle.
+"""`devtools/replay_report.py` -- the WS-0 behaviour-preservation oracle.
 
 The tool is a consumer of the driver like any test, so the driver side is
 mocked at the same seams the tool patches. The scrub is the point: two

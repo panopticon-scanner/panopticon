@@ -12,7 +12,7 @@ The manifest it writes is a JSON object:
   `pytest_collection_modifyitems`, ahead of the `-m` filter and pytest-split;
 - `selected`: what the job then ran, `session.items` at collection finish.
 
-`scripts/ci_shards.py check` reads every job's manifest and proves each
+`devtools/ci_shards.py check` reads every job's manifest and proves each
 collected test ran exactly once per version.
 
 Under xdist the controller collects nothing and every worker collects the same

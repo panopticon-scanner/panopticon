@@ -1,4 +1,4 @@
-"""`scripts/shell_split.py`: the statement splitter, split out of `shell_reader` byte for byte.
+"""`devtools/shell_split.py`: the statement splitter, split out of `shell_reader` byte for byte.
 
 Pins the compatibility bindings -- every name the module defines is the SAME object in the reader,
 so no caller that reads `shell_reader._split` or `shell_reader._BLANK` moved -- and that the new
@@ -51,7 +51,7 @@ class TestTheReaderBindsEveryMovedName(unittest.TestCase):
         # patch through one would change that module's name alone -- silently, for a mark one side
         # writes and the other reads.
         root, binders, offenders = os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ("shell_reader", "shell_split"), []
-        paths = sorted(os.path.join(folder, name) for top in ("scripts", "tests")
+        paths = sorted(os.path.join(folder, name) for top in ("devtools", "tests")
                        for folder, _folders, names in os.walk(os.path.join(root, top)) for name in names if name.endswith(".py"))
         self.assertGreater(len(paths), 100)
         for path in paths:

@@ -259,7 +259,7 @@ def test_the_tool_policy_mode_needs_a_directory_or_the_plans(tmp_path):
 def test_no_production_caller_omits_the_artifact_path():
     sites = dict(_REQUIRED, derive_tool_policy_mode=(None, "panopticon_dir", 0))
     omitted = []
-    for root in ("skill/scripts", "scripts"):
+    for root in ("skill/scripts", "devtools"):
         for path in sorted(Path(REPO_ROOT, root).rglob("*.py")):
             for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
                 if not isinstance(node, ast.Call):

@@ -143,7 +143,7 @@ That is the most expensive shape the tool has: adversarial mode, every tool, the
 - `.panopticon/<run-tag>-report.json` (split into parts when large) and `.panopticon/<run-tag>-report.json.html`, plus a markdown summary on the terminal. The report validates against `skill/reference/report-schema.json`.
 - `summary.gate` for CI: `PASS`, `FAIL`, `OFF` (no `--fail-on` given), or `INCONCLUSIVE` (coverage did not complete; treat as not certified).
 - Cross-run reconcile: against the previous run's report, findings recur, close, arrive as new, or land in `ambiguous`, the fail-closed bucket a person has to adjudicate.
-- Optional issue filing to GitHub from a finished report (`scripts/`), with severity, evidence and panel labels. GitHub is the only tracker supported.
+- Optional issue filing to GitHub from a finished report (`devtools/`), with severity, evidence and panel labels. GitHub is the only tracker supported.
 
 The HTML report is a single file with no sibling assets. Attach it to a message, mail it, or drop it in a shared folder. It contains no telemetry; the only thing it fetches when opened is its web font from Google Fonts, and it renders correctly offline without it.
 
@@ -168,7 +168,7 @@ The HTML report is a single file with no sibling assets. Attach it to a message,
 | `skill/scripts/` | Runnable Python modules (driver, discovery, synthesizer, dispatch, tools) |
 | `skill/agents/` | Custom agent definitions (`advisor`, `domain-advisor`, `domain-panel`, `scout`, `setup-scan`) |
 | `skill/reference/` | Schemas, CWE catalog, security checklists, example group profiles |
-| `scripts/` | Project maintenance, issue filing, and triage CLI scripts |
+| `devtools/` | Project maintenance, issue filing, and triage CLI scripts |
 | `tests/` | pytest suite |
 | `Dockerfile` | `panopticon-tools` scanner image |
 | `Dockerfile.fixtures` | Test fixture image definition |

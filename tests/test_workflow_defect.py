@@ -1,4 +1,4 @@
-"""`scripts/workflow_defect.py`: why one fetch is a defect, split out of `workflow_guard` byte for byte
+"""`devtools/workflow_defect.py`: why one fetch is a defect, split out of `workflow_guard` byte for byte
 (for #3050, #3051 and #2433).
 
 Pins the compatibility bindings -- every name the module defines is the SAME object in
@@ -23,7 +23,7 @@ MOVED = ("_SOFT_STEP", "_UNSHARED_BRANCH", "_UNSHARED_IF", "_binds", "_defect", 
 # The seven imports that left `workflow_guard` with them: only the moved code read them there.
 LEFT = ("_check_at_use", "_clears_nested", "_describe", "_remedy", "at_directory", "names_file",
         "streams_to_executor")
-# Every name a file under `scripts/`, `tests/` or `skill/` read through `workflow_guard` on `main` when
+# Every name a file under `devtools/`, `tests/` or `skill/` read through `workflow_guard` on `main` when
 # the judgment moved (2dcb42b1), by a `from` import or as an attribute: only tests do. None holds a
 # moved or a left name in a string, so no table patches or watches one (read from every file's AST:
 # the lesson of #3011's first head).
@@ -86,7 +86,7 @@ def _rebinds(names):
     """Each assignment or patch of one of `names` through either module, by LITERAL name: by
     assignment, by `patch.object(module, "name", ...)` and by `patch("module.name", ...)`."""
     offenders = []
-    for path, tree in _files("scripts", "tests"):
+    for path, tree in _files("devtools", "tests"):
         aliases = {alias.asname or alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
                    for alias in node.names if alias.name in BINDERS}
         for node in ast.walk(tree):
@@ -155,10 +155,10 @@ class TestWorkflowGuardBindsEveryMovedName(unittest.TestCase):
 
     def test_no_test_holds_a_moved_name_in_a_string(self):
         # #3011's first head: a pin patched readers by a table of (module, names), which no reader of
-        # literal names sees. No file under `scripts/` or `tests/` holds a moved name, or one that left
+        # literal names sees. No file under `devtools/` or `tests/` holds a moved name, or one that left
         # with them, as a string; the same reading finds the strings the swaps are made by.
         def strings(names):
-            return {(path, node.value) for path, tree in _files("scripts", "tests") for node in ast.walk(tree)
+            return {(path, node.value) for path, tree in _files("devtools", "tests") for node in ast.walk(tree)
                     if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in names}
         self.assertEqual(set(), strings(MOVED + LEFT))
         self.assertLessEqual({"_defects", "_job_defects", "read", "statements"},

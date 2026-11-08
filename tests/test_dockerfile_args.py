@@ -7,7 +7,7 @@ dependency-check version from the Dockerfile" step (the version AND the SHA256
 the release zip is checked against) and `.github/workflows/docker-publish.yml`'s
 "Resolve NVD data image digest (content-pin the cache)" step (the version, to
 name the `dc-<version>` cache tag it pins). Both now call
-`scripts/dockerfile_args.py`.
+`devtools/dockerfile_args.py`.
 
 The inline shape check is a security control, not tidiness -- nvd-cache.yml
 spelled it "constrain to expected shapes so a tampered ARG can't inject
@@ -31,7 +31,7 @@ import yaml
 import dockerfile_args as da
 from tests._test_helpers import REPO_ROOT
 
-MODULE = os.path.join(REPO_ROOT, "scripts", "dockerfile_args.py")
+MODULE = os.path.join(REPO_ROOT, "devtools", "dockerfile_args.py")
 WORKFLOWS = os.path.join(REPO_ROOT, ".github", "workflows")
 SHA = "5263fbafb15010823364274b83e9a2219b654d00a557d92941c37736d4076ba4"
 
@@ -257,7 +257,7 @@ class WorkflowCallersTest(unittest.TestCase):
             for arg in args:
                 with self.subTest(workflow=workflow, arg=arg):
                     self.assertIn(
-                        "python3 scripts/dockerfile_args.py read-arg %s" % arg,
+                        "python3 devtools/dockerfile_args.py read-arg %s" % arg,
                         run)
 
     def test_a_refusal_fails_the_step(self):
@@ -284,7 +284,7 @@ class WorkflowCallersTest(unittest.TestCase):
                 self.assertEqual(
                     offenders, [],
                     "%s re-derives a Dockerfile ARG in shell; read it through "
-                    "scripts/dockerfile_args.py, which shape-checks it:\n  %s"
+                    "devtools/dockerfile_args.py, which shape-checks it:\n  %s"
                     % (workflow, "\n  ".join(offenders)))
 
 

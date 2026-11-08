@@ -1,4 +1,4 @@
-"""#2933 phase 2: the CI shard bookkeeping in `scripts/ci_shards.py` and the
+"""#2933 phase 2: the CI shard bookkeeping in `devtools/ci_shards.py` and the
 manifest plugin in `tests/ci_shard_manifest.py`.
 
 Synthetic manifests only: no subprocess and no collection. The real proof is

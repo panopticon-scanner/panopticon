@@ -76,7 +76,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # installer SCRIPT is pinned by commit SHA and `sha256sum -c`'d, but no
 # repository-owned digest governs which SDK bytes that script then fetches;
 # that is the accepted cost of not having to bump a `--version` pin
-# (and give `scripts/bump_pins.py` another family) at every .NET patch and EOL.
+# (and give `devtools/bump_pins.py` another family) at every .NET patch and EOL.
 # Distro apt packages stay unpinned for the reason given above. Direct binary
 # downloads keep their own checksum gates, above and below.
 
@@ -84,7 +84,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # dependencies remain explicit because pip installs this closure with --no-deps.
 # The header
 # of requirements-tools.txt says how the closure was resolved and
-# `scripts/bump_pins.py requirements` writes its digests, reading each from
+# `devtools/bump_pins.py requirements` writes its digests, reading each from
 # PyPI AND recomputing it from the downloaded wheel.
 #
 # semgrep's version (#outage 2026-08-18) is why the three tools keep their own

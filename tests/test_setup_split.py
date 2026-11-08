@@ -141,7 +141,7 @@ class TestNoStaleReferences(unittest.TestCase):
         # would too, but `create=True`, `setattr(..., raising=False)` and a
         # code string a test hands a subprocess would not.
         stale = {}
-        for top in ("skill", "tests", "scripts"):
+        for top in ("skill", "tests", "devtools"):
             for path in sorted((REPO / top).rglob("*.py")):
                 if ".panopticon" in path.relative_to(REPO).parts or path == Path(__file__).resolve():
                     continue   # this file's own spelling sample is the one allowed

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Repo-root `scripts/` is now `devtools/` (#3504, part of #1516).** The dev and CI tooling
+  (`bump_pins`, `ci_shards`, `workflow_guard`, `file_issues`, `replay_report`, ...) moved, so
+  `scripts` names `skill/scripts` only and no longer merges two directories into one namespace
+  package. Every reference moved with it: workflows, `pyproject.toml` (pytest `pythonpath`, mypy
+  `files`, coverage `source`), `panopticon.yml`, `phases/child._child_env`'s child PYTHONPATH,
+  tests and docs. Past CHANGELOG entries keep the old paths. `tests/test_layout.py` fails if a
+  root `scripts/` comes back.
 - **R2 affinity floors (#1133).** `skill/data/capability_affinity.yml` gains three floor domains from
   the R2 calibration (a three-family panel on the thin capabilities, corroborated against the bulk
   sweep, owner ruling 2026-11-08): Catalog now floors ACC and LNG, and Reporting floors LNG.

@@ -17,14 +17,15 @@ Four assertions, each pinning one half of the architecture:
   apart from the residual named in `RESIDUAL`, which the flat-import mode owns.
   It measures IMPORT time only; see `RESIDUAL`'s comment for the call-time class;
 * the BOOTSTRAP CEILING -- every `sys.path` write site under `skill/scripts/` and
-  `scripts/` belongs to an enumerated module, and no module carries more sites
+  `devtools/` belongs to an enumerated module, and no module carries more sites
   than `PERMITTED_BOOTSTRAPS` records. Shrink-only, at SITE granularity: a third
   insert in an already-permitted file is the way the census grows back, so it has
   to be a visible decision too. Each site is reported with the ROOT it adds,
   because the two roots are not the same hazard;
-* the two `scripts` PORTIONS are name-disjoint -- `scripts/` and `skill/scripts/`
-  are two portions of one namespace package, so a basename in both would resolve
-  to whichever portion came first on `sys.path`, silently;
+* the two flat import ROOTS are name-disjoint -- `devtools/` and `skill/scripts/`
+  are both on `sys.path` in several live paths (#3504 took `devtools/` out of the
+  `scripts` namespace), so a bare basename in both would resolve to whichever root
+  came first, silently;
 * no PACKAGE module carries an import FALLBACK -- a module under `synth/`,
   `phases/`, `runners/` or `probes/` can only be reached as `scripts.<pkg>.<mod>`,
   so `scripts` has already resolved and a `except ModuleNotFoundError: from x
@@ -141,7 +142,7 @@ RESIDUAL = ("diff_map", "plan_contract", "repo_config")
 
 # The two production surfaces. `tests/` is `tests/test_no_per_file_sys_path.py`'s,
 # where the rule is ZERO sites rather than an enumerated few.
-BOOTSTRAP_SURFACES = ("skill/scripts", "scripts")
+BOOTSTRAP_SURFACES = ("skill/scripts", "devtools")
 
 # What a site adds, resolved from the call's argument by AST. The two roots are
 # different animals and the advice below differs accordingly; anything this walk
@@ -162,12 +163,12 @@ _UNRECOGNISED = "unrecognised root"
 # module is exactly how the dual-identity census grows back, and the file-level
 # form of this list could not see one. No line number enters the literal.
 PERMITTED_BOOTSTRAPS = {
-    "scripts/code_scanning_reports.py": 1,
-    "scripts/file_issues.py": 1,
-    "scripts/gh_transport.py": 1,      # moved from triage.py (#3404)
-    "scripts/open_pin_pr.py": 1,
-    "scripts/replay_report.py": 1,
-    "scripts/sanitize.py": 1,
+    "devtools/code_scanning_reports.py": 1,
+    "devtools/file_issues.py": 1,
+    "devtools/gh_transport.py": 1,      # moved from triage.py (#3404)
+    "devtools/open_pin_pr.py": 1,
+    "devtools/replay_report.py": 1,
+    "devtools/sanitize.py": 1,
     "skill/scripts/_run_adapter.py": 1,
     "skill/scripts/capture_goldens.py": 1,
     "skill/scripts/discovery.py": 2,
@@ -185,12 +186,12 @@ PERMITTED_BOOTSTRAPS = {
 # reports "unrecognised root" for them rather than guessing. One today:
 # `replay_report.py` joins a FUNCTION-local `repo` with "skill". Shrink-only --
 # making one resolvable is a fix, adding one is not.
-UNRESOLVED_ROOTS = ("scripts/replay_report.py",)
+UNRESOLVED_ROOTS = ("devtools/replay_report.py",)
 
 # Per-root advice, because "any `sys.path` write" is not one hazard. Of the 21
 # sites in 18 modules, SEVEN add the flat root, THIRTEEN add the package root and
 # one builds its root in a form this walk cannot follow; advice that lumps them
-# together tells the `scripts/`-side filers to stop doing the very thing that
+# together tells the `devtools/`-side filers to stop doing the very thing that
 # makes `from scripts import x` work at all.
 _ROOT_ADVICE = {
     _FLAT_ROOT:
@@ -717,7 +718,7 @@ class BootstrapCeilingTest(unittest.TestCase):
             "skill/scripts/entry.py": "import sys\nsys.path.insert(0, '/x')\n",
             "skill/scripts/tools/deep.py": ("from sys import path as roots\n"
                                             "roots.append('/x')\n"),
-            "scripts/filer.py": "import sys as system\nsystem.path += ['/x']\n",
+            "devtools/filer.py": "import sys as system\nsystem.path += ['/x']\n",
             "skill/scripts/quiet.py": "import os\nVALUE = os.sep\n",
             "tests/test_elsewhere.py": "import sys\nsys.path.insert(0, '/x')\n",
         }
@@ -728,7 +729,7 @@ class BootstrapCeilingTest(unittest.TestCase):
                 path.write_text(body, encoding="utf-8")
             found = _bootstrap_sites(directory)
             self.assertEqual(sorted(_unpermitted(found, {})),
-                             ["scripts/filer.py", "skill/scripts/entry.py",
+                             ["devtools/filer.py", "skill/scripts/entry.py",
                               "skill/scripts/tools/deep.py"])
 
     def test_the_root_walk_reads_the_spellings_this_tree_uses(self):
@@ -751,7 +752,7 @@ class BootstrapCeilingTest(unittest.TestCase):
                          'os.path.dirname(os.path.abspath(__file__))), "skill")\n'
                          'OTHER = "/a"\nOTHER = "/b"\n')
         constants = _module_constants(tree)
-        filer = os.path.join(REPO_ROOT, "scripts", "planted.py")
+        filer = os.path.join(REPO_ROOT, "devtools", "planted.py")
         self.assertEqual(
             _root_label(_resolve_path(ast.parse("_SKILL", mode="eval").body,
                                       filer, constants), REPO_ROOT),
@@ -760,15 +761,15 @@ class BootstrapCeilingTest(unittest.TestCase):
 
 
 class ScriptsPortionsTest(unittest.TestCase):
-    """`scripts/` and `skill/scripts/` are two portions of one namespace
-    package. Nothing declares a precedence between them, and the entry scripts
-    that put `skill/` on `sys.path` do it conditionally, so a basename carried
-    by both portions would resolve to whichever one came first -- with no error
-    and no way for a caller to tell which it got."""
+    """`devtools/` and `skill/scripts/` are both flat import roots (#3504
+    renamed the first out of the `scripts` namespace). Nothing declares a
+    precedence between them, so a bare basename carried by both would resolve
+    to whichever root came first -- with no error and no way for a caller to
+    tell which it got."""
 
     def test_the_two_portions_share_no_module_name(self):
         shared = sorted(_module_names(os.path.join(SKILL_ROOT, "scripts"))
-                        & _module_names(os.path.join(REPO_ROOT, "scripts")))
+                        & _module_names(os.path.join(REPO_ROOT, "devtools")))
         self.assertEqual(
             shared, [],
             "module name(s) in BOTH `scripts` portions: %s -- `import "

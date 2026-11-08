@@ -38,7 +38,7 @@ from tests.test_layout import LINE_CEILING
 # PACKAGES tuple does not name (its `base.py` is ARC-2990316730). NOT
 # recursive: `skill/scripts/synth/*` and friends are rule 5's, and tests are
 # nobody's business here.
-SURFACES = ("skill/scripts", "scripts", "skill/scripts/tools")
+SURFACES = ("skill/scripts", "devtools", "skill/scripts/tools")
 
 # path -> the line count it had when this guard landed (2026-09-26, main
 # de4675d; measured with `wc -l`, which agrees with `splitlines()` on every
@@ -56,8 +56,8 @@ SURFACES = ("skill/scripts", "scripts", "skill/scripts/tools")
 # #3460 and it is off the list) and `tools/base.py`
 # (ARC-2990316730; execution moved out in #3406 and it is off the list).
 PENDING: dict[str, int] = {
-    "scripts/bump_pins.py": 871,
-    "scripts/reconcile_apply.py": 813,
+    "devtools/bump_pins.py": 871,
+    "devtools/reconcile_apply.py": 813,
     "skill/scripts/diff_map.py": 1215,
     # #3457/#3485: catalog/scope moved out, then the dead panel schedule was deleted
     "skill/scripts/discovery.py": 1209,
@@ -190,7 +190,7 @@ class RatchetMechanicsTest(unittest.TestCase):
 
     def test_the_surface_is_every_flat_module_and_nothing_nested(self):
         with tempfile.TemporaryDirectory() as directory:
-            for relative in ("skill/scripts/driver.py", "scripts/triage.py",
+            for relative in ("skill/scripts/driver.py", "devtools/triage.py",
                              "skill/scripts/tools/base.py", "skill/scripts/tools/x/y.py",
                              "skill/scripts/synth/report.py", "scripts/sub/tool.py",
                              "tests/test_thing.py", "skill/scripts/notes.md"):
@@ -199,7 +199,7 @@ class RatchetMechanicsTest(unittest.TestCase):
                 with open(path, "w", encoding="utf-8") as fh:
                     fh.write("x = 1\n")
             self.assertEqual(_flat_modules(directory),
-                             ["scripts/triage.py", "skill/scripts/driver.py",
+                             ["devtools/triage.py", "skill/scripts/driver.py",
                               "skill/scripts/tools/base.py"])
 
     def test_a_last_line_without_a_newline_still_counts(self):

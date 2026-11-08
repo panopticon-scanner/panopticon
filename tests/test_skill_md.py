@@ -388,7 +388,7 @@ class TestSkillMd(unittest.TestCase):
 
     def test_all_script_commands_use_repo_root_prefix(self):
         # `python3 scripts/...` is ambiguous: from the repo root it hits the
-        # WRONG directory (repo-root scripts/ = file_issues/triage, not the
+        # WRONG directory (repo-root devtools/ = file_issues/triage, not the
         # pipeline). Every command must use the repo-root `skill/scripts/` prefix.
         offenders = [ln for ln in self.text.splitlines() if "python3 scripts/" in ln]
         self.assertEqual(offenders, [])

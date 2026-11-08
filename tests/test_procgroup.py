@@ -576,7 +576,7 @@ class TestATerminatedDriverEndsItsChildren(_GroupCase):
     def _stand_in(self, program, pidfile):
         env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=os.pathsep.join(
             [os.path.join(_REPO, "skill"), os.path.join(_REPO, "skill", "scripts"),
-             os.path.join(_REPO, "scripts"), _REPO]))
+             os.path.join(_REPO, "devtools"), _REPO]))
         proc = subprocess.Popen(  # noqa: S603 - the interpreter, never a shell
             [sys.executable, "-c", program, _TREE_PIDS % pidfile, self.root],
             cwd=self.root, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,

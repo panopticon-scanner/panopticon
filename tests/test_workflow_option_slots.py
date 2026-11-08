@@ -1,4 +1,4 @@
-"""`scripts/workflow_option_slots.py`: the words that may stand in a shell's option slot, split out of
+"""`devtools/workflow_option_slots.py`: the words that may stand in a shell's option slot, split out of
 `workflow_options` byte for byte (#2889).
 
 Pins the compatibility bindings -- every name the module defines is the SAME object in
@@ -128,7 +128,7 @@ class TestWorkflowOptionsBindsEveryMovedName(unittest.TestCase):
         # silently. This reads LITERAL names; the patches driven by a table are the next test's.
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         offenders = []
-        paths = sorted(os.path.join(folder, name) for top in ("scripts", "tests")
+        paths = sorted(os.path.join(folder, name) for top in ("devtools", "tests")
                        for folder, _folders, names in os.walk(os.path.join(root, top))
                        for name in names if name.endswith(".py"))
         self.assertGreater(len(paths), 100)

@@ -62,7 +62,7 @@ class _FakeProc:
 
 # #1766 (ARC-1825871623): the three import SHAPES a phase child uses, one per
 # root `_child_env` provides -- the `scripts.*` namespace package under skill/,
-# a bare skill/scripts module, and a bare repo-root scripts/ module. This child
+# a bare skill/scripts module, and a bare repo-root devtools/ module. This child
 # loads `evidence` under BOTH of its names on purpose: that is a REACHABILITY
 # probe for the three roots, not a driver process, so the dual identity
 # `tests/test_module_identity.py`'s census forbids is the measurement here

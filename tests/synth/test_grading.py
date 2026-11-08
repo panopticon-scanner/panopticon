@@ -871,7 +871,7 @@ print(json.dumps({"keys": list(graded.groups[0]["panel_grades"]),
         # would keep the oracle green while the product stayed nondeterministic
         # for every other reader of the JSON.
         from tests._test_helpers import REPO_ROOT
-        with open(os.path.join(REPO_ROOT, "scripts", "replay_report.py"),
+        with open(os.path.join(REPO_ROOT, "devtools", "replay_report.py"),
                   encoding="utf-8") as fh:
             hits = [ln.strip() for ln in fh if "PYTHONHASHSEED" in ln]
         self.assertEqual(hits, [], "replay_report.py still pins the hash seed")
