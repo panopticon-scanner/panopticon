@@ -295,14 +295,13 @@ class TestTheControlsAreLive(unittest.TestCase):
                 settings_path = os.path.join(runner.gemini_home, ".gemini", "settings.json")
                 with open(settings_path, encoding="utf-8") as fh:
                     settings = json.load(fh)
-                self.assertEqual(".panopticon-no-context.md",
-                                 settings.get("context", {}).get("fileName"))
+                self.assertNotIn("fileName", settings.get("context", {}))
                 self.assertIs(False, settings.get("context", {}).get(
                     "loadMemoryFromIncludeDirectories"))
                 self.assertIs(False, settings.get("security", {}).get(
                     "folderTrust", {}).get("enabled"))
             finally:
-                runner.teardown()
+                runner.teardown("complete")
 
 
 _HAZARDS = frozenset(chr(o) for o in

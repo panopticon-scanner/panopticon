@@ -21,7 +21,7 @@ HOST_GLOBALS = {
 MODULE_IMPORTS = {
     "node:fs", "fs", "node:fs/promises", "node:child_process", "node:module",
     "node:worker_threads", "node:net", "node:http", "node:https", "node:dgram",
-    "node:tls", "file:///tmp/panopticon-probe.mjs",
+    "node:tls", "node:http2", "file:///tmp/panopticon-probe.mjs",
 }
 
 
@@ -91,6 +91,32 @@ def test_the_non_ecmascript_host_global_allowlist_is_exact():
     assert codex_probes.CODE_MODE_HOST_GLOBALS == HOST_GLOBALS
 
 
+def test_the_author_asserted_live_host_global_classifications_are_recorded():
+    assert codex_probes._AUTHOR_ASSERTED_LIVE_HOST_GLOBAL_CLASSES == {
+        "ephemeral-store": frozenset({"store", "load"}),
+        "output-control": frozenset({"exit", "notify"}),
+        "promise-settlement": frozenset({"as_settled", "stream_settled"}),
+    }
+    classified = set().union(
+        *codex_probes._AUTHOR_ASSERTED_LIVE_HOST_GLOBAL_CLASSES.values())
+    assert classified <= codex_probes.CODE_MODE_HOST_GLOBALS
+
+
+def test_an_unlisted_builtin_canary_is_required_beside_the_curated_write_imports():
+    assert codex_host.BLANKET_IMPORT_CANARY == "node:http2"
+    assert codex_host.BLANKET_IMPORT_CANARY not in codex_host.WRITE_SURFACE_IMPORTS
+    surface = surfaces()[0][1]
+    assert codex_probes._codex_write_surface_problem(surface, "test shell") is None
+    surface["imports"].pop(codex_host.BLANKET_IMPORT_CANARY)
+    problem = codex_probes._codex_write_surface_problem(surface, "test shell")
+    assert problem == "Code Mode filesystem/process/network import set was not measured exactly"
+    surface = surfaces()[0][1]
+    surface["imports"][codex_host.BLANKET_IMPORT_CANARY]["error"] = "module not found"
+    problem = codex_probes._codex_write_surface_problem(surface, "test shell")
+    assert problem == (
+        "Code Mode import route 'node:http2' was not rejected as unsupported")
+
+
 WRITE_ROUTE_MUTATIONS = {
     "mcp-write-tool": lambda s: s["tools"].append("mcp__panopticon_scope__write_file"),
     "direct-write-tool": lambda s: s["direct_tools"].append("functions.apply_patch"),
@@ -98,6 +124,8 @@ WRITE_ROUTE_MUTATIONS = {
     "host-global": lambda s: s["globals"].append("writeFile"),
     "filesystem-import": lambda s: s["imports"].update(
         {"node:fs": {"ok": True, "value": ["writeFile"]}}),
+    "unlisted-builtin-import": lambda s: s["imports"].update(
+        {"node:http2": {"ok": True, "value": ["connect"]}}),
     "resource": lambda s: s["resources"].update(
         {"list": {"ok": True, "value": '{"resources":[{"uri":"file:///tmp/x"}]}'}}),
     "resource-template": lambda s: s["resources"].update(

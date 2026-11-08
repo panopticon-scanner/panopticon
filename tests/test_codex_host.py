@@ -39,7 +39,7 @@ class TestCodexSurfaceOwnership:
     def test_no_source_reaches_a_moved_name_through_codex_host(self):
         root = Path(REPO_ROOT)
         offenders = []
-        for surface in (root / "skill" / "scripts", root / "scripts", root / "tests"):
+        for surface in (root / "skill" / "scripts", root / "devtools", root / "tests"):
             for path in sorted(surface.rglob("*.py")):
                 tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
                 aliases = {"scripts.codex_host"}
@@ -115,7 +115,7 @@ class TestCodexScopeServerKey:
     def test_runtime_has_no_second_spelling(self):
         root = Path(REPO_ROOT)
         found = {}
-        for top in ("skill/scripts", "scripts"):
+        for top in ("skill/scripts", "devtools"):
             for path in sorted((root / top).rglob("*.py")):
                 relative = path.relative_to(root).as_posix()
                 hits = _hard_coded_scope_server(
@@ -599,6 +599,11 @@ def test_probe_script_quotes_paths_as_data_and_rejects_an_incomplete_set():
     assert "Object.getOwnPropertyNames(globalThis)" in script
     for specifier in ("node:fs", "node:child_process", "node:net", "file:"):
         assert specifier in script
+    # #3056: this remains separate from the curated write-shaped list so the
+    # live proof demonstrates blanket denial on an otherwise-unlisted builtin.
+    assert codex_host.BLANKET_IMPORT_CANARY == "node:http2"
+    assert codex_host.BLANKET_IMPORT_CANARY not in codex_host.WRITE_SURFACE_IMPORTS
+    assert codex_host.BLANKET_IMPORT_CANARY in script
     assert "tools.list_mcp_resources" in script
     assert "tools.list_mcp_resource_templates" in script
     assert "tools.read_mcp_resource" in script

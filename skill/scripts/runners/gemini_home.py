@@ -21,18 +21,19 @@ shadow shells leak into the review:
    (under `/tmp` or `/var/tmp`, space-free) and outside `.panopticon`.
 2. Inside `<run_home>/.gemini/` (mode `0700`), ONLY the operator's active auth
    credential files (`oauth_creds.json`, `google_accounts.json`) are copied
-   with `O_NOFOLLOW` and mode `0600` (`state.json`, `installation_id`, `mcp/`,
-   `extensions/`, `skills/`, `agents/`, `policies/`, `GEMINI.md`, and the
-   operator's `settings.json` are never copied or linked).
-3. `<run_home>/.gemini/settings.json` (mode `0600`) locks down every ambient
-   discovery surface:
-   - `admin.mcp.enabled = false`
-   - `admin.extensions.enabled = false`
-   - `admin.skills.enabled = false`
+   with `O_NOFOLLOW | O_NONBLOCK`, `S_ISREG` verification, and mode `0600`
+   (`state.json`, `installation_id`, `mcp/`, `extensions/`, `skills/`,
+   `agents/`, `policies/`, `GEMINI.md`, and the operator's `settings.json` are
+   never copied or linked).
+3. `<run_home>/.gemini/settings.json` (mode `0600`) locks down every user-level
+   ambient discovery surface (`SETTINGS_SCHEMA` in `chunk-CBP73R2W.js`):
+   - `mcpServers = {}` and `mcp.allowed = []`
+   - `skills.enabled = false`
    - `experimental.enableAgents = false`
    - `general.plan.enabled = false`
-   - `context.fileName = ".panopticon-no-context.md"` and
-     `context.loadMemoryFromIncludeDirectories = false`
+   - `context.loadMemoryFromIncludeDirectories = false` (and `context.fileName`
+     is omitted so `DEFAULT_CONTEXT_FILENAME = "GEMINI.md"` is not expanded by
+     additive `setGeminiMdFilename`)
    - `security.folderTrust.enabled = false` (so `<run_home>/workspace` is
      trusted and `HookRegistry` loads the `BeforeTool` hook without prompting)
    - `hooks.BeforeTool`: a single entry with `"matcher": "*"` invoking
@@ -41,19 +42,21 @@ shadow shells leak into the review:
    `.git/{HEAD,objects,refs}` stops `gemini`'s ancestor walk at
    `<run_home>/workspace`.
 5. `teardown(path, status)` removes `<run_home>` completely on
-   `status == "complete"` and strips `CREDENTIAL_FILES` on any other status,
-   backed by `atexit` and `SIGTERM` cleanup handlers.
+   `status == "complete"` and wipes `<run_home>/.gemini/` apart from diagnostic
+   `settings.json` and `policies/` on any other status, backed by `atexit` and
+   `SIGTERM` cleanup handlers.
 """
 import atexit
 import json
 import os
 import shutil
 import signal
+import stat
 import sys
 import tempfile
 
 import scripts.guard_rules as guard_rules
-import scripts.hosts as hosts
+import scripts.model_resolver as model_resolver
 import scripts.toml_values as toml_values
 
 
@@ -71,9 +74,22 @@ TOOL_VOCABULARY = {
     }),
 }
 
+GEMINI_TOOL_FOR = {
+    "Read": "read_file",
+    "Grep": "grep_search",
+    "Glob": "glob",
+    "Write": "write_file",
+}
+
 HOOK_MATCHER = "*"
 HOOK_TIMEOUT_MS = 30000
 CREDENTIAL_FILES = ("oauth_creds.json", "google_accounts.json")
+RUNTIME_SECRET_FILES = (
+    "oauth_creds.json",
+    "google_accounts.json",
+    "gemini-credentials.json",
+    "mcp-oauth-tokens.json",
+)
 ALLOWED_AUTH_TYPES = frozenset({
     "oauth-personal",
     "gemini-api-key",
@@ -82,15 +98,89 @@ ALLOWED_AUTH_TYPES = frozenset({
     "compute-default-credentials",
 })
 SETTINGS_FILE = "settings.json"
+SYSTEM_DEFAULTS_FILE = "system-defaults.json"
 POLICIES_DIR = "policies"
 UNENFORCED_POLICY_FILE = "unenforced.toml"
 WORKSPACE_DIR = "workspace"
-NO_CONTEXT_FILENAME = "%s-no-context.md" % guard_rules.ARTIFACT_DIR
+DIAGNOSTIC_PRESERVE = frozenset({SETTINGS_FILE, POLICIES_DIR})
+ENV_SYSTEM_SETTINGS = "GEMINI_CLI_SYSTEM_SETTINGS_PATH"
+ENV_SYSTEM_DEFAULTS = "GEMINI_CLI_SYSTEM_DEFAULTS_PATH"
 _HOME_PARENTS = ("/tmp", "/var/tmp")
 
 _LIVE_HOMES: set[str] = set()
 _PREV_SIGTERM = None
 _SIGNAL_INSTALLED = False
+
+
+def gemini_tools(tp):
+    """Map a neutral template `tool_policy` dict to `@google/gemini-cli` tool names."""
+    reads = [GEMINI_TOOL_FOR[t] for t in tp["allowed"]
+             if t in GEMINI_TOOL_FOR and t != "Write"]
+    return (reads
+            + (["list_directory"] if reads else [])
+            + (["write_file"] if "Write" in tp["allowed"] else []))
+
+
+def render_shell(role, agent, _meta, tp):
+    """Render one `panopticon-<role>.toml` Tier 5 `--admin-policy` shell."""
+    model = model_resolver.registration_model("gemini", role)
+    return render_policy_toml(gemini_tools(tp), role=role, agent_name=agent, model=model)
+
+
+def default_system_config_dir(platform=None):
+    """Return `@google/gemini-cli`'s `Storage.getSystemConfigDir()` path."""
+    plat = sys.platform if platform is None else platform
+    if plat == "darwin":
+        return "/Library/Application Support/GeminiCli"
+    if plat.startswith("win"):
+        return r"C:\ProgramData\gemini-cli"
+    return "/etc/gemini-cli"
+
+
+def system_policy_hazards(env=None, system_config_dir=None):
+    """Return a list of system-level `@google/gemini-cli` files or env overrides
+    that would supersede `--admin-policy` or `<run_home>/.gemini/settings.json`.
+
+    In `chunk-32XQ54AJ.js` (`createPolicyEngineConfig`), if any `*.toml` exists
+    in `Storage.getSystemPoliciesDir()`, `adminPolicyPaths` (`--admin-policy`)
+    is silently discarded (`adminPolicyPaths = void 0`). And in
+    `chunk-CBP73R2W.js` (`loadSettings`), system `settings.json` and
+    `system-defaults.json` merge above/around user settings.
+    """
+    check_env = os.environ if env is None else env
+    sys_dir = (default_system_config_dir() if system_config_dir is None
+               else system_config_dir)
+    hazards: list[str] = []
+    for var in (ENV_SYSTEM_SETTINGS, ENV_SYSTEM_DEFAULTS):
+        val = (check_env.get(var) or "").strip()
+        if val:
+            hazards.append("env %s=%r is set" % (var, val))
+    if not sys_dir:
+        return hazards
+    policies_dir = os.path.join(sys_dir, POLICIES_DIR)
+    try:
+        entries = sorted(os.listdir(policies_dir))
+    except (FileNotFoundError, NotADirectoryError):
+        entries = []
+    except OSError as exc:
+        hazards.append(
+            "system policies directory %s is unreadable (%s), cannot rule out --admin-policy override"
+            % (policies_dir, exc.strerror or exc))
+        entries = []
+    toml_files = [name for name in entries if name.lower().endswith(".toml")]
+    if toml_files:
+        hazards.append(
+            "system policy file(s) in %s (%s) silently disable --admin-policy"
+            % (policies_dir, ", ".join(toml_files)))
+    for fname in (SETTINGS_FILE, SYSTEM_DEFAULTS_FILE):
+        fpath = os.path.join(sys_dir, fname)
+        try:
+            if os.path.lexists(fpath):
+                hazards.append("system config file %s is present" % fpath)
+        except OSError as exc:
+            hazards.append("system config file %s could not be stat'd (%s)"
+                           % (fpath, exc.strerror or exc))
+    return hazards
 
 
 def _hook_script():
@@ -130,12 +220,21 @@ def _detect_auth_type(real_user_home, seeded_oauth):
             return None
     user_settings = os.path.join(real_user_home, ".gemini", SETTINGS_FILE)
     try:
-        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
         fd = os.open(user_settings, flags)
         try:
-            with os.fdopen(fd, "r", encoding="utf-8") as fh:
-                doc = json.load(fh)
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode):
+                os.close(fd)
+                fd = -1
+                doc = None
+            else:
+                with os.fdopen(fd, "r", encoding="utf-8") as fh:
+                    fd = -1
+                    doc = json.load(fh)
         except Exception:
+            if fd >= 0:
+                os.close(fd)
             doc = None
         if isinstance(doc, dict):
             sec = doc.get("security")
@@ -159,10 +258,12 @@ def settings_document(read_scope_path, write_allowlist_path, *,
     if isinstance(auth_type, str) and auth_type in ALLOWED_AUTH_TYPES:
         security["auth"] = {"selectedType": auth_type}
     return {
-        "admin": {
-            "mcp": {"enabled": False},
-            "extensions": {"enabled": False},
-            "skills": {"enabled": False},
+        "mcpServers": {},
+        "mcp": {
+            "allowed": [],
+        },
+        "skills": {
+            "enabled": False,
         },
         "experimental": {
             "enableAgents": False,
@@ -171,7 +272,6 @@ def settings_document(read_scope_path, write_allowlist_path, *,
             "plan": {"enabled": False},
         },
         "context": {
-            "fileName": NO_CONTEXT_FILENAME,
             "loadMemoryFromIncludeDirectories": False,
         },
         "security": security,
@@ -199,8 +299,9 @@ def settings_document(read_scope_path, write_allowlist_path, *,
 def render_policy_toml(allowed_tools, *, role=None, agent_name=None, model=None,
                        vocabulary=None):
     """Render a Tier 5 `--admin-policy` TOML document allowing `allowed_tools`
-    (priority 900) and denying every other tool in `TOOL_VOCABULARY` plus all
-    MCP tools (priority 950)."""
+    (priority 900), explicitly denying every other tool in `TOOL_VOCABULARY`
+    plus all MCP tools (priority 950), and installing a Tier 5 catch-all deny
+    (`toolName = "*"`, priority 100) that outranks `yolo.toml` (Tier 1, 1.998)."""
     vocab = (TOOL_VOCABULARY["0.55"] if vocabulary is None
              else frozenset(vocabulary))
     allowed_list = list(allowed_tools)
@@ -233,6 +334,11 @@ def render_policy_toml(allowed_tools, *, role=None, agent_name=None, model=None,
             "",
         ])
     lines.extend([
+        "[[rule]]",
+        'toolName = "*"',
+        'decision = "deny"',
+        "priority = 100",
+        "",
         "[[rule]]",
         'mcpName = "*"',
         'toolName = "*"',
@@ -279,16 +385,19 @@ def _create_home(review_root=None):
 
 
 def _copy_credential_file(src, dst):
-    """Copy a regular file with `O_NOFOLLOW` on both ends and mode `0600`.
-    Refuses symlinks and non-regular files silently (returns False)."""
+    """Copy a regular file with `O_NOFOLLOW | O_NONBLOCK` on open, `S_ISREG`
+    verification on `fstat`, and mode `0600` on destination. Refuses symlinks,
+    FIFOs, and non-regular files silently (returns False)."""
     nofollow = getattr(os, "O_NOFOLLOW", 0)
+    nonblock = getattr(os, "O_NONBLOCK", 0)
     try:
-        src_fd = os.open(src, os.O_RDONLY | nofollow)
+        src_fd = os.open(src, os.O_RDONLY | nofollow | nonblock)
     except OSError:
         return False
     try:
         st = os.fstat(src_fd)
-        if not os.path.samestat(st, os.lstat(src)):
+        if not stat.S_ISREG(st.st_mode) or not os.path.samestat(st, os.lstat(src)):
+            os.close(src_fd)
             return False
         with os.fdopen(src_fd, "rb") as rfh:
             src_fd = -1
@@ -342,12 +451,11 @@ def workspace_dir(home):
 
 
 def build(read_scope_path="", write_allowlist_path="", *, user_home=None,
-          registration_dir=None, review_root=None, matcher=HOOK_MATCHER):
+          review_root=None, matcher=HOOK_MATCHER):
     """Create and populate the isolated per-run `GEMINI_CLI_HOME` for `gemini`."""
     _ensure_signal_handler()
     real_user_home = (os.path.abspath(user_home) if user_home
                       else os.path.expanduser("~"))
-    _ = registration_dir or hosts.spec("gemini")
 
     home = _create_home(review_root)
     _LIVE_HOMES.add(home)
@@ -360,9 +468,10 @@ def build(read_scope_path="", write_allowlist_path="", *, user_home=None,
         os.chmod(policies_dir, 0o700)
 
         # P5: copy ONLY actual auth credential files (`oauth_creds.json`,
-        # `google_accounts.json`) with `O_NOFOLLOW` and mode `0600`. Never copy
-        # `state.json`, `installation_id`, `settings.json`, `GEMINI.md`, `mcp/`,
-        # `extensions/`, `skills/`, or `agents/`.
+        # `google_accounts.json`) with `O_NOFOLLOW | O_NONBLOCK`, `S_ISREG`,
+        # and mode `0600`. Never copy `state.json`, `installation_id`,
+        # `settings.json`, `GEMINI.md`, `mcp/`, `extensions/`, `skills/`, or
+        # `agents/`.
         seeded_oauth = False
         for fname in CREDENTIAL_FILES:
             src_cred = os.path.join(real_user_home, ".gemini", fname)
@@ -380,13 +489,13 @@ def build(read_scope_path="", write_allowlist_path="", *, user_home=None,
             indent=2)
         os.chmod(settings_path, 0o600)
 
-        # Fallback policy for explicitly `--allow-unenforced` launches where
-        # emitted per-role `.toml` shells may not be installed on disk: still
-        # confines `gemini` to the 5 reviewer tools and denies shell/edit/web/MCP.
+        # Fallback policy for explicitly `--allow-unenforced` launches: grants
+        # read-only reviewer tools (`read_file`, `grep_search`, `glob`,
+        # `list_directory`) and denies `write_file`, shell, edit, web, and MCP.
         _write_private_file(
             unenforced_policy_path(home),
             render_policy_toml(
-                ("read_file", "grep_search", "glob", "list_directory", "write_file"),
+                ("read_file", "grep_search", "glob", "list_directory"),
                 role="unenforced"))
 
         _init_workspace_ceiling(home)
@@ -400,12 +509,30 @@ def build(read_scope_path="", write_allowlist_path="", *, user_home=None,
 
 
 def _strip_secrets(path):
-    """Remove copied credential files when retaining a failed `<run_home>`."""
-    for fname in CREDENTIAL_FILES:
-        target = os.path.join(path, ".gemini", fname)
+    """Wipe credentials and runtime state under `<run_home>/.gemini/` when
+    retaining a failed `<run_home>`, preserving only diagnostic `settings.json`
+    and `policies/`."""
+    gemini_dir = os.path.join(path, ".gemini")
+    for fname in RUNTIME_SECRET_FILES:
+        target = os.path.join(gemini_dir, fname)
         try:
             if os.path.islink(target) or os.path.isfile(target):
                 os.unlink(target)
+        except OSError:
+            pass
+    try:
+        entries = list(os.listdir(gemini_dir))
+    except OSError:
+        return
+    for name in entries:
+        if name in DIAGNOSTIC_PRESERVE:
+            continue
+        target = os.path.join(gemini_dir, name)
+        try:
+            if os.path.islink(target) or not os.path.isdir(target):
+                os.unlink(target)
+            else:
+                shutil.rmtree(target, ignore_errors=True)
         except OSError:
             pass
 

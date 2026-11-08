@@ -2,7 +2,19 @@
 
 ## Unreleased
 
-- **Google Gemini CLI (`gemini`, `@google/gemini-cli`) is restored as a 5/5 first-class host (#3494, restoring the row #1621 had retired).** `HOSTS["gemini"]` is driver-selectable with `self_write_delivery = True`, backed by `skill/scripts/runners/gemini.py`, `skill/scripts/runners/gemini_home.py`, `skill/scripts/gemini_guard_hook.py` and five capability probes in `skill/scripts/probes/gemini.py` (`gemini-shell-surface`, `gemini-read-guard-armed`, `gemini-write-guard-armed`, `gemini-model-bound`, `gemini-usage-envelope`). Each headless run builds an isolated per-run home (`GEMINI_CLI_HOME`) outside `review_root` and outside `.panopticon` that copies only `oauth_creds.json` and `google_accounts.json` (`0600`, `O_NOFOLLOW`), writes `<run_home>/.gemini/settings.json` disabling MCP/extensions/skills/subagents/plan mode/folder trust while setting `context.fileName = ".panopticon-no-context.md"` and `context.loadMemoryFromIncludeDirectories = false`, seeds a minimal Git ceiling at `<run_home>/workspace/.git` (`cwd` on every launch), emits TOML Tier 4 `--admin-policy` role shells to `~/.gemini/cli-agents` (coexisting with `agy`), and arms a single wildcard `BeforeTool` hook (`"matcher": "*"`) enforcing a strict tool-name allowlist, `PANOPTICON_ENTRY_ID` + prompt-marker binding, explicit absolute paths, per-entry read scope and v2 write allowlist grants.
+- **Google Gemini CLI (`gemini`, `@google/gemini-cli`) is restored as a 5/5 first-class host (#3494, restoring the row #1621 had retired).** `HOSTS["gemini"]` is driver-selectable with `self_write_delivery = True`, backed by `skill/scripts/runners/gemini.py`, `skill/scripts/runners/gemini_home.py`, `skill/scripts/gemini_guard_hook.py` and five capability probes in `skill/scripts/probes/gemini.py` (`gemini-shell-surface`, `gemini-read-guard-armed`, `gemini-write-guard-armed`, `gemini-model-bound`, `gemini-usage-envelope`). Each headless run scrubs inherited `GEMINI_*`/`GEMINI_CLI_*` env vars (preserving only `ALLOWED_GEMINI_ENV_KEYS`), escapes `@` tokens in `-p` as `\@` so `handleAtCommand` cannot invoke `ReadManyFilesTool`, and builds an isolated per-run home (`GEMINI_CLI_HOME`) outside `review_root` and outside `.panopticon` that copies only `oauth_creds.json` and `google_accounts.json` (`0600`, `O_NOFOLLOW | O_NONBLOCK`, `S_ISREG`), writes `<run_home>/.gemini/settings.json` locking user-level MCP (`mcpServers = {}`, `mcp.allowed = []`), skills (`skills.enabled = false`), subagents (`experimental.enableAgents = false`), plan mode (`general.plan.enabled = false`), folder trust (`security.folderTrust.enabled = false`) and startup include-dir memory (`context.loadMemoryFromIncludeDirectories = false`, omitting `context.fileName` because `setGeminiMdFilename` is additive), seeds a minimal Git ceiling at `<run_home>/workspace/.git` (`cwd` on every launch), emits TOML Tier 5 `--admin-policy` role shells to `~/.gemini/cli-agents` (allow `priority = 900`, explicit deny `priority = 950`, catch-all `toolName = "*"` deny `priority = 100`, and MCP wildcard deny `priority = 950`, coexisting with `agy`), and arms a single wildcard `BeforeTool` hook (`"matcher": "*"`) enforcing a strict tool-name and per-tool `TOOL_INPUT_KEYS` parameter allowlist, `PANOPTICON_ENTRY_ID` binding, authoritative `argv` policy paths, explicit absolute paths, `include_pattern` / git-pathspec-magic refusal, per-entry read scope and v2 write allowlist grants.
+- **Repo-root `scripts/` is now `devtools/` (#3504, part of #1516).** The dev and CI tooling
+  (`bump_pins`, `ci_shards`, `workflow_guard`, `file_issues`, `replay_report`, ...) moved, so
+  `scripts` names `skill/scripts` only and no longer merges two directories into one namespace
+  package. Every reference moved with it: workflows, `pyproject.toml` (pytest `pythonpath`, mypy
+  `files`, coverage `source`), `panopticon.yml`, `phases/child._child_env`'s child PYTHONPATH,
+  tests and docs. Past CHANGELOG entries keep the old paths. `tests/test_layout.py` fails if a
+  root `scripts/` comes back.
+- **R2 affinity floors (#1133).** `skill/data/capability_affinity.yml` gains three floor domains from
+  the R2 calibration (a three-family panel on the thin capabilities, corroborated against the bulk
+  sweep, owner ruling 2026-11-08): Catalog now floors ACC and LNG, and Reporting floors LNG.
+  Checkout keeps ACC; Fulfillment is unchanged. The scout already selected these domains on
+  about 9 in 10 such targets, so the floor guards against a scout miss rather than adding coverage.
 - **CI test sharding, phase 2 (#2933).** `ci.yml` now shards the 3.12 coverage run into three
   `test-cov` groups plus the serial leg, combines their data in a `coverage` job that holds the one
   90% gate (every `--cov` leg passes `--cov-fail-under=0`, overriding pyproject's floor), and checks
@@ -43,6 +55,11 @@
   and route byte-identically because consumers have always ignored the field. The unused schedule
   derivation and its duplicate database/architecture classifiers are deleted; coverage remains the
   sole owner of objective routing signals.
+- **The Codex write-surface omission proof now tests blanket import denial (#3056).** Beside its
+  curated filesystem/process/network modules and real `file:` URL, every measured role attempts
+  the otherwise-unlisted `node:http2` builtin and must receive the same `unsupported import`
+  refusal. The six host globals whose non-write status rests on live function-body inspection are
+  now classified explicitly as ephemeral store, output/control, or Promise settlement helpers.
 - **The advisors are asked for `schema_version: 1`, and Codex requires it (#3482, owner-approved).**
   Each is its own commit:
   - **P1:** domain-advisor's bundle example leads with `"schema_version": 1`.

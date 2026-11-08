@@ -524,20 +524,22 @@ CONTROLS = {
         "gemini", (),
         "`runners.gemini.Runner.run_entry` runs the child in `<gemini_home>/workspace` "
         "(pinned with a `.git` ceiling), outside the review root, and sets "
-        "`admin.mcp.enabled=false`, `admin.extensions.enabled=false`, "
-        "`admin.skills.enabled=false`, `experimental.enableAgents=false`, and "
-        "`general.plan.enabled=false` in `<gemini_home>/.gemini/settings.json`"),
+        "`mcpServers={}`, `mcp.allowed=[]`, `skills.enabled=false`, "
+        "`experimental.enableAgents=false`, and `general.plan.enabled=false` "
+        "in `<gemini_home>/.gemini/settings.json`"),
     "gemini:isolated-home-default-context-filename": Control(
         "gemini", (),
-        "the isolated `<gemini_home>/.gemini/settings.json` sets "
-        "`context.fileName` to `gemini_home.NO_CONTEXT_FILENAME`, so `@google/gemini-cli`'s "
-        "default context filename list never includes `AGENTS.md`"),
+        "the isolated `<gemini_home>/.gemini/settings.json` omits `context.fileName` "
+        "and sets `context.loadMemoryFromIncludeDirectories=false`, so "
+        "`@google/gemini-cli`'s `getAllGeminiMdFilenames()` (`chunk-32XQ54AJ.js:11342670`) "
+        "stays at its default `['GEMINI.md']` and never includes `AGENTS.md`"),
     "gemini:admin-policy-tier": Control(
         "gemini", ("--admin-policy",),
         "`--admin-policy <role_policy.toml>` loads at `ADMIN_POLICY_TIER = 5` "
-        "(priority `5.900`/`5.950`), which strictly outranks workspace policies "
-        "(Tier 3) and `--approval-mode yolo` (Tier 1, `1.999`), and `cwd` is "
-        "outside the review root so `.gemini/policies/` in the target is never loaded"),
+        "(allow `5.900`, explicit deny `5.950`, catch-all deny `5.100`), which "
+        "strictly outranks workspace policies (Tier 3) and `--approval-mode yolo` "
+        "(Tier 1, `1.998`), and `cwd` is outside the review root so `.gemini/policies/` "
+        "in the target is never loaded"),
 }
 
 

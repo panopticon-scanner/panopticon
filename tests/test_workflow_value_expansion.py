@@ -65,7 +65,7 @@ class TestTheValueLayerBindsEveryMovedName(unittest.TestCase):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         binders = ("workflow_values", "workflow_uses", "workflow_called", "workflow_annotate")
         offenders = []
-        paths = sorted(os.path.join(folder, name) for top in ("scripts", "tests")
+        paths = sorted(os.path.join(folder, name) for top in ("devtools", "tests")
                        for folder, _folders, names in os.walk(os.path.join(root, top))
                        for name in names if name.endswith(".py"))
         self.assertGreater(len(paths), 100)

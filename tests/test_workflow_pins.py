@@ -29,7 +29,7 @@ from scripts import scanner_config
 from tests._test_helpers import REPO_ROOT
 import workflow_subset
 from workflow_guard import UNNAMED, Step, fetches, job_defects, run_jobs
-# #1641's comment-stripper, now `scripts/shell_reader.py`'s: half this repo's
+# #1641's comment-stripper, now `devtools/shell_reader.py`'s: half this repo's
 # workflow and Dockerfile prose QUOTES the commands it explains -- including
 # the two the install rule was written for -- and a guard that reads a comment
 # as an act flags the explanation. One definition, two rules.
@@ -117,7 +117,7 @@ def _workflow_files():
 # guards it; nothing guarded the workflows, where the same act is written in
 # shell instead of Dockerfile syntax.
 #
-# The RULE now lives in `scripts/workflow_guard.py`, and its unit spec in
+# The RULE now lives in `devtools/workflow_guard.py`, and its unit spec in
 # `tests/test_workflow_guard.py`. #1647 moved it: what stood here were two
 # regexes that could not see `curl ... | sh` or `--output` as downloads at all,
 # and accepted any `sha256sum -c` anywhere in the step as verification of every
@@ -139,7 +139,7 @@ def _workflow_files():
 # privileged may not hold one.
 EXEMPT_FETCHES = ()
 # (workflow, step name, why it may run outside the understood subset) -- #3141: a step a download reaches (the
-# one that fetches and every one after it in its job) that reads outside `scripts/workflow_subset.py`'s subset is
+# one that fetches and every one after it in its job) that reads outside `devtools/workflow_subset.py`'s subset is
 # UNVERIFIED, "step not fully read: ...". EMPTY, and held to the same checks as EXEMPT_FETCHES: each entry is a
 # named step with a written reason, one that stops firing is stale, and a privileged workflow may hold none. A step
 # the subset should cover widens it there instead.
@@ -2866,18 +2866,18 @@ class TestVerifiedPinFreshnessJobs(unittest.TestCase):
         steps = job.get("steps", [])
         check = next((step for step in steps if step.get("id") == "check"), {})
         apply = next((step for step in steps if
-                      "python3 scripts/bump_pins.py " + family + " --write" in
+                      "python3 devtools/bump_pins.py " + family + " --write" in
                       step.get("run", "")), {})
         opening = next((step for step in steps if
-                        "scripts/open_pin_pr.py" in step.get("run", "")), {})
+                        "devtools/open_pin_pr.py" in step.get("run", "")), {})
         defects = []
         if job.get("permissions") != {"contents": "write", "pull-requests": "write"}:
             defects.append("job permissions")
         if not check.get("run", "").startswith("set -euo pipefail\n"):
             defects.append("check shell fail-closed")
-        if "python3 scripts/bump_pins.py " + family + " | tee " not in check.get("run", ""):
+        if "python3 devtools/bump_pins.py " + family + " | tee " not in check.get("run", ""):
             defects.append("check command")
-        write = "python3 scripts/bump_pins.py " + family + " --write"
+        write = "python3 devtools/bump_pins.py " + family + " --write"
         if apply.get("run", "").strip() not in (write, "set -euo pipefail\n" + write):
             defects.append("write command/failure propagation")
         if apply.get("if") != "steps.check.outputs.stale == 'true'":
@@ -2887,7 +2887,7 @@ class TestVerifiedPinFreshnessJobs(unittest.TestCase):
         # This is a single command: Actions propagates its exit code. Exact
         # family binding guards against another pin family opening this PR;
         # the helper tests cover branch naming and explicit PR metadata.
-        if opening.get("run") != "python3 scripts/open_pin_pr.py " + family:
+        if opening.get("run") != "python3 devtools/open_pin_pr.py " + family:
             defects.append("PR helper/failure propagation")
         if opening.get("env") != {"GH_TOKEN": "${{ github.token }}"}:
             defects.append("PR authentication")
@@ -2917,15 +2917,15 @@ class TestVerifiedPinFreshnessJobs(unittest.TestCase):
         with open(os.path.join(WORKFLOW_DIR, "pin-freshness.yml"), encoding="utf-8") as fh:
             original = yaml.safe_load(fh)["jobs"]["rustup"]
         cases = (
-            (lambda job: job["steps"][3].update(run="python3 scripts/open_pin_pr.py trivy"),
+            (lambda job: job["steps"][3].update(run="python3 devtools/open_pin_pr.py trivy"),
              "PR helper/failure propagation"),
-            (lambda job: job["steps"][3].update(run="python3 scripts/open_pin_pr.py rustup || true"),
+            (lambda job: job["steps"][3].update(run="python3 devtools/open_pin_pr.py rustup || true"),
              "PR helper/failure propagation"),
             (lambda job: job["steps"][3].pop("if"), "PR condition"),
             (lambda job: job["steps"][3].pop("env"), "PR authentication"),
             (lambda job: job["steps"][0].update(uses="actions/checkout@v7"),
              "pinned checkout"),
-            (lambda job: job["steps"][2].update(run="python3 scripts/bump_pins.py rustup --write || true"),
+            (lambda job: job["steps"][2].update(run="python3 devtools/bump_pins.py rustup --write || true"),
              "write command/failure propagation"),
         )
         for mutate, expected in cases:

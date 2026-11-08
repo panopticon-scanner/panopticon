@@ -158,7 +158,7 @@ raise SystemExit(pytest.main(["-c", str(root / "pyproject.toml"), "--collect-onl
     def test_pytest_roots_are_declarative(self):
         config = tomllib.loads((ROOT.parent / "pyproject.toml").read_text())
         options = config["tool"]["pytest"]["ini_options"]
-        self.assertEqual(options["pythonpath"], ["skill", "skill/scripts", "scripts", "."])
+        self.assertEqual(options["pythonpath"], ["skill", "skill/scripts", "devtools", "."])
         self.assertIn("--import-mode=importlib", options["addopts"])
 
     def test_test_imports_are_canonical(self):

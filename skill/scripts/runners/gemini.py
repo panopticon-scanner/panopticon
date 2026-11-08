@@ -1,17 +1,23 @@
 """Headless runner for the `gemini` (`@google/gemini-cli`) host family (#3494).
 
 Launches each review entry in a dedicated `gemini -p` subprocess with:
-- `GEMINI_CLI_HOME` pointed at the isolated per-run home built by `runners.gemini_home`
+- `GEMINI_CLI_HOME` and `HOME` pointed at the isolated per-run home built by
+  `runners.gemini_home`, with inherited `GEMINI_*` and `GEMINI_CLI_*` env vars
+  scrubbed (except `ALLOWED_GEMINI_ENV_KEYS`)
 - `cwd` pointed at `<gemini_home>/workspace` (which carries a `.git` ceiling)
 - `--output-format json` for structured JSON telemetry and response envelopes
 - `--approval-mode yolo` for non-interactive headless execution (subordinate to
-  both our `BeforeTool` hook and Tier 5 `--admin-policy` deny rules)
+  both our `BeforeTool` hook and Tier 5 `--admin-policy` allow/deny + catch-all
+  rules)
 - `--admin-policy <panopticon-<role>.toml>` for Tier 5 role tool-allowlist enforcement
 - `--include-directories <review_root>` so `read_file`/`grep_search`/`glob`/`list_directory`
-  can reach `review_root` from `<gemini_home>/workspace` while our `BeforeTool`
-  hook (`gemini_guard_hook.py`) enforces per-entry `read-scope.json` and
-  `write-allowlist.json`
+  can pass `WorkspaceContext.isPathReadable` (`validateToolParamValues`) from
+  `<gemini_home>/workspace` while our `BeforeTool` hook (`gemini_guard_hook.py`)
+  enforces per-entry `read-scope.json` and `write-allowlist.json`
 - `-m <slug>` for role-resolved model binding
+- `-p <escaped_prompt>` with every `@` escaped as `\\@` so `handleAtCommand` /
+  `parseAllAtCommands` never invokes `ReadManyFilesTool` outside `PolicyEngine`
+  and `BeforeTool`
 """
 import json
 import os
@@ -29,7 +35,12 @@ import scripts.runners.gemini_home as gemini_home
 DEFAULT_RUNNER = None
 
 _SAFE_TOKEN_RE = re.compile(r"\A[A-Za-z0-9._:-]+\Z")
-_NESTED_MARKERS = ("GEMINI_CLI",)
+_UNESCAPED_AT_RE = re.compile(r"(?<!\\)@")
+
+ALLOWED_GEMINI_ENV_KEYS = frozenset({
+    "GEMINI_API_KEY",
+    "GEMINI_API_KEY_AUTH_MECHANISM",
+})
 
 KNOWN_MODELS = frozenset({
     "gemini-2.5-pro",
@@ -52,6 +63,14 @@ KNOWN_MODELS = frozenset({
     "auto-gemini-3",
     "auto-gemini-2.5",
 })
+
+
+def escape_prompt_at_tokens(prompt):
+    """Escape every unescaped `@` as `\\@` so `@google/gemini-cli`'s
+    `parseAllAtCommands` (`(?<!\\\\)@${AT_COMMAND_PATH_REGEX_SOURCE}` in
+    `chunk-3PF5QBBI.js`) treats all `@` tokens in `-p` as literal text and never
+    invokes `ReadManyFilesTool` before `PolicyEngine` / `BeforeTool`."""
+    return _UNESCAPED_AT_RE.sub(r"\\@", prompt)
 
 
 def _validate_flag_value(value, label):
@@ -80,6 +99,8 @@ def _extract_usage_and_model(doc):
     - `input`: `Math.max(0, prompt - cached)` (already disjoint from `cached`)
     - `candidates`: output candidate tokens (`candidatesTokenCount`)
     - `thoughts`: thinking tokens (`thoughtsTokenCount`, separate from `candidates`)
+    - `tool`: `toolUsePromptTokenCount` (server-side tool-use prompt tokens;
+      0 for local tool executions, included by the API in `totalTokenCount`)
     - `total`: total token count (`totalTokenCount`)
 
     We map:
@@ -89,6 +110,7 @@ def _extract_usage_and_model(doc):
     - `output_tokens = candidates + thoughts` (so `USAGE_FIELDS` captures all
       generated output + thinking tokens without double-counting)
     - `thinking_tokens = thoughts`
+    - `total_tokens = total or (input_tokens + output_tokens + cache_read_input_tokens)`
     """
     usage = {}
     model = doc.get("model") if isinstance(doc.get("model"), str) and doc.get("model") else None
@@ -103,7 +125,7 @@ def _extract_usage_and_model(doc):
         thinking = (_safe_int(raw_usage.get("thinking_tokens"))
                     or _safe_int(raw_usage.get("reasoning_tokens")))
         total = (_safe_int(raw_usage.get("total_tokens"))
-                 or (inp + out + cache_read))
+                or (inp + out + cache_read))
         usage = {
             "input_tokens": inp,
             "output_tokens": out,
@@ -175,8 +197,9 @@ def parse_envelope(raw, returncode=0, stderr=None, *, entry_id=""):
         detail = diagnosis or "no JSON envelope on stdout"
         reason = ("gemini -p exited %s: %s" % (returncode, detail)
                   if returncode != 0 else "gemini -p returned non-JSON stdout")
+        safe_raw = redact.redact(raw_text[:200]) if returncode != 0 and raw_text else ""
         return base.RunResult(
-            entry_id=entry_id, ok=False, text=raw_text if returncode != 0 else "",
+            entry_id=entry_id, ok=False, text=safe_raw,
             usage={}, cost_usd=None, model=None, session_id=None, denials=[],
             error=reason, host_error=err_text or None, stderr=diagnosis,
             host_error_from_stderr=bool(err_text))
@@ -253,8 +276,7 @@ class Runner(base.HostRunner):
         write_allowlist = os.path.join(self.run_dir, base.ALLOWLIST_FILE)
         self.gemini_home = gemini_home.build(
             read_scope, write_allowlist,
-            review_root=self.review_root,
-            registration_dir=self.registration_dir)
+            review_root=self.review_root)
         self.run_home = self.gemini_home
         self.workspace_dir = gemini_home.workspace_dir(self.gemini_home)
 
@@ -268,11 +290,15 @@ class Runner(base.HostRunner):
 
     def launch_env(self, overlay=None):
         run_env = super().launch_env(overlay)
+        for key in list(run_env):
+            if (key.startswith("GEMINI_") or key == "GEMINI_CLI") \
+                    and key not in ALLOWED_GEMINI_ENV_KEYS \
+                    and key != gemini_guard_hook.ENV_DENIAL_LOG:
+                run_env.pop(key, None)
         if self.gemini_home:
+            run_env["HOME"] = self.gemini_home
             run_env["GEMINI_CLI_HOME"] = self.gemini_home
         run_env["NO_COLOR"] = "1"
-        for marker in _NESTED_MARKERS:
-            run_env.pop(marker, None)
         return run_env
 
     def _shell_path(self, entry):
@@ -329,7 +355,7 @@ class Runner(base.HostRunner):
         eff_model = model if model is not None else entry.get("model")
         if eff_model is not None:
             cmd.extend(["-m", _validate_flag_value(eff_model, "-m")])
-        cmd.extend(["-p", prompt])
+        cmd.extend(["-p", escape_prompt_at_tokens(prompt)])
         return cmd
 
     def parse_envelope(self, entry_id, stdout, returncode=0, stderr=None):

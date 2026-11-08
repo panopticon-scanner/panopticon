@@ -1,4 +1,4 @@
-"""`scripts/shell_command.py`: the command layer split out of `shell_reader` byte for byte.
+"""`devtools/shell_command.py`: the command layer split out of `shell_reader` byte for byte.
 
 Pins the compatibility bindings -- every name the reader imports back is the SAME object, so
 no caller that reads `shell_reader.command` or `shell_reader.KEYWORDS` moved -- and that the

@@ -283,11 +283,11 @@ groups:
       match:
       - requirements-tools.txt
       - tools-image/**
-      - scripts/bump_pins.py
-      - scripts/dockerfile_args.py
-      - scripts/pin_requirements.py
-      - scripts/requirement_policy.py
-      - scripts/open_pin_pr.py
+      - devtools/bump_pins.py
+      - devtools/dockerfile_args.py
+      - devtools/pin_requirements.py
+      - devtools/requirement_policy.py
+      - devtools/open_pin_pr.py
       tests:
       - tests/test_dockerfile.py
       - tests/test_dockerfile_closures.py
@@ -655,7 +655,7 @@ groups:
       - skill/scripts/synthesize.py
       - skill/scripts/synth/report.py
       - skill/scripts/synth/render.py
-      - scripts/replay_report.py
+      - devtools/replay_report.py
       tests:
       - tests/synth/test_report*.py
       - tests/test_synthesize.py
@@ -733,16 +733,16 @@ groups:
       - skill/scripts/x0x_report.py
       - skill/scripts/strain_report.py
       - skill/scripts/report_records.py
-      - scripts/file_issues.py
-      - scripts/file_fixmes.py
-      - scripts/triage.py
-      - scripts/gh_transport.py
-      - scripts/reconcile_apply.py
-      - scripts/pinned_dir.py
-      - scripts/sanitize.py
-      - scripts/code_scanning_reports.py
-      - scripts/reference/*.json
-      - scripts/code_scanning_audit.py
+      - devtools/file_issues.py
+      - devtools/file_fixmes.py
+      - devtools/triage.py
+      - devtools/gh_transport.py
+      - devtools/reconcile_apply.py
+      - devtools/pinned_dir.py
+      - devtools/sanitize.py
+      - devtools/code_scanning_reports.py
+      - devtools/reference/*.json
+      - devtools/code_scanning_audit.py
       tests:
       - tests/test_html_report.py
       - tests/test_x0x_report.py
@@ -759,18 +759,18 @@ groups:
     Shell:
       # #2521: keep the parser, lexer and their focused tests in one review.
       match:
-      - scripts/shell_reader.py
-      - scripts/shell_split.py
-      - scripts/shell_command.py
-      - scripts/shell_folds.py
-      - scripts/shell_defaults.py
-      - scripts/shell_tokens.py
-      - scripts/shell_lex.py
-      - scripts/shell_quote.py
-      - scripts/shell_patterns.py
-      - scripts/shell_text.py
-      - scripts/shell_heredoc.py
-      - scripts/shell_wrappers.py
+      - devtools/shell_reader.py
+      - devtools/shell_split.py
+      - devtools/shell_command.py
+      - devtools/shell_folds.py
+      - devtools/shell_defaults.py
+      - devtools/shell_tokens.py
+      - devtools/shell_lex.py
+      - devtools/shell_quote.py
+      - devtools/shell_patterns.py
+      - devtools/shell_text.py
+      - devtools/shell_heredoc.py
+      - devtools/shell_wrappers.py
       tests:
       - tests/test_shell_reader.py
       - tests/test_workflow_a_descriptors_path.py
@@ -787,24 +787,24 @@ groups:
     WorkflowGuard:
       # #2586: keep the guard's proof layers and focused tests in one review.
       match:
-      - scripts/workflow_guard.py
-      - scripts/workflow_defect.py
-      - scripts/workflow_checks.py
-      - scripts/workflow_failure_contexts.py
-      - scripts/workflow_printers.py
-      - scripts/workflow_printer_writes.py
-      - scripts/workflow_groups.py
-      - scripts/workflow_stdin.py
-      - scripts/workflow_uses.py
-      - scripts/workflow_use_words.py
-      - scripts/workflow_use_scopes.py
-      - scripts/workflow_subset.py
-      - scripts/workflow_values.py
-      - scripts/workflow_value_expansion.py
-      - scripts/workflow_called.py
-      - scripts/workflow_called_fetches.py
-      - scripts/workflow_written.py
-      - scripts/workflow_annotate.py
+      - devtools/workflow_guard.py
+      - devtools/workflow_defect.py
+      - devtools/workflow_checks.py
+      - devtools/workflow_failure_contexts.py
+      - devtools/workflow_printers.py
+      - devtools/workflow_printer_writes.py
+      - devtools/workflow_groups.py
+      - devtools/workflow_stdin.py
+      - devtools/workflow_uses.py
+      - devtools/workflow_use_words.py
+      - devtools/workflow_use_scopes.py
+      - devtools/workflow_subset.py
+      - devtools/workflow_values.py
+      - devtools/workflow_value_expansion.py
+      - devtools/workflow_called.py
+      - devtools/workflow_called_fetches.py
+      - devtools/workflow_written.py
+      - devtools/workflow_annotate.py
       tests:
       - tests/test_workflow_guard.py
       - tests/test_workflow_defect.py
@@ -822,15 +822,15 @@ groups:
     WorkflowForms:
       # #2433: keep command shapes and their failure-gating proof together.
       match:
-      - scripts/workflow_forms.py
-      - scripts/workflow_carried.py
-      - scripts/workflow_gating.py
-      - scripts/workflow_step_credit.py
-      - scripts/workflow_function_calls.py
-      - scripts/workflow_function_index.py
-      - scripts/workflow_posture.py
-      - scripts/workflow_status.py
-      - scripts/workflow_operands.py
+      - devtools/workflow_forms.py
+      - devtools/workflow_carried.py
+      - devtools/workflow_gating.py
+      - devtools/workflow_step_credit.py
+      - devtools/workflow_function_calls.py
+      - devtools/workflow_function_index.py
+      - devtools/workflow_posture.py
+      - devtools/workflow_status.py
+      - devtools/workflow_operands.py
       tests:
       - tests/test_workflow_branch_option_state.py
       - tests/test_workflow_function_gate_calls.py
@@ -855,10 +855,10 @@ groups:
     WorkflowFetch:
       # #2829: bounded named fetches and destination-less network producers.
       match:
-      - scripts/workflow_fetch.py
-      - scripts/workflow_compound_outputs.py
-      - scripts/workflow_fetch_adapters.py
-      - scripts/workflow_network.py
+      - devtools/workflow_fetch.py
+      - devtools/workflow_compound_outputs.py
+      - devtools/workflow_fetch_adapters.py
+      - devtools/workflow_network.py
       tests:
       - tests/test_workflow_fetch_adapters.py
       - tests/test_workflow_network_producers.py
@@ -868,12 +868,12 @@ groups:
       # #3020: what a shell is handed as its program -- the programs lane's
       # readers and their focused tests, split out of `WorkflowGuard` at its fence.
       match:
-      - scripts/workflow_file_readers.py
-      - scripts/workflow_programs.py
-      - scripts/workflow_program_strings.py
-      - scripts/workflow_options.py
-      - scripts/workflow_option_slots.py
-      - scripts/workflow_option_words.py
+      - devtools/workflow_file_readers.py
+      - devtools/workflow_programs.py
+      - devtools/workflow_program_strings.py
+      - devtools/workflow_options.py
+      - devtools/workflow_option_slots.py
+      - devtools/workflow_option_words.py
       tests:
       - tests/test_workflow_file_reader_handoffs.py
       - tests/test_workflow_options.py
@@ -889,7 +889,7 @@ groups:
       # #2933: and with the shard bookkeeping ci.yml runs.
       match:
       - .github/**
-      - scripts/ci_shards.py
+      - devtools/ci_shards.py
       tests:
       - tests/test_ci_shards.py
       - tests/ci_shard_manifest.py

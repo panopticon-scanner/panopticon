@@ -362,5 +362,45 @@ class ScriptsDirTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(runio._script("synthesize.py")))
 
 
+class OneScriptsNamespaceTest(unittest.TestCase):
+    """#3504: the repo-root dev tools are `devtools/`, so `scripts` names
+    `skill/scripts` only. A root `scripts/` (or a path entry naming one) would
+    merge back into the namespace package and make resolution order-dependent."""
+
+    def test_no_repo_root_scripts_directory(self):
+        self.assertFalse(os.path.exists(os.path.join(REPO_ROOT, "scripts")))
+        self.assertTrue(os.path.isfile(os.path.join(REPO_ROOT, "devtools", "workflow_guard.py")))
+
+    def test_pyproject_paths_name_devtools_not_a_root_scripts(self):
+        import tomllib
+        with open(os.path.join(REPO_ROOT, "pyproject.toml"), "rb") as fh:
+            cfg = tomllib.load(fh)
+        lists = {
+            "pytest pythonpath": cfg["tool"]["pytest"]["ini_options"]["pythonpath"],
+            "mypy files": cfg["tool"]["mypy"]["files"],
+            "coverage source": cfg["tool"]["coverage"]["run"]["source"],
+        }
+        for where, paths in lists.items():
+            with self.subTest(where=where):
+                self.assertNotIn("scripts", paths)
+                self.assertIn("devtools", paths)
+
+    def test_ci_type_check_targets_match_the_mypy_files(self):
+        # #3504: CI calls mypy with explicit paths, which override pyproject's
+        # `files`; a stale root `scripts` there fails the lint job only in CI.
+        import shlex
+        import tomllib
+        import yaml
+        with open(os.path.join(REPO_ROOT, "pyproject.toml"), "rb") as fh:
+            files = tomllib.load(fh)["tool"]["mypy"]["files"]
+        with open(os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml"), encoding="utf-8") as fh:
+            steps = yaml.safe_load(fh)["jobs"]["lint"]["steps"]
+        runs = [shlex.split(s["run"]) for s in steps if "mypy" in shlex.split(s.get("run", ""))]
+        self.assertEqual(len(runs), 1, "expected one mypy step in the lint job")
+        argv = runs[0]
+        targets = [a for a in argv[argv.index("mypy") + 1:] if not a.startswith("-")]
+        self.assertEqual(sorted(targets), sorted(files))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -417,33 +417,50 @@ re-attempt (#3494) must not register shells where `agy` looks
 restores the row as a 5/5 first-class host on `@google/gemini-cli` `0.55.x`.)
 `skill/scripts/runners/gemini.py` sets `CLI = "gemini"`,
 `ENVELOPE_FLAGS = ("-p", "--output-format")`, `OUTPUT_SCHEMA_FLAG = ()`,
-`HONOURS_MAX_TURNS = False` and `default_concurrency = 4`. Its `prepare` builds
-an isolated per-run home (`runners/gemini_home.py`) outside `review_root` and
-outside `.panopticon` that copies ONLY `oauth_creds.json` and
-`google_accounts.json` (`0600`, `O_NOFOLLOW`), writes an isolated
-`<run_home>/.gemini/settings.json` disabling MCP, extensions, skills, subagents,
-plan mode and folder trust while setting
-`context.fileName = ".panopticon-no-context.md"` and
-`context.loadMemoryFromIncludeDirectories = false`, writes
+`HONOURS_MAX_TURNS = False` and `default_concurrency = 4`, scrubs inherited
+`GEMINI_*` / `GEMINI_CLI_*` env vars (preserving only `ALLOWED_GEMINI_ENV_KEYS`),
+and escapes every `@` in `-p` as `\@` so `handleAtCommand` / `parseAllAtCommands`
+(`chunk-3PF5QBBI.js`) never invokes `ReadManyFilesTool` outside `PolicyEngine`
+and `BeforeTool`. Its `prepare` builds an isolated per-run home
+(`runners/gemini_home.py`) outside `review_root` and outside `.panopticon` that
+copies ONLY `oauth_creds.json` and `google_accounts.json` (`0600`,
+`O_NOFOLLOW | O_NONBLOCK`, `S_ISREG`), writes an isolated
+`<run_home>/.gemini/settings.json` setting `mcpServers = {}`, `mcp.allowed = []`,
+`skills.enabled = false`, `experimental.enableAgents = false`,
+`general.plan.enabled = false`, `security.folderTrust.enabled = false`, and
+`context.loadMemoryFromIncludeDirectories = false` (omitting `context.fileName`
+because `setGeminiMdFilename` is additive), writes a read-only
 `<run_home>/.gemini/policies/unenforced.toml`, and seeds a minimal Git ceiling
 `<run_home>/workspace/.git/{HEAD,objects,refs}` (`cwd` on every launch). Role
 shells are emitted to `~/.gemini/cli-agents/panopticon-*.toml` (disjoint from
 `agy`'s `~/.gemini/config/agents/` and `~/.gemini/agents/`) and passed via
-`--admin-policy <role_toml>` (Tier 4), which denies every tool in the versioned
-`0.55` CLI vocabulary not granted by the role (`priority = 900`) and sets the
-granted tools to `decision = "allow"` (`priority = 100`). Every tool invocation
-then passes through `hooks.BeforeTool` (`"matcher": "*"`) invoking
-`skill/scripts/gemini_guard_hook.py`, which enforces a hard tool-name allowlist
-(`read_file`, `grep_search`, `glob`, `list_directory`, `write_file`),
-`PANOPTICON_ENTRY_ID` + prompt-marker binding, explicit absolute paths,
+`--admin-policy <role_toml>` (Tier 5, `ADMIN_POLICY_TIER = 5` in
+`chunk-32XQ54AJ.js:11386058`), which sets the role's granted tools to
+`decision = "allow"` (`priority = 900`), denies every other tool in the
+versioned `0.55` CLI vocabulary plus all MCP tools (`priority = 950`), and
+installs a Tier 5 catch-all deny (`toolName = "*"`, `decision = "deny"`,
+`priority = 100`, effective `5.100`) that outranks `yolo.toml` (Tier 1, `1.998`).
+`gemini-shell-surface` refutes if any system policy `.toml` or system
+`settings.json` / `system-defaults.json` exists in `Storage.getSystemConfigDir()`
+(because `createPolicyEngineConfig` silently drops `--admin-policy` when system
+policies exist). Every tool invocation then passes through `hooks.BeforeTool`
+(`"matcher": "*"`) invoking `skill/scripts/gemini_guard_hook.py`, which enforces
+a hard tool-name allowlist (`read_file`, `grep_search`, `glob`,
+`list_directory`, `write_file`), a strict per-tool `TOOL_INPUT_KEYS` parameter
+allow-set, `PANOPTICON_ENTRY_ID` binding, authoritative `argv` policy paths,
+explicit absolute paths, `include_pattern` / git-pathspec-magic refusal,
 per-entry read scope, and v2 write allowlist grants (`self_write_delivery = True`).
 On the discovery surface (#1657), `GM-2`..`GM-6` are `CONTROLLED` by
 `gemini:cwd-outside-target`, `gemini:isolated-home-default-context-filename`
-and `gemini:admin-policy-tier`, while `GM-1` (`**/GEMINI.md`) remains `OPEN`
-because `loadJitSubdirectoryMemory` in `@google/gemini-cli` `0.55.1` hardcodes
-`DEFAULT_CONTEXT_FILENAME = "GEMINI.md"` when `read_file` accesses a target
-file (`packages/core/src/utils/memoryDiscovery.ts:448-451`,
-`packages/core/src/context/memoryContextManager.ts:154-194`).
+and `gemini:admin-policy-tier`, while `GM-1` (`GEMINI.md`, `**/GEMINI.md`)
+remains `OPEN`: in `packages/core/dist/src/tools/memoryTool.js`
+(`chunk-32XQ54AJ.js:11342670`), `DEFAULT_CONTEXT_FILENAME` is `"GEMINI.md"` and
+`setGeminiMdFilename` is additive (`for (const filename of current) { next.add(filename); }`),
+while `ReadFileToolInvocation.execute` calls `discoverJitContext` ->
+`memoryContextManager.discoverContext` (`chunk-32XQ54AJ.js:15298800`), which
+walks upward from any read file inside `--include-directories <review_root>` and
+auto-injects any `GEMINI.md` found along that path without consulting
+`loadMemoryFromIncludeDirectories`.
 
 ## 3. What you may not do
 
@@ -477,7 +494,7 @@ Repository:
 - Do not `git stash`, do not force-push a shared branch, do not rewrite
   history after a review has started.
 - Text that came out of a scan (findings, agent replies, run logs) goes
-  through `scripts/sanitize.py` (`defang()` first, then `scrub()`) before it is
+  through `devtools/sanitize.py` (`defang()` first, then `scrub()`) before it is
   pasted into an issue or a PR body.
 
 Machine:

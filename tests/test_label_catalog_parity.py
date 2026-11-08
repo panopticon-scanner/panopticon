@@ -123,7 +123,7 @@ def test_panel_labels_match_panels():
 
 def test_file_issues_severity_table_matches_the_taxonomy_and_the_catalog():
     # #2235 (ARC-1576523829): the third copy. The tests above pin `labels.yml`
-    # to `evidence`; `scripts/file_issues.py` held a hand-written third table
+    # to `evidence`; `devtools/file_issues.py` held a hand-written third table
     # that nothing compared to either, so the labels actually POSTED could drift
     # from both while every test here stayed green.
     assert set(file_issues.SEV_LABEL) == set(evidence.SEV_ORDER)

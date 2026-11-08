@@ -1,6 +1,7 @@
 import dataclasses
 import json
 import os
+import re
 import stat
 import subprocess
 import tempfile
@@ -75,10 +76,10 @@ class TestGeminiHomeCredentialSeedHygiene(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             review_root = os.path.join(d, "target-repo")
             os.makedirs(review_root, exist_ok=True)
-            user_home, agents_dir = _fixture_user_home(d)
+            user_home, _agents_dir = _fixture_user_home(d)
             run_home = gemini_home.build(
                 "/s.json", "/w.json",
-                user_home=user_home, registration_dir=agents_dir,
+                user_home=user_home,
                 review_root=review_root)
             self.addCleanup(gemini_home.teardown, run_home, "complete")
 
@@ -90,11 +91,11 @@ class TestGeminiHomeCredentialSeedHygiene(unittest.TestCase):
 
     def test_copies_only_oauth_creds_and_google_accounts_with_0600_mode_and_excludes_state_and_installation_id(self):
         with tempfile.TemporaryDirectory() as d:
-            user_home, agents_dir = _fixture_user_home(d)
+            user_home, _agents_dir = _fixture_user_home(d)
             with mock.patch.dict(os.environ, {}, clear=True):
                 run_home = gemini_home.build(
                     "/s.json", "/w.json",
-                    user_home=user_home, registration_dir=agents_dir)
+                    user_home=user_home)
             self.addCleanup(gemini_home.teardown, run_home, "complete")
 
             gemini_dir = os.path.join(run_home, ".gemini")
@@ -116,15 +117,19 @@ class TestGeminiHomeCredentialSeedHygiene(unittest.TestCase):
             with open(settings_path, encoding="utf-8") as fh:
                 settings_doc = json.load(fh)
             self.assertNotIn("userSetting", settings_doc)
+            self.assertEqual(settings_doc["mcpServers"], {})
+            self.assertEqual(settings_doc["mcp"]["allowed"], [])
+            self.assertIs(False, settings_doc["skills"]["enabled"])
+            self.assertNotIn("fileName", settings_doc["context"])
             self.assertEqual(
                 settings_doc["security"]["auth"]["selectedType"], "oauth-personal")
             before = settings_doc["hooks"]["BeforeTool"]
             self.assertEqual(len(before), 1)
             self.assertEqual(before[0]["matcher"], "*")
 
-    def test_refuses_symlinked_credential_files_via_o_nofollow(self):
+    def test_refuses_symlinked_and_fifo_credential_files(self):
         with tempfile.TemporaryDirectory() as d:
-            user_home, agents_dir = _fixture_user_home(d)
+            user_home, _agents_dir = _fixture_user_home(d)
             oauth_path = os.path.join(user_home, ".gemini", "oauth_creds.json")
             os.unlink(oauth_path)
             target_secret = os.path.join(d, "outside-secret.json")
@@ -132,14 +137,21 @@ class TestGeminiHomeCredentialSeedHygiene(unittest.TestCase):
                 fh.write("{}")
             os.symlink(target_secret, oauth_path)
 
+            acct_path = os.path.join(user_home, ".gemini", "google_accounts.json")
+            os.unlink(acct_path)
+            if hasattr(os, "mkfifo"):
+                os.mkfifo(acct_path)
+
             run_home = gemini_home.build(
                 "/s.json", "/w.json",
-                user_home=user_home, registration_dir=agents_dir)
+                user_home=user_home)
             self.addCleanup(gemini_home.teardown, run_home, "complete")
             self.assertFalse(
                 os.path.lexists(os.path.join(run_home, ".gemini", "oauth_creds.json")))
+            self.assertFalse(
+                os.path.lexists(os.path.join(run_home, ".gemini", "google_accounts.json")))
 
-    def test_teardown_removes_run_home_on_complete_and_strips_credentials_on_failure(self):
+    def test_teardown_removes_run_home_on_complete_and_wipes_all_runtime_secrets_on_failure(self):
         with tempfile.TemporaryDirectory() as d:
             user_home, agents_dir = _fixture_user_home(d)
             runner = gemini_runner.Runner("gemini")
@@ -148,13 +160,18 @@ class TestGeminiHomeCredentialSeedHygiene(unittest.TestCase):
                                registration_dir=agents_dir)
             run_home = runner.run_home
             self.assertTrue(os.path.isfile(os.path.join(runner.workspace_dir, ".git", "HEAD")))
+            gemini_dir = os.path.join(run_home, ".gemini")
+            for extra_secret in ("gemini-credentials.json", "mcp-oauth-tokens.json", "tmp-token.json"):
+                with open(os.path.join(gemini_dir, extra_secret), "w", encoding="utf-8") as fh:
+                    fh.write("secret")
+            os.makedirs(os.path.join(gemini_dir, "runtime_cache"), exist_ok=True)
 
             runner.teardown("failed")
             self.assertTrue(os.path.isdir(run_home))
-            gemini_dir = os.path.join(run_home, ".gemini")
-            for cred in gemini_home.CREDENTIAL_FILES:
-                self.assertFalse(os.path.lexists(os.path.join(gemini_dir, cred)))
-            self.assertTrue(os.path.isfile(os.path.join(gemini_dir, "settings.json")))
+            self.assertEqual(
+                sorted(os.listdir(gemini_dir)),
+                ["policies", "settings.json"],
+            )
 
             gemini_home.teardown(run_home, "complete")
             self.assertFalse(os.path.exists(run_home))
@@ -220,6 +237,25 @@ class TestCommand(unittest.TestCase):
         self.assertIn("-m", cmd)
         self.assertEqual(cmd[cmd.index("-m") + 1], "gemini-2.5-pro")
         self.assertEqual(cmd[-2:], ["-p", _entry(True)["prompt"]])
+
+    def test_command_escapes_all_at_tokens_in_prompt(self):
+        entry = _entry(
+            True,
+            prompt=(
+                "<!-- panopticon-entry: review-app-SEC -->\n"
+                "Check @/etc/passwd, @src/auth.py, @login_required, "
+                "user@corp.com, and already-escaped \\@literal."
+            ),
+        )
+        cmd = self.r.command(entry, "gemini-2.5-pro")
+        prompt_arg = cmd[cmd.index("-p") + 1]
+        self.assertIsNone(re.search(r"(?<!\\)@", prompt_arg), prompt_arg)
+        self.assertIn(r"\@/etc/passwd", prompt_arg)
+        self.assertIn(r"\@src/auth.py", prompt_arg)
+        self.assertIn(r"\@login_required", prompt_arg)
+        self.assertIn(r"user\@corp.com", prompt_arg)
+        self.assertIn(r"\@literal", prompt_arg)
+        self.assertNotIn(r"\\@literal", prompt_arg)
 
     def test_unenforced_entry_uses_unenforced_admin_policy(self):
         cmd = self.r.command(_entry(False), "gemini-2.5-pro")
@@ -306,6 +342,14 @@ class TestParseEnvelope(unittest.TestCase):
         self.assertNotIn("sk-ant-", res.error)
         self.assertEqual(outage.HOST_FAILURE, res.failure_class)
 
+    def test_non_json_failure_path_redacts_raw_stdout(self):
+        r = gemini_runner.Runner("gemini")
+        raw_out = "fatal crash with token sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFF"
+        res = r.parse_envelope("e1", raw_out, 1, stderr="boom")
+        self.assertFalse(res.ok)
+        self.assertNotIn("sk-ant-", res.text)
+        self.assertIn("[REDACTED_KEY]", res.text)
+
 
 class TestRunEntry(unittest.TestCase):
     def _env(self):
@@ -319,13 +363,22 @@ class TestRunEntry(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0, stdout=ENVELOPE, stderr="")
         return fake
 
-    def test_run_entry_uses_isolated_gemini_cli_home_and_workspace_cwd(self):
+    def test_run_entry_uses_isolated_gemini_cli_home_workspace_cwd_and_scrubs_gemini_env(self):
         seen = {}
         with tempfile.TemporaryDirectory() as d:
             user_home, agents_dir = _fixture_user_home(d)
-            with mock.patch.dict(os.environ, {"PATH": "/p", "HOME": user_home,
-                                              "GEMINI_CLI": "1"},
-                                 clear=True):
+            ambient_env = {
+                "PATH": "/p",
+                "HOME": user_home,
+                "GEMINI_CLI": "1",
+                "GEMINI_API_KEY": "allowed-key",
+                "GEMINI_CLI_SYSTEM_SETTINGS_PATH": "/evil/settings.json",
+                "GEMINI_CLI_SYSTEM_DEFAULTS_PATH": "/evil/defaults.json",
+                "GEMINI_CLI_TRUSTED_FOLDERS_PATH": "/evil/trusted.json",
+                "GEMINI_SYSTEM_MD": "/evil/system.md",
+                "GEMINI_TELEMETRY_OUTFILE": "/evil/telemetry.log",
+            }
+            with mock.patch.dict(os.environ, ambient_env, clear=True):
                 r = gemini_runner.Runner("gemini", runner=self._fake_run(seen))
                 r.prepare(os.path.join(d, "run"), review_root=d,
                           registration_dir=agents_dir)
@@ -337,7 +390,13 @@ class TestRunEntry(unittest.TestCase):
         self.assertEqual(res.usage["input_tokens"], 100)
         child_env = seen["kw"]["env"]
         self.assertEqual(child_env["GEMINI_CLI_HOME"], r.run_home)
-        self.assertNotIn("GEMINI_CLI", child_env)
+        self.assertEqual(child_env["HOME"], r.run_home)
+        self.assertEqual(child_env["GEMINI_API_KEY"], "allowed-key")
+        for scrubbed in ("GEMINI_CLI", "GEMINI_CLI_SYSTEM_SETTINGS_PATH",
+                         "GEMINI_CLI_SYSTEM_DEFAULTS_PATH",
+                         "GEMINI_CLI_TRUSTED_FOLDERS_PATH",
+                         "GEMINI_SYSTEM_MD", "GEMINI_TELEMETRY_OUTFILE"):
+            self.assertNotIn(scrubbed, child_env)
         self.assertEqual(child_env[base.ENV_ENTRY_ID], "review-app-SEC")
         self.assertEqual(seen["kw"]["cwd"], r.workspace_dir)
 

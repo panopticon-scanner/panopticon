@@ -3,7 +3,7 @@
 `gh_transport.REPO_SLUG` is the GitHub repository the filing tools file
 against and link into; `tools_image` holds the local tools image, its registry
 ref, and the fixtures image and root. The pins below fix each value, and the
-guard fails on a new hard-coded spelling anywhere in skill/ or scripts/, read
+guard fails on a new hard-coded spelling anywhere in skill/ or devtools/, read
 from the AST so a comment or docstring that names the image is not a hit and a
 string split across lines or inside an f-string still is.
 """
@@ -18,7 +18,7 @@ REPO = Path(__file__).resolve().parent.parent
 SPELLINGS = ("panopticon-scanner", "panopticon-tools", "panopticon-fixtures")
 # The two homes: (file, assigned name) pairs whose own value may spell them.
 HOMES = {
-    ("scripts/gh_transport.py", "REPO_SLUG"),
+    ("devtools/gh_transport.py", "REPO_SLUG"),
     ("skill/scripts/tools_image.py", "LOCAL_NAME"),
     ("skill/scripts/tools_image.py", "REGISTRY_IMAGE"),
     ("skill/scripts/tools_image.py", "FIXTURES_NAME"),
@@ -42,7 +42,7 @@ class TestPinnedValues(unittest.TestCase):
         self.assertEqual(tools_image.FIXTURES_ROOT, "/opt/panopticon-fixtures")
 
     def test_the_registry_ref_and_the_slug_name_one_org(self):
-        # skill/ cannot import scripts/, so the org is spelled in both homes;
+        # skill/ cannot import devtools/, so the org is spelled in both homes;
         # this is what keeps the two from drifting apart.
         org = gh_transport.REPO_SLUG.split("/")[0]
         self.assertTrue(tools_image.REGISTRY_IMAGE.startswith("ghcr.io/%s/" % org),
@@ -72,7 +72,7 @@ def _hard_coded_spellings(tree, rel):
 class TestNoNewSpelling(unittest.TestCase):
     def test_nothing_outside_the_homes_spells_the_names(self):
         found = {}
-        for top in ("skill", "scripts"):
+        for top in ("skill", "devtools"):
             for path in sorted((REPO / top).rglob("*.py")):
                 rel = path.relative_to(REPO)
                 if ".panopticon" in rel.parts or "__pycache__" in rel.parts:

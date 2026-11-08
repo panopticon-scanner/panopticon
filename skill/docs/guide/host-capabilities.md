@@ -99,7 +99,12 @@ scoped allowed and denied accesses; and `codex-write-surface-absent` proves
 and the shell-less setup fallback. These are real offline CLI checks, not paid reviewer turns, and
 their details name the inspected registration/runtime surfaces. Removing a tool restriction,
 widening a tested read grant or exposing one write route on one role refutes the corresponding
-probe. The
+probe. The import proof attempts every curated filesystem/process/network module, a real `file:`
+URL, and the otherwise-unlisted `node:http2` builtin; every route must fail as an unsupported
+import. Its exact host-global inventory also records the six classifications established by live
+function-body inspection: `store`/`load` are ephemeral state under `history.persistence="none"`,
+`exit`/`notify` are output/control channels, and `as_settled`/`stream_settled` are Promise-settlement
+iterators. The
 reviewer prompt's own tool-policy paragraph is **rendered from that same surface** rather than
 written beside it (#1639 P14): it names `panopticon_scope`'s `read_file`, `search` and `list_files`
 with the descriptions the broker publishes and states that there is no shell — run-13 found it
@@ -180,16 +185,21 @@ existing `dispatch-ledger.jsonl` carries token counts on every `ok` row).
 
 Gemini claims all five (#3494, restoring the row #1621 had retired), measured under an isolated
 per-run home (`runners/gemini_home.py`, copying only `oauth_creds.json` and `google_accounts.json`)
-with `cwd` pinned at `<run_home>/workspace`: `gemini-shell-surface` (the registered TOML policy
-shells in `~/.gemini/cli-agents` verified against the installed CLI's versioned `0.55` tool
-vocabulary with no shadow in the target tree or `~/.gemini/agents`), `gemini-read-guard-armed` and
-`gemini-write-guard-armed` (isolated `settings.json` disables MCP/extensions/skills/subagents/plan
-mode/folder trust, sets `context.fileName = ".panopticon-no-context.md"` and
-`context.loadMemoryFromIncludeDirectories = false`, and registers a single `"matcher": "*"`
-`BeforeTool` hook invoking `skill/scripts/gemini_guard_hook.py`, proven by 0-quota hook subprocess
-round-trips plus a shared live `gemini` canary launch), `gemini-model-bound` (every role's resolved
-model in `skill/reference/model-profiles.yml` belongs to `Runner.KNOWN_MODELS` and `gemini -m <slug>`
-is advertised by `gemini --help`), and `gemini-usage-envelope` (`gemini --help` advertises `-p` and
+with `cwd` pinned at `<run_home>/workspace`: `gemini-shell-surface` (no system policy `.toml` or
+system `settings.json` / `system-defaults.json` overrides `--admin-policy`, the registered Tier 5
+TOML policy shells in `~/.gemini/cli-agents` with allow `900` / explicit deny `950` / catch-all deny
+`100` are verified against the installed CLI's versioned `0.55` tool vocabulary, `-p` prompts have
+all `@` tokens escaped as `\@`, and user-level `settings.json` locks `mcpServers = {}`,
+`mcp.allowed = []`, `skills.enabled = false`, `experimental.enableAgents = false`,
+`general.plan.enabled = false`, `security.folderTrust.enabled = false`, and
+`context.loadMemoryFromIncludeDirectories = false` with `context.fileName` omitted, plus no shadow in
+the target tree or `~/.gemini/agents`), `gemini-read-guard-armed` and `gemini-write-guard-armed`
+(isolated `settings.json` registers a single `"matcher": "*"` `BeforeTool` hook invoking
+`skill/scripts/gemini_guard_hook.py` with authoritative `argv` policy paths, proven by hook
+subprocess round-trips across read-scope, `include_pattern`, git-pathspec-magic, strict
+`TOOL_INPUT_KEYS`, and v2 write-allowlist cases), `gemini-model-bound` (every role's resolved model
+in `skill/reference/model-profiles.yml` belongs to `Runner.KNOWN_MODELS` and `gemini -m <slug>` is
+advertised by `gemini --help`), and `gemini-usage-envelope` (`gemini --help` advertises `-p` and
 `--output-format`, `parse_envelope` maps standard and cache-read-only `stats.models` token usage,
 and any existing `dispatch-ledger.jsonl` carries token counts on every `ok` row).
 

@@ -15,7 +15,6 @@ import scripts.probes.common as probes_common
 import scripts.probes.gemini as gemini_probes
 import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.base as runners_base
-import scripts.runners.children as children
 import scripts.runners.gemini as gemini_runner
 import scripts.runners.gemini_home as gemini_home
 
@@ -48,10 +47,12 @@ class TestGeminiShellSurfaceProbe(unittest.TestCase):
 
     def test_emitted_policy_shells_and_settings_locks_prove_surface(self):
         runner, _seen = self._runner()
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as sys_dir:
             _emit_gemini_shells(d)
             state, by, detail = gemini_probes.probe_gemini_shell_surface(
-                "gemini", registration_dir=d, runner=runner)
+                "gemini", registration_dir=d, runner=runner,
+                env={}, system_config_dir=sys_dir)
         self.assertEqual(hosts.PROVEN, state, detail)
         self.assertEqual(gemini_probes.GEMINI_SHELL_SURFACE, by)
         self.assertIn("0.55", detail)
@@ -59,15 +60,18 @@ class TestGeminiShellSurfaceProbe(unittest.TestCase):
 
     def test_missing_shells_refute(self):
         runner, _ = self._runner()
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as sys_dir:
             state, _by, detail = gemini_probes.probe_gemini_shell_surface(
-                "gemini", registration_dir=d, runner=runner)
+                "gemini", registration_dir=d, runner=runner,
+                env={}, system_config_dir=sys_dir)
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("no policy shell", detail)
 
     def test_policy_allowing_forbidden_tool_refutes(self):
         runner, _ = self._runner()
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as sys_dir:
             _emit_gemini_shells(d)
             scout = os.path.join(d, "panopticon-scout.toml")
             with open(scout, encoding="utf-8") as fh:
@@ -79,42 +83,143 @@ class TestGeminiShellSurfaceProbe(unittest.TestCase):
             with open(scout, "w", encoding="utf-8") as fh:
                 fh.write(text)
             state, _by, detail = gemini_probes.probe_gemini_shell_surface(
-                "gemini", registration_dir=d, runner=runner)
+                "gemini", registration_dir=d, runner=runner,
+                env={}, system_config_dir=sys_dir)
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("run_shell_command", detail)
 
-    def test_policy_missing_mcp_wildcard_deny_refutes(self):
+    def test_policy_missing_catchall_deny_refutes(self):
         runner, _ = self._runner()
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as sys_dir:
             _emit_gemini_shells(d)
             scout = os.path.join(d, "panopticon-scout.toml")
             with open(scout, encoding="utf-8") as fh:
                 text = fh.read()
-            text = text.replace('[[rule]]\nmcpName = "*"\ntoolName = "*"\ndecision = "deny"\npriority = 950\n', "")
+            text = text.replace(
+                '[[rule]]\ntoolName = "*"\ndecision = "deny"\npriority = 100\n',
+                "",
+            )
             with open(scout, "w", encoding="utf-8") as fh:
                 fh.write(text)
             state, _by, detail = gemini_probes.probe_gemini_shell_surface(
-                "gemini", registration_dir=d, runner=runner)
+                "gemini", registration_dir=d, runner=runner,
+                env={}, system_config_dir=sys_dir)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("catch-all deny", detail)
+
+    def test_policy_missing_mcp_wildcard_deny_refutes(self):
+        runner, _ = self._runner()
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as sys_dir:
+            _emit_gemini_shells(d)
+            scout = os.path.join(d, "panopticon-scout.toml")
+            with open(scout, encoding="utf-8") as fh:
+                text = fh.read()
+            text = text.replace(
+                '[[rule]]\nmcpName = "*"\ntoolName = "*"\ndecision = "deny"\npriority = 950\n',
+                "",
+            )
+            with open(scout, "w", encoding="utf-8") as fh:
+                fh.write(text)
+            state, _by, detail = gemini_probes.probe_gemini_shell_surface(
+                "gemini", registration_dir=d, runner=runner,
+                env={}, system_config_dir=sys_dir)
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("MCP wildcard deny", detail)
 
-    def test_narrowed_tool_vocabulary_refutes(self):
+    def test_policy_with_extra_rule_keys_or_top_level_table_refutes(self):
+        runner, _ = self._runner()
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as sys_dir:
+            _emit_gemini_shells(d)
+            scout = os.path.join(d, "panopticon-scout.toml")
+            with open(scout, encoding="utf-8") as fh:
+                orig = fh.read()
+            for mutated, expected_fragment in (
+                ('modes = ["plan"]\n' + orig, "unexpected top-level key"),
+                (orig.replace('priority = 900', 'priority = 900\nmodes = ["plan"]'),
+                 "unsupported or missing rule keys"),
+                (orig.replace('priority = 900', 'priority = 900\nargsPattern = ".*"'),
+                 "unsupported or missing rule keys"),
+                (orig.replace('priority = 900', 'priority = 900\ninteractive = false'),
+                 "unsupported or missing rule keys"),
+            ):
+                with self.subTest(expected=expected_fragment):
+                    with open(scout, "w", encoding="utf-8") as fh:
+                        fh.write(mutated)
+                    state, _by, detail = gemini_probes.probe_gemini_shell_surface(
+                        "gemini", registration_dir=d, runner=runner,
+                        env={}, system_config_dir=sys_dir)
+                    self.assertEqual(hosts.REFUTED, state)
+                    self.assertIn(expected_fragment, detail)
+
+    def test_system_policies_or_system_settings_or_env_overrides_refute(self):
         runner, _ = self._runner()
         with tempfile.TemporaryDirectory() as d:
+            _emit_gemini_shells(d)
+            with tempfile.TemporaryDirectory() as sys_dir:
+                pol_dir = os.path.join(sys_dir, "policies")
+                os.makedirs(pol_dir, exist_ok=True)
+                with open(os.path.join(pol_dir, "corp.toml"), "w", encoding="utf-8") as fh:
+                    fh.write('[[rule]]\ntoolName = "*"\ndecision = "allow"\npriority = 999\n')
+                state, _by, detail = gemini_probes.probe_gemini_shell_surface(
+                    "gemini", registration_dir=d, runner=runner,
+                    env={}, system_config_dir=sys_dir)
+                self.assertEqual(hosts.REFUTED, state)
+                self.assertIn("corp.toml", detail)
+
+            with tempfile.TemporaryDirectory() as sys_dir:
+                with open(os.path.join(sys_dir, "settings.json"), "w", encoding="utf-8") as fh:
+                    fh.write("{}")
+                state, _by, detail = gemini_probes.probe_gemini_shell_surface(
+                    "gemini", registration_dir=d, runner=runner,
+                    env={}, system_config_dir=sys_dir)
+                self.assertEqual(hosts.REFUTED, state)
+                self.assertIn("settings.json is present", detail)
+
+            with tempfile.TemporaryDirectory() as sys_dir:
+                state, _by, detail = gemini_probes.probe_gemini_shell_surface(
+                    "gemini", registration_dir=d, runner=runner,
+                    env={"GEMINI_CLI_SYSTEM_SETTINGS_PATH": "/etc/custom.json"},
+                    system_config_dir=sys_dir)
+                self.assertEqual(hosts.REFUTED, state)
+                self.assertIn("GEMINI_CLI_SYSTEM_SETTINGS_PATH", detail)
+
+    def test_unescaped_at_in_runner_command_refutes(self):
+        runner, _ = self._runner()
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as sys_dir:
+            _emit_gemini_shells(d)
+            with mock.patch.object(gemini_runner, "escape_prompt_at_tokens",
+                                   side_effect=lambda p: p):
+                state, _by, detail = gemini_probes.probe_gemini_shell_surface(
+                    "gemini", registration_dir=d, runner=runner,
+                    env={}, system_config_dir=sys_dir)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("unescaped '@'", detail)
+
+    def test_narrowed_tool_vocabulary_refutes(self):
+        runner, _ = self._runner()
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as sys_dir:
             _emit_gemini_shells(d)
             narrow = {"0.55": gemini_home.TOOL_VOCABULARY["0.55"] - {"read_file"}}
             with mock.patch.dict(gemini_home.TOOL_VOCABULARY, narrow):
                 state, _by, detail = gemini_probes.probe_gemini_shell_surface(
-                    "gemini", registration_dir=d, runner=runner)
+                    "gemini", registration_dir=d, runner=runner,
+                    env={}, system_config_dir=sys_dir)
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("match nothing", detail)
 
     def test_uncovered_version_is_unknown(self):
         runner, _ = self._runner(version_out="9.99.0\n")
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as sys_dir:
             _emit_gemini_shells(d)
             state, _by, detail = gemini_probes.probe_gemini_shell_surface(
-                "gemini", registration_dir=d, runner=runner)
+                "gemini", registration_dir=d, runner=runner,
+                env={}, system_config_dir=sys_dir)
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIn("9.99", detail)
 
@@ -132,18 +237,30 @@ class TestGeminiShellSurfaceProbe(unittest.TestCase):
         self.assertEqual(probes_common.SHADOW_SHELL_SCAN, by)
         self.assertIn(".gemini/agents/panopticon-scout.md", detail)
 
-    def test_settings_locks_drift_refutes(self):
+    def test_settings_locks_drift_or_context_filename_present_refutes(self):
         runner, _ = self._runner()
-        with tempfile.TemporaryDirectory() as d:
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as sys_dir:
             _emit_gemini_shells(d)
             unlocked = gemini_home.settings_document("/s.json", "/w.json")
             unlocked["experimental"]["enableAgents"] = True
             with mock.patch.object(gemini_home, "settings_document",
                                    return_value=unlocked):
                 state, _by, detail = gemini_probes.probe_gemini_shell_surface(
-                    "gemini", registration_dir=d, runner=runner)
-        self.assertEqual(hosts.REFUTED, state)
-        self.assertIn("experimental.enableAgents", detail)
+                    "gemini", registration_dir=d, runner=runner,
+                    env={}, system_config_dir=sys_dir)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn("experimental.enableAgents", detail)
+
+            with_filename = gemini_home.settings_document("/s.json", "/w.json")
+            with_filename["context"]["fileName"] = "CUSTOM.md"
+            with mock.patch.object(gemini_home, "settings_document",
+                                   return_value=with_filename):
+                state2, _by2, detail2 = gemini_probes.probe_gemini_shell_surface(
+                    "gemini", registration_dir=d, runner=runner,
+                    env={}, system_config_dir=sys_dir)
+            self.assertEqual(hosts.REFUTED, state2)
+            self.assertIn("context.fileName must be omitted", detail2)
 
 
 class TestGeminiReadAndWriteGuardProbes(unittest.TestCase):
@@ -151,7 +268,7 @@ class TestGeminiReadAndWriteGuardProbes(unittest.TestCase):
         state, by, detail = gemini_probes.probe_gemini_read_guard("gemini")
         self.assertEqual(hosts.PROVEN, state, detail)
         self.assertEqual(gemini_probes.GEMINI_READ_GUARD, by)
-        self.assertIn("20/20 payloads", detail)
+        self.assertIn("23/23 payloads", detail)
         self.assertIn("BeforeTool (*)", detail)
 
     def test_read_guard_refutes_when_matcher_narrowed_from_wildcard(self):
@@ -164,7 +281,7 @@ class TestGeminiReadAndWriteGuardProbes(unittest.TestCase):
         state, by, detail = gemini_probes.probe_gemini_write_guard("gemini")
         self.assertEqual(hosts.PROVEN, state, detail)
         self.assertEqual(gemini_probes.GEMINI_WRITE_GUARD, by)
-        self.assertIn("11/11 payloads", detail)
+        self.assertIn("12/12 payloads", detail)
         self.assertIn("BeforeTool (*)", detail)
 
     def test_write_guard_refutes_when_matcher_narrowed_from_wildcard(self):
@@ -195,7 +312,6 @@ class TestGeminiReadAndWriteGuardProbes(unittest.TestCase):
                 json.dump({"version": 2, "entries": {"e1": [out_json]}, "paths": [out_json]}, fh)
 
             env = {"PANOPTICON_ENTRY_ID": "e1"}
-            prompt = "<!-- panopticon-entry: e1 -->\nReview."
             old_cwd = os.getcwd()
             try:
                 os.chdir(cfg_dir)
@@ -214,14 +330,14 @@ class TestGeminiReadAndWriteGuardProbes(unittest.TestCase):
                 for tool_name, args in cases:
                     with self.subTest(tool=tool_name, args=args):
                         allow, reason = gemini_guard_hook.adjudicate(
-                            {"prompt": prompt, "tool_name": tool_name, "tool_input": args},
+                            {"tool_name": tool_name, "tool_input": args},
                             scope_path, allowlist_path, env=env)
                         self.assertFalse(allow, reason)
                         self.assertIn("absolute", reason)
             finally:
                 os.chdir(old_cwd)
 
-    def test_grep_search_on_ungranted_directory_and_include_climb_are_denied(self):
+    def test_grep_search_include_pattern_climb_git_magic_and_unknown_keys_are_denied(self):
         with tempfile.TemporaryDirectory() as sandbox:
             real_box = os.path.realpath(sandbox)
             in_dir = os.path.join(real_box, "granted")
@@ -239,28 +355,86 @@ class TestGeminiReadAndWriteGuardProbes(unittest.TestCase):
             with open(allowlist_path, "w", encoding="utf-8") as fh:
                 json.dump({"version": 2, "entries": {}, "paths": []}, fh)
 
-            allow, reason = gemini_guard_hook.adjudicate(
-                {"prompt": "<!-- panopticon-entry: e1 -->\nReview.",
-                 "tool_name": "grep_search",
-                 "tool_input": {"dir_path": real_box, "pattern": "x"}},
-                scope_path, allowlist_path,
-                env={"PANOPTICON_ENTRY_ID": "e1"})
-            self.assertFalse(allow)
-            self.assertIn("grep_search over a directory is denied", reason)
+            bound_env = {"PANOPTICON_ENTRY_ID": "e1"}
 
-            allow2, reason2 = gemini_guard_hook.adjudicate(
-                {"prompt": "<!-- panopticon-entry: e1 -->\nReview.",
-                 "tool_name": "grep_search",
+            allow_ok, reason_ok = gemini_guard_hook.adjudicate(
+                {"tool_name": "grep_search",
                  "tool_input": {"dir_path": in_dir, "pattern": "x",
-                                "include": "../outside.py"}},
-                scope_path, allowlist_path,
-                env={"PANOPTICON_ENTRY_ID": "e1"})
-            self.assertFalse(allow2)
-            self.assertIn("denied", reason2)
+                                "include_pattern": "allowed.py"}},
+                scope_path, allowlist_path, env=bound_env)
+            self.assertTrue(allow_ok, reason_ok)
+
+            for label, bad_input, fragment in (
+                ("ungranted_dir", {"dir_path": real_box, "pattern": "x"},
+                 "grep_search over a directory is denied"),
+                ("include_pattern_climb",
+                 {"dir_path": in_dir, "pattern": "x", "include_pattern": "../outside.py"},
+                 "denied"),
+                ("include_pattern_git_magic",
+                 {"dir_path": in_dir, "pattern": "x", "include_pattern": ":(top)**"},
+                 "git pathspec magic"),
+                ("exclude_pattern_git_magic",
+                 {"dir_path": in_dir, "pattern": "x", "exclude_pattern": ":(glob)**"},
+                 "git pathspec magic"),
+                ("dead_include_key",
+                 {"dir_path": in_dir, "pattern": "x", "include": "allowed.py"},
+                 "unsupported tool_input key(s): include"),
+            ):
+                with self.subTest(case=label):
+                    allow, reason = gemini_guard_hook.adjudicate(
+                        {"tool_name": "grep_search", "tool_input": bad_input},
+                        scope_path, allowlist_path, env=bound_env)
+                    self.assertFalse(allow, reason)
+                    self.assertIn(fragment, reason)
+
+    def test_argv_is_authoritative_and_env_policy_paths_never_override(self):
+        with tempfile.TemporaryDirectory() as sandbox:
+            real_box = os.path.realpath(sandbox)
+            in_file = os.path.join(real_box, "allowed.py")
+            other_file = os.path.join(real_box, "other.py")
+            for p in (in_file, other_file):
+                with open(p, "w", encoding="utf-8") as fh:
+                    fh.write("x = 1\n")
+            argv_scope = os.path.join(real_box, "argv-scope.json")
+            env_scope = os.path.join(real_box, "env-scope.json")
+            allowlist_path = os.path.join(real_box, "write-allowlist.json")
+            with open(argv_scope, "w", encoding="utf-8") as fh:
+                json.dump(read_guard_hook.stamp_rows(read_guard_hook.scope_from_plan([
+                    {"id": "e1", "scope": {"files": [in_file], "dirs": [], "reads": []}}
+                ])), fh)
+            with open(env_scope, "w", encoding="utf-8") as fh:
+                json.dump(read_guard_hook.stamp_rows(read_guard_hook.scope_from_plan([
+                    {"id": "e1", "scope": {"files": [other_file], "dirs": [], "reads": []}}
+                ])), fh)
+            with open(allowlist_path, "w", encoding="utf-8") as fh:
+                json.dump({"version": 2, "entries": {}, "paths": []}, fh)
+
+            allow, reason = gemini_guard_hook.adjudicate(
+                {"tool_name": "read_file", "tool_input": {"file_path": other_file}},
+                argv_scope, allowlist_path,
+                env={"PANOPTICON_ENTRY_ID": "e1",
+                     "PANOPTICON_READ_SCOPE": env_scope})
+            self.assertFalse(allow)
+            self.assertIn("outside your cell's scope", reason)
+
+            stdin = io.StringIO(json.dumps({
+                "tool_name": "read_file",
+                "tool_input": {"file_path": other_file},
+            }))
+            stdout = io.StringIO()
+            with mock.patch("sys.stdin", stdin), contextlib.redirect_stdout(stdout):
+                rc = gemini_guard_hook.main(
+                    [],
+                    env={"PANOPTICON_ENTRY_ID": "e1",
+                         "PANOPTICON_READ_SCOPE": env_scope,
+                         "PANOPTICON_WRITE_ALLOWLIST": allowlist_path})
+            self.assertEqual(0, rc)
+            verdict = json.loads(stdout.getvalue())
+            self.assertEqual("deny", verdict["decision"])
+            self.assertIn("bad hook invocation", verdict["reason"])
 
     def test_main_crash_handler_denies_fail_closed(self):
         stdin = io.StringIO(json.dumps({
-            "prompt": "<!-- panopticon-entry: e1 -->\nReview.",
             "tool_name": "read_file",
             "tool_input": {"file_path": "/abs/a.py"},
         }))
@@ -289,7 +463,6 @@ class TestGeminiReadAndWriteGuardProbes(unittest.TestCase):
                            "paths": ["/abs/allowed.json"]}, fh)
             secret_body = "SECRET_WRITE_CONTENT_PAYLOAD_999"
             stdin = io.StringIO(json.dumps({
-                "prompt": "<!-- panopticon-entry: e1 -->\nWrite.",
                 "tool_name": "write_file",
                 "tool_input": {"file_path": "/abs/forbidden.json",
                                "content": secret_body},
@@ -511,11 +684,30 @@ class TestGeminiLiveCanary(unittest.TestCase):
         self.assertEqual("pass", verdict, detail)
         self.assertIn("read_file", detail)
 
-    def test_live_canary_blocks_shell_and_outside_read_or_skips_when_auth_unavailable(self):
-        verdict, detail = gemini_probes.run_live_canary(runner=children.launch)
-        if verdict == "skip":
-            self.skipTest(detail)
-        self.assertEqual("pass", verdict, detail)
+    def test_simulated_runner_skips_on_auth_unavailable_and_fails_on_leaked_sentinel(self):
+        def auth_fail(cmd, **kw):
+            out = json.dumps({
+                "error": {
+                    "type": "IneligibleTierError",
+                    "message": "Authentication required",
+                }
+            })
+            return subprocess.CompletedProcess(cmd, 1, stdout=out, stderr="")
+
+        verdict, detail = gemini_probes.run_live_canary(runner=auth_fail)
+        self.assertEqual("skip", verdict)
+        self.assertIn("auth unavailable", detail)
+
+        def leaked(cmd, **kw):
+            out = json.dumps({
+                "session_id": "s-leak",
+                "response": "PANOPTICON_GEMINI_LIVE_CANARY_SECRET_77c1b2",
+            })
+            return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
+
+        verdict2, detail2 = gemini_probes.run_live_canary(runner=leaked)
+        self.assertEqual("fail", verdict2)
+        self.assertIn("leaked out-of-scope sentinel", detail2)
 
 
 if __name__ == "__main__":

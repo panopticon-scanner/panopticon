@@ -163,7 +163,7 @@ jobs:
       # What main gets in exchange for no longer being gated on its own
       # standing set: that set is DISCLOSED under the pre-existing heading on
       # every single run, and it is governed by the post-merge code-scanning
-      # audit (`scripts/code_scanning_audit.py`) and the owner's own GitHub
+      # audit (`devtools/code_scanning_audit.py`) and the owner's own GitHub
       # dismissals, which is where a finding is fixed or ruled on.
       #
       # `actions: read` on this job is for exactly this step and nothing else:
@@ -540,7 +540,7 @@ jobs:
           # subprocess stubs, fake tokens) are not alerts an operator acts on.
           # The gate itself still sees `tests/` -- a HIGH there still fails a
           # PR -- and the excluded count is printed and in the step summary.
-          python controller/scripts/code_scanning_reports.py \
+          python controller/devtools/code_scanning_reports.py \
             --input-dir "$RUNNER_TEMP/${{ env.TOOLS_OUT }}" \
             --output-dir "$RUNNER_TEMP/code-scanning-reports" \
             --exclude '${{ env.FIXTURE_GLOB }}' \
@@ -592,7 +592,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           SECURITY_SARIF_ID: ${{ steps.upload-sarif.outputs.sarif-id }}
         run: |
-          python controller/scripts/code_scanning_audit.py \
+          python controller/devtools/code_scanning_audit.py \
             --repository "$GITHUB_REPOSITORY" \
             --server-url "$GITHUB_SERVER_URL" \
             --ref "$GITHUB_REF" \

@@ -33,7 +33,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Check the egress sidecar digest
-        run: python3 scripts/bump_pins.py tinyproxy
+        run: python3 devtools/bump_pins.py tinyproxy
 
   rustup:
     runs-on: ubuntu-latest
@@ -52,7 +52,7 @@ jobs:
         id: check
         run: |
           set -euo pipefail
-          python3 scripts/bump_pins.py rustup | tee /tmp/pins.txt
+          python3 devtools/bump_pins.py rustup | tee /tmp/pins.txt
           if grep -q "available (re-run with --write)" /tmp/pins.txt; then
             echo "stale=true" >> "$GITHUB_OUTPUT"
           fi
@@ -61,13 +61,13 @@ jobs:
       # downloaded artifact, so a failure here means "do not pin", not "retry".
       - name: Apply the bump
         if: steps.check.outputs.stale == 'true'
-        run: python3 scripts/bump_pins.py rustup --write
+        run: python3 devtools/bump_pins.py rustup --write
 
       - name: Open or recover the pin PR
         if: steps.check.outputs.stale == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/open_pin_pr.py rustup
+        run: python3 devtools/open_pin_pr.py rustup
 
   trivy:
     runs-on: ubuntu-latest
@@ -81,7 +81,7 @@ jobs:
         id: check
         run: |
           set -euo pipefail
-          python3 scripts/bump_pins.py trivy | tee /tmp/trivy-pins.txt
+          python3 devtools/bump_pins.py trivy | tee /tmp/trivy-pins.txt
           if grep -q "available (re-run with --write)" /tmp/trivy-pins.txt; then
             echo "stale=true" >> "$GITHUB_OUTPUT"
           fi
@@ -89,12 +89,12 @@ jobs:
         if: steps.check.outputs.stale == 'true'
         run: |
           set -euo pipefail
-          python3 scripts/bump_pins.py trivy --write
+          python3 devtools/bump_pins.py trivy --write
       - name: Open or recover the pin PR
         if: steps.check.outputs.stale == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/open_pin_pr.py trivy
+        run: python3 devtools/open_pin_pr.py trivy
 
   rust-toolchain:
     runs-on: ubuntu-latest
@@ -108,7 +108,7 @@ jobs:
         id: check
         run: |
           set -euo pipefail
-          python3 scripts/bump_pins.py rust-toolchain | tee /tmp/rust-toolchain-pins.txt
+          python3 devtools/bump_pins.py rust-toolchain | tee /tmp/rust-toolchain-pins.txt
           if grep -q "available (re-run with --write)" /tmp/rust-toolchain-pins.txt; then
             echo "stale=true" >> "$GITHUB_OUTPUT"
           fi
@@ -116,9 +116,9 @@ jobs:
         if: steps.check.outputs.stale == 'true'
         run: |
           set -euo pipefail
-          python3 scripts/bump_pins.py rust-toolchain --write
+          python3 devtools/bump_pins.py rust-toolchain --write
       - name: Open or recover the pin PR
         if: steps.check.outputs.stale == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 scripts/open_pin_pr.py rust-toolchain
+        run: python3 devtools/open_pin_pr.py rust-toolchain

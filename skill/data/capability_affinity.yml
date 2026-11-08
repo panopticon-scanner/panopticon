@@ -1,15 +1,16 @@
 # Capability -> default panel FLOOR (R1-calibrated; see calibration/2026-08-15-vocab-panel-r1/rulings.md).
+# R2 (#1133, owner ruling 2026-11-08): Catalog gains ACC+LNG, Reporting gains LNG; Checkout keeps ACC.
 # Global-floor domains {COD, DAT, TST, ARC} are matrix-level, NOT affinity rows.
 affinity:
   Auth:          [SEC]
   Accounts:      [SEC, ACC]
   Checkout:      [SEC, ACC]
   Billing:       [SEC]
-  Catalog:       []
+  Catalog:       [ACC, LNG]
   Search:        []
   Fulfillment:   []
   Notifications: [OPS]
-  Reporting:     []
+  Reporting:     [LNG]
   Admin:         [SEC, ACC, OPS]
   API:           [SEC]
   Platform:      [OPS, SEC]

@@ -43,8 +43,8 @@ import scripts.discovery_catalog as discovery_catalog
 
 # The surfaces a reviewer is expected to see with its architecture context.
 # `skill/scripts/**/*.py` is the package; `skill/workflows/**` the dispatch
-# workflow scripts; `skill/agents/**` the prompt templates; `scripts/**/*.py`
-# the repo-root CLIs; `scripts/reference/**/*.json` what they validate against
+# workflow scripts; `skill/agents/**` the prompt templates; `devtools/**/*.py`
+# the repo-root CLIs; `devtools/reference/**/*.json` what they validate against
 # (#3233); `skill/reference/**/*.{json,yml,yaml}` the shipped
 # contracts (the schemas every artifact is validated against, the CWE catalog,
 # the OCRDb bundle, the model profiles) -- `verdict-bundle-schema.json` shipped
@@ -60,8 +60,8 @@ RUNTIME_SURFACE = (
     "skill/scripts/**/*.py",
     "skill/workflows/**",
     "skill/agents/**",
-    "scripts/**/*.py",
-    "scripts/reference/**/*.json",
+    "devtools/**/*.py",
+    "devtools/reference/**/*.json",
     "skill/reference/**/*.json",
     "skill/reference/**/*.yml",
     "skill/reference/**/*.yaml",
@@ -162,7 +162,7 @@ class TestMatrixCoverage(unittest.TestCase):
         # shipped contract sitting off-surface for no reason but the glob.
         # Most of these paths do not exist: they are the shapes the tree may
         # grow next.
-        for path in ("scripts/sub/tool.py",
+        for path in ("devtools/sub/tool.py",
                      "skill/reference/model-profiles.yml",
                      "skill/reference/sub/thing-schema.json",
                      "skill/reference/sub/profiles.yaml",
@@ -306,7 +306,7 @@ class TestMatrixCoverage(unittest.TestCase):
         #
         # #2521 adds `CI` for the same reason: `.github/**` grows without a
         # contributor choosing a matrix home, and the group reached all 48
-        # files when `scripts/shell_heredoc.py` joined its lexer surface.
+        # files when `devtools/shell_heredoc.py` joined its lexer surface.
         headroom = 40
         assigned, _left, _w = discovery_catalog.assign_scoped(self.files, self.catalog)
         for group in GUARDED_BY_HEADROOM:

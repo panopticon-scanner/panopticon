@@ -45,7 +45,7 @@ jobs:
           #
           # The digest was read from upstream's own hadolint-Linux-x86_64.sha256
           # AND recomputed from the downloaded artifact, which is the rule
-          # scripts/bump_pins.py states for every pin it maintains: never guess
+          # devtools/bump_pins.py states for every pin it maintains: never guess
           # a checksum. bump_pins has no hadolint family and does not cover this
           # file; bumping the version here means re-reading both.
           HADOLINT_VERSION: "2.12.0"

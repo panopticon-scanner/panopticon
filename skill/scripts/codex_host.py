@@ -52,6 +52,10 @@ WRITE_SURFACE_IMPORTS = (
     "node:worker_threads", "node:net", "node:http", "node:https", "node:dgram",
     "node:tls",
 )
+# Kept OUTSIDE WRITE_SURFACE_IMPORTS on purpose.  Those are the known
+# write-shaped routes; this otherwise-unlisted builtin proves the runtime's
+# "unsupported import" refusal is blanket rather than tailored to that list.
+BLANKET_IMPORT_CANARY = "node:http2"
 # Everything one launch allocated, keyed by the scratch cwd -- the one path
 # cleanup can recover from argv. The value is (per-entry runtime dir, run
 # path): BOTH are removed, and only ever when this module recorded them.

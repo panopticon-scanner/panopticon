@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Gemini CLI (`@google/gemini-cli`) BeforeTool guard hook: read-scope,
-write-allowlist, and strict tool-name allowlist adjudication for headless
-panopticon reviewers (#3494, FAMILY-PR-GUARDRAILS).
+write-allowlist, and strict tool-name + parameter allowlist adjudication for
+headless panopticon reviewers (#3494, FAMILY-PR-GUARDRAILS).
 
 `@google/gemini-cli` loads user/global hooks from ``~/.gemini/settings.json``
 under ``hooks.BeforeTool`` and has no CLI flag for supplying a per-invocation
@@ -15,19 +15,24 @@ call in the session is routed through this script:
 
     "matcher": "*" -> <driver python> -I <this file> <read_scope_path> <write_allowlist_path>
 
-This script enforces three boundaries on every tool call:
+This script enforces four boundaries on every tool call:
 1. Tool-name allowlist: only ``READ_TOOLS | WRITE_TOOLS`` may be adjudicated;
    any other tool name (``run_shell_command``, ``replace``, ``read_many_files``,
    ``web_fetch``, ``google_web_search``, etc.) is denied immediately.
-2. Entry binding: ``PANOPTICON_ENTRY_ID`` must be present and non-empty in the
-   environment, and if ``prompt`` or ``lastUserInput`` carries a
-   ``panopticon-entry: <id>`` marker on line 1 it must match
-   ``PANOPTICON_ENTRY_ID``.
-3. Path confinement: ``write_file`` is checked against the v2 per-entry
-   ``write-allowlist.json``; ``read_file``, ``grep_search``, ``list_directory``,
-   and ``glob`` are checked against the per-entry ``read-scope.json``. Every
-   tool requires an explicit absolute path (``file_path`` or ``dir_path``);
-   omitted or relative paths are denied before resolution.
+2. Strict per-tool parameter allow-set (`TOOL_INPUT_KEYS`): any call whose
+   ``tool_input`` carries a key outside the pinned ``@google/gemini-cli`` 0.55
+   schema for that tool is denied before path resolution.
+3. Entry binding: ``PANOPTICON_ENTRY_ID`` must be present and non-empty in the
+   per-entry subprocess environment (``@google/gemini-cli`` ``BeforeTool`` stdin
+   carries ``{session_id, transcript_path, cwd, hook_event_name, timestamp,
+   tool_name, tool_input, mcp_context}`` and never includes the prompt).
+4. Authoritative ``argv`` policy paths & path confinement: policy paths come
+   exclusively from ``argv`` (never from environment variables). ``write_file``
+   is checked against the v2 per-entry ``write-allowlist.json``; ``read_file``,
+   ``grep_search``, ``list_directory``, and ``glob`` are checked against the
+   per-entry ``read-scope.json``. Every tool requires an explicit absolute path
+   (``file_path`` or ``dir_path``); omitted or relative paths, climbing globs,
+   and git pathspec magic (``:(top)``, ``:``) are denied.
 
 `@google/gemini-cli` unmarshals ``BeforeTool`` stdout as ``DefaultHookOutput``
 JSON: ``{"decision": "allow"}`` or ``{"decision": "deny", "reason": "..."}``.
@@ -42,8 +47,26 @@ READ_TOOLS = frozenset({"read_file", "grep_search", "glob", "list_directory"})
 WRITE_TOOLS = frozenset({"write_file"})
 ALLOWED_TOOLS = READ_TOOLS | WRITE_TOOLS
 
-ENV_READ_SCOPE = "PANOPTICON_READ_SCOPE"
-ENV_WRITE_ALLOWLIST = "PANOPTICON_WRITE_ALLOWLIST"
+# Pinned parameter schema from @google/gemini-cli 0.55.1
+# (`packages/core/dist/src/tools/definitions/base-declarations.js` in
+# `chunk-32XQ54AJ.js`). Any key outside a tool's allow-set is denied.
+TOOL_INPUT_KEYS = {
+    "read_file": frozenset({"file_path", "start_line", "end_line"}),
+    "grep_search": frozenset({
+        "pattern", "dir_path", "include_pattern", "exclude_pattern",
+        "names_only", "max_matches_per_file", "total_max_matches",
+        "fixed_strings", "case_sensitive", "context",
+    }),
+    "list_directory": frozenset({
+        "dir_path", "ignore", "file_filtering_options",
+    }),
+    "glob": frozenset({
+        "pattern", "dir_path", "case_sensitive",
+        "respect_git_ignore", "respect_gemini_ignore",
+    }),
+    "write_file": frozenset({"file_path", "content"}),
+}
+
 ENV_DENIAL_LOG = "PANOPTICON_GEMINI_DENIAL_LOG"
 
 # Every name this hook reads from guard_rules; the loader refuses a module that
@@ -57,6 +80,10 @@ _GUARD_RULES_USED = (
     "_load_allowlist", "_escaped_component", "_glob_refusal", "marker_of",
     "hook_command", "_trusted_hook_argv", "record_denial")
 
+# NOTE: The loader stanza between LOADER_BEGIN and LOADER_END is byte-pinned
+# across all five guard hooks by `tests/test_guard_rules.py::TestTheVendoredBytes`
+# and must remain byte-identical to `read_guard_hook.py` / `write_guard_hook.py` /
+# `kimi_guard_hook.py` / `agy_guard_hook.py`.
 # --- GUARD RULES LOADER (#3273 cut 11) ---
 # Byte-identical in the three guard hooks (tests/test_guard_rules.py). Run as a
 # hook (`<python> -I <abs path>`) this module has no package, so guard_rules.py
@@ -117,45 +144,68 @@ def _deny(reason):
     print(json.dumps({"decision": "deny", "reason": str(reason)}), flush=True)
 
 
-def _prompt_marker(text):
-    """Extract the entry id from line 1 of `prompt` / `lastUserInput` if present."""
-    if not isinstance(text, str):
-        return None
-    direct = guard_rules.marker_of(text)
-    if direct is not None:
-        return direct
-    first = text.split("\n", 1)[0].strip()
-    for prefix, suffix in (("[" + guard_rules.MARKER_PREFIX, "]"),
-                           ("<!-- " + guard_rules.MARKER_PREFIX, "-->")):
-        if first.startswith(prefix) and first.endswith(suffix):
-            return first[len(prefix):-len(suffix)].strip() or None
-    return None
+def _bind_entry(env, tool_name):
+    """Bind the call to `PANOPTICON_ENTRY_ID` from the per-entry child environment.
 
-
-def _bind_entry(payload, env, tool_name):
-    """Bind the call to `PANOPTICON_ENTRY_ID` and cross-check any prompt marker."""
+    `@google/gemini-cli`'s `BeforeTool` stdin payload carries no prompt field
+    (`HookEventHandler.fireBeforeToolEvent` in `chunk-32XQ54AJ.js`), so binding
+    is enforced via `PANOPTICON_ENTRY_ID` on the one-entry-per-subprocess launch.
+    """
     entry_id = env.get(guard_rules.ENV_ENTRY_ID)
     if not entry_id or not isinstance(entry_id, str) or not entry_id.strip():
         return None, ("%s is denied: this session is not bound to a panopticon "
                       "entry (no %s in the environment), and the per-run guard "
                       "confines everything it cannot bind"
                       % (tool_name, guard_rules.ENV_ENTRY_ID))
-    entry_id = entry_id.strip()
-    prompt_text = payload.get("prompt")
-    if not isinstance(prompt_text, str):
-        prompt_text = payload.get("lastUserInput")
-    prompt_id = _prompt_marker(prompt_text)
-    if prompt_id is not None and prompt_id != entry_id:
-        return None, ("%s is denied: prompt entry marker %r disagrees with "
-                      "%s=%r" % (tool_name, prompt_id, guard_rules.ENV_ENTRY_ID,
-                                 entry_id))
-    return entry_id, ""
+    return entry_id.strip(), ""
+
+
+def _check_tool_input_keys(tool_name, tool_input):
+    """Verify `tool_input` is a dict whose keys are a subset of `TOOL_INPUT_KEYS[tool_name]`."""
+    if not isinstance(tool_input, dict):
+        return "%s is denied: malformed tool input" % tool_name
+    allowed_keys = TOOL_INPUT_KEYS.get(tool_name)
+    if allowed_keys is None:
+        return "%s is denied: tool is not on the reviewer allowlist" % tool_name
+    unknown = sorted(str(k) for k in tool_input
+                     if not isinstance(k, str) or k not in allowed_keys)
+    if unknown:
+        return ("%s is denied: unsupported tool_input key(s): %s"
+                % (tool_name, ", ".join(unknown)))
+    return ""
+
+
+def _has_git_pathspec_magic(pattern):
+    """True when `pattern` uses git pathspec magic (`:(top)`, `:^`, `:!`, etc.).
+
+    `@google/gemini-cli`'s `grep_search` passes `include_pattern` and
+    `exclude_pattern` after `--` to `git grep`, where leading `:` or `:(`
+    invokes git pathspec magic (e.g. `:(top)**` escapes `cwd`/`dir_path` to the
+    repository root).
+    """
+    stripped = pattern.lstrip()
+    return stripped.startswith(":") or ":(" in pattern
+
+
+def _validate_filter_pattern(tool_name, field_name, pattern):
+    """Validate a glob/pathspec filter parameter (`include_pattern`, `exclude_pattern`, `pattern`)."""
+    if not isinstance(pattern, str):
+        return "%s is denied: malformed `%s` pattern" % (tool_name, field_name)
+    if _has_git_pathspec_magic(pattern):
+        return ("%s is denied: git pathspec magic in `%s` (%r) is forbidden"
+                % (tool_name, field_name, pattern))
+    if guard_rules._glob_pattern_climbs(pattern):
+        return guard_rules.GLOB_PATTERN_DENIAL
+    if guard_rules._names_git_store(pattern):
+        return guard_rules.GIT_STORE_DENIAL
+    return ""
 
 
 def _decide_read(tool_name, tool_input, scope):
     """(allow, reason) for a bound entry's read_file/grep_search/list_directory/glob."""
-    if not isinstance(tool_input, dict):
-        return False, "%s is denied: malformed tool input" % tool_name
+    key_err = _check_tool_input_keys(tool_name, tool_input)
+    if key_err:
+        return False, key_err
     if tool_name == "read_file":
         raw = tool_input.get("file_path")
         if not isinstance(raw, str) or not os.path.isabs(raw):
@@ -179,13 +229,20 @@ def _decide_read(tool_name, tool_input, scope):
         if target is None:
             return False, ("grep_search is denied: pass `dir_path` explicitly -- "
                            "a path from the list in your prompt")
-        include = tool_input.get("include")
+        include_pattern = tool_input.get("include_pattern")
+        if include_pattern is not None:
+            pat_err = _validate_filter_pattern("grep_search", "include_pattern", include_pattern)
+            if pat_err:
+                return False, pat_err
+        exclude_pattern = tool_input.get("exclude_pattern")
+        if exclude_pattern is not None:
+            pat_err = _validate_filter_pattern("grep_search", "exclude_pattern", exclude_pattern)
+            if pat_err:
+                return False, pat_err
         if os.path.isdir(target):
             if any(guard_rules._in_dir_grant(target, d) for d in scope["dirs"]):
-                if include is not None:
-                    if not isinstance(include, str):
-                        return False, "grep_search is denied: malformed `include` pattern"
-                    refusal = guard_rules._glob_refusal(target, include, scope)
+                if include_pattern is not None:
+                    refusal = guard_rules._glob_refusal(target, include_pattern, scope)
                     if refusal:
                         return False, refusal
                 return True, ""
@@ -220,8 +277,10 @@ def _decide_read(tool_name, tool_input, scope):
         if os.path.isdir(target) and any(
                 guard_rules._in_dir_grant(target, d) for d in scope["dirs"]):
             pattern = tool_input.get("pattern")
-            if pattern is not None and not isinstance(pattern, str):
-                return False, "glob is denied: malformed `pattern`"
+            if pattern is not None:
+                pat_err = _validate_filter_pattern("glob", "pattern", pattern)
+                if pat_err:
+                    return False, pat_err
             refusal = guard_rules._glob_refusal(
                 target, "*" if pattern is None else pattern, scope)
             return (False, refusal) if refusal else (True, "")
@@ -236,8 +295,9 @@ def _decide_write(tool_name, tool_input, allowlist, entry_id):
     if granted is None:
         return False, ("%s is denied: the armed write allowlist names no grant "
                        "for this entry" % tool_name)
-    if not isinstance(tool_input, dict):
-        return False, "%s is denied: malformed tool input" % tool_name
+    key_err = _check_tool_input_keys(tool_name, tool_input)
+    if key_err:
+        return False, key_err
     raw = tool_input.get("file_path")
     if not isinstance(raw, str) or not os.path.isabs(raw):
         return False, "%s is denied: file_path %r must be an absolute path" % (tool_name, raw)
@@ -264,15 +324,6 @@ def _decide_write(tool_name, tool_input, allowlist, entry_id):
                    "another run" % (tool_name, raw))
 
 
-def _select_policy_path(argv_path, env_var, env):
-    """Select the policy file path, preferring a live per-entry env override
-    when the configured argv path has not been removed."""
-    env_path = (env.get(env_var) or "").strip()
-    if env_path and os.path.isfile(env_path) and (not argv_path or os.path.isfile(argv_path)):
-        return env_path
-    return argv_path or env_path
-
-
 def adjudicate(payload, read_scope_path="", write_allowlist_path="", *,
                mode=None, env=None):
     """(allow, reason) for one `gemini` BeforeTool hook payload."""
@@ -293,19 +344,17 @@ def adjudicate(payload, read_scope_path="", write_allowlist_path="", *,
         return False, ("%s is denied: tool is not on the reviewer allowlist"
                        % tool_name)
     env = os.environ if env is None else env
-    entry_id, bind_err = _bind_entry(payload, env, tool_name)
+    entry_id, bind_err = _bind_entry(env, tool_name)
     if entry_id is None:
         return False, bind_err
     tool_input = payload.get("tool_input")
     if tool_name in WRITE_TOOLS:
-        policy_path = _select_policy_path(write_allowlist_path, ENV_WRITE_ALLOWLIST, env)
-        allowlist, error = guard_rules._load_allowlist(policy_path)
+        allowlist, error = guard_rules._load_allowlist(write_allowlist_path)
         if allowlist is None:
             return False, error
         allow, reason = _decide_write(tool_name, tool_input, allowlist, entry_id)
     else:
-        policy_path = _select_policy_path(read_scope_path, ENV_READ_SCOPE, env)
-        scopes, error = guard_rules._load_scope(policy_path)
+        scopes, error = guard_rules._load_scope(read_scope_path)
         if scopes is None:
             return False, error
         scope = scopes.get(entry_id)
@@ -359,7 +408,8 @@ def _record_gemini_denial(payload, reason, env):
 
 def main(argv=None, env=None):
     """`argv` is `[read_scope_path, write_allowlist_path]` (or `[mode, data_path]`).
-    Always exits 0 and prints a `DefaultHookOutput` JSON object."""
+    `argv` is strictly authoritative (environment variables never override policy
+    paths). Always exits 0 and prints a `DefaultHookOutput` JSON object."""
     args = sys.argv[1:] if argv is None else list(argv)
     env = os.environ if env is None else env
     try:
@@ -380,9 +430,6 @@ def main(argv=None, env=None):
         write_allowlist_path = args[1] if mode == "write" else ""
     elif len(args) >= 2:
         read_scope_path, write_allowlist_path = args[0], args[1]
-    elif len(args) == 0 and (env.get(ENV_READ_SCOPE) or env.get(ENV_WRITE_ALLOWLIST)):
-        read_scope_path = env.get(ENV_READ_SCOPE, "")
-        write_allowlist_path = env.get(ENV_WRITE_ALLOWLIST, "")
     else:
         _deny("gemini guard: bad hook invocation %r -- expected "
               "[<read_scope_path>, <write_allowlist_path>]" % (args,))

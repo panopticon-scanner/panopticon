@@ -21,7 +21,7 @@
 # carry through a rewrite, so the linux resolution is what is committed. See
 # DEVELOPMENT.md, "Regenerating the pinned dependency hashes".
 #
-# The digests are not written by hand. `python3 scripts/bump_pins.py
+# The digests are not written by hand. `python3 devtools/bump_pins.py
 # requirements --file requirements-tools.txt --write` reads each one from
 # PyPI's JSON API and recomputes it from the downloaded wheel. Both linux
 # architectures' wheels are pinned on every line, because pip on the arm64 leg

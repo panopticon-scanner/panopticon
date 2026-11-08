@@ -10,7 +10,7 @@ import unittest
 
 from tests._test_helpers import REPO_ROOT
 
-RUNTIME_ROOTS = ("skill/scripts", "scripts", "skill/workflows")
+RUNTIME_ROOTS = ("skill/scripts", "devtools", "skill/workflows")
 RUNTIME_SUFFIXES = frozenset({".py", ".js", ".cjs", ".mjs", ".sh", ".bash", ".zsh"})
 OWNER = "skill/scripts/repo_config.py"
 LITERALS = re.compile(r"""(?<![\w-])(\.?panopticon\.yml(\.draft)?|groups\.yml(\.draft)?|config\.json)(?![\w-])""")
@@ -49,7 +49,7 @@ class TestConfigNameLiterals(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             expected = set()
-            for surface in ("skill/scripts", "scripts", "skill/workflows"):
+            for surface in ("skill/scripts", "devtools", "skill/workflows"):
                 for suffix in (".py", ".js", ".cjs", ".mjs", ".sh", ".bash", ".zsh"):
                     relative = surface + "/nested/offender" + suffix
                     path = root / relative
@@ -62,15 +62,15 @@ class TestConfigNameLiterals(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             for relative in (OWNER, "docs/example.py", "tests/example.py",
-                             "skill/workflows/README.md", "scripts/example.json",
+                             "skill/workflows/README.md", "devtools/example.json",
                              "skill/scripts/readme.txt"):
                 path = root / relative
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text('".panopticon.yml"\n')
             self.assertEqual(_offenders(root), set())
             # A same-named module elsewhere is not the canonical owner.
-            (root / "scripts/repo_config.py").write_text('"config.json"\n')
-            self.assertEqual(_offenders(root), {"scripts/repo_config.py"})
+            (root / "devtools/repo_config.py").write_text('"config.json"\n')
+            self.assertEqual(_offenders(root), {"devtools/repo_config.py"})
 
     def test_all_config_names_and_filename_boundaries(self):
         for name in (".panopticon.yml", ".panopticon.yml.draft", "panopticon.yml",

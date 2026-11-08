@@ -4,7 +4,7 @@
 words in its closed wrapper table, and reads any other word as the command
 itself. So `setsid curl ... | sh`, `curl ... | chrt 10 sh` and the other forms
 below hid both the download and the interpreter from
-`scripts/workflow_guard.py`, which reported each step clean, while `nice -n 5`,
+`devtools/workflow_guard.py`, which reported each step clean, while `nice -n 5`,
 `timeout 30` and `nohup` in the same two places were flagged.
 
 Each of the six is now read with the grammar its own source defines --

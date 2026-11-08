@@ -194,9 +194,8 @@ class _HookLaunch(unittest.TestCase):
             ("agy_guard_hook.py", [],
              {"hook": "PreToolUse", "lastUserInput": "<!-- panopticon-entry: e1 -->",
               "toolCall": {"name": "read_file", "arguments": {"Path": self.outside}}}),
-            ("gemini_guard_hook.py", [],
-             {"prompt": "<!-- panopticon-entry: e1 -->",
-              "tool_name": "read_file", "tool_input": {"file_path": self.outside}}),
+            ("gemini_guard_hook.py", [self.scope, self.allowlist],
+             {"tool_name": "read_file", "tool_input": {"file_path": self.outside}}),
         )
 
     def _launch(self, python, hook_path, argv, payload, cwd, extra_env=None):

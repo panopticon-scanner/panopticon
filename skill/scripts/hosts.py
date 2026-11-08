@@ -447,11 +447,15 @@ HOSTS = {
     #
     # GM-1 (`GEMINI.md`, `**/GEMINI.md`) remains OPEN (P4): in
     # `packages/core/dist/src/tools/memoryTool.js` (`chunk-32XQ54AJ.js:11342670`),
-    # `setGeminiMdFilename` is additive (`currentGeminiMdFilename` starts at
-    # `"GEMINI.md"` and `getAllGeminiMdFilenames()` appends `context.fileName`
-    # without removing `"GEMINI.md"`), and `MemoryContextManager`
-    # (`chunk-32XQ54AJ.js:15298800`) walks `--include-directories` and lazy
-    # upward paths on `read_file` without consulting
+    # `DEFAULT_CONTEXT_FILENAME` is `"GEMINI.md"` and `setGeminiMdFilename` is
+    # additive (`for (const filename of current) { next.add(filename); }`), so
+    # `<run_home>/.gemini/settings.json` omits `context.fileName` to keep
+    # `getAllGeminiMdFilenames()` at `["GEMINI.md"]` only (closing `AGENTS.md`
+    # in GM-2). However, `ReadFileToolInvocation.execute` calls
+    # `discoverJitContext` -> `memoryContextManager.discoverContext`
+    # (`chunk-32XQ54AJ.js:15298800`), which walks upward from any read file
+    # toward trusted roots (including `--include-directories <review_root>`)
+    # and auto-injects any `GEMINI.md` found along that path without consulting
     # `loadMemoryFromIncludeDirectories`. Targets shipping `GEMINI.md` are
     # therefore refused on `tool_policy_enforced`.
     "gemini": HostSpec(

@@ -217,7 +217,7 @@ RUN mkdir -p /opt/nuget-packages && chmod -R a+rX /opt/nuget-packages
 # adapters are validated against -- and pyproject.toml's `pytest>=9.2.0` floor
 # does not reach this separate command. --require-hashes makes pip refuse any
 # artifact whose sha256 is not in the file, a missing transitive dependency
-# included; `scripts/bump_pins.py requirements --write` is what writes them.
+# included; `devtools/bump_pins.py requirements --write` is what writes them.
 COPY requirements-fixtures.txt /tmp/requirements-fixtures.txt
 RUN pip install --no-cache-dir --require-hashes -r /tmp/requirements-fixtures.txt \
     && rm /tmp/requirements-fixtures.txt

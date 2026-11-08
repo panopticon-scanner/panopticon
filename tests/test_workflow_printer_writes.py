@@ -1,4 +1,4 @@
-"""`scripts/workflow_printer_writes.py`: how a printer's text is decoded, split out of
+"""`devtools/workflow_printer_writes.py`: how a printer's text is decoded, split out of
 `workflow_printers` byte for byte (#3013).
 
 Pins the compatibility bindings -- every name the module defines is the SAME object in
@@ -18,7 +18,7 @@ import workflow_programs
 
 MOVED = ("_CONVERSION", "_COUNT", "_ESCAPE", "_ESCAPES", "_KNOWN", "_LONG", "_OCTAL", "_PAD", "_PLAIN",
          "_WRITERS", "_decoded", "_echoed", "_formatted", "_written")
-# Every name a file under `scripts/`, `tests/` or `skill/` read through `workflow_printers` on `main`
+# Every name a file under `devtools/`, `tests/` or `skill/` read through `workflow_printers` on `main`
 # when the half moved (ddeadc0f): by a `from` import or as an attribute. Nothing reads one by `getattr`
 # over a list or patches one by a table (checked by running every module that imports it, and by
 # reading each for both shapes: the lesson of #3011's first head).
@@ -85,7 +85,7 @@ class TestWorkflowPrintersBindsEveryMovedName(unittest.TestCase):
         # `patch.object(module, "name", ...)` and by `patch("module.name", ...)`.
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         binders, offenders = ("workflow_printers", "workflow_printer_writes"), []
-        paths = sorted(os.path.join(folder, name) for top in ("scripts", "tests")
+        paths = sorted(os.path.join(folder, name) for top in ("devtools", "tests")
                        for folder, _folders, names in os.walk(os.path.join(root, top))
                        for name in names if name.endswith(".py"))
         self.assertGreater(len(paths), 100)

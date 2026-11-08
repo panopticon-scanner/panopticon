@@ -710,7 +710,7 @@ class TheProgressPrefixIsLoopProgressOwnTest(unittest.TestCase):
     def test_only_loop_progress_spells_it(self):
         import ast
         skill = os.path.dirname(os.path.dirname(child.__file__))
-        roots = [skill, os.path.join(os.path.dirname(os.path.dirname(skill)), "scripts")]
+        roots = [skill, os.path.join(os.path.dirname(os.path.dirname(skill)), "devtools")]
         offenders = []
         for root in roots:
             for folder, _dirs, names in os.walk(root):

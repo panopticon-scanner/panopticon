@@ -33,9 +33,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(                    # skill
 # SAME model_resolver every other importer holds -- one profile cache, one patch
 # target. The `from scripts import ...` line just below already requires
 # `scripts` to resolve, and the bootstrap above guarantees it.
-from scripts import model_resolver
-
-from scripts import claim_scope, codex_read_tools, hosts, plan_contract, toml_values
+from scripts import claim_scope, codex_read_tools, hosts, model_resolver, plan_contract, toml_values
+import scripts.runners.gemini_home as gemini_home
 
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -337,8 +336,8 @@ def _render_codex(role, agent, meta, tp):
     return "\n".join(lines) + "\n"
 
 
-AGY_TOOL_FOR = {"Read": "read_file", "Grep": "grep_search", "Glob": "find_by_name", "Write": "write_file"}
-GEMINI_TOOL_FOR = {"Read": "read_file", "Grep": "grep_search", "Glob": "glob", "Write": "write_file"}
+AGY_TOOL_FOR = {"Read": "read_file", "Grep": "grep_search",
+                "Glob": "find_by_name", "Write": "write_file"}
 
 
 def _agy_tools(tp):
@@ -349,25 +348,15 @@ def _agy_tools(tp):
 def _render_agy(role, agent, meta, tp):
     tier = model_resolver.registration_config("agy", role).get("tier")
     fm = (["---", "name: %s" % agent, "description: %s" % meta["description"]]
-          + (["model: %s" % tier] if tier else []) + ["tools:"] + ["  - %s" % t for t in _agy_tools(tp)] + ["---"])
+          + (["model: %s" % tier] if tier else [])
+          + ["tools:"] + ["  - %s" % t for t in _agy_tools(tp)] + ["---"])
     return "\n".join(fm) + "\n\n" + _role_charter(role, tp)
-
-
-def _gemini_tools(tp):
-    reads = [GEMINI_TOOL_FOR[t] for t in tp["allowed"] if t in GEMINI_TOOL_FOR and t != "Write"]
-    return reads + (["list_directory"] if reads else []) + (["write_file"] if "Write" in tp["allowed"] else [])
-
-
-def _render_gemini(role, agent, _meta, tp):
-    import scripts.runners.gemini_home as gemini_home
-    model = model_resolver.registration_model("gemini", role)
-    return gemini_home.render_policy_toml(_gemini_tools(tp), role=role, agent_name=agent, model=model)
 
 
 # How each registrable host renders one role's shell (ARC-981076646): the file's
 # whole text, from the role, its agent name, template meta and tool policy.
 _RENDERERS = {"claude": _render_claude, "kimi": _render_kimi, "codex": _render_codex,
-              "agy": _render_agy, "gemini": _render_gemini}
+              "agy": _render_agy, "gemini": gemini_home.render_shell}
 
 
 def _prune_retired_shells(host, out_dir, written):
@@ -520,9 +509,11 @@ def _detect_host():
     session can legitimately carry more than one family's variables and the
     historical precedence is load-bearing (tests/test_dispatch.py pins it).
     """
-    warning = "WARNING: host detected from environment; pass --host explicitly for stable behavior"
+    warning = ("WARNING: host detected from environment; pass --host "
+               "explicitly for stable behavior")
     for name in ("codex", "kimi", "claude", "agy", "gemini"):
-        if any(os.environ.get(var) for var in hosts.spec(name).detect_env):
+        row = hosts.spec(name)
+        if any(os.environ.get(var) for var in row.detect_env):
             print(warning, file=sys.stderr)
             return name
     if any(k.startswith("CLAUDE_CODE_") for k in os.environ):
@@ -542,7 +533,8 @@ def _registration_dir(host, agents_dir):
 
 def _is_registered(reg_dir, role_file, host=None):
     """Check if a role is registered in the registration directory."""
-    return bool(reg_dir) and os.path.isfile(os.path.join(reg_dir, registered_agent_filename(host, role_file)))
+    return bool(reg_dir) and os.path.isfile(
+        os.path.join(reg_dir, registered_agent_filename(host, role_file)))
 
 
 def render_advisor_prompts(queue_path, out_dir, host=None, review_root=None):
@@ -609,9 +601,11 @@ def render_advisor_prompts(queue_path, out_dir, host=None, review_root=None):
         queue_id = entry.get("queue_id")
         finding = entry.get("finding")
         if not queue_id or not isinstance(finding, dict):
-            raise ValueError("verify queue %s: malformed entry %r" % (queue_path, entry.get("queue_id")))
+            raise ValueError("verify queue %s: malformed entry %r"
+                             % (queue_path, entry.get("queue_id")))
         if not isinstance(queue_id, str):
-            raise ValueError("verify queue %s: non-string queue_id %r" % (queue_path, queue_id))
+            raise ValueError("verify queue %s: non-string queue_id %r"
+                             % (queue_path, queue_id))
         # queue_id is a finding_fingerprint (16 hex chars; #443) plus an
         # optional -<n> collision suffix from evidence.build_verify_queue.
         # No separators, no dots, no traversal -- strictly tighter than the
@@ -620,7 +614,8 @@ def render_advisor_prompts(queue_path, out_dir, host=None, review_root=None):
         # newline, so "<16 hex>\n" would clear the guard and then be
         # interpolated straight into a filename below.
         if not re.match(r"\A[0-9a-f]{16}(-[0-9]+)?\Z", queue_id):
-            raise ValueError("verify queue %s: unsafe queue_id %r" % (queue_path, queue_id))
+            raise ValueError("verify queue %s: unsafe queue_id %r"
+                             % (queue_path, queue_id))
         # #run8 ARC-F2A, on this path as of #1767: a location that escapes the
         # review root is neutralized BEFORE it reaches the claim JSON. Copy on
         # write, and only when there is a location dict to confine, so a finding
@@ -628,11 +623,12 @@ def render_advisor_prompts(queue_path, out_dir, host=None, review_root=None):
         safe_finding = finding
         if isinstance(finding.get("location"), dict):
             safe_finding = dict(finding)
-            safe_finding["location"] = claim_scope.confine_claim_location(review_root, finding["location"])
+            safe_finding["location"] = claim_scope.confine_claim_location(
+                review_root, finding["location"])
         claim = json.dumps(safe_finding, indent=2, ensure_ascii=False)
         prompt = render_prompt("advisor.md", {"claim_json": claim}, host=host)
         prompt = ("Verification run id: %s\nEcho it as the top-level JSON field "
-                  "`run_id` in your verdict.\n\n%s" % (run_id, prompt))
+              "`run_id` in your verdict.\n\n%s" % (run_id, prompt))
         # #975: pin the review root. Advisors inherit the session cwd, so a
         # relative location in the claim resolved against the wrong checkout
         # when the session root diverged from the tree under review. #1767: what
@@ -658,19 +654,23 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description="panopticon dispatch planner")
     ap.add_argument("--host", default=None,
                     help="Host platform: claude|kimi|codex|generic (any model-profiles.yml host key accepted)")
-    ap.add_argument("--out", default=None, help="Output directory for --render-advisor")
+    ap.add_argument("--out", default=None,
+                    help="Output directory for --render-advisor")
     ap.add_argument("--render-advisor", metavar="QUEUE", default=None,
                     help="Render advisor prompts from a verify-queue JSON into --out DIR")
     ap.add_argument("--review-root", metavar="PATH", default=None,
                     help="Tree the rendered claims resolve against (default: the "
                          "directory above the queue's %s segment)" % plan_contract.ARTIFACT_DIR)
     _REGISTRABLE = sorted(n for n, h in hosts.HOSTS.items() if h.shell_format)
-    ap.add_argument("--emit-host-agents", metavar="HOST", choices=_REGISTRABLE, default=None)
-    ap.add_argument("--agents-dir", default=None, help="Directory containing registered agent .md files")
+    ap.add_argument("--emit-host-agents", metavar="HOST",
+                    choices=_REGISTRABLE, default=None)
+    ap.add_argument("--agents-dir", default=None,
+                    help="Directory containing registered agent .md files")
     args = ap.parse_args(argv)
 
     if args.emit_host_agents:
-        out_dir = args.out or _registration_dir(args.emit_host_agents, args.agents_dir)
+        out_dir = (args.out
+                   or _registration_dir(args.emit_host_agents, args.agents_dir))
         try:
             written = emit_host_agents(args.emit_host_agents, out_dir)
         except ValueError as e:
@@ -685,7 +685,9 @@ def main(argv=None):
             print("dispatch: --render-advisor requires --out DIR", file=sys.stderr)
             return 2
         try:
-            written = render_advisor_prompts(args.render_advisor, args.out, host=args.host, review_root=args.review_root)
+            written = render_advisor_prompts(args.render_advisor, args.out,
+                                             host=args.host,
+                                             review_root=args.review_root)
         except ValueError as e:
             print("dispatch: %s" % e, file=sys.stderr)
             return 1

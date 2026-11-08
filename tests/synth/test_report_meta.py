@@ -14,7 +14,7 @@ from unittest import mock
 
 import scripts.citations as citations
 import scripts.evidence as evidence_mod
-import scripts.file_issues as file_issues
+import devtools.file_issues as file_issues
 import scripts.ledger as ledger_mod
 import scripts.ocrdb as ocrdb
 import scripts.phases.review as review_phase
