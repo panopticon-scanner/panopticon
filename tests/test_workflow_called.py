@@ -1,4 +1,4 @@
-"""`scripts/workflow_called.py`: what a called function may leave in the caller's value table
+"""`devtools/workflow_called.py`: what a called function may leave in the caller's value table
 (#2664 fix rounds, #2785). Pins the one-way layering -- the module imports the value table, the
 command layer and the wrappers' table, never the uses module or the guard -- and the fail-closed
 carry's own rules: every assignment the body may make is added unsure and the caller's own kept;

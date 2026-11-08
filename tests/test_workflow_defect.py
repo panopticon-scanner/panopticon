@@ -1,4 +1,4 @@
-"""`scripts/workflow_defect.py`: why one fetch is a defect, split out of `workflow_guard` byte for byte
+"""`devtools/workflow_defect.py`: why one fetch is a defect, split out of `workflow_guard` byte for byte
 (for #3050, #3051 and #2433).
 
 Pins the compatibility bindings -- every name the module defines is the SAME object in
@@ -86,7 +86,7 @@ def _rebinds(names):
     """Each assignment or patch of one of `names` through either module, by LITERAL name: by
     assignment, by `patch.object(module, "name", ...)` and by `patch("module.name", ...)`."""
     offenders = []
-    for path, tree in _files("scripts", "tests"):
+    for path, tree in _files("devtools", "tests"):
         aliases = {alias.asname or alias.name for node in ast.walk(tree) if isinstance(node, ast.Import)
                    for alias in node.names if alias.name in BINDERS}
         for node in ast.walk(tree):
@@ -158,7 +158,7 @@ class TestWorkflowGuardBindsEveryMovedName(unittest.TestCase):
         # literal names sees. No file under `scripts/` or `tests/` holds a moved name, or one that left
         # with them, as a string; the same reading finds the strings the swaps are made by.
         def strings(names):
-            return {(path, node.value) for path, tree in _files("scripts", "tests") for node in ast.walk(tree)
+            return {(path, node.value) for path, tree in _files("devtools", "tests") for node in ast.walk(tree)
                     if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value in names}
         self.assertEqual(set(), strings(MOVED + LEFT))
         self.assertLessEqual({"_defects", "_job_defects", "read", "statements"},

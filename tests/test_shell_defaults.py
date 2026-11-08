@@ -1,4 +1,4 @@
-"""`scripts/shell_defaults.py`: the `$` command words bash may expand, split out of `shell_command` byte for byte.
+"""`devtools/shell_defaults.py`: the `$` command words bash may expand, split out of `shell_command` byte for byte.
 
 Pins the compatibility bindings -- every name the module defines is the SAME object in `shell_command`,
 and in the reader where it binds one too, so no caller that reads `shell_command._OPTIONAL` or
@@ -68,7 +68,7 @@ class TestTheCommandLayerBindsEveryMovedName(unittest.TestCase):
         # assignment or a patch through either would change that module's name alone and nothing
         # this module reads -- silently, for the dict the folds write in place. Patch `shell_defaults`.
         root, binders, offenders = os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ("shell_command", "shell_reader"), []
-        paths = sorted(os.path.join(folder, name) for top in ("scripts", "tests")
+        paths = sorted(os.path.join(folder, name) for top in ("devtools", "tests")
                        for folder, _folders, names in os.walk(os.path.join(root, top)) for name in names if name.endswith(".py"))
         self.assertGreater(len(paths), 100)
         for path in paths:

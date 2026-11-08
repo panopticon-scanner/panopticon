@@ -14,7 +14,7 @@ and run-13 found both of them failing OPEN:
 
 A guard over shell text that cannot read the shell reports a clean pass on
 every form its regex does not parse, which is the worst answer a control can
-give. So the logic moved into `scripts/workflow_guard.py` -- a small, real
+give. So the logic moved into `devtools/workflow_guard.py` -- a small, real
 parser: statements split quote-aware on `;`, `&&`, `||`, `|` and newlines,
 argv from `shlex`, heredocs and continuations joined first -- and this module
 is its specification. Every case below returned None ("clean") from the regex
@@ -8095,7 +8095,7 @@ class TestRunSteps(unittest.TestCase):
 
 
 class TestCli(unittest.TestCase):
-    """`python3 scripts/workflow_guard.py .github/workflows/*.yml` -- the same
+    """`python3 devtools/workflow_guard.py .github/workflows/*.yml` -- the same
     rule the suite runs, for a human holding a shell."""
 
     WORKFLOW = ("name: t\non: [push]\njobs:\n  b:\n    runs-on: ubuntu-latest\n"
@@ -8173,7 +8173,7 @@ class TestCli(unittest.TestCase):
         self.assertIn("straight to `sh`", lines[3])
         # The count names what it counts, a refused step as well as a fetch.
         self.assertEqual("4 defect(s): unverified fetch-and-exec, or code the guard cannot "
-                         "read; see scripts/workflow_guard.py", lines[4])
+                         "read; see devtools/workflow_guard.py", lines[4])
 
 
 if __name__ == "__main__":  # pragma: no cover
@@ -8406,7 +8406,7 @@ class TestTheReaderLexesTheWayBashDoes(unittest.TestCase):
     `$(...)` matcher took `\\"` inside a nested string for a closing quote.
     Each flagged step below pipes a download into `sh` after one such
     construct, and real bash runs that payload every time. Until the three
-    passes became one quote-aware pass (`scripts/shell_lex.py`) the guard
+    passes became one quote-aware pass (`devtools/shell_lex.py`) the guard
     reported most of them clean -- through `job_defects`, the path the fleet
     test takes; the rest pin what that pass must read right as well.
     """

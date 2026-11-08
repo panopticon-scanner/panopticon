@@ -1875,7 +1875,7 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
         for fingerprint in ("(fix before running a review)", "readiness OK"):
             owners = []
             for root in (os.path.join(SKILL_ROOT, "scripts"),
-                         os.path.join(REPO_ROOT, "scripts")):
+                         os.path.join(REPO_ROOT, "devtools")):
                 for d, dirs, files in os.walk(root):
                     dirs[:] = sorted(x for x in dirs if x != "__pycache__")
                     for f in sorted(files):

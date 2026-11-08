@@ -6,7 +6,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scripts import open_pin_pr as pin
+from devtools import open_pin_pr as pin
 
 
 BASE = """FROM scratch
@@ -107,9 +107,9 @@ def test_each_family_metadata_and_workflow_wiring(repo, family):
     assert "2.0.0" in create[create.index("--title") + 1]
     assert "Review" in create[create.index("--body") + 1]
     workflow = (Path(__file__).parents[1] / ".github/workflows/pin-freshness.yml").read_text()
-    assert "python3 scripts/open_pin_pr.py " + family in workflow
+    assert "python3 devtools/open_pin_pr.py " + family in workflow
     matrix = (Path(__file__).parents[1] / "panopticon.yml").read_text()
-    assert "- scripts/open_pin_pr.py" in matrix
+    assert "- devtools/open_pin_pr.py" in matrix
     assert "- tests/test_pin_pr.py" in matrix
 
 

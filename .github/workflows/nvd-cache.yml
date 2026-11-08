@@ -61,8 +61,8 @@ jobs:
           # inject downstream -- the version keys the tag below and the SHA256
           # is what the release zip is checked against -- and it exits 2 rather
           # than return one it cannot, which `set -e` turns into a failed step.
-          ver="$(python3 scripts/dockerfile_args.py read-arg DEPENDENCY_CHECK_VERSION)"
-          sha="$(python3 scripts/dockerfile_args.py read-arg DEPENDENCY_CHECK_SHA256)"
+          ver="$(python3 devtools/dockerfile_args.py read-arg DEPENDENCY_CHECK_VERSION)"
+          sha="$(python3 devtools/dockerfile_args.py read-arg DEPENDENCY_CHECK_SHA256)"
           {
             echo "version=$ver"
             echo "sha256=$sha"

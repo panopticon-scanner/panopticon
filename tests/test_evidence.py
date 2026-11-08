@@ -520,7 +520,7 @@ class TestOneReaderPerGuardedKey(unittest.TestCase):
 
     It covers `evidence.py` alone. `phases/review.py` and `security_gate.py` keep
     the idiom on adapter-constructed findings, whose `location` is always a dict
-    an adapter built, so those are safe by construction; `scripts/file_issues.py`
+    an adapter built, so those are safe by construction; `devtools/file_issues.py`
     -- the other consumer of the same `reconcile.load_report` -- now reads all
     three through the same readers (#2372). One layer up, `load_report` types its
     own document, so a report, a `meta`, a part or the discarded-claims sibling

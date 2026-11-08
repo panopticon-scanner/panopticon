@@ -233,7 +233,7 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
         prepare = by_name["Prepare Security and AI inventory reports"]
         upload = by_name["Upload actionable SARIF to GitHub Security tab"]
         self.assertIn('${{ env.TOOLS_OUT }}', gate["run"])
-        self.assertIn("scripts/code_scanning_reports.py", prepare["run"])
+        self.assertIn("devtools/code_scanning_reports.py", prepare["run"])
         self.assertIn("code-scanning-reports/security",
                       upload["with"]["sarif_file"])
         self.assertLess(steps.index(gate), steps.index(prepare))
@@ -297,7 +297,7 @@ class TestSecurityWorkflowTrustBoundary(unittest.TestCase):
                 "${{ steps.upload-sarif.outputs.sarif-id }}",
         })
         run = _without_comments(audit["run"])
-        self.assertIn("python controller/scripts/code_scanning_audit.py", run)
+        self.assertIn("python controller/devtools/code_scanning_audit.py", run)
         self.assertIn('--repository "$GITHUB_REPOSITORY"', run)
         self.assertIn('--server-url "$GITHUB_SERVER_URL"', run)
         self.assertIn('--ref "$GITHUB_REF"', run)

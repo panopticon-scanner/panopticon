@@ -31,7 +31,7 @@ SECURITY_MODES = ("standard", REDTEAM)
 # #1790 owner ruling 2026-09-23: what this gate prints over the findings it
 # declined to count. The wording is the ruling -- a pre-existing finding is not
 # forgiven, it is governed somewhere else: the post-merge code-scanning audit
-# (`scripts/code_scanning_audit.py`) fails the push to main on any OPEN alert,
+# (`devtools/code_scanning_audit.py`) fails the push to main on any OPEN alert,
 # and an alert the owner has read and dismissed is not open. A reader who sees
 # one of these listed and wants it gone dismisses it there, or fixes it; either
 # way not here, on a commit whose diff never touched it.

@@ -141,7 +141,7 @@ RESIDUAL = ("diff_map", "plan_contract", "repo_config")
 
 # The two production surfaces. `tests/` is `tests/test_no_per_file_sys_path.py`'s,
 # where the rule is ZERO sites rather than an enumerated few.
-BOOTSTRAP_SURFACES = ("skill/scripts", "scripts")
+BOOTSTRAP_SURFACES = ("skill/scripts", "devtools")
 
 # What a site adds, resolved from the call's argument by AST. The two roots are
 # different animals and the advice below differs accordingly; anything this walk
@@ -162,12 +162,12 @@ _UNRECOGNISED = "unrecognised root"
 # module is exactly how the dual-identity census grows back, and the file-level
 # form of this list could not see one. No line number enters the literal.
 PERMITTED_BOOTSTRAPS = {
-    "scripts/code_scanning_reports.py": 1,
-    "scripts/file_issues.py": 1,
-    "scripts/gh_transport.py": 1,      # moved from triage.py (#3404)
-    "scripts/open_pin_pr.py": 1,
-    "scripts/replay_report.py": 1,
-    "scripts/sanitize.py": 1,
+    "devtools/code_scanning_reports.py": 1,
+    "devtools/file_issues.py": 1,
+    "devtools/gh_transport.py": 1,      # moved from triage.py (#3404)
+    "devtools/open_pin_pr.py": 1,
+    "devtools/replay_report.py": 1,
+    "devtools/sanitize.py": 1,
     "skill/scripts/_run_adapter.py": 1,
     "skill/scripts/capture_goldens.py": 1,
     "skill/scripts/discovery.py": 2,
@@ -185,7 +185,7 @@ PERMITTED_BOOTSTRAPS = {
 # reports "unrecognised root" for them rather than guessing. One today:
 # `replay_report.py` joins a FUNCTION-local `repo` with "skill". Shrink-only --
 # making one resolvable is a fix, adding one is not.
-UNRESOLVED_ROOTS = ("scripts/replay_report.py",)
+UNRESOLVED_ROOTS = ("devtools/replay_report.py",)
 
 # Per-root advice, because "any `sys.path` write" is not one hazard. Of the 21
 # sites in 18 modules, SEVEN add the flat root, THIRTEEN add the package root and
@@ -717,7 +717,7 @@ class BootstrapCeilingTest(unittest.TestCase):
             "skill/scripts/entry.py": "import sys\nsys.path.insert(0, '/x')\n",
             "skill/scripts/tools/deep.py": ("from sys import path as roots\n"
                                             "roots.append('/x')\n"),
-            "scripts/filer.py": "import sys as system\nsystem.path += ['/x']\n",
+            "devtools/filer.py": "import sys as system\nsystem.path += ['/x']\n",
             "skill/scripts/quiet.py": "import os\nVALUE = os.sep\n",
             "tests/test_elsewhere.py": "import sys\nsys.path.insert(0, '/x')\n",
         }
@@ -728,7 +728,7 @@ class BootstrapCeilingTest(unittest.TestCase):
                 path.write_text(body, encoding="utf-8")
             found = _bootstrap_sites(directory)
             self.assertEqual(sorted(_unpermitted(found, {})),
-                             ["scripts/filer.py", "skill/scripts/entry.py",
+                             ["devtools/filer.py", "skill/scripts/entry.py",
                               "skill/scripts/tools/deep.py"])
 
     def test_the_root_walk_reads_the_spellings_this_tree_uses(self):
@@ -751,7 +751,7 @@ class BootstrapCeilingTest(unittest.TestCase):
                          'os.path.dirname(os.path.abspath(__file__))), "skill")\n'
                          'OTHER = "/a"\nOTHER = "/b"\n')
         constants = _module_constants(tree)
-        filer = os.path.join(REPO_ROOT, "scripts", "planted.py")
+        filer = os.path.join(REPO_ROOT, "devtools", "planted.py")
         self.assertEqual(
             _root_label(_resolve_path(ast.parse("_SKILL", mode="eval").body,
                                       filer, constants), REPO_ROOT),
@@ -768,7 +768,7 @@ class ScriptsPortionsTest(unittest.TestCase):
 
     def test_the_two_portions_share_no_module_name(self):
         shared = sorted(_module_names(os.path.join(SKILL_ROOT, "scripts"))
-                        & _module_names(os.path.join(REPO_ROOT, "scripts")))
+                        & _module_names(os.path.join(REPO_ROOT, "devtools")))
         self.assertEqual(
             shared, [],
             "module name(s) in BOTH `scripts` portions: %s -- `import "

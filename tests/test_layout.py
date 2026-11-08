@@ -362,5 +362,29 @@ class ScriptsDirTest(unittest.TestCase):
         self.assertTrue(os.path.isfile(runio._script("synthesize.py")))
 
 
+class OneScriptsNamespaceTest(unittest.TestCase):
+    """#3504: the repo-root dev tools are `devtools/`, so `scripts` names
+    `skill/scripts` only. A root `scripts/` (or a path entry naming one) would
+    merge back into the namespace package and make resolution order-dependent."""
+
+    def test_no_repo_root_scripts_directory(self):
+        self.assertFalse(os.path.exists(os.path.join(REPO_ROOT, "scripts")))
+        self.assertTrue(os.path.isfile(os.path.join(REPO_ROOT, "devtools", "workflow_guard.py")))
+
+    def test_pyproject_paths_name_devtools_not_a_root_scripts(self):
+        import tomllib
+        with open(os.path.join(REPO_ROOT, "pyproject.toml"), "rb") as fh:
+            cfg = tomllib.load(fh)
+        lists = {
+            "pytest pythonpath": cfg["tool"]["pytest"]["ini_options"]["pythonpath"],
+            "mypy files": cfg["tool"]["mypy"]["files"],
+            "coverage source": cfg["tool"]["coverage"]["run"]["source"],
+        }
+        for where, paths in lists.items():
+            with self.subTest(where=where):
+                self.assertNotIn("scripts", paths)
+                self.assertIn("devtools", paths)
+
+
 if __name__ == "__main__":
     unittest.main()

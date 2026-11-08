@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from scripts import code_scanning_reports as reports
+from devtools import code_scanning_reports as reports
 
 
 ANTHROPIC = "opt.semgrep-rules.ai.generic.detect-generic-ai-anthprop"

@@ -7,7 +7,7 @@ Run-2's *stored* fingerprints predate the P2 fingerprint-corruption fix
 comparable across runs. This tool recomputes both sides through today's
 `evidence.finding_fingerprint` and diffs those, never the stored values. The
 stored value is preserved per-record anyway, because stage 2
-(scripts/reconcile_apply.py) needs it to look up the issue that was filed
+(devtools/reconcile_apply.py) needs it to look up the issue that was filed
 against it.
 
 Usage: python3 skill/scripts/reconcile.py diff RUN2.json RUN3.json --out diff.json [--summary summary.md]
@@ -311,7 +311,7 @@ GUARD_REASONS = {
 }
 
 # Why corroboration failed, carried on every ambiguous entry as `basis`, for a
-# consumer that must word its own message (scripts/reconcile_apply.py keys its
+# consumer that must word its own message (devtools/reconcile_apply.py keys its
 # comment template on it -- reading the reason text would be substring
 # archaeology). "scope": nothing in the new run's coverage can speak to this
 # file, which is EVERY whole-run guard (a zero-record run and path-shape drift

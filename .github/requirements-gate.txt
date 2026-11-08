@@ -11,7 +11,7 @@
 # installs exactly these lines, so a closure that is missing one fails loudly at
 # `import jsonschema` instead of silently resolving something unpinned.
 #
-# The digests are not written by hand. `python3 scripts/bump_pins.py
+# The digests are not written by hand. `python3 devtools/bump_pins.py
 # requirements --write` reads each one from PyPI's JSON API and recomputes it
 # from the downloaded wheel; see DEVELOPMENT.md, "Regenerating the pinned
 # dependency hashes". Versions are Dependabot's to bump, and must track

@@ -91,7 +91,7 @@ ALLOWLIST = {
 # root. The digest is the OCI image INDEX digest, so one pin covers both
 # architectures.
 #
-# `scripts/bump_pins.py tinyproxy` checks this digest against the current
+# `devtools/bump_pins.py tinyproxy` checks this digest against the current
 # multi-platform index weekly in pin-freshness.yml. It warns without changing
 # the pin: an update still needs proxy tests on both architectures. The tools
 # image already has nightly builds and tools-image-health.yml freshness checks.

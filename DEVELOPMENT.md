@@ -267,13 +267,13 @@ characters, and matching consumes the whole path.
   rather than counted, on every route. A scheduled strict full-tree lane that
   would count them is a follow-up.
   After that gate reads the unchanged raw captures and manifest, the workflow
-  runs `scripts/code_scanning_reports.py` in runner temporary storage. It
+  runs `devtools/code_scanning_reports.py` in runner temporary storage. It
   keeps only the two named, note-level AI-usage rules from the exact supported
   `Semgrep OSS` driver in a separate JSON/Markdown inventory. A similar tool
   name, elevated severity, taxonomy relationship, or any metadata beyond the
   reviewed low-confidence inventory shape keeps the result in Security. The
   helper strictly decodes JSON, validates each complete capture offline against
-  the fixed official SARIF 2.1.0 Draft 7 schema in `scripts/reference/`, and
+  the fixed official SARIF 2.1.0 Draft 7 schema in `devtools/reference/`, and
   resolves localized result-message IDs through the rule or driver message
   strings before routing. All schema-defined property-bag carriers, taxa, and
   relationships are checked recursively. Shared document, run, tool, driver,
@@ -379,8 +379,8 @@ characters, and matching consumes the whole path.
   the disclosure axis that makes a truncated run visible in the artifact instead of silently
   biased toward "no findings"; it only *produces* the signal — refuse-to-grade-on-divergence and
   panel reorder are SP-B policy, not SP-A.
-- **Two import modes, one module object per file.** Neither `scripts/` nor `skill/scripts/` has an
-  `__init__.py`: they are two portions of the `scripts` namespace package, reached with `skill/` on
+- **Two import modes, one module object per file.** `skill/scripts/` has no
+  `__init__.py`: it is the `scripts` namespace package (the repo-root dev tools live in `devtools/`, #3504), reached with `skill/` on
   the path (`from scripts import x`, what `phases/child._child_env` gives every child), while
   `skill/scripts/` is on the path too so an entry script run by path can `import x` flat. Importing
   one file under BOTH names builds two module objects from it, with two sets of module state and
@@ -419,7 +419,7 @@ meaning "use `setup_preflight.DEFAULT_RUNNER`"; a non-`None` value left in shipp
 readiness checkpoint answer "ok" off a fake without probing Docker at all — and that is the check
 gating every paid dispatch. `tests/phases/test_readiness.py::test_the_docker_runner_seam_is_none_in_production`
 asserts both halves (the shipped default, in a fresh interpreter, and that no module under
-`skill/scripts/` or `scripts/` assigns it).
+`skill/scripts/` or `devtools/` assigns it).
 
 ## Adding a new static-analysis tool
 
@@ -504,7 +504,7 @@ containment regression.
 ## Pinned dependencies
 
 Dependabot covers this repo's `pip` and `github-actions` dependencies. The families below sit outside it
-and are maintained by `scripts/bump_pins.py <family> [--write]`. Families that write checksums
+and are maintained by `devtools/bump_pins.py <family> [--write]`. Families that write checksums
 verify the publisher's HTTPS checksum against the downloaded artifact before editing a pin:
 
 | Family | What it pins | Who bumps it |
@@ -523,7 +523,7 @@ the cargo-audit version is a deliberate dependency-graph refresh: check that rel
 build the image before accepting it. This is not a repository-owned hash closure.
 
 Trivy is installed from its official release archives, outside the apt mirror's update policy.
-Run `python3 scripts/bump_pins.py trivy` to check, then `python3 scripts/bump_pins.py trivy --write`
+Run `python3 devtools/bump_pins.py trivy` to check, then `python3 devtools/bump_pins.py trivy --write`
 to update `TRIVY_VERSION` and both architecture SHA256s together. The command reads the official
 release's `trivy_<version>_checksums.txt` over HTTPS and compares each entry with its downloaded
 Linux archive. This checks publisher data against the bytes; it does not verify a release signature.
@@ -536,7 +536,7 @@ is something this repo asserts rather than something RubyGems works out — and 
 requires a new gem would carry a perfectly good digest and still be wrong to pin.
 
 The two workflows that CONSUME the Dockerfile's dependency-check pins — `nvd-cache.yml` and
-`docker-publish.yml` — read them with `python3 scripts/dockerfile_args.py read-arg <NAME>`,
+`docker-publish.yml` — read them with `python3 devtools/dockerfile_args.py read-arg <NAME>`,
 which refuses a value that is not of its expected shape before it reaches an image tag or a
 download (#1774).
 
@@ -625,7 +625,7 @@ identity leaves a summary explaining why no snapshot could be published.
 
 **Post-merge zero-alert audit.** Nightly, on the `main-audit` route (#3292; until then every push to
 `main` ran it), `security.yml` follows its actionable SARIF
-upload with a read-only `scripts/code_scanning_audit.py` check. The check independently proves that
+upload with a read-only `devtools/code_scanning_audit.py` check. The check independently proves that
 the Security upload and CodeQL's separate Python upload both finished for the exact current main
 SHA, then reads every page of `state=open` code-scanning alerts without a severity or tool filter.
 GitHub ingests a SARIF upload asynchronously, so each of those two proofs waits on the same
@@ -658,7 +658,7 @@ every run so nobody has to remember it is there. For a read-only reproduction, t
 `sarif-id` output from the main Security upload and run:
 
 ```bash
-GH_TOKEN="$(gh auth token)" python3 scripts/code_scanning_audit.py \
+GH_TOKEN="$(gh auth token)" python3 devtools/code_scanning_audit.py \
   --repository OWNER/REPOSITORY --server-url https://github.com \
   --ref refs/heads/main --sha FULL_40_HEX_MAIN_SHA --sarif-id SECURITY_UPLOAD_UUID
 ```
@@ -678,8 +678,8 @@ The versions are the input and yours to choose; the digests are not. After chang
 `name==version` line (or adding a package), run:
 
 ```bash
-python3 scripts/bump_pins.py requirements --write      # all three files
-python3 scripts/bump_pins.py requirements --file .github/requirements-gate.txt --write
+python3 devtools/bump_pins.py requirements --write      # all three files
+python3 devtools/bump_pins.py requirements --file .github/requirements-gate.txt --write
 ```
 
 Dependabot proposes version bumps: the root `pip` entry sees `requirements-fixtures.txt`,
@@ -749,7 +749,7 @@ job's effective `permissions:` undeclared, which is why `ci.yml` states `content
 instead of inheriting the repository's `GITHUB_TOKEN` default (#1784). `docker-build-pr.yml`, the
 only other workflow that declared nothing, now does the same, though no exemption holds it there.
 
-The third door is what a workflow **downloads and then runs**, and `scripts/workflow_guard.py`
+The third door is what a workflow **downloads and then runs**, and `devtools/workflow_guard.py`
 holds it. It parses shell — statements split quote-aware on `;`, `&&`, `||` and `|`, argv from
 `shlex`, comments dropped and `\`-continuations, heredocs and `$(…)`/`<(…)` substitutions lifted
 first — and fails the suite when a `curl`/`wget` download is made executable, interpreted,
@@ -772,7 +772,7 @@ where the job holds a fetch the guard itself **reports**: a download no checksum
 or an API `curl … | jq` that is no download at all, keeps none of them standing. Exemptions are
 `(workflow, step name, reason)` tuples on `tests/test_workflow_pins.py`'s `EXEMPT_FETCHES`, held
 to the same staleness and posture checks as the install list. Run it by hand with
-`python3 scripts/workflow_guard.py .github/workflows/*.yml`; CI gets **no separate lint step**,
+`python3 devtools/workflow_guard.py .github/workflows/*.yml`; CI gets **no separate lint step**,
 because `tests/test_workflow_pins.py` already applies it to the whole fleet on every PR.
 
 ## Versioning

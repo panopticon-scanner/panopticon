@@ -332,7 +332,7 @@ class TestReadinessIsWiredAsThePhase(_ReadinessCase):
 
         offenders = []
         for base in (os.path.join(SKILL_ROOT, "scripts"),
-                     os.path.join(REPO_ROOT, "scripts")):
+                     os.path.join(REPO_ROOT, "devtools")):
             for dirpath, dirnames, filenames in os.walk(base):
                 dirnames[:] = [x for x in dirnames if x != "__pycache__"]
                 for filename in sorted(filenames):

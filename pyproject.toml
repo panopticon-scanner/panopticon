@@ -60,7 +60,7 @@ Issues = "https://github.com/panopticon-scanner/panopticon/issues"
 py-modules = []
 
 [tool.pytest.ini_options]
-pythonpath = ["skill", "skill/scripts", "scripts", "."]
+pythonpath = ["skill", "skill/scripts", "devtools", "."]
 addopts = ["--import-mode=importlib"]
 markers = [
     # #1515: the ONLY tests allowed to reach the Docker daemon. Everything else
@@ -85,7 +85,7 @@ markers = [
 ]
 
 [tool.mypy]
-files = ["skill/scripts", "scripts"]
+files = ["skill/scripts", "devtools"]
 python_version = "3.11"
 # Runtime imports use `scripts.*` from skill/, even when entry scripts are
 # invoked by path. Check that same namespace instead of skill.scripts.*.
@@ -109,7 +109,7 @@ force-exclude = true
 
 [tool.coverage.run]
 core = "sysmon"
-source = ["skill/scripts", "scripts"]
+source = ["skill/scripts", "devtools"]
 omit = ["*/tests/fixtures/*", "*/tests/goldens/*"]
 relative_files = true
 

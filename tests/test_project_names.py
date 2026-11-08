@@ -18,7 +18,7 @@ REPO = Path(__file__).resolve().parent.parent
 SPELLINGS = ("panopticon-scanner", "panopticon-tools", "panopticon-fixtures")
 # The two homes: (file, assigned name) pairs whose own value may spell them.
 HOMES = {
-    ("scripts/gh_transport.py", "REPO_SLUG"),
+    ("devtools/gh_transport.py", "REPO_SLUG"),
     ("skill/scripts/tools_image.py", "LOCAL_NAME"),
     ("skill/scripts/tools_image.py", "REGISTRY_IMAGE"),
     ("skill/scripts/tools_image.py", "FIXTURES_NAME"),

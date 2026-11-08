@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.12"
       - name: Check privileged requirements wheel hashes
-        run: python3 scripts/bump_pins.py requirements --check
+        run: python3 devtools/bump_pins.py requirements --check
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
@@ -58,7 +58,7 @@ jobs:
   #                pyproject's fail_under = 90 and fails each partial leg
   #                (~10-30% alone) before its .coverage is saved.
   #   shard-check  proves, from every job's manifest, that each collected test
-  #                ran exactly once per version (scripts/ci_shards.py check).
+  #                ran exactly once per version (devtools/ci_shards.py check).
   #                It runs unless cancelled, so a red leg still gets partition
   #                evidence; tests-passed still requires every job to succeed.
   #   tests-passed one always-reporting gate over all five -- the single
@@ -66,7 +66,7 @@ jobs:
   #                protection.
   # The split profile `.test_durations` is, since phase 2, a 3.12 parallel pass
   # measured WITH coverage, merged by the coverage job and refreshed by a normal
-  # PR from its artifact (`scripts/ci_shards.py merge-durations` warns when the
+  # PR from its artifact (`devtools/ci_shards.py merge-durations` warns when the
   # committed copy is stale). Its relative weights balance every version.
   # Why two passes at all: `serial`-marked time-bound tests red-fail under xdist
   # because parallel workers inflate even `time.process_time()` on large inputs
@@ -203,14 +203,14 @@ jobs:
       # refuses to judge a partial combine.
       - name: Combine coverage and gate at 90%
         run: |
-          python scripts/ci_shards.py coverage-files shards --expect 4
+          python devtools/ci_shards.py coverage-files shards --expect 4
           python -m coverage combine shards
           python -m coverage report --fail-under=90
           python -m coverage xml -o coverage.xml
       - name: Merge the durations profile
         run: |
           mkdir -p merged
-          python scripts/ci_shards.py merge-durations shards --committed .test_durations -o merged/.test_durations
+          python devtools/ci_shards.py merge-durations shards --committed .test_durations -o merged/.test_durations
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -245,7 +245,7 @@ jobs:
           path: shards
           merge-multiple: true
       - name: Every collected test ran exactly once per version
-        run: python scripts/ci_shards.py check shards --expect 3.11=3 --expect 3.12=4 --expect 3.13=3 --expect 3.14=3
+        run: python devtools/ci_shards.py check shards --expect 3.11=3 --expect 3.12=4 --expect 3.13=3 --expect 3.14=3
 
   tests-passed:
     runs-on: ubuntu-latest
