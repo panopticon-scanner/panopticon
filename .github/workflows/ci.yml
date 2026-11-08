@@ -38,7 +38,7 @@ jobs:
       - name: Lint
         run: python -m ruff check skill/scripts/ tests/
       - name: Type check
-        run: python -m mypy skill/scripts scripts
+        run: python -m mypy skill/scripts devtools
 
   # #2933. Phase 1 (#3085) split the suite by measured duration; phase 2 shards
   # the coverage run too and gates on the COMBINED data:
