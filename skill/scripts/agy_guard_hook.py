@@ -38,8 +38,6 @@ READ_TOOLS = frozenset({"read_file", "grep_search", "find_by_name", "list_dir", 
 WRITE_TOOLS = frozenset({"write_file"})
 ALLOWED_TOOLS = READ_TOOLS | WRITE_TOOLS
 
-ENV_READ_SCOPE = "PANOPTICON_READ_SCOPE"
-ENV_WRITE_ALLOWLIST = "PANOPTICON_WRITE_ALLOWLIST"
 ENV_DENIAL_LOG = "PANOPTICON_AGY_DENIAL_LOG"
 
 # Every name this hook reads from guard_rules; the loader refuses a module that
@@ -250,15 +248,6 @@ def _decide_write(tool_name, tool_input, allowlist, entry_id):
                    "another run" % (tool_name, raw))
 
 
-def _select_policy_path(argv_path, env_var, env):
-    """Select the policy file path, preferring a live per-entry env override
-    when the configured argv path has not been removed."""
-    env_path = (env.get(env_var) or "").strip()
-    if env_path and os.path.isfile(env_path) and (not argv_path or os.path.isfile(argv_path)):
-        return env_path
-    return argv_path or env_path
-
-
 def adjudicate(payload, read_scope_path="", write_allowlist_path="", *,
                mode=None, env=None):
     """(allow, reason) for one `agy` PreToolUse hook payload."""
@@ -289,16 +278,14 @@ def adjudicate(payload, read_scope_path="", write_allowlist_path="", *,
     if not isinstance(tool_input, dict):
         tool_input = tool_call.get("arguments")
     if tool_name in WRITE_TOOLS:
-        policy_path = _select_policy_path(write_allowlist_path, ENV_WRITE_ALLOWLIST, env)
-        allowlist, error = guard_rules._load_allowlist(policy_path)
+        allowlist, error = guard_rules._load_allowlist(write_allowlist_path)
         if allowlist is None:
             return False, error
         allow, reason = _decide_write(tool_name, tool_input, allowlist, entry_id)
     else:
         if tool_name == "finish":
             return True, ""
-        policy_path = _select_policy_path(read_scope_path, ENV_READ_SCOPE, env)
-        scopes, error = guard_rules._load_scope(policy_path)
+        scopes, error = guard_rules._load_scope(read_scope_path)
         if scopes is None:
             return False, error
         scope = scopes.get(entry_id)
@@ -374,9 +361,6 @@ def main(argv=None, env=None):
         write_allowlist_path = args[1] if mode == "write" else ""
     elif len(args) >= 2:
         read_scope_path, write_allowlist_path = args[0], args[1]
-    elif len(args) == 0 and (env.get(ENV_READ_SCOPE) or env.get(ENV_WRITE_ALLOWLIST)):
-        read_scope_path = env.get(ENV_READ_SCOPE, "")
-        write_allowlist_path = env.get(ENV_WRITE_ALLOWLIST, "")
     else:
         _deny("agy guard: bad hook invocation %r -- expected "
               "[<read_scope_path>, <write_allowlist_path>]" % (args,))
