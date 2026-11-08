@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Slimmer Dockerfile tests (#3514, part of #3264).** 25 tests (330 lines) that pinned workflow-file
+  shape or tested a lint instead of the image are gone from `tests/test_dockerfile.py` and
+  `tests/test_dockerfile_args.py`: the docker-build-pr/docker-publish wiring classes, the ARG
+  reader's workflow-caller checks, the NuGet/piped-installer/OSV rule-mutation tests and one prose
+  assertion. Every digest, pin and version check on the images stays, as do
+  `TestDownloadChecksumGuard` and the pip/gem/npm closure checks.
 - **Repo-root `scripts/` is now `devtools/` (#3504, part of #1516).** The dev and CI tooling
   (`bump_pins`, `ci_shards`, `workflow_guard`, `file_issues`, `replay_report`, ...) moved, so
   `scripts` names `skill/scripts` only and no longer merges two directories into one namespace
