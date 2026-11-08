@@ -191,7 +191,7 @@ UNRESOLVED_ROOTS = ("devtools/replay_report.py",)
 # Per-root advice, because "any `sys.path` write" is not one hazard. Of the 21
 # sites in 18 modules, SEVEN add the flat root, THIRTEEN add the package root and
 # one builds its root in a form this walk cannot follow; advice that lumps them
-# together tells the `scripts/`-side filers to stop doing the very thing that
+# together tells the `devtools/`-side filers to stop doing the very thing that
 # makes `from scripts import x` work at all.
 _ROOT_ADVICE = {
     _FLAT_ROOT:
