@@ -879,6 +879,7 @@ groups:
       match:
       - .github/**
       - devtools/ci_shards.py
+      - devtools/nvd_cache_compare.py
       tests:
       - tests/test_ci_shards.py
       - tests/ci_shard_manifest.py
@@ -889,6 +890,7 @@ groups:
       - tests/test_image_freshness.py
       - tests/test_nvd_cache_decision.py
       - tests/test_nvd_cache_sync_step.py
+      - tests/test_nvd_cache_compare.py
       - tests/test_workflow_pins.py
       - tests/test_pyproject.py
       - tests/test_pyproject_metadata.py
