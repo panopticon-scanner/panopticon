@@ -733,7 +733,6 @@ class TestNoFetchIsPipedIntoAShell(unittest.TestCase):
     never appear on that list.
     """
 
-
     def test_no_dockerfile_pipes_a_fetch_into_a_shell(self):
         for name, text in (("Dockerfile", _read_dockerfile()),
                            ("Dockerfile.fixtures", _read_dockerfile_fixtures())):
