@@ -37,8 +37,7 @@ from scripts import claim_scope, codex_read_tools, hosts, model_resolver, plan_c
 import scripts.runners.gemini_home as gemini_home
 
 
-TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            os.pardir, "agents")
+TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "agents")
 
 _FM_SCALAR_RE = re.compile(r"^([a-z_]+):\s*(.*)$")
 _FM_LIST_RE = re.compile(r"^\s{2}(allowed|forbidden):\s*\[([^\]]*)\]\s*$")

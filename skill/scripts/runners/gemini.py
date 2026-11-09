@@ -261,6 +261,7 @@ class Runner(base.HostRunner):
         self.run_dir = None
         self.review_root = None
         self.registration_dir = None
+        self.system_config_dir = None
         self.max_turns = 60
         self.entry_timeout = 1800
 
@@ -334,6 +335,10 @@ class Runner(base.HostRunner):
         prompt = entry.get("prompt")
         if not isinstance(prompt, str) or not prompt:
             raise ValueError("gemini entry %r has no prompt" % (entry.get("id"),))
+        hazards = gemini_home.system_policy_hazards(
+            env={}, system_config_dir=self.system_config_dir)
+        if hazards:
+            raise RuntimeError("gemini system policy hazard: %s" % "; ".join(hazards))
         cmd = [
             self.CLI,
             "--output-format", "json",

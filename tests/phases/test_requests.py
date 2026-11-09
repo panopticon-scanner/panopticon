@@ -223,13 +223,42 @@ class TestDelivery(unittest.TestCase):
         return evidence
 
     def test_claude_and_kimi_self_write_only_with_a_proven_boundary(self):
-        for host in ("claude", "kimi"):
+        for host in ("claude", "kimi", "gemini"):
             with self.subTest(host=host):
                 mode, prefix = requests.delivery(
                     host, self._evidence(hosts.PROVEN),
                     "domain-panel.md", "/abs/out.json")
                 self.assertIsNone(mode)
                 self.assertEqual("", prefix)
+
+    def test_gemini_unenforced_entry_bridges_to_return_json_even_with_proven_write_guard(self):
+        # #3510 R1: when tool_policy_enforced is not PROVEN (e.g. target ships
+        # GEMINI.md under --allow-unenforced), gemini launches with
+        # --admin-policy <run_home>/unenforced.toml, which is read-only and
+        # denies write_file. delivery() must therefore select return_json with
+        # the preamble for write-capable roles even when artifact_write_guard
+        # and the other capabilities are PROVEN.
+        for tool_policy in (hosts.REFUTED, hosts.UNKNOWN):
+            ev = {
+                hosts.TOOL_POLICY_ENFORCED: {
+                    "state": tool_policy, "by": "x", "detail": "x"},
+                hosts.READ_SCOPE_CONFINED: {
+                    "state": hosts.PROVEN, "by": "x", "detail": "x"},
+                hosts.ARTIFACT_WRITE_GUARD: {
+                    "state": hosts.PROVEN, "by": "x", "detail": "x"},
+                hosts.MODEL_BINDING: {
+                    "state": hosts.PROVEN, "by": "x", "detail": "x"},
+                hosts.USAGE_LEDGER: {
+                    "state": hosts.PROVEN, "by": "x", "detail": "x"},
+            }
+            for role_file in ("domain-panel.md", "domain-advisor.md"):
+                with self.subTest(tool_policy=tool_policy, role_file=role_file):
+                    mode, prefix = requests.delivery(
+                        "gemini", ev, role_file, "/abs/out.json")
+                    self.assertEqual("return_json", mode)
+                    self.assertEqual(
+                        requests.RETURN_PERSIST_PREAMBLE % {"out_file": "/abs/out.json"},
+                        prefix)
 
     def test_a_proven_boundary_without_self_write_transport_returns_json(self):
         omission = hosts.HostSpec(

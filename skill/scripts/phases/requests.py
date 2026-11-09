@@ -120,21 +120,21 @@ def delivery(host, evidence, role_file, out_file):
       * the role's template grants no Write (advisor.md): return_json, no
         preamble -- the template already says "return", nothing to override;
       * the template grants Write, the host has self-write transport, AND its
-        artifact_write_guard is PROVEN: self-write;
-      * otherwise: return_json WITH the preamble, because the
-        template's own instruction says "Write your findings to {out_file}";
-        it must be overridden while the controller waits for returned JSON.
+        artifact_write_guard is PROVEN (plus tool_policy_enforced on gemini,
+        whose unenforced.toml policy is read-only): self-write;
+      * otherwise: return_json WITH the preamble overriding the template's
+        "Write your findings to {out_file}" instruction.
 
-    This does NOT bypass require_unenforced_ack (spec 10). Delivery is an
-    instruction and transport choice, not proof of the effective write
-    surface; the gate consumes the boundary capability independently.
+    This does NOT bypass require_unenforced_ack (spec 10): delivery is an
+    instruction/transport choice; the gate consumes the boundary independently.
     """
     allowed = dispatch.load_template(role_file)[0]["tool_policy"].get("allowed") or []
     if "Write" not in allowed:
         return "return_json", ""
-    row = hosts.spec(host)
+    row, posture = hosts.spec(host), hosts.posture(host, evidence)
     if (row and row.self_write_delivery
-            and hosts.posture(host, evidence)[hosts.ARTIFACT_WRITE_GUARD] == hosts.PROVEN):
+            and posture[hosts.ARTIFACT_WRITE_GUARD] == hosts.PROVEN
+            and (host != "gemini" or posture[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)):
         return None, ""
     return "return_json", RETURN_PERSIST_PREAMBLE % {"out_file": out_file}
 
@@ -534,9 +534,8 @@ def require_unenforced_ack(review_root, manifest, entries):
     delivery or self_write_delivery; the ack records the latter and keys gaps on it.
 
     On a host that does not declare it -- `--host generic`, the one
-    claim-nothing value in the selectable set (#1621 retired gemini on
-    2026-09-13, and #3494 restored gemini with all 5 capabilities proven) --
-    a domain-panel or domain-advisor `Write` has
+    claim-nothing value in the selectable set (#1621 retired gemini; #3494
+    restored it with 5/5 capabilities proven) -- a domain-panel or domain-advisor `Write` has
     NO mediation whatsoever: no hook, nothing but the advisory prose
     `_tool_policy_line` appends. And a write that lands OUTSIDE review_root is
     invisible to every integrity check here, because validate's clean-tree diff

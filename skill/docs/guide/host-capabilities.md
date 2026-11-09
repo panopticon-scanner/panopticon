@@ -189,22 +189,25 @@ with `cwd` pinned at `<run_home>/workspace`: `gemini-shell-surface` (no system p
 system `settings.json` / `system-defaults.json` overrides `--admin-policy`, the registered Tier 5
 TOML policy shells in `~/.gemini/cli-agents` with allow `900` / explicit deny `950` / catch-all deny
 `100` are verified against the installed CLI's versioned `0.55` tool vocabulary, `-p` prompts have
-all `@` tokens escaped as `\@`, and user-level `settings.json` locks `mcpServers = {}`,
-`mcp.allowed = []`, `skills.enabled = false`, `experimental.enableAgents = false`,
+all `@` tokens escaped as `\@` so `handleAtCommand` does not expand `@<path>` via `read_many_files`
+— note that inline `@decorator` tokens in quoted prompt excerpts are therefore seen by the model as
+`\@decorator`, while files read via `read_file` are unaffected — and user-level `settings.json` locks
+`mcpServers = {}`, `mcp.allowed = []`, `skills.enabled = false`, `experimental.enableAgents = false`,
 `general.plan.enabled = false`, `security.folderTrust.enabled = false`, and
-`context.loadMemoryFromIncludeDirectories = false` with `context.fileName` omitted, plus no shadow in
-the target tree or `~/.gemini/agents`), `gemini-read-guard-armed` and `gemini-write-guard-armed`
-(isolated `settings.json` registers a single `"matcher": "*"` `BeforeTool` hook invoking
-`skill/scripts/gemini_guard_hook.py` with authoritative `argv` policy paths, proven by hook
-subprocess round-trips across read-scope, `include_pattern`, git-pathspec-magic, strict
-`TOOL_INPUT_KEYS`, and v2 write-allowlist cases), `gemini-model-bound` (every role's resolved model
-in `skill/reference/model-profiles.yml` belongs to `Runner.KNOWN_MODELS` and `gemini -m <slug>` is
-advertised by `gemini --help`), and `gemini-usage-envelope` (`gemini --help` advertises `-p` and
-`--output-format`, `parse_envelope` maps standard and cache-read-only `stats.models` token usage,
-and any existing `dispatch-ledger.jsonl` carries token counts on every `ok` row).
+`context.loadMemoryFromIncludeDirectories = false` with `context.fileName` omitted and no extensions
+copied into `<run_home>/.gemini/extensions/`, plus no shadow in the target tree or `~/.gemini/agents`),
+`gemini-read-guard-armed` and `gemini-write-guard-armed` (isolated `settings.json` registers a single
+`"matcher": "*"` `BeforeTool` hook invoking `skill/scripts/gemini_guard_hook.py` with authoritative
+`argv` policy paths, proven by hook subprocess round-trips across read-scope, `include_pattern`,
+git-pathspec-magic, strict `TOOL_INPUT_KEYS`, and v2 write-allowlist cases), `gemini-model-bound`
+(every role's resolved model in `skill/reference/model-profiles.yml` belongs to `Runner.KNOWN_MODELS`
+and `gemini -m <slug>` is advertised by `gemini --help`), and `gemini-usage-envelope` (`gemini --help`
+advertises `-p` and `--output-format`, `parse_envelope` maps standard and cache-read-only `stats.models`
+token usage, and any existing `dispatch-ledger.jsonl` carries token counts on every `ok` row).
 
 `self_write_delivery` is true only for Claude, Kimi, Agy and Gemini. A write-template role self-writes only when
-that static mechanism fact and a proven `artifact_write_guard` both hold; Codex and generic
+that static mechanism fact and a proven `artifact_write_guard` both hold (and on Gemini, `tool_policy_enforced`
+is also `proven`, since `unenforced.toml` is read-only and denies `write_file`); Codex and generic
 remain return-persist. Delivery is never evidence for the gate, so generic still refuses without
 `--allow-unenforced`. Codex's proof by omission covers the complete reviewer write surface, so it
 carries no Bash-path gap while remaining return-persist.

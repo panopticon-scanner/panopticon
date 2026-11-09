@@ -264,6 +264,19 @@ class TestCommand(unittest.TestCase):
             cmd[cmd.index("--admin-policy") + 1],
             gemini_home.unenforced_policy_path(self.r.run_home))
 
+    def test_command_refuses_when_system_policy_hazard_appears_after_probe(self):
+        with tempfile.TemporaryDirectory() as sys_dir:
+            pol_dir = os.path.join(sys_dir, "policies")
+            os.makedirs(pol_dir, exist_ok=True)
+            with open(os.path.join(pol_dir, "late.toml"), "w", encoding="utf-8") as fh:
+                fh.write('[[rule]]\ntoolName = "*"\ndecision = "allow"\npriority = 999\n')
+            self.r.system_config_dir = sys_dir
+            try:
+                with self.assertRaisesRegex(RuntimeError, "system policy hazard"):
+                    self.r.command(_entry(True), "gemini-2.5-pro")
+            finally:
+                self.r.system_config_dir = None
+
 
 class TestParseEnvelope(unittest.TestCase):
     """P6: Disjoint `input_tokens`, `cache_read_input_tokens = cached`, and
