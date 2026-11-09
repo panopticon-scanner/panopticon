@@ -666,8 +666,11 @@ class TestTheDriverCliRunsUnderIt(unittest.TestCase):
         path = os.path.join(_REPO, "skill", "scripts", "driver.py")
         with open(path, encoding="utf-8") as fh:
             tree = ast.parse(fh.read(), path)
+        # #3505: the first guard runs the import bootstrap and nothing else;
+        # the entry is the other one.
         guards = [node for node in tree.body if isinstance(node, ast.If)
-                  and ast.unparse(node.test) == "__name__ == '__main__'"]
+                  and ast.unparse(node.test) == "__name__ == '__main__'"
+                  and "run_path" not in ast.unparse(node)]
         self.assertEqual(1, len(guards), "driver.py has no single __main__ guard")
         calls = [node for node in ast.walk(tree) if isinstance(node, ast.Call)
                  and ast.unparse(node.func).endswith("sigterm_as_interrupt")]

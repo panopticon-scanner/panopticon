@@ -66,6 +66,9 @@ import subprocess
 import sys
 import tempfile
 from unittest import mock
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_skill_bootstrap.py"))
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SUFFIXES = (".json", "-discarded.json", "-x0x.json", "-x0x-failures.json")
@@ -288,7 +291,9 @@ def _mark_unverified(path):
 
 def replay(args):
     repo = os.path.abspath(args.repo or os.path.dirname(HERE))
-    sys.path.insert(0, os.path.join(repo, "skill"))
+    import runpy
+    bootstrap = runpy.run_path(os.path.join(HERE, "_skill_bootstrap.py"))
+    bootstrap["install"](repo)          # that checkout's skill/, first on sys.path
     from scripts import hosts
     import scripts.first_contact as first_contact
     import scripts.phases.child as child_mod

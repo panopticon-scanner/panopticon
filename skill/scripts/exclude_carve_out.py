@@ -30,15 +30,8 @@ module-level edge here would close that cycle. It is the same lazy shape
 reason -- see `coverage_model`'s own docstring, which promises that no
 module-level import runs back the other way.
 """
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from scripts import groups_schema
-else:
-    try:
-        from scripts import groups_schema
-    except ModuleNotFoundError:     # flat: only skill/scripts on sys.path
-        import groups_schema
+from scripts import groups_schema
 
 
 def sec_surface(path):
@@ -48,10 +41,7 @@ def sec_surface(path):
     and the carve-out is a per-FILE decision: a group-wide answer would carve out
     docs/assets beside code as soon as one code-shaped file appeared.
     """
-    try:
-        from scripts import coverage_model
-    except ModuleNotFoundError:     # flat: only skill/scripts on sys.path
-        import coverage_model       # type: ignore[no-redef]
+    from scripts import coverage_model
     return bool(coverage_model.applicable_sec_floor([path]))
 
 

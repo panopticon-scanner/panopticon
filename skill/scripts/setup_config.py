@@ -149,7 +149,7 @@ def _seed_groups_manifest(repo):
     if committed is not None:
         names = list((discovery.load_catalog(repo) or {}).keys())
         return committed, False, names
-    from scripts import setup_proposal as sp  # noqa: E402
+    from scripts import setup_proposal as sp
     files = discovery.discover_repo_files(repo)
     tops = sorted({p.split("/", 1)[0] for p in files
                    if "/" in p and not p.startswith(".")})
@@ -286,7 +286,7 @@ def migrate_config(repo):
     Returns (path, message)."""
     # Nested, not module level: the driver's import path stays third-party-free (#2369).
     import yaml
-    from scripts import setup_proposal as sp  # noqa: E402
+    from scripts import setup_proposal as sp
     res = repo_config.resolve(repo)
     if res.path is not None or res.disclosures:
         # Not `res.path is not None` alone: a REFUSED symlink at either config

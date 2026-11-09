@@ -29,6 +29,9 @@ import threading
 import time
 from typing import Any, Callable
 
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
 from scripts.run_tools import recommendable_tools
 import scripts.tools.legacy_sarif as legacy_sarif
 

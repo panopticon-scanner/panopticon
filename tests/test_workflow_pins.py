@@ -944,10 +944,10 @@ SKILL_SCRIPTS = os.path.join(REPO_ROOT, "skill", "scripts")
 def _is_local_module(name):
     """Is `name` one of this repo's own modules rather than a package?
 
-    `scripts` itself, or a module `skill/scripts/` ships under its BARE name:
-    `discovery.py` reaches `diff_map` that way, off the flat import root it
-    puts on `sys.path` itself, and a checker that did not know that would
-    report the repo's own files as third-party.
+    `scripts` itself, or a module `skill/scripts/` ships under its BARE name
+    (none is imported that way since #3505, which tests/test_import_shape.py
+    pins; a checker that missed one would report the repo's own file as
+    third-party).
     """
     return (name == "scripts"
             or os.path.isfile(os.path.join(SKILL_SCRIPTS, name + ".py"))
@@ -1036,13 +1036,11 @@ def every_third_party(source, filename="<source>"):
 # `scripts.smoke_adapters` (a nested `bandit`). Reading this suite's own
 # `sys.modules` would make both guards depend on test ORDER.
 #
-# Selected by FILE and not by module NAME. `skill/scripts/` holds no
-# `__init__.py` and is itself on `sys.path` in several live paths, so a module
-# there has two reachable names (`tests/test_module_identity.py` is the guard
-# for that), and the flat one is how several are actually reached:
-# `grouping_engine.py` does a bare `import tests_axis`, and a census keyed
-# on `scripts.` missed `setup_proposal.py`'s own module-level `import yaml`
-# entirely. The file is on the path however it was spelled.
+# Selected by FILE and not by module NAME: a census keyed on `scripts.` once
+# missed `setup_proposal.py`'s own module-level `import yaml` entirely, when
+# modules were still reached under bare names too (#3505 retired that;
+# tests/test_import_shape.py guards it). The file is on the path however it
+# was spelled.
 _CENSUS = """
 import json, os, sys
 scripts_dir = sys.argv[1]
@@ -1060,7 +1058,7 @@ def files_reached_by(*roots):
     """Every `skill/scripts` FILE that importing `roots` loads, sorted.
 
     A fresh interpreter with only `skill/` on the path and a cwd elsewhere --
-    the driver-shaped process `tests/test_module_identity.py` measures its own
+    the driver-shaped process `tests/test_import_shape.py` measures its own
     census in, for the same reason: the import graph under test must be the
     product's, not this suite's.
 

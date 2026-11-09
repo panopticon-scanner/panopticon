@@ -104,8 +104,7 @@ def _all_proven_artifact(host="claude"):
     """A host-capabilities.json body proving every capability `host` claims.
 
     Mirrors test_driver.py's fixture of the same name (kept local rather than
-    imported: test_layout's flat-import rule aside, these two test modules do
-    not otherwise share fixtures, and this one is small enough that a shared
+    imported: these two test modules do not otherwise share fixtures, and this one is small enough that a shared
     import would cost more coupling than it saves)."""
     return {"schema_version": 1, "host": host,
             "probed_at": "2026-09-10T00:00:00Z",

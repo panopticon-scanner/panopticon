@@ -27,19 +27,18 @@ try:
 except ImportError:            # pragma: no cover - not reachable on posix CI
     fcntl = None
 
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_skill_bootstrap.py"))
 import gh_transport
 from sanitize import repo_root, repo_relative, scrub, defang
 
 # skill/scripts/reconcile.py owns the part-path confinement; this filer's own copy never got the
 # #run9 SEC-D1C realpath hardening (#1523), so import that one implementation, never mirror it.
-_SKILL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                      "skill")
-if _SKILL not in sys.path:
-    sys.path.insert(0, _SKILL)
-import scripts.reconcile as _reconcile  # noqa: E402
-import scripts.safe_write as safe_write  # noqa: E402
-import scripts.evidence as evidence  # noqa: E402
-import scripts.evidence_sections as evidence_sections  # noqa: E402
+import scripts.reconcile as _reconcile
+import scripts.safe_write as safe_write
+import scripts.evidence as evidence
+import scripts.evidence_sections as evidence_sections
 
 __all__ = ["repo_root", "repo_relative", "scrub", "defang"]
 

@@ -17,6 +17,10 @@ import json
 import re
 from typing import Any
 
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import os
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_skill_bootstrap.py"))
 import file_issues
 import gh_transport
 

@@ -10,20 +10,10 @@ function of its inputs (the only I/O is reading a data file whose path it is
 handed). See docs/superpowers/specs/2026-08-14-panopticon-5.0-setup-scan-design.md
 and the 5.2 grouping-engine spec (§3 catalogs, §5.3 assembly).
 """
-from typing import TYPE_CHECKING, Any
+from typing import Any
 import re
 
-# #2256: package-first, so a driver-shaped process holds ONE object per file
-# rather than `x` and `scripts.x` (the shape the siblings use, #1766).
-if TYPE_CHECKING:
-    from scripts import coverage_model, groups_schema, repo_config
-else:
-    try:
-        from scripts import coverage_model, groups_schema, repo_config
-    except ModuleNotFoundError:  # flat: the standalone `--repo-scan` path,
-        import coverage_model    # with only skill/scripts on sys.path
-        import groups_schema
-        import repo_config
+from scripts import coverage_model, groups_schema, repo_config
 
 # 5.2: names the engine mints itself -- the Tests sweep, the Commons fold, the
 # residual sink, and the residual LAYER. A catalog entry or alias carrying one

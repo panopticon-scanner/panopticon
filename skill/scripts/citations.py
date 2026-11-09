@@ -2,7 +2,7 @@
 """Citation enrichment for panopticon findings: CWE validation, OWASP
 derivation, reduced-SSVC decisioning, and opt-in EPSS lookup. Stdlib-only.
 """
-from typing import TYPE_CHECKING, Any
+from typing import Any
 import logging
 import json
 import math
@@ -12,28 +12,12 @@ import sys
 import urllib.parse
 import urllib.request
 
-if TYPE_CHECKING:
-    from scripts import _version
-    from scripts import run_stamp
-    from scripts import safe_write
-    from scripts import tolerant_json
-    from scripts._version import __version__
-    from scripts.evidence import is_tool_sourced
-else:
-    try:
-        from scripts import _version
-        from scripts import run_stamp
-        from scripts import safe_write
-        from scripts import tolerant_json
-        from scripts._version import __version__
-        from scripts.evidence import is_tool_sourced
-    except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-        import _version
-        import run_stamp
-        import safe_write
-        import tolerant_json
-        from _version import __version__
-        from evidence import is_tool_sourced
+from scripts import _version
+from scripts import run_stamp
+from scripts import safe_write
+from scripts import tolerant_json
+from scripts._version import __version__
+from scripts.evidence import is_tool_sourced
 
 CVE_RE = re.compile(r"^CVE-\d{4}-\d{4,}$", re.IGNORECASE)
 CWE_RE = re.compile(r"^CWE-\d+$", re.IGNORECASE)

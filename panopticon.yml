@@ -367,6 +367,9 @@ groups:
     Driver:
       match:
       - skill/scripts/driver.py
+      # #3505: the import bootstrap every entry script runs, and the package marker.
+      - skill/scripts/_bootstrap.py
+      - skill/scripts/__init__.py
       - skill/scripts/host_posture.py
       # #3493: Orchestration:Hosts and Orchestration:Runners are at the 48-file
       # cap; keeping the agy guard hook and probe harness here keeps both
@@ -659,8 +662,7 @@ groups:
       - tests/synth/**
       - tests/test_layout.py
       - tests/test_flat_module_ceiling.py
-      - tests/test_no_per_file_sys_path.py
-      - tests/test_module_identity.py
+      - tests/test_import_shape.py
       - tests/test_schema_parity.py
       - tests/test_verdict_binding.py
       - tests/test_agent_findings_guard.py
@@ -729,6 +731,7 @@ groups:
       - devtools/reconcile_apply.py
       - devtools/pinned_dir.py
       - devtools/sanitize.py
+      - devtools/_skill_bootstrap.py
       - devtools/code_scanning_reports.py
       - devtools/reference/*.json
       - devtools/code_scanning_audit.py

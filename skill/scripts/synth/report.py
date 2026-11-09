@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 # resolved before this line runs, and tests/test_layout.py rule 2 forbids the
 # flat package import that would be the only way to reach a fallback. The arm
 # that used to sit here was dead code wearing a mode's clothes;
-# tests/test_module_identity.py now pins that no package module grows another.
+# tests/test_import_shape.py now pins that no module grows another.
 from scripts._version import __version__
 import scripts.app_trace as app_trace
 import scripts.evidence as evidence_mod

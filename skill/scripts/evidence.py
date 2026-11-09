@@ -5,7 +5,6 @@ triage, and advisor verdict ingestion. Stdlib-only.
 Two-axis model: severity means "impact if true" and is never mutated here;
 evidence.status records how hard the claim has been verified.
 """
-from typing import TYPE_CHECKING
 from typing import Any
 
 import hashlib
@@ -14,40 +13,15 @@ import os
 import re
 import sys
 import uuid
-from types import ModuleType
 
-if TYPE_CHECKING:
-    from scripts import findings_contract, inert, safe_write, tolerant_json
-    from scripts._version import __version__
-else:
-    try:
-        from scripts import findings_contract, inert, safe_write, tolerant_json
-        from scripts._version import __version__
-    except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-        import findings_contract, inert, safe_write, tolerant_json
-        from _version import __version__
+from scripts import findings_contract, inert, safe_write, tolerant_json
+from scripts._version import __version__
 
 # #1639 P15 F3: the pinned types live in ONE module (it both enforces them on
 # the way out and normalizes to them on the way in), and the verdict boundary
 # is one of the places that has to normalize. `validate_schema` imports nothing
 # of ours, so this cannot cycle back through `synth`.
-#
-# Fix round 3, R2-5: this module must stay importable FLAT (with skill/scripts
-# itself on sys.path) -- `citations` and `html_report` reach it that way, and
-# round 2 narrowed the mode by accident. The `_version` idiom three lines up
-# cannot be copied here, though: `synth` is a PACKAGE, and layout rule 2
-# (tests/test_layout.py) forbids `import synth.validate_schema` anywhere under
-# skill/scripts, because a flat package import builds a SECOND module object
-# with its own state and its own patch targets. So flat mode gets None and the
-# repair becomes a no-op there -- narrower than the package path and said out
-# loud rather than crashing four modules at import. No flat caller adjudicates
-# verdicts: every verdict reader (`phases/verify`, `synthesize`) is
-# package-imported, which `tests/test_agent_verdict_guard.py` enumerates.
-try:
-    import scripts.synth.validate_schema as _validate_schema_mod
-    validate_schema_mod: ModuleType | None = _validate_schema_mod
-except ModuleNotFoundError:            # imported flat: see above
-    validate_schema_mod = None
+import scripts.synth.validate_schema as validate_schema_mod
 
 SEV_ORDER = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
 # Canonical panel list, in display order. synthesize's VALID_PANELS/PANEL_ORDER
@@ -143,8 +117,6 @@ def _agent_verdict(raw):
     raw = inert.surrogate_free(raw)
     clean = {k: v for k, v in raw.items()
              if not str(k).startswith("_") and k not in CONTROLLER_STAMPED}
-    if validate_schema_mod is None:
-        return clean                   # flat import: no schema to repair against
     return validate_schema_mod.repair_verdict(clean)
 
 

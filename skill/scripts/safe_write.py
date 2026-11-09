@@ -39,16 +39,10 @@ regular-file, and byte-limit checks; callers own confinement and presentation.
 import errno
 import os
 import stat
-from typing import TYPE_CHECKING
 
 import json
 
-if TYPE_CHECKING or __package__:
-    from scripts import claim_scope, plan_contract, tolerant_json
-else:  # flat consumers put skill/scripts itself on sys.path
-    import claim_scope
-    import plan_contract
-    import tolerant_json
+from scripts import claim_scope, plan_contract, tolerant_json
 
 # #3271 F0: the most a run or setup manifest (or `owner.json`) may weigh. ONE
 # number for the checker and every consumer: first contact once read 1 MiB

@@ -1,28 +1,15 @@
 """Surface filtering and scope resolution for discovery."""
-from typing import TYPE_CHECKING
 import fnmatch
 import os
 import subprocess
 import sys
 
-if TYPE_CHECKING:
-    from scripts import claim_scope
-    from scripts import discovery_catalog
-    from scripts import dot_paths
-    from scripts import safe_git
-else:
-    try:
-        from scripts import claim_scope
-        from scripts import discovery_catalog
-        from scripts import dot_paths
-        from scripts import safe_git
-    except ModuleNotFoundError:
-        import claim_scope
-        import discovery_catalog
-        import dot_paths
-        import safe_git
-import repo_config
-import tests_axis
+from scripts import claim_scope
+from scripts import discovery_catalog
+from scripts import dot_paths
+from scripts import safe_git
+from scripts import repo_config
+from scripts import tests_axis
 
 
 # Directory NAMES pruned from --repo-scan discovery walking. These are build
