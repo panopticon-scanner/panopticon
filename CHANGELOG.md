@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **CI lint covers `devtools/` (#3074).** The lint job's ruff step named only `skill/scripts/`
+  and `tests/`, so the repo-root dev tools (the filing, triage and pin CLIs) were never linted in
+  CI. It now names `devtools/` too, and `tests/test_layout.py` pins the step's targets.
 - **Repo-root `scripts/` is now `devtools/` (#3504, part of #1516).** The dev and CI tooling
   (`bump_pins`, `ci_shards`, `workflow_guard`, `file_issues`, `replay_report`, ...) moved, so
   `scripts` names `skill/scripts` only and no longer merges two directories into one namespace
