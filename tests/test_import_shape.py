@@ -358,8 +358,9 @@ def _python(args, cwd, pythonpath, extra_env=None, timeout=180):
     env.update(extra_env or {})
     env["PYTHONPATH"] = os.pathsep.join(pythonpath)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    return subprocess.run(  # nosec B603 -- sys.executable and fixed arguments
-        [sys.executable, *args], cwd=cwd, env=env,
+    # `-B` leads so the argv opens with literals, like every other child here.
+    return subprocess.run(
+        [sys.executable, "-B", *args], cwd=cwd, env=env,
         capture_output=True, text=True, timeout=timeout)
 
 
