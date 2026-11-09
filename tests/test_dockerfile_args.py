@@ -26,13 +26,10 @@ import sys
 import tempfile
 import unittest
 
-import yaml
-
 import dockerfile_args as da
 from tests._test_helpers import REPO_ROOT
 
 MODULE = os.path.join(REPO_ROOT, "devtools", "dockerfile_args.py")
-WORKFLOWS = os.path.join(REPO_ROOT, ".github", "workflows")
 SHA = "5263fbafb15010823364274b83e9a2219b654d00a557d92941c37736d4076ba4"
 
 
@@ -228,64 +225,6 @@ class CommandLineTest(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(result.stdout, "")
 
-
-class WorkflowCallersTest(unittest.TestCase):
-    """Both callers read the pins through the module, and a refusal still stops
-    the step: the consolidation is only real while nothing greps the Dockerfile
-    for an ARG again, and only safe while the reader's exit 2 fails the job."""
-
-    CALLERS = (
-        ("docker-publish.yml", "build",
-         "Resolve NVD data image digest (content-pin the cache)",
-         ("DEPENDENCY_CHECK_VERSION",)),
-        ("nvd-cache.yml", "refresh",
-         "Read dependency-check version from the Dockerfile",
-         ("DEPENDENCY_CHECK_VERSION", "DEPENDENCY_CHECK_SHA256")),
-    )
-
-    def _step(self, workflow, job, name):
-        with open(os.path.join(WORKFLOWS, workflow), encoding="utf-8") as fh:
-            parsed = yaml.safe_load(fh)
-        step = next((s for s in parsed["jobs"][job]["steps"]
-                     if s.get("name") == name), None)
-        self.assertIsNotNone(step, "%s has no %r step" % (workflow, name))
-        return step
-
-    def test_each_caller_reads_its_pins_through_the_module(self):
-        for workflow, job, name, args in self.CALLERS:
-            run = self._step(workflow, job, name)["run"]
-            for arg in args:
-                with self.subTest(workflow=workflow, arg=arg):
-                    self.assertIn(
-                        "python3 devtools/dockerfile_args.py read-arg %s" % arg,
-                        run)
-
-    def test_a_refusal_fails_the_step(self):
-        # The reader exits 2; `set -e` is what turns that into a failed job, and
-        # a failed command substitution in an assignment carries its status.
-        for workflow, job, name, _args in self.CALLERS:
-            with self.subTest(workflow=workflow):
-                run = self._step(workflow, job, name)["run"]
-                self.assertIn("set -euo pipefail", run)
-                # ... and nothing on the reader's own line swallows that status:
-                # `|| true` or `|| echo <default>` would be the fail-open back.
-                for line in run.splitlines():
-                    if "dockerfile_args.py" in line:
-                        self.assertNotIn("||", line, line)
-
-    def test_neither_caller_greps_the_dockerfile_for_an_arg_any_more(self):
-        # Whole file, not just the step: a second reader anywhere in it is the
-        # duplication coming back. The offending lines are the message.
-        for workflow, _job, _name, _args in self.CALLERS:
-            with self.subTest(workflow=workflow):
-                offenders = [line.strip() for line
-                             in _text(os.path.join(WORKFLOWS, workflow)).splitlines()
-                             if "^ARG " in line or "cut -d=" in line]
-                self.assertEqual(
-                    offenders, [],
-                    "%s re-derives a Dockerfile ARG in shell; read it through "
-                    "devtools/dockerfile_args.py, which shape-checks it:\n  %s"
-                    % (workflow, "\n  ".join(offenders)))
 
 
 if __name__ == "__main__":

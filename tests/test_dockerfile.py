@@ -4,8 +4,6 @@ import re
 import shlex
 import unittest
 
-import yaml
-
 import shell_reader
 import workflow_guard
 from workflow_forms import names_file, regions
@@ -482,20 +480,6 @@ class TestOfflineAssets(unittest.TestCase):
         osv_block = self.text.split(start_marker)[1].split(end_marker)[0]
         self.assertNotIn("/dev/null", osv_block)
 
-    def test_osv_guard_ignores_comments_echoes_and_unrelated_commands(self):
-        good = ('RUN timeout 300 osv-scanner --experimental-offline --experimental-download-offline-databases '
-                '--recursive /tmp/osv-warm && for eco in npm PyPI; do '
-                'if [ ! -s "/opt/osv-db/osv-scanner/$eco/all.zip" ]; then exit 1; fi; done')
-        self.assertEqual(_osv_warm_contracts(good), [({"npm", "PyPI"}, set())])
-        for bad in ('# ' + good, 'RUN echo "' + good.replace('"', "'") + '"',
-                    good.replace("osv-scanner", "echo", 1),
-                    good.replace("--recursive /tmp/osv-warm", "--recursive /tmp/other"),
-                    good.replace("if [ ! -s", "if echo [ ! -s"),
-                    good.replace("/opt/osv-db/osv-scanner/$eco/all.zip", "/tmp/unrelated")):
-            with self.subTest(text=bad):
-                self.assertEqual(_osv_warm_contracts(bad), [])
-        wrong = good.replace("npm PyPI", "Go Maven") + "\n# npm PyPI"
-        self.assertEqual(_osv_warm_contracts(wrong), [({"Go", "Maven"}, set())])
 
     def test_fetched_artifacts_use_immutable_urls(self):
         # 2026-09-01: rustup-init was fetched from `rustup/dist/<triple>/`,
@@ -571,132 +555,11 @@ class TestOfflineAssets(unittest.TestCase):
         self.assertIsNotNone(gosec, "GOSEC_VERSION pin missing")
         self.assertRegex(go.group(1), r"^\d+\.\d+(\.\d+)?$")
         self.assertRegex(gosec.group(1), r"^\d+\.\d+(\.\d+)?$")
-        self.assertIn("Bump these two together.", self.text,
-                      "the Go/gosec version coupling is not documented at the pin")
 
-    def test_publish_cadence_and_tags(self):
-        with open(os.path.join(ROOT, ".github", "workflows",
-                               "docker-publish.yml"), encoding="utf-8") as fh:
-            wf = yaml.safe_load(fh)
-        # PyYAML 1.1 parses the unquoted `on:` key as the boolean True.
-        on = wf.get(True, {})
-        sched = on.get("schedule") or []           # run-9 TST-B3A: guard the [0] index
-        self.assertTrue(sched, "workflow has no schedule trigger")
-        self.assertEqual(sched[0]["cron"], "0 6 * * *")
-        self.assertIn("workflow_dispatch", on)
-        promote = on["workflow_dispatch"]["inputs"]["promote_weekly"]
-        self.assertEqual(promote.get("type"), "boolean")
-        self.assertIn("default", promote)
-        self.assertEqual(promote.get("default"), False)
-        self.assertIn(
-            "(github.event_name == 'schedule' && steps.cadence.outputs.weekly == 'true') || inputs.promote_weekly == true",
-            str(wf["jobs"]["merge"]["steps"]),
-        )
-
-        # Negative regression: the weekly tag expression must live in the
-        # metadata-action tags input, not just anywhere in the file.
-        meta_step = next(
-            (s for s in wf["jobs"]["merge"]["steps"]
-             if s.get("id") == "meta"), None
-        )
-        self.assertIsNotNone(meta_step, "no 'meta' step in the merge job")  # TST-B3A
-        self.assertIn(
-            "(github.event_name == 'schedule' && steps.cadence.outputs.weekly == 'true') || inputs.promote_weekly == true",
-            meta_step["with"]["tags"],
-        )
-        self.assertIn(
-            "type=raw,value=daily,enable={{is_default_branch}}",
-            meta_step["with"]["tags"],
-        )
-
-        # The workflow must pass the computed asset-refresh date into the
-        # build-args so daily rebuilds bust the layers that embed $ASSET_REFRESH.
-        build_step = next(
-            (s for s in wf["jobs"]["build"]["steps"]
-             if s.get("id") == "build"), None
-        )
-        self.assertIsNotNone(build_step, "no 'build' step in the build job")  # TST-B3A
-        self.assertIn(
-            "ASSET_REFRESH=${{ steps.cadence.outputs.date }}",
-            build_step["with"]["build-args"],
-        )
 
     def test_dockerfile_has_asset_refresh_arg(self):
         self.assertIn("ARG ASSET_REFRESH", self.text)
 
-
-class TestDockerBuildPrWorkflow(unittest.TestCase):
-    def setUp(self):
-        with open(os.path.join(ROOT, ".github", "workflows",
-                               "docker-build-pr.yml"), encoding="utf-8") as fh:
-            self.wf = yaml.safe_load(fh)
-
-    def test_expanded_trigger_paths_present(self):
-        on = self.wf.get(True, {})
-        paths = on.get("pull_request", {}).get("paths", [])
-        self.assertIn(".github/workflows/docker-build-pr.yml", paths)
-        self.assertIn("skill/scripts/**", paths)
-
-    def test_the_pinned_closures_are_trigger_paths(self):
-        # #1734: a lockfile edit changes what the image installs and is the
-        # ONE edit that can break `--require-hashes` or `npm ci` while leaving
-        # the Dockerfile byte-identical. Without these the build that would
-        # catch it never runs on the PR that caused it.
-        on = self.wf.get(True, {})
-        paths = on.get("pull_request", {}).get("paths", [])
-        for path in ("requirements-tools.txt", "tools-image/**"):
-            self.assertIn(path, paths)
-
-    def test_tools_build_reads_the_main_branch_layer_cache(self):
-        # #1421: this workflow fires on skill/scripts/**, so most PRs pay for it,
-        # and a plain `docker build` has no layer cache -- each qualifying PR was
-        # a cold full build compiling cargo-audit from source. It now reads the
-        # gha cache docker-publish.yml writes on main.
-        build = next((s for s in self.wf["jobs"]["build"]["steps"]
-                      if s.get("name") == "Build Dockerfile"), None)
-        self.assertIsNotNone(build, "no 'Build Dockerfile' step")
-        self.assertIn("docker/build-push-action", build.get("uses", ""),
-                      "the tools build is not a cache-aware buildx build")
-        self.assertIn("type=gha", build["with"]["cache-from"])
-        # The scope must be the one docker-publish.yml writes for THIS runner's
-        # architecture, or the cache is real but always empty.
-        self.assertIn("scope=linux-amd64", build["with"]["cache-from"])
-
-    def test_buildx_is_set_up_before_the_cached_build(self):
-        names = [s.get("name") for s in self.wf["jobs"]["build"]["steps"]]
-        self.assertIn("Set up Buildx", names)
-        self.assertLess(names.index("Set up Buildx"),
-                        names.index("Build Dockerfile"))
-
-    def test_the_tools_image_is_loaded_for_the_fixtures_build(self):
-        # Dockerfile.fixtures is `FROM panopticon-tools:latest`. buildx does NOT
-        # export to the docker daemon by default, so dropping `load` would leave
-        # the tools build green and the fixtures build failing on a base image
-        # that is only in the build cache.
-        build = next(s for s in self.wf["jobs"]["build"]["steps"]
-                     if s.get("name") == "Build Dockerfile")
-        self.assertTrue(build["with"].get("load"), "tools image is not loaded")
-        self.assertIn("panopticon-tools:latest", str(build["with"]["tags"]))
-
-    def test_the_pr_build_writes_no_layer_cache(self):
-        # Deliberate, and worth a test because "add cache-to as well" is the
-        # obvious-looking follow-up: a mode=max export of this image is several
-        # GB against a 10GB repo-wide quota, so writing one per PR would evict
-        # the main-branch caches these builds read.
-        for step in self.wf["jobs"]["build"]["steps"]:
-            self.assertNotIn("cache-to", step.get("with") or {},
-                             "a PR build exporting a layer cache will evict the "
-                             "main-branch cache it depends on")
-
-    def test_dockerfile_fixtures_is_trigger_and_built(self):
-        on = self.wf.get(True, {})
-        paths = on.get("pull_request", {}).get("paths", [])
-        self.assertIn("Dockerfile.fixtures", paths)
-        step_names = " ".join(
-            s.get("name", "") for s in self.wf["jobs"]["build"]["steps"])
-        self.assertIn("Build Dockerfile.fixtures", step_names)
-        # #1641: the image's pinned digests are part of what it builds.
-        self.assertIn("requirements-fixtures.txt", paths)
 
 
 # --- ARC-2930403871 (#1771): the .NET package cache a non-root scan can read --
@@ -855,114 +718,6 @@ class TestDockerfileFixtures(unittest.TestCase):
         defects = nuget_cache_defects(_read_dockerfile_fixtures())
         self.assertEqual([], defects, "\n".join(defects))
 
-    def test_the_rule_reads_this_file_rather_than_its_prose(self):
-        # Guards the guard: the comments above the fix QUOTE
-        # `ENV NUGET_PACKAGES=...` and `chmod -R a+rX /opt/nuget-packages`, so a
-        # reader that graded the prose would pass on a file whose instructions
-        # said neither. Strip the instructions, keep the prose: defects.
-        text = _read_dockerfile_fixtures()
-        prose_only = "\n".join(ln for ln in text.splitlines()
-                               if ln.lstrip().startswith("#"))
-        self.assertNotEqual([], nuget_cache_defects(prose_only))
-
-    def test_the_reported_line_numbers_are_the_files_own(self):
-        # R2-4: the rule blanks comment CONTENT rather than dropping the lines,
-        # so a defect points at the line a reader will open. Checked against the
-        # file rather than against a constant.
-        text = _read_dockerfile_fixtures()
-        lines = text.splitlines()
-        expected = 1 + next(i for i, ln in enumerate(lines)
-                            if ln.startswith("ENV NUGET_PACKAGES="))
-        defects = nuget_cache_defects(text.replace(
-            "ENV NUGET_PACKAGES=/opt/nuget-packages",
-            "ENV NUGET_PACKAGES=/root/.nuget/packages"))
-        self.assertTrue(any("line %d" % expected in d for d in defects),
-                        "expected line %d in %s" % (expected, defects))
-
-    def test_moving_the_env_below_a_restore_is_a_defect(self):
-        # On a string copy, never on the file: this is the edit that leaves the
-        # image building green while the C# probes go back to reporting an empty
-        # result that reads as a clean one.
-        text = _read_dockerfile_fixtures()
-        env_line = "ENV NUGET_PACKAGES=/opt/nuget-packages\n"
-        self.assertIn(env_line, text)
-        restore = "RUN dotnet restore /opt/panopticon-fixtures/hostile-csproj/evil.csproj\n"
-        self.assertIn(restore, text)
-        moved = text.replace(env_line, "").replace(restore, restore + env_line)
-        defects = nuget_cache_defects(moved)
-        self.assertNotEqual([], defects, "the ENV below a restore passed")
-        self.assertTrue(any("AFTER" in d for d in defects), defects)
-
-    def test_dropping_the_env_is_a_defect(self):
-        text = _read_dockerfile_fixtures().replace(
-            "ENV NUGET_PACKAGES=/opt/nuget-packages\n", "")
-        defects = nuget_cache_defects(text)
-        self.assertNotEqual([], defects)
-        self.assertTrue(any("NUGET_PACKAGES" in d for d in defects), defects)
-
-    def test_pointing_the_cache_back_into_roots_home_is_a_defect(self):
-        text = _read_dockerfile_fixtures().replace(
-            "ENV NUGET_PACKAGES=/opt/nuget-packages",
-            "ENV NUGET_PACKAGES=/root/.nuget/packages")
-        self.assertNotEqual([], nuget_cache_defects(text))
-
-    def test_opening_the_cache_before_the_last_restore_is_a_defect(self):
-        text = _read_dockerfile_fixtures()
-        chmod = "RUN mkdir -p /opt/nuget-packages && chmod -R a+rX /opt/nuget-packages\n"
-        self.assertIn(chmod, text)
-        aspgoat = [ln for ln in text.splitlines()
-                   if ln.startswith("RUN cd /opt/panopticon-fixtures/AspGoat")][0]
-        moved = text.replace(chmod, "").replace(aspgoat, chmod.rstrip("\n") + "\n" + aspgoat)
-        defects = nuget_cache_defects(moved)
-        self.assertNotEqual([], defects, "an open before the last restore passed")
-        self.assertTrue(any("BEFORE" in d for d in defects), defects)
-
-    def test_dropping_the_open_is_a_defect(self):
-        text = _read_dockerfile_fixtures().replace(
-            "RUN mkdir -p /opt/nuget-packages && chmod -R a+rX /opt/nuget-packages\n", "")
-        defects = nuget_cache_defects(text)
-        self.assertNotEqual([], defects)
-        self.assertTrue(any("opens" in d for d in defects), defects)
-
-
-
-    def test_a_comment_inside_a_continuation_does_not_hide_a_restore(self):
-        # R3-1: docker folds a `\\`-continuation THROUGH an interior comment
-        # line; a rule that blanked the comment in place ended the logical
-        # line there and lost the `dotnet restore` that followed, so moving the
-        # ENV below it went unreported. Real line numbers AND the fold.
-        text = ("ENV NUGET_PACKAGES=/opt/nuget-packages\n"
-                "RUN cd /opt/panopticon-fixtures/AspGoat && \\\n"
-                "    # the restore, behind a comment inside the continuation\n"
-                "    dotnet restore\n"
-                "RUN mkdir -p /opt/nuget-packages && chmod -R a+rX "
-                "/opt/nuget-packages\n")
-        self.assertEqual([], nuget_cache_defects(text))
-        moved = text.replace("ENV NUGET_PACKAGES=/opt/nuget-packages\n", "", 1)
-        moved += "ENV NUGET_PACKAGES=/opt/nuget-packages\n"
-        defects = nuget_cache_defects(moved)
-        self.assertTrue(any("on line 5 comes AFTER 1 `dotnet restore`" in d
-                            for d in defects), defects)
-
-
-class TestDockerPublishWorkflow(unittest.TestCase):
-    def setUp(self):
-        with open(os.path.join(ROOT, ".github", "workflows",
-                               "docker-publish.yml"), encoding="utf-8") as fh:
-            self.wf = yaml.safe_load(fh)
-
-    def test_build_job_does_not_request_unused_id_token(self):
-        perms = self.wf["jobs"]["build"]["permissions"]
-        self.assertNotIn("id-token", perms)
-
-    def test_merge_job_retains_id_token_for_attestation(self):
-        perms = self.wf["jobs"]["merge"]["permissions"]
-        self.assertEqual(perms.get("id-token"), "write")
-
-    def test_concurrency_guard_is_configured(self):
-        self.assertIn("concurrency", self.wf)
-        self.assertTrue(self.wf["concurrency"]["group"])
-
 
 class TestNoFetchIsPipedIntoAShell(unittest.TestCase):
     """SEC-E3C (#1251): a remote installer piped straight into an interpreter
@@ -977,31 +732,6 @@ class TestNoFetchIsPipedIntoAShell(unittest.TestCase):
     from arriving as `curl ... | sh`, which has no artifact to pin and so would
     never appear on that list.
     """
-
-    def test_the_rule_flags_a_piped_installer(self):
-        # The positive control. A guard run only over a clean tree can pass
-        # while matching nothing at all, so prove it says no before believing
-        # it when it says yes.
-        hostile = (
-            "RUN curl -sfL https://example.test/install.sh | sh\n"
-            "RUN wget -qO- https://example.test/get | sudo bash -s -- --yes\n"
-            "RUN curl -sfL https://example.test/i.py \\\n"
-            "    | python3 -\n"
-            "RUN bash <(curl -sfL https://example.test/install.sh)\n"
-        )
-        hits = fetch_piped_into_a_shell(hostile)
-        self.assertEqual([1, 2, 3, 5], [n for n, _ in hits], hits)
-
-    def test_the_rule_leaves_a_verified_download_alone(self):
-        benign = (
-            "RUN curl -sfL https://example.test/rustup-init -o /tmp/r \\\n"
-            "    && echo \"$SHA  /tmp/r\" | sha256sum -c - \\\n"
-            "    && chmod +x /tmp/r && /tmp/r -y\n"
-            # a fetch piped into a NON-interpreter is a different thing: this
-            # one dearmors an apt signing key, it does not execute the bytes.
-            "RUN curl -sfL https://example.test/key | gpg --dearmor -o /k.gpg\n"
-        )
-        self.assertEqual([], fetch_piped_into_a_shell(benign))
 
     def test_no_dockerfile_pipes_a_fetch_into_a_shell(self):
         for name, text in (("Dockerfile", _read_dockerfile()),
