@@ -302,6 +302,88 @@ class TestAgyReadAndWriteGuardProbes(unittest.TestCase):
             self.assertFalse(allow)
             self.assertIn("grep_search over a directory is denied", reason)
 
+    def test_policy_paths_from_argv_cannot_be_overridden_by_environment(self):
+        with tempfile.TemporaryDirectory() as sandbox:
+            root = os.path.realpath(sandbox)
+            readable = os.path.join(root, "allowed.py")
+            writable = os.path.join(root, "findings.json")
+            with open(readable, "w", encoding="utf-8") as fh:
+                fh.write("x = 1\n")
+
+            argv_scope = os.path.join(root, "argv-read-scope.json")
+            argv_allowlist = os.path.join(root, "argv-write-allowlist.json")
+            env_scope = os.path.join(root, "env-read-scope.json")
+            env_allowlist = os.path.join(root, "env-write-allowlist.json")
+            with open(argv_scope, "w", encoding="utf-8") as fh:
+                scopes = read_guard_hook.scope_from_plan([
+                    {"id": "e1", "scope": {"files": [readable], "dirs": [], "reads": []}}
+                ])
+                json.dump(read_guard_hook.stamp_rows(scopes), fh)
+            with open(argv_allowlist, "w", encoding="utf-8") as fh:
+                json.dump({"version": 2, "entries": {"e1": [writable]},
+                           "paths": [writable]}, fh)
+            with open(env_scope, "w", encoding="utf-8") as fh:
+                scopes = read_guard_hook.scope_from_plan([
+                    {"id": "e1", "scope": {"files": [], "dirs": [], "reads": []}}
+                ])
+                json.dump(read_guard_hook.stamp_rows(scopes), fh)
+            with open(env_allowlist, "w", encoding="utf-8") as fh:
+                json.dump({"version": 2, "entries": {"e1": []}, "paths": []}, fh)
+
+            env = {
+                "PANOPTICON_ENTRY_ID": "e1",
+                "PANOPTICON_READ_SCOPE": env_scope,
+                "PANOPTICON_WRITE_ALLOWLIST": env_allowlist,
+            }
+            prompt = "<!-- panopticon-entry: e1 -->\nReview."
+            cases = (
+                ("read_file", {"Path": readable}),
+                ("write_file", {"Path": writable, "Content": "{}"}),
+            )
+            for tool_name, args in cases:
+                with self.subTest(tool=tool_name):
+                    allow, reason = agy_guard_hook.adjudicate(
+                        {"lastUserInput": prompt,
+                         "toolCall": {"name": tool_name, "args": args}},
+                        argv_scope, argv_allowlist, env=env)
+                    self.assertTrue(allow, reason)
+
+    def test_main_rejects_missing_policy_argv_even_when_environment_would_allow(self):
+        with tempfile.TemporaryDirectory() as sandbox:
+            root = os.path.realpath(sandbox)
+            readable = os.path.join(root, "allowed.py")
+            scope_path = os.path.join(root, "read-scope.json")
+            allowlist_path = os.path.join(root, "write-allowlist.json")
+            with open(readable, "w", encoding="utf-8") as fh:
+                fh.write("x = 1\n")
+            scopes = read_guard_hook.scope_from_plan([
+                {"id": "e1", "scope": {"files": [readable], "dirs": [], "reads": []}}
+            ])
+            with open(scope_path, "w", encoding="utf-8") as fh:
+                json.dump(read_guard_hook.stamp_rows(scopes), fh)
+            with open(allowlist_path, "w", encoding="utf-8") as fh:
+                json.dump({"version": 2, "entries": {"e1": []}, "paths": []}, fh)
+
+            env = {
+                "PANOPTICON_ENTRY_ID": "e1",
+                "PANOPTICON_READ_SCOPE": scope_path,
+                "PANOPTICON_WRITE_ALLOWLIST": allowlist_path,
+            }
+            payload = {
+                "lastUserInput": "<!-- panopticon-entry: e1 -->\nReview.",
+                "toolCall": {"name": "read_file", "args": {"Path": readable}},
+            }
+            for argv in ([], [scope_path]):
+                with self.subTest(argv=argv):
+                    stdin = io.StringIO(json.dumps(payload))
+                    stdout = io.StringIO()
+                    with mock.patch("sys.stdin", stdin), contextlib.redirect_stdout(stdout):
+                        rc = agy_guard_hook.main(argv, env=env)
+                    self.assertEqual(0, rc)
+                    verdict = json.loads(stdout.getvalue())
+                    self.assertEqual("deny", verdict["decision"])
+                    self.assertIn("bad hook invocation", verdict["reason"])
+
     def test_main_crash_handler_denies_fail_closed(self):
         stdin = io.StringIO(json.dumps({
             "lastUserInput": "<!-- panopticon-entry: e1 -->\nReview.",
