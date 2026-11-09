@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Slimmer Dockerfile tests (#3514, part of #3264).** 25 tests (330 lines) that pinned workflow-file
+  shape or tested a lint instead of the image are gone from `tests/test_dockerfile.py` and
+  `tests/test_dockerfile_args.py`: the docker-build-pr/docker-publish wiring classes, the ARG
+  reader's workflow-caller checks, the NuGet/piped-installer/OSV rule-mutation tests and one prose
+  assertion. Every digest, pin and version check on the images stays, as do
+  `TestDownloadChecksumGuard` and the pip/gem/npm closure checks.
 - **CI lint covers `devtools/` (#3074).** The lint job's ruff step named only `skill/scripts/`
   and `tests/`, so the repo-root dev tools (the filing, triage and pin CLIs) were never linted in
   CI. It now names `devtools/` too, and `tests/test_layout.py` pins the step's targets.
