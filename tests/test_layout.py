@@ -401,6 +401,19 @@ class OneScriptsNamespaceTest(unittest.TestCase):
         targets = [a for a in argv[argv.index("mypy") + 1:] if not a.startswith("-")]
         self.assertEqual(sorted(targets), sorted(files))
 
+    def test_ci_lint_step_covers_every_python_root(self):
+        # #3074: the lint job's ruff call names its paths, so a root it leaves
+        # out (devtools/ until #3074) is never linted in CI.
+        import shlex
+        import yaml
+        with open(os.path.join(REPO_ROOT, ".github", "workflows", "ci.yml"), encoding="utf-8") as fh:
+            steps = yaml.safe_load(fh)["jobs"]["lint"]["steps"]
+        runs = [shlex.split(s["run"]) for s in steps if "ruff" in shlex.split(s.get("run", ""))]
+        self.assertEqual(len(runs), 1, "expected one ruff step in the lint job")
+        argv = runs[0]
+        targets = {a.rstrip("/") for a in argv[argv.index("check") + 1:] if not a.startswith("-")}
+        self.assertEqual(targets, {"skill/scripts", "devtools", "tests"})
+
 
 if __name__ == "__main__":
     unittest.main()
