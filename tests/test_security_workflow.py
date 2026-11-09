@@ -1,18 +1,18 @@
 """The security gate's process-status contract and workflow propagation."""
+import contextlib
+import io
 import json
 import os
-import subprocess
-import sys
 import tempfile
 import unittest
 
 import yaml
 
+import scripts.security_gate as security_gate
 from tests._test_helpers import semgrep_size_stamped
 
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
-GATE_SCRIPT = os.path.join(ROOT, "skill", "scripts", "security_gate.py")
 SECURITY = os.path.join(ROOT, ".github", "workflows", "security.yml")
 FORK = os.path.join(ROOT, ".github", "workflows", "security-fork.yml")
 GATE = "Gate on HIGH/CRITICAL tool findings (unverified-strict policy)"
@@ -69,12 +69,16 @@ class TestSecurityGateExitStatus(unittest.TestCase):
                         "produced": ["semgrep"] if produced else [],
                         "missing": [] if produced else ["semgrep"],
                     }, fh)
-                proc = subprocess.run(
-                    [sys.executable, GATE_SCRIPT, "--tools-dir", tools,
-                     "--manifest", manifest],
-                    cwd=ROOT, capture_output=True, text=True, check=False)
-                self.assertEqual(proc.returncode, expected, proc.stdout + proc.stderr)
-                self.assertIn(message, proc.stdout + proc.stderr)
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+                    try:
+                        status = security_gate.main(
+                            ["--tools-dir", tools, "--manifest", manifest])
+                    except SystemExit as exc:
+                        status = exc.code
+                output = stdout.getvalue() + stderr.getvalue()
+                self.assertEqual(status, expected, output)
+                self.assertIn(message, output)
 
     def test_workflows_do_not_soften_gate_failures(self):
         routes = (
