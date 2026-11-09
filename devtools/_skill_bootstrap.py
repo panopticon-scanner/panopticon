@@ -6,8 +6,9 @@ Rather than edit sys.path itself, this runs that checkout's
 `skill/scripts/_bootstrap.py`, so the mutation stays in one file (the guard in
 tests/test_import_shape.py allows no other).
 
-A CLI runs it by path inside its `if __name__ == "__main__":` block, so it
-works under `python3 -P` too:
+A CLI runs it by path inside its `if __name__ == "__main__":` block, which
+finds this file under `python3 -P` too (the CLIs' own flat sibling imports,
+like `import gh_transport`, still need `devtools/` on sys.path, as on main):
 
     if __name__ == "__main__":
         import runpy

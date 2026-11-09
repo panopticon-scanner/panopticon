@@ -81,9 +81,8 @@ def _parse(path):
 
 
 def _py_files(root):
-    return sorted(p for p in root.rglob("*.py")
-                  if "__pycache__" not in p.parts and "fixtures" not in p.parts
-                  and "goldens" not in p.parts)
+    """Every Python file under `root`, fixtures and goldens included."""
+    return sorted(p for p in pathlib.Path(root).rglob("*.py") if "__pycache__" not in p.parts)
 
 
 def _rel(path):
@@ -105,44 +104,87 @@ DEVTOOLS_MODULES = frozenset(_module_names(DEVTOOLS))
 # --- rule 1: sys.path writes ------------------------------------------------
 
 def _mutation_sites(path):
-    """AST writes to sys.path, including ordinary import aliases.
+    """AST writes to sys.path, through any alias this file can see.
 
-    Imported path names may be mutated in place; assigning a new value to
-    that local name alone only rebinds it and does not change sys.path.
-    This is a static guard, not interprocedural alias/data-flow analysis.
+    Caught: a store, delete, slice or subscript assignment, augmented
+    assignment or mutating method call on `sys.path`, reached as `sys.path`
+    (with `sys` under any import name), `getattr(sys, "path")`, a
+    `from sys import path` name, or a local name bound to any of those
+    (`_p = sys.path`); `setattr(sys, "path", ...)`; and `site.addsitedir(...)`.
+    Rebinding a name to a new value changes nothing and is not a write. This is
+    a static guard, not interprocedural data-flow analysis.
     """
     source, tree = _parse(path)
-    modules, paths = {"sys"}, set()
+    modules, paths, site_modules, site_calls = {"sys"}, set(), {"site"}, set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            modules.update(alias.asname or alias.name for alias in node.names
-                           if alias.name == "sys")
+            for alias in node.names:
+                if alias.name == "sys":
+                    modules.add(alias.asname or alias.name)
+                elif alias.name == "site":
+                    site_modules.add(alias.asname or alias.name)
         elif isinstance(node, ast.ImportFrom) and node.module == "sys":
             paths.update(alias.asname or alias.name for alias in node.names
                          if alias.name == "path")
+        elif isinstance(node, ast.ImportFrom) and node.module == "site":
+            site_calls.update(alias.asname or alias.name for alias in node.names
+                              if alias.name == "addsitedir")
 
-    def module_path(node):
-        return (isinstance(node, ast.Attribute) and node.attr == "path"
-                and isinstance(node.value, ast.Name) and node.value.id in modules)
+    def names(node, *wanted):
+        return isinstance(node, ast.Name) and node.id in wanted
+
+    def sys_attr_call(node, func):
+        # `getattr(sys, "path")` / `setattr(sys, "path", ...)`
+        return (isinstance(node, ast.Call) and names(node.func, func)
+                and len(node.args) >= 2 and names(node.args[0], *modules)
+                and isinstance(node.args[1], ast.Constant) and node.args[1].value == "path")
 
     def path_value(node):
-        return module_path(node) or (isinstance(node, ast.Name) and node.id in paths)
+        return (isinstance(node, ast.Attribute) and node.attr == "path"
+                and names(node.value, *modules)
+                or sys_attr_call(node, "getattr")
+                or names(node, *paths))
+
+    # Local aliases, to a fixed point: `_p = sys.path`, `_q = _p`, `(_r := _p)`.
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            targets, value = [], None
+            if isinstance(node, ast.Assign):
+                targets, value = node.targets, node.value
+            elif isinstance(node, (ast.AnnAssign, ast.NamedExpr)) and node.value is not None:
+                targets, value = [node.target], node.value
+            if value is not None and path_value(value):
+                for target in targets:
+                    if isinstance(target, ast.Name) and target.id not in paths:
+                        paths.add(target.id)
+                        changed = True
 
     lines, hits = source.splitlines(), set()
     for node in ast.walk(tree):
-        if (module_path(node) and isinstance(node.ctx, (ast.Store, ast.Del))
+        if (isinstance(node, ast.Attribute) and node.attr == "path" and names(node.value, *modules)
+                and isinstance(node.ctx, (ast.Store, ast.Del))
                 or isinstance(node, ast.Subscript) and path_value(node.value)
                 and isinstance(node.ctx, (ast.Store, ast.Del))
                 or isinstance(node, ast.AugAssign) and path_value(node.target)
                 or isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-                and path_value(node.func.value) and node.func.attr in _MUTATORS):
+                and path_value(node.func.value) and node.func.attr in _MUTATORS
+                or sys_attr_call(node, "setattr")
+                or isinstance(node, ast.Call) and (
+                    isinstance(node.func, ast.Attribute) and node.func.attr == "addsitedir"
+                    and names(node.func.value, *site_modules)
+                    or names(node.func, *site_calls))):
             hits.add(node.lineno)
     return [(line, lines[line - 1].strip()) for line in sorted(hits)]
 
 
 def _tree_offenders(root):
+    """`file:line  text` for every sys.path write under `root`, over the same
+    walk the production check uses."""
+    root = pathlib.Path(root)
     return ["%s:%d  %s" % (path.relative_to(root.parent), lineno, text)
-            for path in sorted(root.rglob("*.py"))
+            for path in _py_files(root)
             for lineno, text in _mutation_sites(path)]
 
 
@@ -316,18 +358,23 @@ def _entry_offenders(surface, files=None):
     return offenders
 
 
+_SIBLING = 'os.path.join(os.path.dirname(os.path.realpath(__file__)), %r)'
+
+
 def _run_path_offenders(path, surface):
-    """`run_path` calls whose target is not this surface's sibling bootstrap."""
+    """`run_path` calls that are not exactly `runpy.run_path(<the sibling
+    bootstrap>)`, the sibling spelled from this file's own realpath. A matching
+    file name joined to any other directory (the cwd, a variable) is refused."""
     _, tree = _parse(path)
-    allowed = BOOTSTRAP_FOR[surface]
+    allowed = ast.dump(ast.parse(_SIBLING % BOOTSTRAP_FOR[surface], mode="eval").body)
     hits = []
     for node in ast.walk(tree):
         if isinstance(node, ast.Call) and (
                 isinstance(node.func, ast.Attribute) and node.func.attr == "run_path"
                 or isinstance(node.func, ast.Name) and node.func.id == "run_path"):
-            strings = {c.value for c in ast.walk(node)
-                       if isinstance(c, ast.Constant) and isinstance(c.value, str)}
-            if strings != {allowed}:
+            exact = (ast.unparse(node.func) == "runpy.run_path" and not node.keywords
+                     and len(node.args) == 1 and ast.dump(node.args[0]) == allowed)
+            if not exact:
                 hits.append((node.lineno, ast.unparse(node)))
     return hits
 
@@ -429,10 +476,10 @@ class SysPathWriteTest(unittest.TestCase):
     def test_the_bootstrap_is_the_only_sys_path_write(self):
         found = {}
         for surface in SURFACES:
-            for path in _py_files(surface):
-                sites = _mutation_sites(path)
-                if sites:
-                    found[_rel(path)] = len(sites)
+            for offender in _tree_offenders(surface):
+                where = offender.split(":", 1)[0]
+                rel = _rel(surface.parent / where)
+                found[rel] = found.get(rel, 0) + 1
         self.assertEqual(
             found, PERMITTED_WRITES,
             "sys.path is written only by skill/scripts/_bootstrap.py (#3505). An "
@@ -465,6 +512,22 @@ class SysPathWriteTest(unittest.TestCase):
                 self.assertEqual(_mutation_sites(path), [(2, source)])
             path.write_text("from sys import path\npath.clear()\n")
             self.assertEqual(_mutation_sites(path), [(2, "path.clear()")])
+            # The escapes a text guard missed: an alias by assignment (and
+            # through a second name, a walrus, getattr), setattr, addsitedir.
+            for source, expression in (
+                    ("import sys\n_p = sys.path\n", "_p.insert(0, '/x')"),
+                    ("import sys\n_p = sys.path\n_q = _p\n", "_q.append('/x')"),
+                    ("import sys\n(_p := sys.path)\n", "_p[:] = []"),
+                    ("import sys\n_p = getattr(sys, 'path')\n", "_p.extend(['/x'])"),
+                    ("import sys\n", "getattr(sys, 'path').insert(0, '/x')"),
+                    ("import sys\n", "setattr(sys, 'path', [])"),
+                    ("import site\n", "site.addsitedir('/x')"),
+                    ("import site as s\n", "s.addsitedir('/x')"),
+                    ("from site import addsitedir\n", "addsitedir('/x')")):
+                with self.subTest(source=source + expression):
+                    path.write_text(source + expression + "\n")
+                    line = source.count("\n") + 1
+                    self.assertEqual(_mutation_sites(path), [(line, expression)])
 
     def test_prose_reads_and_local_rebinding_are_harmless(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -475,7 +538,11 @@ class SysPathWriteTest(unittest.TestCase):
                             'sys.path.count("/x")\n'
                             'from sys import path as entries\n'
                             'entries = []\n'
-                            'other.path.append("/x")\n')
+                            'other.path.append("/x")\n'
+                            'snapshot = list(sys.path)\n'
+                            'snapshot.append("/x")\n'
+                            'getattr(sys, "argv").append("x")\n'
+                            'other.addsitedir("/x")\n')
             self.assertEqual(_mutation_sites(path), [])
 
     def test_parse_errors_fail_closed(self):
@@ -489,10 +556,13 @@ class SysPathWriteTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = pathlib.Path(directory) / "tests"
             (root / "nested").mkdir(parents=True)
-            for path in (root / "conftest.py", root / "nested" / "conftest.py"):
+            (root / "fixtures").mkdir()
+            for path in (root / "conftest.py", root / "nested" / "conftest.py",
+                         root / "fixtures" / "conftest.py"):
                 path.write_text("import sys\nsys.path.clear()\n")
             self.assertEqual(_tree_offenders(root),
                              ["tests/conftest.py:2  sys.path.clear()",
+                              "tests/fixtures/conftest.py:2  sys.path.clear()",
                               "tests/nested/conftest.py:2  sys.path.clear()"])
 
 
@@ -642,8 +712,13 @@ class RunPathTest(unittest.TestCase):
                          "(%s)" % " / ".join(sorted(BOOTSTRAP_FOR.values())))
 
     def test_the_detector_reads_the_target(self):
-        cases = {'runpy.run_path(os.path.join(HERE, "_bootstrap.py"))\n': 0,
-                 'runpy.run_path(os.path.join(HERE, "other.py"))\n': 1,
+        sibling = _SIBLING % "_bootstrap.py"
+        cases = {"runpy.run_path(%s)\n" % sibling: 0,
+                 "runpy.run_path(%s)\n" % sibling.replace("_bootstrap.py", "other.py"): 1,
+                 "runpy.run_path(%s)\n" % (_SIBLING % "_skill_bootstrap.py"): 1,
+                 "d = os.getcwd()\nrunpy.run_path(os.path.join(d, '_bootstrap.py'))\n": 1,
+                 'runpy.run_path(os.path.join(HERE, "_bootstrap.py"))\n': 1,
+                 "runpy.run_path(%s, run_name='x')\n" % sibling: 1,
                  'runpy.run_path(target)\n': 1,
                  'from runpy import run_path\nrun_path("x.py")\n': 1,
                  'runpy.run_module("x")\n': 0}

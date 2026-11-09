@@ -292,7 +292,7 @@ def _mark_unverified(path):
 def replay(args):
     repo = os.path.abspath(args.repo or os.path.dirname(HERE))
     import runpy
-    bootstrap = runpy.run_path(os.path.join(HERE, "_skill_bootstrap.py"))
+    bootstrap = runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_skill_bootstrap.py"))
     bootstrap["install"](repo)          # that checkout's skill/, first on sys.path
     from scripts import hosts
     import scripts.first_contact as first_contact
