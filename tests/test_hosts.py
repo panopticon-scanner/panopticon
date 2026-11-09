@@ -41,6 +41,7 @@ class TestTotality(unittest.TestCase):
         for name, row in hosts.HOSTS.items():
             with self.subTest(host=name):
                 self.assertIsInstance(row.self_write_delivery, bool)
+                self.assertIsInstance(row.self_write_requires_tool_policy, bool)
                 self.assertEqual(
                     [], sorted(set(row.session_root_capabilities)
                                - set(hosts.CAPABILITIES)))
@@ -49,6 +50,9 @@ class TestTotality(unittest.TestCase):
                                - set(row.claims)))
                 if row.self_write_delivery:
                     self.assertIn(hosts.ARTIFACT_WRITE_GUARD, row.claims)
+                if row.self_write_requires_tool_policy:
+                    self.assertTrue(row.self_write_delivery)
+                    self.assertIn(hosts.TOOL_POLICY_ENFORCED, row.claims)
 
     def test_a_host_that_registers_shells_says_where_and_in_what_format(self):
         for name, row in hosts.HOSTS.items():
@@ -133,18 +137,28 @@ class TestDriverHostCapabilities(unittest.TestCase):
             ["agy", "claude", "gemini", "kimi"],
             sorted(name for name, row in hosts.HOSTS.items()
                    if row.self_write_delivery))
+        self.assertEqual(
+            ["gemini"],
+            sorted(name for name, row in hosts.HOSTS.items()
+                   if row.self_write_requires_tool_policy))
 
     def test_current_self_write_proofs_name_the_unproven_bash_path(self):
         partial = {hosts.ARTIFACT_WRITE_GUARD: hosts.PROVEN,
                    hosts.TOOL_POLICY_ENFORCED: hosts.REFUTED}
         complete = dict(partial, **{hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN})
-        for host in ("agy", "claude", "gemini", "kimi"):
+        for host in ("agy", "claude", "kimi"):
             with self.subTest(host=host):
                 self.assertEqual(
                     (hosts.BASH_PATH_ARTIFACT_WRITE_GAP,),
                     hosts.write_boundary_gaps(host, partial))
                 self.assertEqual((), hosts.write_boundary_gaps(host, complete))
-        self.assertEqual((), hosts.write_boundary_gaps("codex", partial))
+        # gemini has self_write_requires_tool_policy=True: when tool_policy_enforced
+        # is not proven, it drops to return_json and read-only unenforced.toml, so
+        # there is no self-write Bash-path gap.
+        for host in ("codex", "gemini"):
+            with self.subTest(host=host):
+                self.assertEqual((), hosts.write_boundary_gaps(host, partial))
+                self.assertEqual((), hosts.write_boundary_gaps(host, complete))
 
     def test_kimi_and_codex_are_registrable_and_now_driver_selectable(self):
         # This was "registrable but not driver-selectable": dispatch.py could

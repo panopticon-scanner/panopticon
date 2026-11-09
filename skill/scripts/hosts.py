@@ -109,10 +109,8 @@ STATES = (PROVEN, REFUTED, UNKNOWN)
 # `spec(host).registration_dir`.
 CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
 KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
-AGY_AGENTS_DIR = os.path.join(
-    os.path.expanduser("~"), ".gemini", "config", "agents")
-GEMINI_AGENTS_DIR = os.path.join(
-    os.path.expanduser("~"), ".gemini", "cli-agents")
+AGY_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".gemini", "config", "agents")
+GEMINI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".gemini", "cli-agents")
 
 
 def codex_home(value):
@@ -265,6 +263,7 @@ class HostSpec:
     name: str
     claims: frozenset
     self_write_delivery: bool = False
+    self_write_requires_tool_policy: bool = False
     session_root_capabilities: tuple = ()
     registration_dir: str = ""      # "" when the host registers no shells
     # Why this machine gives the row NO usable `registration_dir` although
@@ -463,6 +462,7 @@ HOSTS = {
         claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
                           ARTIFACT_WRITE_GUARD, MODEL_BINDING, USAGE_LEDGER}),
         self_write_delivery=True,
+        self_write_requires_tool_policy=True,
         registration_dir=GEMINI_AGENTS_DIR,
         shell_format="toml",
         project_scope_dirs=(os.path.join(".agents", "agents"),
@@ -524,6 +524,7 @@ def write_boundary_gaps(host, posture):
     """
     row = spec(host)
     if (row and row.self_write_delivery
+            and not row.self_write_requires_tool_policy
             and posture.get(ARTIFACT_WRITE_GUARD) == PROVEN
             and posture.get(TOOL_POLICY_ENFORCED) != PROVEN):
         return (BASH_PATH_ARTIFACT_WRITE_GAP,)

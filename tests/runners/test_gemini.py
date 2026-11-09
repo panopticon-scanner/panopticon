@@ -216,6 +216,8 @@ class TestCommand(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         user_home, self.agents_dir = _fixture_user_home(self.tmp.name)
         self.r = gemini_runner.Runner("gemini")
+        self.r.system_config_dir = os.path.join(self.tmp.name, "empty-sys")
+        os.makedirs(self.r.system_config_dir, exist_ok=True)
         with mock.patch.dict(os.environ, {"HOME": user_home}):
             self.r.prepare(os.path.join(self.tmp.name, "run"),
                            review_root=self.tmp.name,

@@ -286,6 +286,18 @@ class TestTheAckRecordsAShadowedOverride(unittest.TestCase):
         self.assertIn("posture remains PROVEN", ack["note"])
         self.assertNotIn("mediate reviewer Write", ack["note"])
 
+    def test_gemini_refuted_tool_policy_records_return_json_transport_and_no_bash_gap(self):
+        root = self._root(hosts.REFUTED, detail=self.SHADOW)
+        self._plant_transport(root, False)
+        path = requests.require_unenforced_ack(
+            root, _manifest("gemini", allow=True), ENTRIES)
+        with open(path, encoding="utf-8") as fh:
+            ack = json.load(fh)
+        self.assertEqual(hosts.REFUTED, ack[hosts.TOOL_POLICY_ENFORCED])
+        self.assertEqual(hosts.PROVEN, ack[hosts.ARTIFACT_WRITE_GUARD])
+        self.assertEqual([], ack["gaps"])
+        self.assertFalse(ack["self_write_delivery"])
+
     def test_the_recorded_override_reads_back_through_synthesize(self):
         # Worthless unless the reader honours it: integrity's #493 plan-hash
         # binding has to match, or meta.integrity reports it stale.

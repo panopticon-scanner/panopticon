@@ -134,7 +134,8 @@ def delivery(host, evidence, role_file, out_file):
     row, posture = hosts.spec(host), hosts.posture(host, evidence)
     if (row and row.self_write_delivery
             and posture[hosts.ARTIFACT_WRITE_GUARD] == hosts.PROVEN
-            and (host != "gemini" or posture[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)):
+            and (not row.self_write_requires_tool_policy
+                 or posture[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)):
         return None, ""
     return "return_json", RETURN_PERSIST_PREAMBLE % {"out_file": out_file}
 
@@ -517,8 +518,7 @@ def write_capable_roles():
 
 # Refreshed on every invocation rather than written once: these describe what
 # the CURRENT probe found, not what the operator agreed to. See the merge below.
-_ACK_DISCLOSURE = (hosts.TOOL_POLICY_ENFORCED, hosts.ARTIFACT_WRITE_GUARD,
-                   "tool_policy_detail", "gaps")
+_ACK_DISCLOSURE = (hosts.TOOL_POLICY_ENFORCED, hosts.ARTIFACT_WRITE_GUARD, "tool_policy_detail", "gaps")
 
 
 def require_unenforced_ack(review_root, manifest, entries):
@@ -623,8 +623,7 @@ def require_unenforced_ack(review_root, manifest, entries):
                ("The write canary measured nothing, so re-run first: the next run "
                 "probes again. Only if it stays unknown, re-run" if unmeasured else "Re-run"),
                UNENFORCED_ACK, alternative))
-    return _record_unenforced_ack(review_root, manifest, entries, evidence,
-                                  posture)
+    return _record_unenforced_ack(review_root, manifest, entries, evidence, posture)
 
 
 def _record_unenforced_ack(review_root, manifest, entries, evidence, posture, session_gap=False):
@@ -637,18 +636,19 @@ def _record_unenforced_ack(review_root, manifest, entries, evidence, posture, se
     to call on a resume that has learned something new (a shadow file planted
     mid-run) without invalidating the ack's binding to this run.
     """
+    row = hosts.spec(manifest.get("host", "claude"))
     body = {
         "acknowledged": True,
         "host": manifest.get("host"),
-        # Binds the ack to THIS run's plan (#493 R2): a stale ack from an
-        # earlier run must not mark a later run acknowledged.
-        "plan_sha256": integrity_mod._plan_hash(entries),
+        "plan_sha256": integrity_mod._plan_hash(entries),  # #493 R2 plan binding
         "roles": sorted(write_capable_roles()),
         "write_guard_covers_bash": False,
         hosts.ARTIFACT_WRITE_GUARD: posture[hosts.ARTIFACT_WRITE_GUARD],
         "gaps": list(hosts.write_boundary_gaps(manifest.get("host", "claude"), posture)),
-        "self_write_delivery": bool(getattr(hosts.spec(
-            manifest.get("host", "claude")), "self_write_delivery", False)),
+        "self_write_delivery": bool(
+            row and row.self_write_delivery
+            and (not row.self_write_requires_tool_policy
+                 or posture[hosts.TOOL_POLICY_ENFORCED] == hosts.PROVEN)),
         "note": (hosts.SESSION_GAP_ACK_NOTE if session_gap else
                  "Tool policy enforcement is REFUTED for this run and the "
                  "operator overrode the spec 7.3 refusal with "
