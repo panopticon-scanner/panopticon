@@ -431,7 +431,8 @@ class TestOfflineAssets(unittest.TestCase):
         # hits the NVD API or needs a secret.
         self.assertIn("ARG NVD_DATA_REF", self.text)
         self.assertIn("AS nvd-data", self.text)
-        self.assertIn("COPY --from=nvd-data /opt/odc-data /opt/odc-data", self.text)
+        self.assertIn("COPY --chown=scanner:scanner --from=nvd-data /opt/odc-data /opt/odc-data",
+                      self.text)
         # the old build-time sync and its secret mount are gone
         self.assertNotIn("--mount=type=secret,id=nvd_api_key", self.text)
         self.assertNotIn("--updateonly", self.text)
@@ -636,6 +637,167 @@ def nuget_cache_defects(text):
                 "root-only mode it was written with" % (NUGET_CACHE, lineno,
                                                         len(after)))
     return defects
+
+
+SCRIPTS_COPY = "COPY skill/scripts /opt/panopticon/scripts"
+SMOKE_RUN = "RUN python3 /opt/panopticon/scripts/smoke_adapters.py"
+# Instructions that only set metadata: they add no files, so they cost nothing
+# when the layers around them are rebuilt.
+_METADATA = ("ENV", "USER", "WORKDIR", "ARG", "LABEL")
+
+
+def layer_order_defects(text):
+    """Why this image would store more than it has to on an ordinary merge (#2106).
+
+    Two rules, read from the final stage with comments dropped the way
+    `nuget_cache_defects` drops them:
+
+    * `skill/scripts` changes on most merges, and every layer below a COPY is
+      rebuilt when the copied files change. So its COPY sits right above the
+      smoke test that runs it, with only metadata between them, and its
+      `ENV PYTHONPATH` moves down with it.
+    * The NVD database is copied with `--chown`, after the user it names
+      exists. A later `chown`/`chmod` of /opt/odc-data stores the whole
+      database again in a new layer, and the H2 database still needs
+      scanner to own it (#451).
+    """
+    numbered = [(n, ln) for n, ln in enumerate(text.splitlines(), 1)
+                if not ln.lstrip().startswith("#")]
+    lines = [(n, j) for n, j in _fold_numbered(numbered) if j]
+    starts = [i for i, (_n, j) in enumerate(lines) if j.split()[0].upper() == "FROM"]
+    final = lines[starts[-1] + 1:] if starts else lines
+
+    def first(pred):
+        return next((i for i, (_n, j) in enumerate(final) if pred(j)), None)
+
+    defects = []
+    copy_at = first(lambda j: j == SCRIPTS_COPY)
+    smoke_at = first(lambda j: j == SMOKE_RUN)
+    env_at = first(lambda j: j.startswith("ENV PYTHONPATH="))
+    if copy_at is None or smoke_at is None:
+        defects.append("the final stage needs both `%s` and `%s`" % (SCRIPTS_COPY, SMOKE_RUN))
+    elif copy_at > smoke_at:
+        defects.append("line %d copies skill/scripts AFTER the smoke test that runs it"
+                       % final[copy_at][0])
+    else:
+        for n, j in final[copy_at + 1:smoke_at]:
+            if j.split()[0].upper() not in _METADATA:
+                defects.append(
+                    "line %d (`%s`) sits between the skill/scripts COPY and the smoke "
+                    "test, so it is rebuilt on every change to skill/scripts" % (n, j.split()[0]))
+        if env_at is None or env_at < copy_at:
+            defects.append("`ENV PYTHONPATH=` must come after the skill/scripts COPY it "
+                           "points at")
+
+    nvd_at = first(lambda j: j.startswith("COPY") and "--from=nvd-data" in j.split())
+    user_at = first(lambda j: j.startswith("RUN") and re.search(r"\buseradd\b.*\bscanner\b", j))
+    if nvd_at is None:
+        defects.append("no `COPY --from=nvd-data` in the final stage")
+    else:
+        if "--chown=scanner:scanner" not in final[nvd_at][1].split():
+            defects.append("line %d copies the NVD database without "
+                           "`--chown=scanner:scanner`" % final[nvd_at][0])
+        if user_at is None or user_at > nvd_at:
+            defects.append("the scanner user must be created before line %d's "
+                           "`--chown` names it" % final[nvd_at][0])
+        for n, j in final[nvd_at + 1:]:
+            if (j.startswith("RUN") and "/opt/odc-data" in j
+                    and re.search(r"\bch(?:own|mod)\b", j)):
+                defects.append("line %d re-owns /opt/odc-data in a later layer, which "
+                               "stores the whole database a second time" % n)
+    return defects
+
+
+_ORDERED = """FROM base AS nvd-data
+FROM python:3.12-slim
+RUN useradd -m -u 1000 scanner
+COPY --chown=scanner:scanner --from=nvd-data /opt/odc-data /opt/odc-data
+USER scanner
+# a comment between them is not an instruction
+%s
+ENV PYTHONPATH=/opt/panopticon
+%s
+RUN semgrep --version
+""" % (SCRIPTS_COPY, SMOKE_RUN)
+
+
+class TestLayerOrder(unittest.TestCase):
+    def test_the_dockerfile_keeps_merges_cheap(self):
+        self.assertEqual(layer_order_defects(_read_dockerfile()), [])
+
+    def test_the_ordered_control_is_clean(self):
+        self.assertEqual(layer_order_defects(_ORDERED), [])
+
+    def assert_one_defect(self, text, words):
+        defects = layer_order_defects(text)
+        self.assertEqual(len(defects), 1, defects)
+        self.assertIn(words, defects[0])
+
+    def test_a_run_between_the_copy_and_the_smoke_test(self):
+        text = _ORDERED.replace(SMOKE_RUN, "RUN apt-get update\n" + SMOKE_RUN)
+        self.assert_one_defect(text, "line 9 (`RUN`) sits between")
+
+    def test_a_copy_between_the_copy_and_the_smoke_test(self):
+        text = _ORDERED.replace(SMOKE_RUN, "COPY a /b\n" + SMOKE_RUN)
+        self.assert_one_defect(text, "(`COPY`) sits between")
+
+    def test_the_scripts_copied_high_up_as_before_2106(self):
+        text = _ORDERED.replace(SCRIPTS_COPY + "\nENV PYTHONPATH=/opt/panopticon\n", "")
+        text = text.replace("RUN useradd", SCRIPTS_COPY
+                            + "\nENV PYTHONPATH=/opt/panopticon\nRUN useradd")
+        defects = layer_order_defects(text)
+        self.assertEqual([d.split(" sits")[0] for d in defects],
+                         ["line 5 (`RUN`)", "line 6 (`COPY`)"])
+
+    def test_pythonpath_left_behind(self):
+        text = _ORDERED.replace("ENV PYTHONPATH=/opt/panopticon\n", "")
+        text = text.replace("USER scanner", "ENV PYTHONPATH=/opt/panopticon\nUSER scanner")
+        self.assert_one_defect(text, "`ENV PYTHONPATH=` must come after")
+
+    def test_pythonpath_missing(self):
+        self.assert_one_defect(_ORDERED.replace("ENV PYTHONPATH=/opt/panopticon\n", ""),
+                               "`ENV PYTHONPATH=` must come after")
+
+    def test_the_scripts_copied_after_the_smoke_test(self):
+        text = _ORDERED.replace(SCRIPTS_COPY + "\n", "")
+        text = text.replace("RUN semgrep", SCRIPTS_COPY + "\nRUN semgrep")
+        self.assert_one_defect(text, "AFTER the smoke test")
+
+    def test_no_smoke_test(self):
+        self.assert_one_defect(_ORDERED.replace(SMOKE_RUN + "\n", ""), "needs both")
+
+    def test_an_earlier_stage_does_not_count(self):
+        text = SCRIPTS_COPY + "\n" + _ORDERED.replace(SCRIPTS_COPY + "\n", "")
+        self.assert_one_defect(text, "needs both")
+
+    def test_the_nvd_copy_without_chown(self):
+        self.assert_one_defect(_ORDERED.replace("--chown=scanner:scanner ", ""),
+                               "without `--chown=scanner:scanner`")
+
+    def test_the_user_created_after_the_nvd_copy(self):
+        text = _ORDERED.replace("RUN useradd -m -u 1000 scanner\n", "")
+        text = text.replace("USER scanner", "RUN useradd -m -u 1000 scanner\nUSER scanner")
+        self.assert_one_defect(text, "must be created before line 3")
+
+    def test_no_user_at_all(self):
+        self.assert_one_defect(_ORDERED.replace("RUN useradd -m -u 1000 scanner\n", ""),
+                               "must be created before")
+
+    def test_a_later_chown_of_the_database(self):
+        text = _ORDERED.replace(
+            "USER scanner",
+            "RUN mkdir -p /x \\\n    && chown -R scanner:scanner /opt/odc-data\nUSER scanner")
+        self.assert_one_defect(text, "line 5 re-owns /opt/odc-data")
+
+    def test_a_later_chmod_of_the_database(self):
+        text = _ORDERED.replace("USER scanner",
+                                "RUN chmod -R a+rwX /opt/odc-data\nUSER scanner")
+        self.assert_one_defect(text, "re-owns /opt/odc-data")
+
+    def test_no_nvd_copy(self):
+        text = _ORDERED.replace(
+            "COPY --chown=scanner:scanner --from=nvd-data /opt/odc-data /opt/odc-data\n", "")
+        self.assert_one_defect(text, "no `COPY --from=nvd-data`")
 
 
 class TestDockerfileFixtures(unittest.TestCase):
