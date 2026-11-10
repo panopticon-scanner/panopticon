@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **The NVD cache sync seeds from yesterday's database (#3417, script half).** The keyed sync
+  moves into `.github/scripts/nvd-cache-sync.sh` and starts from the last published
+  `panopticon-tools-nvd` image, pulled by digest from our own registry, so a normal day downloads
+  only what NVD changed instead of all ~417,000 records. It falls back to a full download, saying
+  why, when there is no seed, the seed carries no marker or was made by another dependency-check,
+  its `nvd.api.last.modified` is over 90 days old, or its last full build is 30 days old; a
+  scheduled run also rebuilds in full every Sunday once the last full build is a week old, and
+  `NVD_FULL_REBUILD=1` forces one. Every update passes `--nvdValidForHours 0` (10.0.3 otherwise
+  skips an update, exit 0, when the seed was checked under 4 h ago). The #3251 guard survives
+  seeding: a seeded database is published only when the update exited 0 and
+  `nvd.api.last.checked` moved past the seed's, which a day with no NVD changes still does.
+  `devtools/nvd_cache_compare.py` compares a seeded and a fresh database on a CVE sample. The
+  workflow switches to the script in a follow-up.
 - **No more line-ceiling ratchets (#3515, part of #3264).** `tests/test_flat_module_ceiling.py` (the
   shrink-only 700-line allowlist for flat modules, devtools and adapters) and rule 5 of
   `tests/test_layout.py` (the 700-line ceiling for package modules) are gone; module size is a
