@@ -989,10 +989,10 @@ class TestADirectSynthesizeMakesFirstContact(_Trees):
         with open(groups, encoding="utf-8") as fh:
             self.assertEqual(planted, fh.read())
 
-    def test_discovery_that_writes_nothing_keeps_its_flat_import_graph(self):
-        # Ruling D1: the package-root bootstrap and the first_contact import are
-        # lazy -- only `_first_contact` holds them, and a stdout-only run never
-        # calls it, nor creates .panopticon/.
+    def test_discovery_that_writes_nothing_keeps_first_contact_lazy(self):
+        # Ruling D1: the first_contact import is lazy -- only `_first_contact`
+        # holds it, and a stdout-only run never calls it, nor creates
+        # .panopticon/. (#3505 retired the lazy sys.path insert beside it.)
         import ast
         import scripts.discovery as discovery
         root = self._tree(False)
@@ -1009,10 +1009,7 @@ class TestADirectSynthesizeMakesFirstContact(_Trees):
                     if isinstance(inner, ast.ImportFrom) and any(
                             a.name == "first_contact" for a in inner.names):
                         holders.setdefault("import", set()).add(node.name)
-                    if (isinstance(inner, ast.Call) and "realpath(__file__)" in ast.unparse(inner)
-                            and ast.unparse(inner.func) == "sys.path.insert"):
-                        holders.setdefault("insert", set()).add(node.name)
-        self.assertEqual({"import": {"_first_contact"}, "insert": {"_first_contact"}}, holders)
+        self.assertEqual({"import": {"_first_contact"}}, holders)
         self.assertNotIn("first_contact", {a.name for n in tree.body
                                            if isinstance(n, (ast.Import, ast.ImportFrom))
                                            for a in n.names})

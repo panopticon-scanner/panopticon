@@ -35,19 +35,8 @@ Its own module rather than a block inside `evidence.py`: that module and
 ratchet in `tests/test_flat_module_ceiling.py`, whose stated remedy for a module
 that needs more room is a new module.
 """
-from typing import TYPE_CHECKING
 
-# PACKAGE first, flat fallback -- the order `score_gate` and `html_report` use
-# (tests/test_layout.py pins flat mode for these modules): skill/scripts is on
-# sys.path as well as its parent, so a flat-first import would build a SECOND
-# `evidence` module object with its own module-level state.
-if TYPE_CHECKING:
-    import scripts.evidence as evidence
-else:
-    try:
-        import scripts.evidence as evidence
-    except ModuleNotFoundError:  # imported flat, with skill/scripts on sys.path
-        import evidence
+import scripts.evidence as evidence
 
 VERIFIED_STATUSES = ("tool_confirmed", "advisor_confirmed")
 UNVERIFIED_STATUSES = ("tool_reported", "needs_more_info", "unverified")

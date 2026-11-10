@@ -1,9 +1,6 @@
 # tests/test_coverage_model.py
 import inspect
-import os
 import re
-import subprocess
-import sys
 
 import scripts.coverage_model as cov
 import scripts.discovery as discovery
@@ -633,24 +630,3 @@ def test_surfaces_enum_is_the_scouts_thirteen():
         if s not in cov.SURFACES: raise AssertionError(s)
 
 
-
-# #1770: `coverage_model` now carries a flat-import fallback for `discovery`,
-# and that arm is load-bearing -- `setup_proposal` imports this module with only
-# `skill/scripts` on sys.path (`setup_flow` and `grouping_engine` did too, until
-# #1766 moved them to the package),
-# and `discovery_catalog._capability_aliases` swallows an ImportError on that path and
-# returns `{}`, so a dropped arm would cost the standalone `--repo-scan` path
-# all of its capability aliases with a green suite. `tests/test_layout.py`'s
-# `FLAT_MODULES` does not list this module, so the pin lives here, in the same
-# fresh-interpreter shape.
-def test_coverage_model_imports_flat_with_only_skill_scripts_on_the_path():
-    scripts = os.path.dirname(os.path.abspath(cov.__file__))
-    env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
-    env["PYTHONPATH"] = scripts
-    proc = subprocess.run(
-        [sys.executable, "-c",
-         "import coverage_model, discovery_catalog; "
-         "print(len(discovery_catalog._capability_aliases()))"],
-        cwd=scripts, env=env, capture_output=True, text=True, check=False)
-    assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.strip() != "0", "flat import lost the capability aliases"

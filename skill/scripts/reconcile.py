@@ -19,7 +19,9 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
 
 import scripts.evidence as evidence
 import scripts.ocrdb as ocrdb

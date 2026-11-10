@@ -11,7 +11,7 @@ diff-hunks.json emission). Extracted from the now-retired orchestrator.py
 in P6.5 -- discovery.py is the sole discovery entry point the 5.0 driver
 subprocesses.
 """
-from typing import TYPE_CHECKING, Any
+from typing import Any
 import argparse
 from collections import defaultdict
 import functools
@@ -23,73 +23,33 @@ import subprocess
 import sys
 import uuid
 
-# This script is invoked as a standalone CLI entrypoint (``python
-# skill/scripts/discovery.py --repo-scan``) from ``driver.py``. Because
-# ``skill/scripts/`` has no ``__init__.py``, relative imports are unavailable,
-# so we add the sibling directory to ``sys.path``. A structural fix (making
-# ``skill/scripts/`` a package and invoking ``python -m skill.scripts.discovery``)
-# requires changes to off-limits ``driver.py``; accepted as tech debt (#1201).
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-import diff_map  # noqa: E402
+# A standalone CLI entrypoint too (`python3 skill/scripts/discovery.py
+# --repo-scan`, run by the driver's discovery phase), so the bootstrap puts
+# `skill/` on sys.path when run by path.
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
+from scripts import diff_map
 # #1740 fix round 2: ONE module object, so the glob compiler this module and
-# the TOOL side share is one cache and one disclosure ledger, not two. Same
-# fallback shape as safe_write below: the standalone CLI has only skill/scripts on sys.path.
-if TYPE_CHECKING:
-    from scripts import groups_schema
-else:
-    try:
-        from scripts import groups_schema
-    except ModuleNotFoundError:
-        import groups_schema               # noqa: E402
+# the TOOL side share is one cache and one disclosure ledger, not two.
+from scripts import groups_schema
 # #1784/#1771: the ONE dot-path policy both discovery methods ask. Its own
-# module because this one is at its size ratchet. Same fallback shape as above.
-if TYPE_CHECKING:
-    from scripts import dot_paths
-else:
-    try:
-        from scripts import dot_paths
-    except ModuleNotFoundError:
-        import dot_paths                   # noqa: E402
+# module because this one is at its size ratchet.
+from scripts import dot_paths
 # #1757: the SEC carve-out policy, its own module because this one is ratcheted.
-import exclude_carve_out  # noqa: E402
-import plan_contract  # noqa: E402
-import repo_config  # noqa: E402
-import tests_axis  # noqa: E402
-# #3457: catalog matching and scoped assignment have one source owner. Keep
-# the guarded arm because this file is also invoked as a standalone script.
-if TYPE_CHECKING:
-    from scripts import discovery_catalog
-else:
-    try:
-        from scripts import discovery_catalog
-    except ModuleNotFoundError:
-        import discovery_catalog           # noqa: E402
-# #3457: surface filtering and scope resolution have one source owner. Keep
-# the guarded arm because this file is also invoked as a standalone script.
-if TYPE_CHECKING:
-    from scripts import discovery_scope
-else:
-    try:
-        from scripts import discovery_scope
-    except ModuleNotFoundError:
-        import discovery_scope             # noqa: E402
-# #1735: the no-follow artifact open. Fallback arm: imported with only skill/scripts on sys.path.
-if TYPE_CHECKING:
-    from scripts import safe_write
-else:
-    try:
-        from scripts import safe_write     # noqa: E402
-    except ModuleNotFoundError:
-        import safe_write                  # noqa: E402
+from scripts import exclude_carve_out
+from scripts import plan_contract
+from scripts import repo_config
+from scripts import tests_axis
+# #3457: catalog matching and scoped assignment have one source owner.
+from scripts import discovery_catalog
+# #3457: surface filtering and scope resolution have one source owner.
+from scripts import discovery_scope
+# #1735: the no-follow artifact open.
+from scripts import safe_write
 # #2006: every git call in this module runs against the TARGET, so all of them
-# go through the trusted, bounded, preflighted probe. Same fallback arm.
-if TYPE_CHECKING:
-    from scripts import safe_git
-else:
-    try:
-        from scripts import safe_git       # noqa: E402
-    except ModuleNotFoundError:
-        import safe_git                    # noqa: E402
+# go through the trusted, bounded, preflighted probe.
+from scripts import safe_git
 
 # Files per review group before it splits into `<name>_<i>` chunks. A BUDGET dial,
 # not an accuracy one (calibration corpus, 7 runs / 5 targets, 2026-08-30..09-03):
@@ -349,9 +309,7 @@ def _validate_artifact_output(repo, path):
 def _first_contact(write_paths):
     """#3273 P1 (rulings R1, D1): first contact's `.panopticon/` half before any
     artifact write; an absent or empty one written into is marked ours. Lazy, so
-    a run that writes nothing keeps the flat import graph."""
-    if os.path.dirname(os.path.dirname(os.path.realpath(__file__))) not in sys.path:
-        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.realpath(__file__))))
+    a run that writes nothing keeps its import graph small."""
     from scripts import first_contact
     first_contact.assess_standalone(None, (), write_paths)
 

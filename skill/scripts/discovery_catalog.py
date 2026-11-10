@@ -1,16 +1,9 @@
 """Catalog matching and scoped assignment for discovery."""
-from typing import TYPE_CHECKING
 import functools
 import os
 
-if TYPE_CHECKING:
-    from scripts import groups_schema
-else:
-    try:
-        from scripts import groups_schema
-    except ModuleNotFoundError:
-        import groups_schema
-import tests_axis
+from scripts import groups_schema
+from scripts import tests_axis
 
 
 def _glob_to_re(pat):
@@ -66,13 +59,10 @@ def _capability_aliases():
     `tests/authentication/`. Empty when the file is unreadable: aliases only
     ever ADD credit, so running without them is safe."""
     import yaml
+    from scripts import setup_proposal
     try:
-        try:
-            from scripts import setup_proposal
-        except ModuleNotFoundError:     # flat: only skill/scripts on sys.path
-            import setup_proposal  # type: ignore[no-redef]
         vocab, _ = setup_proposal.load_vocabulary(_VOCAB_PATH)
-    except (OSError, ValueError, ImportError, yaml.YAMLError):
+    except (OSError, ValueError, yaml.YAMLError):
         return {}
     # The loader keeps the raw entry; re-check the shape so a scalar `aliases`
     # (a loader ERROR, not a crash) cannot explode into per-character labels.

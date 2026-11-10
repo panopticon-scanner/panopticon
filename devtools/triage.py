@@ -31,6 +31,9 @@ import sys
 import tempfile
 import time
 
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_skill_bootstrap.py"))
 from sanitize import defang, scrub
 
 # #3404: the gh transport lives in gh_transport.py now (which also puts skill/scripts on

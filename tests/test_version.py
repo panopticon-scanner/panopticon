@@ -14,8 +14,8 @@ import io
 import tempfile
 from unittest import mock
 
-from scripts._version import __version__  # noqa: E402
-import scripts.synth.grading as grading  # noqa: E402
+from scripts._version import __version__
+import scripts.synth.grading as grading
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
 

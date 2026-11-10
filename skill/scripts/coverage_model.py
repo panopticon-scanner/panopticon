@@ -27,7 +27,6 @@ tests/test_surface_signal_contract.py pins those signals and proves that a
 legacy groups.json schedule and its omission route byte-identically.
 """
 
-from typing import TYPE_CHECKING
 
 import os
 import re
@@ -40,18 +39,8 @@ import re
 # `discovery_catalog._capability_aliases` imports `setup_proposal` (which imports this
 # module) at CALL time, and it must stay lazy. This module, in turn, binds the
 # `discovery` module object here and reads `discovery.is_test_file` only at
-# call time, so neither order can see a half-initialised module. Same fallback
-# shape as `discovery` uses for its own siblings -- this module is imported both as
-# `scripts.coverage_model` (the driver's children, which get `skill/` on
-# PYTHONPATH, and `setup_flow` / `grouping_engine` since #1766) and flat by
-# `setup_proposal`, and the flat mode has only `skill/scripts` on sys.path.
-if TYPE_CHECKING:
-    from scripts import discovery
-else:
-    try:
-        from scripts import discovery
-    except ModuleNotFoundError:
-        import discovery
+# call time, so neither order can see a half-initialised module.
+from scripts import discovery
 
 # #5.0-11: the universal-tier domains ride a GLOBAL floor — every group reviews
 # code/database/test/architecture regardless of its committed vertical floor.

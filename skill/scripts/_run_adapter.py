@@ -5,10 +5,9 @@ import sys
 import traceback
 from typing import Any
 
-# When executed inside the panopticon-tools container the target repo is mounted
-# at /src; on a developer host it is the project root. Adding the project root to
-# sys.path lets us import ``tools`` both ways.
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
 
 from scripts.tools import ADAPTERS
 from scripts.tools.base import SECURITY_FLAG, SECURITY_MODES, STANDARD

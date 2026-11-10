@@ -4,22 +4,8 @@ Pure functions over the discrete severity / confidence / evidence.status values
 a finding already carries. No I/O, no dispatch. See
 docs/superpowers/specs/2026-08-14-panopticon-5.0-domain-panel-matrix-design.md §7.
 """
-from typing import TYPE_CHECKING
 
-# PACKAGE first, flat fallback -- the order host_disclosure.py and
-# model_resolver.py already use, and the one tests/test_layout.py rule 2
-# explains: skill/scripts is on sys.path as well as its parent, so a flat-first
-# import builds a SECOND `evidence` module object with its own module-level
-# state, and every real run (the driver puts both directories on PYTHONPATH)
-# held both at once. Nothing in `evidence` is stateful today; the split would
-# be silent when something is (#1679).
-if TYPE_CHECKING:
-    from scripts import evidence
-else:
-    try:
-        from scripts import evidence
-    except ModuleNotFoundError:
-        import evidence
+from scripts import evidence
 
 SEVERITY_WEIGHT = {"CRITICAL": 20, "HIGH": 5, "MEDIUM": 2, "LOW": 0, "INFO": 0}
 CONFIDENCE_MULT = {"CERTAIN": 1.0, "LIKELY": 0.9, "POSSIBLE": 0.8, "NOTE": 0.4}
