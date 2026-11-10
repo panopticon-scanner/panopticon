@@ -15,8 +15,7 @@ One lane does opt in (#1655, owner ruling 2026-09-22): the `containment`
 job in `.github/workflows/adapter-integration.yml`, daily at 08:00 UTC
 and on workflow_dispatch, which runs this file inside the fixtures image
 with `docker run --network none` -- the opt-in and the containment set
-together, by the same command. Nothing else in the fleet sets the flag,
-and `tests/test_workflow_pins.py` pins both halves of that sentence.
+together, by the same command.
 
 The env var is opt-in *intent*, not proof of containment (issue #1183): a
 developer or CI job that sets it on a network-enabled host would execute the
@@ -127,12 +126,9 @@ CONTAINMENT_PROBE_ENV = "PANOPTICON_CONTAINMENT_PROBE"
 # `containment` job, whose `docker run` carries both `--network none` and the
 # flag. Its sibling `integration` job runs this same file WITHOUT the flag, so
 # the probe skips there -- the correct answer for a lane that has a network.
-# Which lanes opt in, and that every one of them is offline on the same
-# command line, are both PINNED by tests/test_workflow_pins.py
-# (EXPECTED_CONTAINMENT_LANES, `uncontained_lanes()`) -- the fleet is read with
-# PyYAML there because this tree also runs inside the fixtures image, which
-# carries none. If the lane moves, is renamed or loses either control, those
-# pins fail and this sentence has to be rewritten with them.
+# The probe independently verifies that egress is unavailable before it runs
+# hostile build logic, so a misplaced opt-in fails closed instead of trusting
+# workflow wiring as proof of containment.
 _NO_LANE = (
     "%s is not 1 here, so the containment probe is not opted in (#1655). The "
     "lane that does opt in is the `containment` job in "

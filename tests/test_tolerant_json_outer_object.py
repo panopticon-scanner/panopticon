@@ -17,7 +17,7 @@ from unittest import mock
 import pytest
 
 import scripts.tolerant_json as tolerant_json
-from tests.test_shell_reader import LinearGrowth
+from tests._test_helpers import LinearGrowth
 
 
 def proposal(n_groups, n_layers):

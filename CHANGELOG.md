@@ -50,6 +50,12 @@
   `--security redteam` on every CI scanner and gate, and the runtime
   strict-integration flag. Broad workflow prose/shape readers and mutation tests
   of those readers are removed.
+- **Workflow `run:` guard and shell reader retired (#3513, part of #3264).**
+  The 49 `devtools/{workflow,shell}_*.py` modules (18,922 lines) and their 51
+  `tests/test_{workflow,shell}_*.py` modules (44,977 lines) are gone. A four-test
+  structural YAML allowlist now requires 40-hex action pins, effective permissions,
+  and confines `pull_request_target` to `security-fork.yml`. The retained Dockerfile
+  checksum/OSV and JSON scaling checks no longer import the deleted readers.
 - **The `agy` guard's argv policy paths are authoritative (#3511).**
   `PANOPTICON_READ_SCOPE` and `PANOPTICON_WRITE_ALLOWLIST` can no longer replace the
   read scope or write allowlist named in the hook command, and an invocation without

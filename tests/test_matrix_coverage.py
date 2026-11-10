@@ -233,14 +233,13 @@ class TestMatrixCoverage(unittest.TestCase):
             "Orchestration:Phases", "Orchestration:Loop",
             "Orchestration:Hosts", "Orchestration:Runners",
             "RepoProfiling:Discovery", "RepoProfiling:Profiling",
-            "Reporting:Synth", "Reporting:Core", "CI:Shell", "CI:Workflows",
+            "Reporting:Synth", "Reporting:Core", "CI:Workflows",
             "Commons", "Ungrouped_1",
         }
         added = {
             "ToolAdapters:Contract", "ToolAdapters:Integration",
             "Orchestration:Driver", "Orchestration:Core", "Orchestration:Docs",
-            "Reporting:Report", "Reporting:Outputs", "CI:WorkflowGuard",
-            "CI:WorkflowForms", "CI:WorkflowFetch", "CI:WorkflowPrograms", "Tests",
+            "Reporting:Report", "Reporting:Outputs", "Tests",
         }
         groups, _residual = discovery.catalog_groups(
             self.files, self.catalog, discovery.DEFAULT_MAX_PER_GROUP)
@@ -249,11 +248,12 @@ class TestMatrixCoverage(unittest.TestCase):
                        if coverage_model.applicable_sec_floor(group_files)}
 
         # #3233: `Ungrouped_1` held one unclaimed file. It has a group now, so the sink is gone.
-        self.assertEqual(len(groups), 26)
-        self.assertEqual(len(legacy_sec), 14)
+        # #3513 retired the five shell/workflow-reader leaves.
+        self.assertEqual(len(groups), 21)
+        self.assertEqual(len(legacy_sec), 13)
         self.assertEqual(current_sec, (legacy_sec - {"Ungrouped_1"}) | added)
-        self.assertEqual(len(current_sec), 25)       # Docs is the sole exemption
-        self.assertEqual(len(added), 12)
+        self.assertEqual(len(current_sec), 20)       # Docs is the sole exemption
+        self.assertEqual(len(added), 8)
         # The group label is not evidence: these executable tests make the mixed
         # Orchestration:Docs group code-shaped. Name one for the PR's audit trail.
         self.assertIn("tests/doc_helpers.py", files["Orchestration:Docs"])
@@ -280,7 +280,7 @@ class TestMatrixCoverage(unittest.TestCase):
         # no longer draw DAT for ToolAdapters:Core, Orchestration:Hosts,
         # RepoProfiling:Discovery, RepoProfiling:Profiling, Reporting:Synth,
         # Reporting:Core and Reporting:Outputs. The SEC difference is unchanged.
-        self.assertEqual((before, after, after - before), (104, 108, 4))
+        self.assertEqual((before, after, after - before), (84, 88, 4))
         self.assertEqual(paid, {
             "Orchestration:Docs", "Reporting:Report", "Reporting:Outputs", "Tests",
         })
@@ -305,8 +305,8 @@ class TestMatrixCoverage(unittest.TestCase):
         # subsystem's own decision instead of the next contributor's surprise.
         #
         # #2521 adds `CI` for the same reason: `.github/**` grows without a
-        # contributor choosing a matrix home, and the group reached all 48
-        # files when `devtools/shell_heredoc.py` joined its lexer surface.
+        # contributor choosing a matrix home, and the group once reached all
+        # 48 files before its obsolete shell-reader surface was retired.
         headroom = 40
         assigned, _left, _w = discovery_catalog.assign_scoped(self.files, self.catalog)
         for group in GUARDED_BY_HEADROOM:

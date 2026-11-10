@@ -4,10 +4,6 @@ import re
 import shlex
 import unittest
 
-import shell_reader
-import workflow_guard
-from workflow_forms import names_file, regions
-
 from tests._test_helpers import fake_aws_key
 
 ROOT = os.path.join(os.path.dirname(__file__), os.pardir)
@@ -83,55 +79,111 @@ def fetch_piped_into_a_shell(text):
 
 
 def _download_checksum_defects(text):
-    """Require checks for every explicit RUN download, even unused files.
+    """Require each Dockerfile download to be checked before use.
 
-    Reuse the workflow guard's bounded shell reader, transfer discovery,
-    checksum binding and use ordering. Docker ARG digest pins stay covered
-    independently below; no shell expansion or execution happens here.
-    Checks must occur in the same RUN as the download. For executable uses,
-    support only an uninterrupted && chain from the check to every use: a
-    Docker shell need not enable errexit. Leave other control-flow shapes
-    unproven rather than interpret shell failure/exit behavior here.
+    This is deliberately bounded to the Dockerfile's command shape. It does
+    not interpret shell values, functions, or workflow ``run:`` programs.
     """
     defects = []
-    for lineno, line in _logical_lines(shell_reader.without_comments(text)):
+    numbered = ((n, line) for n, line in enumerate(text.splitlines(), 1)
+                if not line.lstrip().startswith("#"))
+    for lineno, line in _fold_numbered(numbered):
         if not line.upper().startswith("RUN "):
             continue
-        statements = workflow_guard.read(line[4:])
-        checks = workflow_guard._checks(statements)
-        conditions = {i: (None, branch) for i, branch in regions(statements).items()}
-        for index, fetch in workflow_guard._fetch_records(statements):
+        tokens = _shell_tokens(line[4:])
+        commands = list(_commands(tokens))
+        for start, end, tool, url, dest in _downloads(commands):
             # #2829 owner-approved accepted gap: this exact clone is fresh-required
             # security-advisory DATA for cargo-audit, not a binary, and is intentionally
             # unpinned: pinning it would stale the advisories; no other clone is exempt.
-            if (fetch.tool, str(fetch.url), str(fetch.dest)) == (
+            if (tool, url, dest) == (
                     "git clone", "https://github.com/rustsec/advisory-db",
-                    "/home/scanner/.cargo/advisory-db"):
+                    "/home/scanner/.cargo/advisory-db") and not any(
+                        _uses_dest(token, dest) and token != dest + "/.git"
+                        for token in tokens[end:]
+                    ):
                 continue
-            if fetch.dest is None:
-                continue  # streamed execution has its own guard below
-            _names, uses = workflow_guard._uses(statements, fetch.dest, after=index)
-            deadline = uses[0][0] if uses else len(statements)
-            # Without a use, bind to the real download's branch rather than a
-            # synthetic unconditional endpoint outside any enclosing `if`.
-            binding = uses[0][0] if uses else index
-            if not any(index < check < deadline and why is None
-                       and names_file(checked, fetch.dest)
-                       and workflow_guard._binds(conditions, check, binding)
-                       and _checksum_blocks_uses(statements, check, uses)
-                       for check, checked, why in checks):
-                defects.append((lineno, str(fetch.dest)))
+            if not _checked_before_use(tokens, commands, start, end, dest):
+                defects.append((lineno, dest))
     return defects
 
 
-def _checksum_blocks_uses(statements, check, uses):
-    # Without pipefail, only the final pipeline command controls &&. Do not
-    # credit a checksum piped into a successful `cat`/`tee`, even if ordered.
-    last = shell_reader.command(statements[check].stages[-1].argv)
-    if not last or os.path.basename(last[0]) not in workflow_guard.CHECKSUM_TOOLS:
-        return False
-    return all(all(statement.separator == "&&" for statement in statements[check:use])
-               for use, _description in uses)
+_CONTROL = {"&&", "||", ";", ";;", "|", "&"}
+_HASH_VALUE = r"(?:\$\{[^}]+\}|[0-9a-f]{64})"
+
+
+def _shell_tokens(script):
+    lexer = shlex.shlex(script, posix=True, punctuation_chars=";&|<>")
+    lexer.whitespace_split = True
+    lexer.commenters = "#"
+    return list(lexer)
+
+
+def _commands(tokens):
+    start = 0
+    for index, token in enumerate(tokens + [";"]):
+        if token in _CONTROL:
+            if start < index:
+                yield start, index, tokens[start:index]
+            start = index + 1
+
+
+def _downloads(commands):
+    for start, end, words in commands:
+        offset = 1 if words and words[0] in {"then", "do", "else"} else 0
+        if words[offset:offset + 1] == ["timeout"] and len(words) > offset + 2:
+            offset += 2
+        command = os.path.basename(words[offset]) if offset < len(words) else ""
+        args = words[offset + 1:]
+        if command in {"curl", "wget"}:
+            dest = None
+            for index, arg in enumerate(args):
+                if arg in {"-o", "-O"} and index + 1 < len(args):
+                    dest = args[index + 1]
+                elif arg.startswith(("--output=", "--output-document=")):
+                    dest = arg.split("=", 1)[1]
+                elif arg == ">" and index + 1 < len(args):
+                    dest = args[index + 1]
+            url = next((arg for arg in args if arg.startswith(("http://", "https://"))), "")
+            if dest:
+                yield start + offset, end, command, url, dest
+        elif command == "git" and args[:1] == ["clone"]:
+            url_index = next((i for i, arg in enumerate(args)
+                              if arg.startswith(("http://", "https://"))), None)
+            if url_index is not None and url_index + 1 < len(args):
+                yield start + offset, end, "git clone", args[url_index], args[url_index + 1]
+
+
+def _uses_dest(token, dest):
+    return token == dest or token.startswith(dest.rstrip("/") + "/")
+
+
+def _checked_before_use(tokens, commands, fetch_start, fetch_end, dest):
+    for check_start, check_end, words in commands:
+        if check_start <= fetch_start or not words:
+            continue
+        if os.path.basename(words[0]) != "sha256sum" or words[1:] != ["-c", "-"]:
+            continue
+        previous = next((row for row in commands if row[1] == check_start - 1), None)
+        if tokens[check_start - 1:check_start] != ["|"] or previous is None:
+            continue
+        hashed = any(re.search(_HASH_VALUE + r"\s{2}" + re.escape(dest) + r"(?:\s|$)", word)
+                     for word in previous[2])
+        controls = [token for token in tokens[fetch_end:check_start]
+                    if token in _CONTROL]
+        used_early = any(_uses_dest(token, dest)
+                         for token in tokens[fetch_end:previous[0]])
+        next_control = tokens[check_end] if check_end < len(tokens) else None
+        if (not hashed or used_early or not controls or controls[0] != "&&"
+                or any(token not in {"&&", "|"} for token in controls)
+                or next_control in {"||", "|"}):
+            continue
+        uses = [index for index, token in enumerate(tokens[check_end:], check_end)
+                if _uses_dest(token, dest)]
+        if all(all(token in {"&&", "|"} for token in tokens[check_end:index]
+                   if token in _CONTROL) for index in uses):
+            return True
+    return False
 
 
 class TestDownloadChecksumGuard(unittest.TestCase):
@@ -215,9 +267,8 @@ class TestDownloadChecksumGuard(unittest.TestCase):
         ):
             with self.subTest(command=command):
                 self.assertEqual([(1, fetched)], _download_checksum_defects("RUN " + command))
-        self.assertIsNotNone(workflow_guard.fetch_exec_defect(
-            clone[4:] + "\nsh %s/tool" % dest,
-        ))
+        self.assertEqual([(1, dest)], _download_checksum_defects(
+            clone + " && sh %s/tool" % dest))
 
 
 class TestDockerfile(unittest.TestCase):
@@ -388,27 +439,21 @@ def _osv_warm_contracts(text):
     Bounded to the Dockerfile's explicit RUN/for/if shape; never executes shell.
     """
     contracts = []
-    for _line, run in _logical_lines(shell_reader.without_comments(text)):
+    numbered = ((n, line) for n, line in enumerate(text.splitlines(), 1)
+                if not line.lstrip().startswith("#"))
+    for _line, run in _fold_numbered(numbered):
         if not run.startswith("RUN "):
             continue
-        stages = [stage for statement in shell_reader.statements(run[4:])
-                  for stage in statement.stages]
-        commands = [shell_reader.command(stage.argv) for stage in stages]
-        scans = [cmd for cmd in commands if cmd and cmd[0] == "osv-scanner"
-                 and "--experimental-download-offline-databases" in cmd
-                 and "--experimental-offline" in cmd
-                 and "--recursive" in cmd
-                 and cmd[cmd.index("--recursive") + 1:] == ["/tmp/osv-warm"]]
-        if not scans:
+        required = ("osv-scanner", "--experimental-download-offline-databases",
+                    "--experimental-offline", "--recursive /tmp/osv-warm")
+        if not all(marker in run for marker in required):
             continue
-        writes = {str(path) for stage, cmd in zip(stages, commands)
-                  if cmd and cmd[0] == "printf" for path in stage.writes}
-        for i, stage in enumerate(stages[:-1]):
-            if list(stage.argv[:3]) != ["for", "eco", "in"]:
-                continue
-            if commands[i + 1] != ["[", "!", "-s", "/opt/osv-db/osv-scanner/$eco/all.zip", "]"]:
-                continue
-            contracts.append((set(stage.argv[3:]), writes))
+        loop = re.search(r"\bfor eco in ([^;]+); do\s+if\s+"
+                         r"\[ ! -s [\"']?/opt/osv-db/osv-scanner/\$eco/"
+                         r"all\.zip[\"']? \]", run)
+        if loop:
+            writes = set(re.findall(r">\s*(/tmp/osv-warm/[^\s;&]+)", run))
+            contracts.append((set(shlex.split(loop.group(1))), writes))
     return contracts
 
 

@@ -1,8 +1,10 @@
 """Shared test helpers used across multiple test modules."""
 import errno
+import gc
 import os
 import subprocess
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -30,6 +32,31 @@ PLANTED_REFUSALS = {
     "symlink-outside": ".panopticon must be a real directory, not a symlink",
     "not-a-directory": ".panopticon exists but is not a directory",
 }
+
+
+class LinearGrowth:
+    """Time a parser at two sizes and reject super-linear growth."""
+
+    def assert_linear_growth(self, n, make, check, parser):
+        def read(size):
+            value = make(size)
+            enabled = gc.isenabled()
+            gc.disable()
+            try:
+                start = time.process_time()
+                parsed = parser(value)
+                elapsed = time.process_time() - start
+            finally:
+                if enabled:
+                    gc.enable()
+            check(size, parsed)
+            return elapsed
+
+        small, large = read(n), read(4 * n)
+        if large > 8 * small + 0.25:
+            small, large = min(small, read(n)), min(large, read(4 * n))
+        self.assertLessEqual(large, 8 * small + 0.25, (small, large))
+        self.assertLess(large, 15.0, (small, large))
 
 
 def plant_artifact_dir(root, kind, elsewhere):
