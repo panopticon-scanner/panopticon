@@ -70,8 +70,8 @@ class TestClaudeSessionModeWorkflowTemplate(unittest.TestCase):
                 + rest + "\n}\n")
 
     @staticmethod
-    def _run_node(node, *args):
-        return subprocess.run([node, *args], capture_output=True, text=True)
+    def _run_node(*args):
+        return subprocess.run(["node", *args], capture_output=True, text=True)
 
     def test_the_workflow_scripts_parse_the_way_the_harness_evaluates_them(self):
         # #2024: dispatch.js and family-pr-review.js are Workflow-tool
@@ -100,9 +100,10 @@ class TestClaudeSessionModeWorkflowTemplate(unittest.TestCase):
                 with tempfile.NamedTemporaryFile(
                         "w", suffix=".mjs", delete=False, encoding="utf-8") as fh:
                     fh.write(body)
+                    fh.flush()
                     tmp_path = fh.name
                 try:
-                    proc = self._run_node(node, "--check", tmp_path)
+                    proc = self._run_node("--check", tmp_path)
                 finally:
                     os.unlink(tmp_path)
                 self.assertEqual(0, proc.returncode, proc.stderr)
@@ -151,7 +152,7 @@ process.stdout.write(JSON.stringify({ result, schemaCaps, verifierCalls, logs })
             with open(tmp_path, "w", encoding="utf-8") as fh:
                 fh.write(body)
                 fh.write(harness)
-            proc = self._run_node(node, tmp_path)
+            proc = self._run_node(tmp_path)
         self.assertEqual(0, proc.returncode, proc.stderr)
         observed = json.loads(proc.stdout)
         result = observed["result"]
@@ -213,7 +214,7 @@ process.stdout.write(JSON.stringify({ result, verifierCalls, logs }))
             with open(tmp_path, "w", encoding="utf-8") as fh:
                 fh.write(body)
                 fh.write(harness)
-            proc = self._run_node(node, tmp_path)
+            proc = self._run_node(tmp_path)
         self.assertEqual(0, proc.returncode, proc.stderr)
         observed = json.loads(proc.stdout)
         result = observed["result"]
