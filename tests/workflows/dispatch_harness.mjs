@@ -95,8 +95,9 @@ async function parallel(thunks) {
 // Real Workflow globals. `phase()` is progress-only, so it stays a no-op;
 // `log()` lines are the script's operator-facing output, so they are RECORDED
 // rather than dropped -- nothing could observe them before, and #2379 is about
-// what they print. `calls` stays the agent-call record `{prompt, opts}` for
-// harness consumers.
+// what they print. `calls` stays the agent-call record `{prompt, opts}` the
+// pins in tests/test_dispatch_workflow_script.py read (the `opts.label` in it
+// is asserted on, never keyed on).
 const phase = () => {}
 const logs = []
 const log = (m) => { logs.push(String(m)) }

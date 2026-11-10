@@ -538,6 +538,8 @@ groups:
       - tests/test_hook_command_quoting.py
       - tests/test_generic_retirement_bar.py
       - tests/test_family_guardrails_doc.py
+      - tests/test_dispatch_workflow_script.py
+      - tests/test_skill_workflow_docs.py
       - tests/workflows/dispatch_harness.mjs
       panels:
       - ARC
