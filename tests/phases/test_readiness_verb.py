@@ -792,6 +792,31 @@ class TestTheSelectedHostsBinaryIsGating(_VerbCase):
         self.assertIsNone(row["binary"])
         self.assertIsNone(row["on_path"])
 
+    def test_gemini_selected_with_api_key_auth_and_unset_env_var_fails_with_remedy(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        home = self._tmpdir()
+        os.makedirs(os.path.join(home, ".gemini"), exist_ok=True)
+        with open(os.path.join(home, ".gemini", "settings.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"security": {"auth": {"selectedType": "gemini-api-key"}}}, fh)
+        with mock.patch.dict(os.environ, {}, clear=True):
+            code, body = self._json(
+                d, "--host", "gemini", home=home,
+                which={"gemini": "/opt/bin/gemini"})
+        self.assertEqual(1, code)
+        self.assertEqual(["cli"], body["failed"])
+        self.assertIn(
+            "export GEMINI_API_KEY in the shell that runs panopticon",
+            body["cli"][0]["remedy"] or "")
+
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "secret-val"}, clear=True):
+            code_ok, body_ok = self._json(
+                d, "--host", "gemini", home=home,
+                which={"gemini": "/opt/bin/gemini"})
+        self.assertEqual(0, code_ok)
+        self.assertEqual([], body_ok["failed"])
+        self.assertIsNone(body_ok["cli"][0]["remedy"])
+
 
 class TestTheRowsThatSayNothingIsWrongSayItOnce(_VerbCase):
     """Fix round 1, F7. A field called `remedy` holding the string "ok"

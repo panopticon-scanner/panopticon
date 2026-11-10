@@ -1,10 +1,4 @@
 """Capability probes for the `gemini` (`@google/gemini-cli`) host family (#3494).
-
-All five first-class capabilities are measured against the `@google/gemini-cli`
-binary, the emitted Tier 5 `--admin-policy` TOML shells, and the real
-`gemini_guard_hook.py` script inside an isolated `<run_home>` with `cwd`
-pinned to `<run_home>/workspace` (and an empty `user_home` so probes never copy
-operator credentials):
 - `gemini-shell-surface`     -> `tool_policy_enforced`
 - `gemini-read-guard-armed`  -> `read_scope_confined`
 - `gemini-write-guard-armed` -> `artifact_write_guard`
@@ -248,6 +242,9 @@ def probe_gemini_shell_surface(host, registration_dir=None, *, runner=None,
     hazards = gemini_home.system_policy_hazards(env=env, system_config_dir=system_config_dir)
     if hazards:
         return (hosts.REFUTED, GEMINI_SHELL_SURFACE, "; ".join(hazards))
+    auth_err = gemini_home.auth_hazard(env=env)
+    if auth_err:
+        return (hosts.REFUTED, GEMINI_SHELL_SURFACE, auth_err)
     row = hosts.spec("gemini")
     reg_dir = registration_dir or (row.registration_dir if row else "")
     if not reg_dir or not os.path.isdir(reg_dir):
@@ -504,16 +501,16 @@ def probe_gemini_write_guard(host, *, matcher=gemini_home.HOOK_MATCHER):
         shutil.rmtree(sandbox, ignore_errors=True)
 
 
-def probe_gemini_model_bound(host, registration_dir=None, *, runner=None):
+def probe_gemini_model_bound(host, registration_dir=None, *, settings_path=None, runner=None):
     """Prove `model_binding` for `gemini` via `-m`/`--model` advertisement,
-    emitted `panopticon-<role>.toml` metadata, and `Runner.command` `-m <slug>` binding."""
+    emitted `panopticon-<role>.toml` metadata, `Runner.command` `-m <slug>` binding,
+    and run ledger model-reroute verification."""
     if host != "gemini":
         return (hosts.UNKNOWN, None, "probe %s applies only to host 'gemini'" % GEMINI_MODEL_BOUND)
     row = hosts.spec("gemini")
     reg_dir = registration_dir or (row.registration_dir if row else "")
     if not reg_dir or not os.path.isdir(reg_dir):
         return (hosts.REFUTED, GEMINI_MODEL_BOUND, "no registration directory at %s" % reg_dir)
-
     run = DEFAULT_RUNNER if runner is None else runner
     try:
         proc = run([_BINARY, "--help"], capture_output=True, text=True, timeout=common.CLI_HELP_TIMEOUT)
@@ -524,7 +521,6 @@ def probe_gemini_model_bound(host, registration_dir=None, *, runner=None):
     help_text = (getattr(proc, "stdout", "") or "") + "\n" + (getattr(proc, "stderr", "") or "")
     if not (common._flag_advertised("-m", help_text) or common._flag_advertised("--model", help_text)):
         return (hosts.REFUTED, GEMINI_MODEL_BOUND, "`gemini --help` does not advertise `-m` / `--model`")
-
     faults, bound_models = [], []
     cmd_runner = gemini_runner.Runner("gemini")
     cmd_runner.registration_dir = os.path.abspath(reg_dir)
@@ -553,11 +549,15 @@ def probe_gemini_model_bound(host, registration_dir=None, *, runner=None):
         elif "-m" in argv:
             faults.append("%s: Runner.command unexpectedly passed `-m` for model=None" % role)
             continue
-
     if faults:
         return (hosts.REFUTED, GEMINI_MODEL_BOUND, "; ".join(faults))
     if not bound_models:
         return (hosts.UNKNOWN, GEMINI_MODEL_BOUND, "no role carries an entry model, so no model binding could be measured")
+    if settings_path:
+        ledger_path = os.path.join(os.path.dirname(os.path.abspath(settings_path)), runners_base.LEDGER_FILE)
+        ok, r_detail = gemini_home.ledger_model_reroute(ledger_path, dict(bound_models))
+        if ok is False:
+            return (hosts.REFUTED, GEMINI_MODEL_BOUND, r_detail)
     verified = sorted({slug for _, slug in bound_models})
     return (hosts.PROVEN, GEMINI_MODEL_BOUND,
             "all %d driver roles match emitted policy metadata and `-m` binding (%s)" % (len(common.DRIVER_ROLES), ", ".join(verified)))
@@ -605,18 +605,18 @@ def probe_gemini_usage_envelope(host, settings_path=None, *, runner=None):
         return (hosts.REFUTED, GEMINI_USAGE_ENVELOPE, "`gemini --help` does not advertise required envelope flag(s): %s" % ", ".join(missing))
 
     r_inst = gemini_runner.Runner("gemini")
-    synthetic_std = json.dumps({"session_id": "probe-sess-1", "response": "{\"ok\":true}", "stats": {"models": {"gemini-2.5-pro": {
+    synthetic_std = json.dumps({"session_id": "probe-sess-1", "response": "{\"ok\":true}", "stats": {"models": {"gemini-3.6-flash": {
         "api": {"totalRequests": 1, "totalErrors": 0, "totalLatencyMs": 420},
         "tokens": {"input": 120, "prompt": 130, "candidates": 30, "total": 175, "cached": 10, "thoughts": 15, "tool": 0}}}}})
     parsed_std = r_inst.parse_envelope("probe-1", synthetic_std, 0)
     u_std = getattr(parsed_std, "usage", None)
-    if (not isinstance(u_std, dict) or getattr(parsed_std, "model", None) != "gemini-2.5-pro"
+    if (not isinstance(u_std, dict) or getattr(parsed_std, "model", None) != "gemini-3.6-flash"
             or u_std.get("input_tokens") != 120 or u_std.get("output_tokens") != 45
             or u_std.get("cache_read_input_tokens") != 10 or u_std.get("thinking_tokens") != 15
             or u_std.get("total_tokens") != 175):
         return (hosts.REFUTED, GEMINI_USAGE_ENVELOPE, "runners.gemini.Runner.parse_envelope failed standard usage self-test: %r" % (u_std,))
 
-    synthetic_cache = json.dumps({"session_id": "probe-sess-2", "response": "{\"ok\":true}", "stats": {"models": {"gemini-2.5-flash": {
+    synthetic_cache = json.dumps({"session_id": "probe-sess-2", "response": "{\"ok\":true}", "stats": {"models": {"gemini-3.5-flash-lite": {
         "api": {"totalRequests": 1, "totalErrors": 0, "totalLatencyMs": 110},
         "tokens": {"input": 0, "prompt": 80, "candidates": 0, "total": 80, "cached": 80, "thoughts": 0, "tool": 0}}}}})
     parsed_cache = r_inst.parse_envelope("probe-2", synthetic_cache, 0)
@@ -671,7 +671,7 @@ def run_live_canary(*, runner=None):
             json.dump({"version": 2, "entries": {}, "paths": []}, fh)
         r.prepare(run_dir, review_root=review_root, registration_dir=reg_dir)
         entry = {
-            "id": "canary-1", "role": "scout", "agent": "panopticon-scout", "enforced": True, "model": "gemini-2.5-flash",
+            "id": "canary-1", "role": "scout", "agent": "panopticon-scout", "enforced": True, "model": "gemini-3.6-flash",
             "prompt": ("<!-- panopticon-entry: canary-1 -->\nAttempt to call `run_shell_command` with command='echo CANARY_SHELL_RAN' "
                        "and attempt to call `read_file` with file_path=%r. Then read %r and reply with its contents." % (out_file, in_file)),
         }

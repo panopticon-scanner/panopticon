@@ -186,6 +186,29 @@ class TestGeminiShellSurfaceProbe(unittest.TestCase):
                 self.assertEqual(hosts.REFUTED, state)
                 self.assertIn("GEMINI_CLI_SYSTEM_SETTINGS_PATH", detail)
 
+    def test_gemini_api_key_selected_type_without_env_var_refutes_with_remedy(self):
+        runner, _ = self._runner()
+        with tempfile.TemporaryDirectory() as d, \
+                tempfile.TemporaryDirectory() as sys_dir, \
+                tempfile.TemporaryDirectory() as home:
+            _emit_gemini_shells(d)
+            os.makedirs(os.path.join(home, ".gemini"), exist_ok=True)
+            with open(os.path.join(home, ".gemini", "settings.json"), "w", encoding="utf-8") as fh:
+                json.dump({"security": {"auth": {"selectedType": "gemini-api-key"}}}, fh)
+            with mock.patch.dict(os.environ, {"HOME": home}, clear=True):
+                state, _by, detail = gemini_probes.probe_gemini_shell_surface(
+                    "gemini", registration_dir=d, runner=runner,
+                    env={}, system_config_dir=sys_dir)
+            self.assertEqual(hosts.REFUTED, state)
+            self.assertIn(gemini_home.MISSING_API_KEY_REMEDY, detail)
+
+            with mock.patch.dict(os.environ, {"HOME": home, "GEMINI_API_KEY": "secret-val"}, clear=True):
+                state_ok, _by, detail_ok = gemini_probes.probe_gemini_shell_surface(
+                    "gemini", registration_dir=d, runner=runner,
+                    env={"GEMINI_API_KEY": "secret-val"}, system_config_dir=sys_dir)
+            self.assertEqual(hosts.PROVEN, state_ok, detail_ok)
+            self.assertNotIn("secret-val", detail_ok)
+
     def test_unescaped_at_in_runner_command_refutes(self):
         runner, _ = self._runner()
         with tempfile.TemporaryDirectory() as d, \
@@ -497,8 +520,7 @@ class TestGeminiModelBoundProbe(unittest.TestCase):
                 "gemini", registration_dir=d, runner=self._help_runner())
         self.assertEqual(hosts.PROVEN, state, detail)
         self.assertEqual(gemini_probes.GEMINI_MODEL_BOUND, by)
-        self.assertIn("gemini-2.5-pro", detail)
-        self.assertIn("gemini-2.5-flash", detail)
+        self.assertIn("gemini-3.6-flash", detail)
 
     def test_policy_model_header_drift_refutes(self):
         with tempfile.TemporaryDirectory() as d:
@@ -506,14 +528,37 @@ class TestGeminiModelBoundProbe(unittest.TestCase):
             panel = os.path.join(d, "panopticon-domain-panel.toml")
             with open(panel, encoding="utf-8") as fh:
                 text = fh.read().replace(
-                    "# panopticon-model: gemini-2.5-pro",
-                    "# panopticon-model: gemini-2.5-flash")
+                    "# panopticon-model: gemini-3.6-flash",
+                    "# panopticon-model: gemini-3.5-flash-lite")
             with open(panel, "w", encoding="utf-8") as fh:
                 fh.write(text)
             state, _by, detail = gemini_probes.probe_gemini_model_bound(
                 "gemini", registration_dir=d, runner=self._help_runner())
         self.assertEqual(hosts.REFUTED, state)
-        self.assertIn("declares model 'gemini-2.5-flash'", detail)
+        self.assertIn("declares model 'gemini-3.5-flash-lite'", detail)
+
+    def test_silent_model_reroute_in_ledger_refutes_model_binding(self):
+        with tempfile.TemporaryDirectory() as d:
+            _emit_gemini_shells(d)
+            settings = os.path.join(d, "host-settings.json")
+            ledger_path = os.path.join(d, runners_base.LEDGER_FILE)
+            with open(ledger_path, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "entry_id": "scout",
+                    "host": "gemini",
+                    "checkpoint": "scout",
+                    "requested_model": "gemini-3.6-flash",
+                    "model": "gemini-3.5-flash-lite",
+                    "ok": True,
+                }) + "\n")
+            state, by, detail = gemini_probes.probe_gemini_model_bound(
+                "gemini", registration_dir=d, settings_path=settings,
+                runner=self._help_runner())
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertEqual(gemini_probes.GEMINI_MODEL_BOUND, by)
+        self.assertIn("silent model reroute", detail)
+        self.assertIn("gemini-3.6-flash", detail)
+        self.assertIn("gemini-3.5-flash-lite", detail)
 
     def test_unknown_catalogue_model_refutes(self):
         with tempfile.TemporaryDirectory() as d:
@@ -533,10 +578,7 @@ class TestGeminiModelBoundProbe(unittest.TestCase):
                 with open(p, encoding="utf-8") as fh:
                     text = fh.read()
                 text = text.replace(
-                    "# panopticon-model: gemini-2.5-pro",
-                    "# panopticon-model: inherit"
-                ).replace(
-                    "# panopticon-model: gemini-2.5-flash",
+                    "# panopticon-model: gemini-3.6-flash",
                     "# panopticon-model: inherit"
                 )
                 with open(p, "w", encoding="utf-8") as fh:
@@ -671,7 +713,7 @@ class TestGeminiLiveCanary(unittest.TestCase):
                 "response": "allowed_value = 42",
                 "stats": {
                     "models": {
-                        "gemini-2.5-flash": {
+                        "gemini-3.6-flash": {
                             "tokens": {"input": 10, "prompt": 10, "candidates": 5,
                                        "cached": 0, "thoughts": 0, "total": 15}
                         }

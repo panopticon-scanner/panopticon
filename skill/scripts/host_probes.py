@@ -198,7 +198,8 @@ _PROBE_RUNNERS: dict[str, Callable[[_ProbeContext], _ProbeResult]] = {
         lambda context: gemini_probes.probe_gemini_write_guard(context.host),
     gemini_probes.GEMINI_MODEL_BOUND:
         lambda context: gemini_probes.probe_gemini_model_bound(
-            context.host, context.registration_dir),
+            context.host, context.registration_dir,
+            settings_path=context.settings_path),
     gemini_probes.GEMINI_USAGE_ENVELOPE:
         lambda context: gemini_probes.probe_gemini_usage_envelope(
             context.host, settings_path=context.settings_path),

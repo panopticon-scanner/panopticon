@@ -18,7 +18,10 @@ from scripts import codex_host  # #1344: the suite's launch guard type
 from scripts import host_probes  # #1344 F3b: readiness probes live posture
 import scripts.probes.common as probes_common  # #1627: the shared probe helpers
 from scripts import host_disclosure  # #1344 F3b: one voice for the posture
+import scripts.runners.gemini_home as gemini_home
 from scripts import tools_image  # #3407: the local image name
+
+host_auth_hazard = gemini_home.host_auth_hazard
 
 
 # The roles the DRIVER dispatches and therefore needs registered shells for.

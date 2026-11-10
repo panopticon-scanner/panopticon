@@ -1,4 +1,6 @@
+import contextlib
 import dataclasses
+import io
 import json
 import os
 import re
@@ -22,7 +24,7 @@ ENVELOPE = json.dumps({
     "response": "the final reply",
     "stats": {
         "models": {
-            "gemini-2.5-pro": {
+            "gemini-3.6-flash": {
                 "api": {"totalRequests": 1, "totalErrors": 0, "totalLatencyMs": 420},
                 "tokens": {"input": 100, "prompt": 140, "candidates": 25,
                            "total": 180, "cached": 40, "thoughts": 15, "tool": 0},
@@ -32,7 +34,7 @@ ENVELOPE = json.dumps({
 })
 
 
-def _entry(enforced=True, model="gemini-2.5-pro", **extra):
+def _entry(enforced=True, model="gemini-3.6-flash", **extra):
     out = {
         "id": "review-app-SEC",
         "role": "domain_panel",
@@ -225,7 +227,7 @@ class TestCommand(unittest.TestCase):
         self.addCleanup(self.r.teardown, "complete")
 
     def test_enforced_entry_passes_yolo_admin_policy_include_directories_and_model(self):
-        cmd = self.r.command(_entry(True), "gemini-2.5-pro")
+        cmd = self.r.command(_entry(True), "gemini-3.6-flash")
         self.assertEqual(cmd[0], "gemini")
         self.assertIn("--output-format", cmd)
         self.assertIn("json", cmd)
@@ -237,7 +239,7 @@ class TestCommand(unittest.TestCase):
         self.assertEqual(cmd[cmd.index("--admin-policy") + 1], expected_policy)
         self.assertIn("--include-directories", cmd)
         self.assertIn("-m", cmd)
-        self.assertEqual(cmd[cmd.index("-m") + 1], "gemini-2.5-pro")
+        self.assertEqual(cmd[cmd.index("-m") + 1], "gemini-3.6-flash")
         self.assertEqual(cmd[-2:], ["-p", _entry(True)["prompt"]])
 
     def test_command_escapes_all_at_tokens_in_prompt(self):
@@ -249,7 +251,7 @@ class TestCommand(unittest.TestCase):
                 "user@corp.com, and already-escaped \\@literal."
             ),
         )
-        cmd = self.r.command(entry, "gemini-2.5-pro")
+        cmd = self.r.command(entry, "gemini-3.6-flash")
         prompt_arg = cmd[cmd.index("-p") + 1]
         self.assertIsNone(re.search(r"(?<!\\)@", prompt_arg), prompt_arg)
         self.assertIn(r"\@/etc/passwd", prompt_arg)
@@ -260,7 +262,7 @@ class TestCommand(unittest.TestCase):
         self.assertNotIn(r"\\@literal", prompt_arg)
 
     def test_unenforced_entry_uses_unenforced_admin_policy(self):
-        cmd = self.r.command(_entry(False), "gemini-2.5-pro")
+        cmd = self.r.command(_entry(False), "gemini-3.6-flash")
         self.assertIn("--admin-policy", cmd)
         self.assertEqual(
             cmd[cmd.index("--admin-policy") + 1],
@@ -275,9 +277,17 @@ class TestCommand(unittest.TestCase):
             self.r.system_config_dir = sys_dir
             try:
                 with self.assertRaisesRegex(RuntimeError, "system policy hazard"):
-                    self.r.command(_entry(True), "gemini-2.5-pro")
+                    self.r.command(_entry(True), "gemini-3.6-flash")
             finally:
                 self.r.system_config_dir = None
+
+    def test_known_models_excludes_retired_gemini_2_5_models(self):
+        for retired in ("gemini-2.5-pro", "gemini-2.5-flash",
+                        "gemini-2.5-flash-lite", "auto-gemini-2.5"):
+            self.assertNotIn(retired, gemini_runner.KNOWN_MODELS)
+        for current in ("gemini-3.6-flash", "gemini-3.8-flash",
+                        "gemini-3.5-flash-lite", "gemini-4-argon", "gemini-4-carbon"):
+            self.assertIn(current, gemini_runner.KNOWN_MODELS)
 
 
 class TestParseEnvelope(unittest.TestCase):
@@ -290,7 +300,7 @@ class TestParseEnvelope(unittest.TestCase):
         self.assertTrue(res.ok)
         self.assertEqual(res.text, "the final reply")
         self.assertEqual(res.session_id, "2c8d8cf2-070f-416c-90bf-5a1983debf98")
-        self.assertEqual(res.model, "gemini-2.5-pro")
+        self.assertEqual(res.model, "gemini-3.6-flash")
         self.assertIsNone(res.cost_usd)
         self.assertEqual(res.usage, {
             "input_tokens": 100,
@@ -308,7 +318,7 @@ class TestParseEnvelope(unittest.TestCase):
             "response": "ok",
             "stats": {
                 "models": {
-                    "gemini-2.5-flash": {
+                    "gemini-3.5-flash-lite": {
                         "tokens": {"prompt": 140, "cached": 40, "candidates": 25,
                                    "thoughts": 15, "total": 180},
                     }
@@ -327,7 +337,7 @@ class TestParseEnvelope(unittest.TestCase):
             "response": "ok",
             "stats": {
                 "models": {
-                    "gemini-2.5-flash": {
+                    "gemini-3.5-flash-lite": {
                         "tokens": {"input": 0, "prompt": 80, "cached": 80,
                                    "candidates": 0, "thoughts": 0, "total": 80},
                     }
@@ -365,6 +375,74 @@ class TestParseEnvelope(unittest.TestCase):
         self.assertNotIn("sk-ant-", res.text)
         self.assertIn("[REDACTED_KEY]", res.text)
 
+    def test_exit_codes_41_and_173_classify_as_host_failure_and_name_exit_codes(self):
+        r = gemini_runner.Runner("gemini")
+        res_41 = r.parse_envelope(
+            "scout", "", 41,
+            stderr=(
+                "YOLO mode is enabled. All tool calls will be automatically approved.\n"
+                "When using Gemini API, you must specify the GEMINI_API_KEY environment variable.\n"
+            ),
+        )
+        self.assertFalse(res_41.ok)
+        self.assertEqual(outage.HOST_FAILURE, res_41.failure_class)
+        self.assertIn("41 (FatalAuthenticationError)", res_41.error)
+        self.assertIn("GEMINI_API_KEY", res_41.error)
+
+        res_173 = r.parse_envelope("scout", "", 173, stderr="GaxiosError: limit reached")
+        self.assertFalse(res_173.ok)
+        self.assertEqual(outage.HOST_FAILURE, res_173.failure_class)
+        self.assertIn("173 (HTTP 429 rate-limit/quota (429 mod 256))", res_173.error)
+
+        for code, expected_name in ((42, "FatalInputError"),
+                                    (52, "FatalConfigError"),
+                                    (53, "FatalTurnLimitedError")):
+            res_code = r.parse_envelope("scout", "", code, stderr="fatal")
+            self.assertIn("%d (%s)" % (code, expected_name), res_code.error)
+
+    def test_auth_and_ineligible_tier_errors_pause_tally_after_one_launch_without_retries(self):
+        r = gemini_runner.Runner("gemini")
+        stderr_run2 = (
+            "YOLO mode is enabled. All tool calls will be automatically approved.\n"
+            "Loaded cached credentials.\n"
+            "IneligibleTierError: This client is no longer supported for Gemini Code Assist for individuals.\n"
+            "    at UserContentGenerator.doOnboarding (/bundle/chunk.js:123:45)\n"
+            "[ERROR] {\n"
+            '  "error": {\n'
+            '    "message": "This client is no longer supported for Gemini Code Assist for individuals.",\n'
+            '    "code": 400\n'
+            "  }\n"
+            "}\n"
+        )
+        res = r.parse_envelope("scout", "", 1, stderr=stderr_run2)
+        self.assertEqual(outage.HOST_FAILURE, res.failure_class)
+        self.assertIn("This client is no longer supported", res.stderr)
+        tally = outage.FailureTally("gemini")
+        tally.record("scout", res, seq=0)
+        paused = tally.settle(unlaunched=0)
+        self.assertIsNotNone(paused)
+        self.assertIn("paused: the gemini host failed 1 of this batch's 1 launches", paused)
+        self.assertEqual({}, tally.streaks)
+
+    def test_long_stderr_preserves_tail_reason_instead_of_startup_banner(self):
+        r = gemini_runner.Runner("gemini")
+        long_stderr = "\n".join([
+            "YOLO mode is enabled. All tool calls will be automatically approved.",
+            "Loaded cached credentials.",
+            "Ripgrep is not available, falling back to basic search (slower, less accurate)",
+            "Attempt 1 failed with status 429. Retrying with backoff...",
+            "    at stackFrameOne (/usr/local/lib/node_modules/@google/gemini-cli/bundle/chunk.js:100:10)",
+            "    at stackFrameTwo (/usr/local/lib/node_modules/@google/gemini-cli/bundle/chunk.js:200:20)",
+            "    at stackFrameThree (/usr/local/lib/node_modules/@google/gemini-cli/bundle/chunk.js:300:30)",
+            "    at stackFrameFour (/usr/local/lib/node_modules/@google/gemini-cli/bundle/chunk.js:400:40)",
+            "FINAL_ROOT_CAUSE: Quota exceeded for metric generate_content_requests",
+        ])
+        res = r.parse_envelope("scout", "", 1, stderr=long_stderr)
+        self.assertFalse(res.ok)
+        self.assertIn("FINAL_ROOT_CAUSE: Quota exceeded", res.stderr)
+        self.assertIn("FINAL_ROOT_CAUSE: Quota exceeded", res.error)
+        self.assertNotIn("YOLO mode is enabled", res.stderr)
+
 
 class TestRunEntry(unittest.TestCase):
     def _env(self):
@@ -401,7 +479,7 @@ class TestRunEntry(unittest.TestCase):
                 res = r.run_entry(_entry(True), self._env())
         self.assertTrue(res.ok)
         self.assertEqual(res.text, "the final reply")
-        self.assertEqual(res.model, "gemini-2.5-pro")
+        self.assertEqual(res.model, "gemini-3.6-flash")
         self.assertEqual(res.usage["input_tokens"], 100)
         child_env = seen["kw"]["env"]
         self.assertEqual(child_env["GEMINI_CLI_HOME"], r.run_home)
@@ -480,10 +558,74 @@ class TestRunEntry(unittest.TestCase):
                 r.prepare(os.path.join(d, "run"), review_root=d,
                           registration_dir=agents_dir)
                 self.addCleanup(r.teardown, "complete")
-                res = r.run_entry(_entry(True, model="gemini-2.5-pro"), self._env())
+                res = r.run_entry(_entry(True, model="gemini-3.6-flash"), self._env())
         self.assertTrue(res.ok)
         self.assertIsNone(res.model)
         self.assertEqual(res.usage["total_tokens"], 15)
+
+    def test_run_entry_fails_early_when_selected_type_is_gemini_api_key_and_env_var_unset(self):
+        launched = []
+
+        def should_not_launch(cmd, **kw):
+            launched.append(cmd)
+            return subprocess.CompletedProcess(cmd, 0, stdout=ENVELOPE, stderr="")
+
+        with tempfile.TemporaryDirectory() as d:
+            user_home, agents_dir = _fixture_user_home(d)
+            with open(os.path.join(user_home, ".gemini", "settings.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"security": {"auth": {"selectedType": "gemini-api-key"}}}, fh)
+            with mock.patch.dict(os.environ, {"HOME": user_home}, clear=True):
+                r = gemini_runner.Runner("gemini", runner=should_not_launch)
+                r.prepare(os.path.join(d, "run"), review_root=d,
+                          registration_dir=agents_dir)
+                self.addCleanup(r.teardown, "complete")
+                res = r.run_entry(_entry(True, model="gemini-3.6-flash"), self._env())
+        self.assertFalse(res.ok)
+        self.assertEqual([], launched)
+        self.assertEqual(outage.HOST_FAILURE, res.failure_class)
+        self.assertIn(gemini_home.MISSING_API_KEY_REMEDY, res.error)
+
+    def test_rerouted_envelope_records_requested_model_in_ledger_and_discloses_on_stderr(self):
+        rerouted_env = json.dumps({
+            "session_id": "sess-reroute",
+            "response": "ok",
+            "stats": {
+                "models": {
+                    "gemini-3.5-flash-lite": {
+                        "tokens": {"input": 10, "prompt": 10, "candidates": 5,
+                                   "cached": 0, "thoughts": 0, "total": 15},
+                    }
+                }
+            },
+        })
+
+        def fake(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout=rerouted_env, stderr="")
+
+        with tempfile.TemporaryDirectory() as d:
+            user_home, agents_dir = _fixture_user_home(d)
+            run_dir = os.path.join(d, "run")
+            with mock.patch.dict(os.environ, {"HOME": user_home}):
+                r = gemini_runner.Runner("gemini", runner=fake)
+                r.prepare(run_dir, review_root=d, registration_dir=agents_dir)
+                self.addCleanup(r.teardown, "complete")
+                entry = _entry(True, model="gemini-3.6-flash")
+                res = r.run_entry(entry, self._env())
+                led = ledger.Ledger(run_dir)
+                stderr_buf = io.StringIO()
+                with contextlib.redirect_stderr(stderr_buf):
+                    led.record(entry, "review", res, "headless", "gemini",
+                               timing={"started_at": "2026-11-10T00:00:00Z",
+                                       "finished_at": "2026-11-10T00:00:01Z",
+                                       "duration_ms": 1000})
+                with open(led.path, encoding="utf-8") as fh:
+                    row = json.loads(fh.readline())
+        self.assertEqual("gemini-3.6-flash", row.get("requested_model"))
+        self.assertEqual("gemini-3.5-flash-lite", row.get("model"))
+        self.assertIn("model rerouted by host 'gemini'", stderr_buf.getvalue())
+        self.assertIn("bound 'gemini-3.6-flash'", stderr_buf.getvalue())
+        self.assertIn("envelope reported 'gemini-3.5-flash-lite'", stderr_buf.getvalue())
 
 
 if __name__ == "__main__":

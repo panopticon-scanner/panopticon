@@ -115,10 +115,10 @@ _AGY_FALLBACK: dict[str, dict[str, Any]] = {
     "setup_scan": {"model": None},
 }
 _GEMINI_FALLBACK: dict[str, dict[str, Any]] = {
-    "scout": {"model": "gemini-2.5-flash"},
-    "advisor": {"model": "gemini-2.5-flash"},
-    "domain_panel": {"model": "gemini-2.5-pro"},
-    "domain_advisor": {"model": "gemini-2.5-pro"},
+    "scout": {"model": "gemini-3.6-flash"},
+    "advisor": {"model": "gemini-3.6-flash"},
+    "domain_panel": {"model": "gemini-3.6-flash"},
+    "domain_advisor": {"model": "gemini-3.6-flash"},
     "setup_scan": {"model": None},
 }
 
@@ -147,7 +147,7 @@ def _hardcoded_fallback(host, role):
         return _AGY_FALLBACK.get(role, {"model": "gemini-4-argon-high",
                                          "tier": "pro"})
     if host == "gemini":
-        return _GEMINI_FALLBACK.get(role, {"model": "gemini-2.5-pro"})
+        return _GEMINI_FALLBACK.get(role, {"model": "gemini-3.6-flash"})
     return {"model": None}
 
 

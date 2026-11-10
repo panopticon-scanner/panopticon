@@ -218,7 +218,7 @@ def dynamic_fingerprint(host, probe_id, *, session_root=None,
         from scripts.runners import base as runners_base
         material = _path_record(os.path.join(
             os.path.dirname(os.path.abspath(settings_path)), runners_base.LEDGER_FILE))
-    elif host == "gemini" and probe_id == "gemini-usage-envelope" and settings_path:
+    elif host == "gemini" and probe_id in ("gemini-usage-envelope", "gemini-model-bound") and settings_path:
         from scripts.runners import base as runners_base
         material = _path_record(os.path.join(
             os.path.dirname(os.path.abspath(settings_path)), runners_base.LEDGER_FILE))

@@ -30,12 +30,18 @@ import scripts.hosts as hosts
 import scripts.redact as redact
 import scripts.runners.base as base
 import scripts.runners.gemini_home as gemini_home
+import scripts.runners.outage as outage
 
 
 DEFAULT_RUNNER = None
 
 _SAFE_TOKEN_RE = re.compile(r"\A[A-Za-z0-9._:-]+\Z")
 _UNESCAPED_AT_RE = re.compile(r"(?<!\\)@")
+_NOISY_STDERR_LINE_RE = re.compile(
+    r"^(?:YOLO mode is enabled\b|Loaded cached credentials\b|"
+    r"Ripgrep is not available\b|Attempt \d+ failed\b)",
+    re.I,
+)
 
 ALLOWED_GEMINI_ENV_KEYS = frozenset({
     "GEMINI_API_KEY",
@@ -43,17 +49,19 @@ ALLOWED_GEMINI_ENV_KEYS = frozenset({
 })
 
 KNOWN_MODELS = frozenset({
-    "gemini-2.5-pro",
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-3-pro-preview",
+    "gemini-4-carbon",
+    "gemini-4-argon",
+    "gemini-3.8-flash",
+    "gemini-3.6-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
     "gemini-3.1-pro-preview",
     "gemini-3.1-pro-preview-customtools",
-    "gemini-3-flash-preview",
-    "gemini-3.5-flash",
-    "gemini-3-flash",
     "gemini-3.1-flash-lite",
     "gemini-3.1-flash-lite-preview",
+    "gemini-3-pro-preview",
+    "gemini-3-flash",
+    "gemini-3-flash-preview",
     "gemma-4-31b-it",
     "gemma-4-26b-a4b-it",
     "auto",
@@ -61,8 +69,18 @@ KNOWN_MODELS = frozenset({
     "flash",
     "flash-lite",
     "auto-gemini-3",
-    "auto-gemini-2.5",
 })
+
+EXIT_CODE_NAMES = {
+    41: "FatalAuthenticationError",
+    42: "FatalInputError",
+    44: "FatalSandboxError",
+    52: "FatalConfigError",
+    53: "FatalTurnLimitedError",
+    54: "FatalToolExecutionError",
+    173: "HTTP 429 rate-limit/quota (429 mod 256)",
+}
+HOST_FAILURE_EXIT_CODES = frozenset({41, 173})
 
 
 def escape_prompt_at_tokens(prompt):
@@ -179,11 +197,51 @@ def _extract_error(raw_err):
     return None
 
 
+def _stderr_diagnosis(stderr):
+    """Extract the structured `[ERROR]` JSON payload or the non-banner tail of
+    `stderr` (up to `base.STDERR_HEAD` chars, redacted) so startup banners never
+    crowd out the real failure reason at the end of `stderr`."""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+    if not isinstance(stderr, str) or not stderr.strip():
+        return None
+    err_idx = stderr.rfind("[ERROR]")
+    if err_idx >= 0:
+        brace_idx = stderr.find("{", err_idx)
+        if brace_idx >= 0:
+            try:
+                parsed = json.loads(stderr[brace_idx:].strip())
+                if isinstance(parsed, dict):
+                    nested = parsed.get("error")
+                    err_obj = nested if isinstance(nested, dict) else parsed
+                    parts = []
+                    for key in ("type", "code", "message"):
+                        val = err_obj.get(key)
+                        if val not in (None, ""):
+                            parts.append("%s: %s" % (key, val) if key != "message" else str(val))
+                    if parts:
+                        summary = redact.redact("[ERROR] " + " | ".join(parts))
+                        return summary[:base.STDERR_HEAD]
+            except ValueError:
+                pass
+    lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
+    kept = [ln for ln in lines if not _NOISY_STDERR_LINE_RE.match(ln)] or lines
+    joined = "\n".join(kept)
+    tail = joined[-base.STDERR_HEAD:] if len(joined) > base.STDERR_HEAD else joined
+    return redact.redact(tail)[:base.STDERR_HEAD]
+
+
+def _exit_label(returncode):
+    name = EXIT_CODE_NAMES.get(returncode)
+    return "%s (%s)" % (returncode, name) if name else str(returncode)
+
+
 def parse_envelope(raw, returncode=0, stderr=None, *, entry_id=""):
     """Parse `gemini -p --output-format json` stdout into a `base.RunResult`."""
     raw_text = raw if isinstance(raw, str) else ""
     err_text = redact.redact(stderr.strip()) if isinstance(stderr, str) and stderr.strip() else ""
-    diagnosis = base.stderr_head(stderr)
+    diagnosis = _stderr_diagnosis(stderr)
+    forced_class = outage.HOST_FAILURE if returncode in HOST_FAILURE_EXIT_CODES else None
     doc = None
     if raw_text.strip():
         try:
@@ -195,13 +253,14 @@ def parse_envelope(raw, returncode=0, stderr=None, *, entry_id=""):
 
     if doc is None:
         detail = diagnosis or "no JSON envelope on stdout"
-        reason = ("gemini -p exited %s: %s" % (returncode, detail)
+        reason = ("gemini -p exited %s: %s" % (_exit_label(returncode), detail)
                   if returncode != 0 else "gemini -p returned non-JSON stdout")
         safe_raw = redact.redact(raw_text[:200]) if returncode != 0 and raw_text else ""
         return base.RunResult(
             entry_id=entry_id, ok=False, text=safe_raw,
             usage={}, cost_usd=None, model=None, session_id=None, denials=[],
-            error=reason, host_error=err_text or None, stderr=diagnosis,
+            error=reason, host_error=err_text or reason or None, stderr=diagnosis,
+            failure_class=forced_class,
             host_error_from_stderr=bool(err_text))
 
     usage, model = _extract_usage_and_model(doc)
@@ -231,12 +290,13 @@ def parse_envelope(raw, returncode=0, stderr=None, *, entry_id=""):
     if not ok:
         reason = (host_error
                   or diagnosis
-                  or ("gemini status %r (exit %s)" % (status, returncode)))
+                  or ("gemini status %r (exit %s)" % (status, _exit_label(returncode))))
         return base.RunResult(
             entry_id=entry_id, ok=False, text=text, usage=usage, cost_usd=None,
             model=model, session_id=session_id, denials=denials,
-            error="gemini -p exited %s: %s" % (returncode, reason),
-            host_error=host_error or err_text or None, stderr=diagnosis,
+            error="gemini -p exited %s: %s" % (_exit_label(returncode), reason),
+            host_error=host_error or err_text or reason or None, stderr=diagnosis,
+            failure_class=forced_class,
             host_error_from_stderr=bool(not host_error and err_text))
 
     return base.RunResult(
@@ -257,6 +317,7 @@ class Runner(base.HostRunner):
         self.runner = self.launcher(runner, DEFAULT_RUNNER)
         self.gemini_home = None
         self.run_home = None
+        self.user_home = None
         self.workspace_dir = None
         self.run_dir = None
         self.review_root = None
@@ -273,10 +334,12 @@ class Runner(base.HostRunner):
         os.makedirs(self.run_dir, exist_ok=True)
         if self.gemini_home is not None and os.path.isdir(self.gemini_home):
             return
+        self.user_home = os.path.expanduser("~")
         read_scope = os.path.join(self.run_dir, base.SCOPE_FILE)
         write_allowlist = os.path.join(self.run_dir, base.ALLOWLIST_FILE)
         self.gemini_home = gemini_home.build(
             read_scope, write_allowlist,
+            user_home=self.user_home,
             review_root=self.review_root)
         self.run_home = self.gemini_home
         self.workspace_dir = gemini_home.workspace_dir(self.gemini_home)
@@ -414,6 +477,11 @@ class Runner(base.HostRunner):
         proc = None
         try:
             child_env = self.launch_env(env)
+            hazard = gemini_home.auth_hazard(env=child_env, real_user_home=self.user_home)
+            if hazard:
+                return base.RunResult.failed(
+                    entry_id, hazard, host_error=hazard,
+                    failure_class=outage.HOST_FAILURE)
             child_env[gemini_guard_hook.ENV_DENIAL_LOG] = denial_log
             cmd = self.command(entry, eff_model)
             proc = launcher(
@@ -425,7 +493,7 @@ class Runner(base.HostRunner):
             result = base.RunResult.failed(
                 entry_id, "gemini -p timed out after %ss" % self.entry_timeout,
                 text=base.partial_output(exc),
-                stderr=base.stderr_head(getattr(exc, "stderr", None)))
+                stderr=_stderr_diagnosis(getattr(exc, "stderr", None)))
         except OSError as exc:
             result = base.RunResult.failed(
                 entry_id,

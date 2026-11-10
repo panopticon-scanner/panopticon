@@ -210,14 +210,17 @@ def hook_command(read_scope_path, write_allowlist_path):
         os.path.abspath(write_allowlist_path))
 
 
-def _detect_auth_type(real_user_home, seeded_oauth):
-    """Return a validated `security.auth.selectedType` string when no env-based
-    auth variable overrides it, or None when env auth (`GEMINI_API_KEY`, etc.)
-    should take precedence."""
-    for env_key in ("GEMINI_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI",
-                    "GOOGLE_GENAI_USE_GCA"):
-        if (os.environ.get(env_key) or "").strip():
-            return None
+MISSING_API_KEY_REMEDY = (
+    "export GEMINI_API_KEY in the shell that runs panopticon. "
+    "A key saved through gemini's sign-in dialog is not visible to the isolated run home."
+)
+
+
+def _read_user_selected_auth_type(real_user_home):
+    """Read `security.auth.selectedType` (or legacy `selectedAuthType`) from
+    `<real_user_home>/.gemini/settings.json` without following symlinks."""
+    if not real_user_home:
+        return None
     user_settings = os.path.join(real_user_home, ".gemini", SETTINGS_FILE)
     try:
         flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
@@ -240,13 +243,88 @@ def _detect_auth_type(real_user_home, seeded_oauth):
             sec = doc.get("security")
             auth = sec.get("auth") if isinstance(sec, dict) else None
             selected = auth.get("selectedType") if isinstance(auth, dict) else None
+            if not (isinstance(selected, str) and selected):
+                selected = doc.get("selectedAuthType")
             if isinstance(selected, str) and selected in ALLOWED_AUTH_TYPES:
                 return selected
     except OSError:
         pass
+    return None
+
+
+def _detect_auth_type(real_user_home, seeded_oauth, env=None):
+    """Return a validated `security.auth.selectedType` string when no env-based
+    auth variable overrides it, or None when env auth (`GEMINI_API_KEY`, etc.)
+    should take precedence."""
+    check_env = os.environ if env is None else env
+    for env_key in ("GEMINI_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI",
+                    "GOOGLE_GENAI_USE_GCA"):
+        val = check_env.get(env_key)
+        if isinstance(val, str) and val.strip():
+            return None
+    selected = _read_user_selected_auth_type(real_user_home)
+    if selected:
+        return selected
     if seeded_oauth:
         return "oauth-personal"
     return None
+
+
+def auth_hazard(env=None, real_user_home=None):
+    """Return an actionable remedy when `selectedType == 'gemini-api-key'` in
+    `~/.gemini/settings.json` and `GEMINI_API_KEY` (or Vertex/GCA env auth) is
+    unset or empty in the launch environment. Never reads or echoes any secret."""
+    home = os.path.expanduser("~") if real_user_home is None else real_user_home
+    if _detect_auth_type(home, False, env=env) == "gemini-api-key":
+        return (
+            "gemini auth selectedType is 'gemini-api-key' in ~/.gemini/settings.json, "
+            "but GEMINI_API_KEY is unset or empty in the launch environment: %s"
+            % MISSING_API_KEY_REMEDY
+        )
+    return None
+
+
+def host_auth_hazard(host, env=None, real_user_home=None):
+    """Host-agnostic wrapper for readiness checks."""
+    if host != "gemini":
+        return None
+    return auth_hazard(env=env, real_user_home=real_user_home)
+
+
+def ledger_model_reroute(ledger_path, bound_by_role=None):
+    """Inspect `dispatch-ledger.jsonl` for silent Gemini model reroutes.
+
+    Returns `(False, detail)` if any `gemini` entry recorded an envelope `model`
+    different from its `requested_model` (or its role's bound model), else
+    `(True, 'ok')`."""
+    if not ledger_path or not os.path.isfile(ledger_path):
+        return True, "no ledger"
+    try:
+        with open(ledger_path, encoding="utf-8") as fh:
+            for idx, raw in enumerate(fh, 1):
+                line = raw.strip()
+                if not line:
+                    continue
+                rec = json.loads(line)
+                if not isinstance(rec, dict) or rec.get("host") != "gemini":
+                    continue
+                actual = rec.get("model")
+                requested = rec.get("requested_model")
+                if not (isinstance(requested, str) and requested.strip()) and isinstance(bound_by_role, dict):
+                    role = rec.get("role") or ("scout" if rec.get("checkpoint") == "scout" else None)
+                    requested = bound_by_role.get(role) if isinstance(role, str) else None
+                if (isinstance(requested, str) and requested.strip()
+                        and isinstance(actual, str) and actual.strip()
+                        and actual != requested):
+                    entry_id = rec.get("entry_id") or rec.get("id") or ("line-%d" % idx)
+                    return False, (
+                        "dispatch-ledger.jsonl entry %r (line %d) bound model %r, "
+                        "but the envelope reported %r (silent model reroute)"
+                        % (entry_id, idx, requested, actual)
+                    )
+    except (OSError, ValueError):
+        pass
+    return True, "ok"
 
 
 def settings_document(read_scope_path, write_allowlist_path, *,

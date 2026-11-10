@@ -214,6 +214,15 @@ class Ledger:
         models = getattr(result, "models", None)
         if models:
             line["models"] = models
+        bound_model = entry.get("model") if isinstance(entry, dict) else None
+        if (host == "gemini"
+                and isinstance(bound_model, str) and bound_model
+                and isinstance(result.model, str) and result.model
+                and result.model != bound_model):
+            line["requested_model"] = bound_model
+            print("driver loop: %s: model rerouted by host %r: bound %r, envelope reported %r"
+                  % (entry.get("id"), host, bound_model, result.model),
+                  file=sys.stderr, flush=True)
         # Host errors and persistence refusals can quote credentials. Redact at
         # the single writer, preserving null when the row has no error (#1709).
         if line["error"] is not None:
