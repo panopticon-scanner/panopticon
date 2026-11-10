@@ -97,12 +97,18 @@ else
   digest="${digest//\"/}"
   if [[ ! "$digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
     reason="the seed image has no usable digest"
+  elif ! cid="$(docker create "${REGISTRY}/${NVD_IMAGE}@${digest}" seed)"; then
+    reason="could not pull ${digest}"
   else
-    cid="$(docker create "${REGISTRY}/${NVD_IMAGE}@${digest}" seed)"
     mkdir seed
     docker cp "${cid}:/opt/odc-data/." seed/ || reason="could not copy the seed out of ${digest}"
     docker rm "$cid" > /dev/null || true
   fi
+fi
+# The marker is read only as a regular file: `cat` would follow a link to
+# anything on the runner.
+if [ -z "$reason" ] && { [ -L "seed/$MARKER" ] || { [ -e "seed/$MARKER" ] && [ ! -f "seed/$MARKER" ]; }; }; then
+  reason="the seed's $MARKER is not a regular file"
 fi
 if [ -z "$reason" ]; then
   marker="$(cat "seed/$MARKER" 2>/dev/null)" || marker=""
@@ -112,8 +118,14 @@ if [ -z "$reason" ]; then
     reason="the seed carries no $MARKER"
   elif [ "$seed_version" != "$DC_VERSION" ]; then
     reason="the seed was made by dependency-check ${seed_version:-?}, not ${DC_VERSION}"
-  elif ! built_at="$(date -u -d "$seed_full_build" +%s 2>/dev/null)"; then
+  elif [[ ! "$seed_full_build" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] \
+       || ! built_at="$(date -u -d "$seed_full_build" +%s 2>/dev/null)"; then
     reason="the seed's full_build is not a date: ${seed_full_build:-?}"
+  elif [ "$built_at" -gt "$now" ]; then
+    # Carried forward, a future date would switch off the cap and the weekly
+    # rebuild for good. Compared in seconds: tomorrow is under a day ahead, and
+    # bash rounds that to 0 days.
+    reason="the seed's full_build is in the future: ${seed_full_build}"
   else
     built_days="$(( (now - built_at) / 86400 ))"
     if [ "$built_days" -ge "$FULL_BUILD_CAP_DAYS" ]; then
@@ -127,6 +139,9 @@ if [ -z "$reason" ]; then
       reason="the seed's nvd.api.last.modified is over ${LAST_MODIFIED_CAP_DAYS} days old"
     elif ! seed_checked="$(seed_time nvd.api.last.checked)"; then
       reason="the seed has no readable nvd.api.last.checked"
+    elif [ "$(date -u -d "$seed_checked" +%s)" -gt "$now" ]; then
+      # Every seeded run would refuse below until the next full download.
+      reason="the seed's nvd.api.last.checked is in the future: ${seed_checked}"
     else
       seeded=1 full_build="$seed_full_build"
       seed_checked_at="$(date -u -d "$seed_checked" +%s)"
@@ -201,6 +216,8 @@ if [ "$seeded" = 1 ]; then
   echo "nvd.api.last.checked: ${checked} (seed: ${seed_checked})"
 fi
 
+# Removed first so the write can't go through a link left in odc-data.
+rm -f "odc-data/$MARKER"
 printf '{"dc_version": "%s", "full_build": "%s"}\n' "$DC_VERSION" "$full_build" > "odc-data/$MARKER"
 chmod a+r "odc-data/$MARKER"
 echo "marker: dependency-check ${DC_VERSION}, last full build ${full_build}"

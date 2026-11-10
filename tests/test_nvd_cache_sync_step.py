@@ -27,6 +27,9 @@ NOW = datetime.datetime(2026, 11, 4, 12, 0, 0, tzinfo=datetime.timezone.utc)   #
 DIGEST = "sha256:" + "ab" * 32
 KEY = "nvd-key-value-not-for-output"
 HOUR = 3600
+# What a link planted in the seed points at: a valid-looking marker, so only
+# the file-type check stands between it and a seeded run.
+OUTSIDE = '{"dc_version": "10.0.3", "full_build": "2026-11-03"}\n'
 DAY = 24 * HOUR
 
 # `date -u -d VALUE +%s` for the stub: ISO timestamps and dates, UTC.
@@ -51,12 +54,17 @@ def days_ago(days):
 
 
 def seed(dc_version="10.0.3", full_build=None, modified=None, checked=None,
-         marker=True, cp_rc=0):
-    """A published data image: its marker and the two properties it carries."""
+         marker=True, cp_rc=0, digest=DIGEST, create_rc=0, marker_kind="file"):
+    """A published data image: its marker and the two properties it carries.
+
+    `digest` is what the tag lookup answers; `create_rc` is `docker create`'s
+    status (a failed pull); `marker_kind` is what the copied-out marker is:
+    "file", "link" (to a file outside odc-data) or "dir"."""
     return {"dc_version": dc_version, "full_build": full_build or days_ago(2),
             "modified": ago(5 * HOUR) if modified is None else modified,
             "checked": ago(20 * HOUR) if checked is None else checked,
-            "marker": marker, "cp_rc": cp_rc}
+            "marker": marker, "cp_rc": cp_rc, "digest": digest,
+            "create_rc": create_rc, "marker_kind": marker_kind}
 
 
 def _write(path, text):
@@ -67,17 +75,21 @@ def _write(path, text):
 
 def _run(curl_rc=0, sha_rc=0, sync_rc=0, db=False, modified=None, checked=None,
          java_rc=0, the_seed=None, weekday=3, event="schedule", full_rebuild=False,
-         props="data.user=dc-user\\ndata.password=a=b\\n"):
+         props="data.user=dc-user\\ndata.password=a=b\\n", link_after=False):
     """Run the script with stubbed tools; return a dict describing the run.
 
     `the_seed` is None for "no seed image" (the digest lookup fails), else a
     `seed(...)`. `db` makes the update leave a database over the size floor;
     `modified`/`checked` are the properties it writes there (None: leaves
-    them as they were, which over an empty directory means absent)."""
+    them as they were, which over an empty directory means absent).
+    `link_after` makes the update leave the marker path as a link to a file
+    outside odc-data. Either link's target is returned as "outside"."""
     with tempfile.TemporaryDirectory() as tmp:
         _write(os.path.join(tmp, "parse.py"), _PARSE)
         state = os.path.join(tmp, "state")
         os.makedirs(state)
+        outside = os.path.join(tmp, "outside.json")
+        _write(outside, OUTSIDE)
         if the_seed is not None:
             for name in ("modified", "checked"):
                 if the_seed[name] is not False:
@@ -104,9 +116,13 @@ docker() {
   printf '%%s\n' "$*" >> "%(tmp)s/docker-calls"
   case "$1" in
     buildx) [ -d "%(state)s/seed" ] || return 1; printf '"%(digest)s"\n' ;;
-    create) echo cid-1 ;;
+    create) [ %(create_rc)d -eq 0 ] || return %(create_rc)d; echo cid-1 ;;
     cp) local to="${@: -1}"
-        [ -f "%(state)s/seed/marker" ] && cp "%(state)s/seed/marker" "$to/panopticon-seed.json"
+        case "%(marker_kind)s" in
+          file) [ -f "%(state)s/seed/marker" ] && cp "%(state)s/seed/marker" "$to/panopticon-seed.json" ;;
+          link) ln -s "%(outside)s" "$to/panopticon-seed.json" ;;
+          dir) mkdir "$to/panopticon-seed.json" ;;
+        esac
         : > "$to/odc.mv.db"; mkdir -p "$to/.props"
         cp "%(state)s/seed/"nvd.api.* "$to/.props/" 2>/dev/null
         return %(cp_rc)d ;;
@@ -131,11 +147,16 @@ timeout() {
     : > odc-data/odc.mv.db; mkdir -p odc-data/.props
     cp "%(state)s/after/"nvd.api.* odc-data/.props/ 2>/dev/null
   fi
+  [ %(link_after)d = 0 ] || ln -sf "%(outside)s" odc-data/panopticon-seed.json
   return %(sync_rc)d
 }
 """ % {"curl_rc": curl_rc, "sha_rc": sha_rc, "props": props, "py": sys.executable,
        "tmp": tmp, "state": state, "now": int(NOW.timestamp()), "weekday": weekday,
-       "today": NOW.strftime("%Y-%m-%d"), "digest": DIGEST,
+       "today": NOW.strftime("%Y-%m-%d"),
+       "digest": (the_seed or {}).get("digest", DIGEST),
+       "create_rc": (the_seed or {}).get("create_rc", 0),
+       "marker_kind": (the_seed or {}).get("marker_kind", "file"),
+       "outside": outside, "link_after": 1 if link_after else 0,
        "cp_rc": (the_seed or {}).get("cp_rc", 0), "java_rc": java_rc,
        "db": 1 if db else 0, "sync_rc": sync_rc}
         env = {"PATH": os.environ.get("PATH", ""), "HOME": tmp,
@@ -155,7 +176,10 @@ timeout() {
             return open(path).read().splitlines() if os.path.exists(path) else []
 
         marker = os.path.join(tmp, "odc-data", "panopticon-seed.json")
-        return {"rc": proc.returncode, "out": proc.stdout + proc.stderr,
+        with open(outside, encoding="utf-8") as fh:
+            outside_text = fh.read()
+        return {"outside": outside_text,
+                "marker_is_link": os.path.islink(marker),"rc": proc.returncode, "out": proc.stdout + proc.stderr,
                 "dc": lines("dc-argv"), "launched": os.path.exists(os.path.join(tmp, "dc-argv")),
                 "docker": lines("docker-calls"), "java": lines("java-argv"),
                 "marker": json.load(open(marker)) if os.path.exists(marker) else None}
@@ -329,6 +353,20 @@ class TestASeededSync(unittest.TestCase):
         self.assertNotEqual(run["rc"], 0, run["out"])
         self.assertIn("over 72 h old", run["out"])
 
+    def test_the_seed_is_copied_from_the_data_directory_of_the_pinned_container(self):
+        run = _run(the_seed=seed(), db=True, checked=ago(0))
+        self.assertEqual([c for c in run["docker"] if c.startswith("cp ")],
+                         ["cp cid-1:/opt/odc-data/. seed/"])
+
+    def test_the_marker_is_rewritten_not_written_through_a_link(self):
+        for the_seed in (None, seed()):
+            with self.subTest(seeded=the_seed is not None):
+                run = _fresh(the_seed=the_seed, link_after=True)
+                self.assertEqual(run["rc"], 0, run["out"])
+                self.assertEqual(run["outside"], OUTSIDE)
+                self.assertFalse(run["marker_is_link"])
+                self.assertEqual(run["marker"]["dc_version"], "10.0.3")
+
     def test_the_seed_s_full_build_date_is_carried_forward(self):
         run = _run(the_seed=seed(full_build=days_ago(9)), db=True, checked=ago(0))
         self.assertEqual(run["rc"], 0, run["out"])
@@ -378,6 +416,44 @@ class TestAnUnusableSeedFallsBackToAFullDownload(unittest.TestCase):
         self._full("weekly full rebuild (the seed's last full build is 7 days old)",
                    the_seed=seed(full_build=days_ago(7)), weekday=7)
 
+    def test_a_failed_pull_falls_back_instead_of_stopping_the_step(self):
+        run = self._full("could not pull " + DIGEST, the_seed=seed(create_rc=1))
+        self.assertFalse([c for c in run["docker"] if c.startswith("cp ")])
+
+    def test_a_tag_answer_that_is_not_a_sha256_digest(self):
+        for answer in ("sha256:" + "ab" * 31, "latest", "sha256:" + "AB" * 32,
+                       "x" + DIGEST):
+            with self.subTest(answer=answer):
+                run = self._full("the seed image has no usable digest",
+                                 the_seed=seed(digest=answer))
+                self.assertFalse([c for c in run["docker"] if c.startswith("create ")])
+
+    def test_a_marker_that_is_a_link_or_a_directory(self):
+        for kind in ("link", "dir"):
+            with self.subTest(kind=kind):
+                run = self._full("the seed's panopticon-seed.json is not a regular file",
+                                 the_seed=seed(marker_kind=kind))
+                self.assertEqual(run["outside"], OUTSIDE)
+                self.assertFalse(run["marker_is_link"])
+
+    def test_a_future_or_non_date_full_build(self):
+        # Carried forward, a future full_build would switch off the cap and the
+        # weekly rebuild for good. Tomorrow is under a day ahead: a check in
+        # whole days would let it through.
+        for value in ("2099-01-01", days_ago(-1)):
+            with self.subTest(value=value):
+                self._full("the seed's full_build is in the future: " + value,
+                           the_seed=seed(full_build=value), weekday=7)
+        for value in ("tomorrow", "2026-11-03T00:00:00Z", "2026-11-3"):
+            with self.subTest(value=value):
+                self._full("the seed's full_build is not a date: " + value,
+                           the_seed=seed(full_build=value))
+
+    def test_a_future_last_checked(self):
+        future = ago(-2 * HOUR)
+        self._full("the seed's nvd.api.last.checked is in the future: " + future,
+                   the_seed=seed(checked=future))
+
     def test_a_31_day_old_full_build_whatever_the_day(self):
         self._full("the seed's last full build is 31 days old (cap 30)",
                    the_seed=seed(full_build=days_ago(31)))
@@ -402,6 +478,9 @@ class TestTheRebuildDayDoesNotCostAnUpdate(unittest.TestCase):
         # Only the schedule rebuilds on its own; a dispatch forces one by name.
         self._seeded(the_seed=seed(full_build=days_ago(8)), weekday=7,
                      event="workflow_dispatch")
+
+    def test_a_full_build_of_today(self):
+        self._seeded(the_seed=seed(full_build=days_ago(0)), weekday=7)
 
     def test_a_29_day_old_full_build(self):
         self._seeded(the_seed=seed(full_build=days_ago(29)), weekday=2)
