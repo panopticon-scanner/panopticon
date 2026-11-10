@@ -22,7 +22,7 @@ pruning those claims was rejected, and .git / .venv / cache / scratch noise
 stays pruned.
 
 The policy lives in its own module because `discovery.py` is at its size
-ratchet (`tests/test_flat_module_ceiling.py`), and the ratchet's answer to a
+ratchet (`tests/test_flat_module_ceiling.py`, retired in #3515), and the ratchet's answer to a
 module that needs more room is a split, never a raised pin. All three
 directions are pinned against the shipped files by
 `tests/test_discovery_catalog.py`: every dot-leading catalog glob and the small

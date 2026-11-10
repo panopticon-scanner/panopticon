@@ -661,7 +661,6 @@ groups:
       tests:
       - tests/synth/**
       - tests/test_layout.py
-      - tests/test_flat_module_ceiling.py
       - tests/test_import_shape.py
       - tests/test_schema_parity.py
       - tests/test_verdict_binding.py
