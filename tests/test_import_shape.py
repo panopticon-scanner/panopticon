@@ -656,7 +656,7 @@ class BareImportTest(unittest.TestCase):
     def test_pytest_roots_are_declarative(self):
         config = tomllib.loads((ROOT / "pyproject.toml").read_text())
         options = config["tool"]["pytest"]["ini_options"]
-        self.assertEqual(options["pythonpath"], ["skill", "skill/scripts", "devtools", "."])
+        self.assertEqual(options["pythonpath"], ["skill", "devtools", "."])
         self.assertIn("--import-mode=importlib", options["addopts"])
 
 

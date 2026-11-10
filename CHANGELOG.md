@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **The replay tests no longer leak `sys.path`; pytest drops `skill/scripts` (#3522, part of #1516).**
+  `devtools/replay_report.replay()` installs a checkout's `skill/` on `sys.path` in the calling
+  process, and `tests/test_replay_report.py` called it in-process with nothing to put the list back,
+  so every later test in that worker ran on a different import path. That is how an order-dependent
+  bare import stayed green on main until #3521. An autouse fixture now hands each test there a copy
+  of `sys.path`. Pytest's `pythonpath` drops `skill/scripts`: since #3505 nothing imports a skill
+  module by its bare name, and the entry only let a new bare import pass in some test orders.
 - **Dependabot's five tools-closure bumps and the gate's pip bump, re-resolved (supersedes #3524,
   #3525).**
   - anyio 4.15.1 -> 4.16.0; filelock 4.2.4 -> 4.2.7; pip 26.2.2 -> 26.3 (in both

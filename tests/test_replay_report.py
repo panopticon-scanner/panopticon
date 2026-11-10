@@ -45,6 +45,19 @@ def _run_folder(base):
 _REAL_RUN = subprocess.run
 
 
+def _sys_path_copy(entries=None):
+    """#3522: `replay()` installs a checkout's `skill/` on `sys.path` in THIS
+    process (and drops `skill/scripts`). Hand it a copy instead, so the list
+    every later test in the worker imports from is never touched."""
+    return mock.patch.object(sys, "path", list(sys.path if entries is None else entries))
+
+
+@pytest.fixture(autouse=True)
+def _restore_sys_path():
+    with _sys_path_copy():
+        yield
+
+
 @contextlib.contextmanager
 def _child(fake=None):
     """Fake only the synthesize CHILD (#3332): replay's first-contact git probe
@@ -668,6 +681,40 @@ def test_diff_html_timestamp_content_and_presence(tmp_path):
     assert any("present on A only" in line for line in _diff(a, b)[1])
 
 
+
+def test_every_test_here_runs_under_the_sys_path_restore(request):
+    # #3522: the fixture is autouse, so a replay test added later is covered too.
+    assert "_restore_sys_path" in request.fixturenames
+
+
+class SysPathRestoreTest(unittest.TestCase):
+    """#3522: a replay leaves `sys.path` as it found it."""
+
+    def test_a_replay_rewrites_sys_path_and_the_restore_puts_it_back(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        review_root = os.path.join(tmp.name, "review")
+        os.makedirs(review_root)
+        _write_ours(review_root, MANIFEST)
+        run_folder = _run_folder(tmp.name)
+        scripts_dir = os.path.dirname(os.path.realpath(run_manifest.__file__))
+        real, before = sys.path, list(sys.path)
+        # The copy carries what the old pytest root added, which replay() drops.
+        with _sys_path_copy([sys.path[0], scripts_dir, *sys.path[1:]]):
+            self.assertIsNot(sys.path, real)
+            _replay_into(review_root, run_folder, os.path.join(tmp.name, "out"))
+            self.assertNotIn(scripts_dir, sys.path)   # the replay did rewrite it
+        self.assertIs(sys.path, real)
+        self.assertEqual(sys.path, before)
+
+    def test_the_default_is_an_equal_copy_not_the_list_itself(self):
+        real = sys.path
+        with _sys_path_copy():
+            self.assertIsNot(sys.path, real)
+            self.assertEqual(sys.path, real)
+        self.assertIs(sys.path, real)
+
+
 if __name__ == "__main__":
     unittest.main()
 
@@ -882,3 +929,4 @@ class ArchivedToolReceiptTest(unittest.TestCase):
 
 
 _DROP = object()
+
