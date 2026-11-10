@@ -460,10 +460,8 @@ on a hostile project, executing `evil.csproj`'s MSBuild target with its live `cu
 marker-file write. That job adds two flags to the same `docker run`, and neither works without the
 other: `-e PANOPTICON_CONTAINMENT_PROBE=1` is the opt-in, and `--network none` is what makes the
 opt-in true. The probe does not trust the flag — before building it dials out, and if anything
-answers it refuses and fails — so the lane is offline by construction, and both controls are pinned
-on it by `tests/test_workflow_pins.py` (`EXPECTED_CONTAINMENT_LANES`, `uncontained_lanes()`). It is
-its own job rather than a step in `integration` so that an adapter regression cannot hide a
-containment one.
+answers it refuses and fails — so an accidentally networked lane fails closed. It is its own job
+rather than a step in `integration` so that an adapter regression cannot hide a containment one.
 
 The fixture it scans is baked into the fixtures image and `dotnet restore`d there (#1655):
 `roslyn-secguard` refuses a C# target with no restore output, and a read-only mount with no network
@@ -727,8 +725,8 @@ The differences between the files are deliberate:
   `bump_pins.py requirements --file requirements-tools.txt --write` so the digests are ones this
   repo re-verified against downloaded artifacts. Build the tools image for both architectures;
   its install now runs `python3 -m pip check` to reject declared dependency conflicts, followed by
-  the existing scanner smoke tests for real startup and output. Run the related Dockerfile, workflow
-  pin, smoke-adapter, and bump-pins tests when changing this closure. Do NOT commit
+  the existing scanner smoke tests for real startup and output. Run the related Dockerfile,
+  smoke-adapter, and bump-pins tests when changing this closure. Do NOT commit
   `uv pip compile --universal` output directly: it adds packages
   behind environment markers, and `rewrite_requirements` does not carry a marker through a rewrite,
   so a win32-only package would arrive as an unconditional pin the linux build cannot satisfy.
@@ -740,41 +738,11 @@ is the declared list and `tools-image/node/package-lock.json` the 139-package cl
 with `npm install --package-lock-only --ignore-scripts`. The image installs it with
 `npm ci --ignore-scripts`, which fails rather than resolving anything if the two disagree.
 
-`tests/test_workflow_pins.py` holds the rule: every `pip install` in `.github/workflows/*.yml` and
-`Dockerfile*` either installs from a `--require-hashes` file or is on that module's
-`EXEMPT_INSTALLS` list with a reason, every pin in such a file carries a `--hash=` (a `TODO-hash`
-placeholder is refused), and the pinned pip may not be older than the one the runner ships. An
-exempted workflow's **posture** is asserted rather than assumed: it may not run on
-`pull_request_target`, may not hold a `write` scope at workflow or job level, and may not leave a
-job's effective `permissions:` undeclared, which is why `ci.yml` states `contents: read` at the top
-instead of inheriting the repository's `GITHUB_TOKEN` default (#1784). `docker-build-pr.yml`, the
-only other workflow that declared nothing, now does the same, though no exemption holds it there.
-
-The third door is what a workflow **downloads and then runs**, and `devtools/workflow_guard.py`
-holds it. It parses shell — statements split quote-aware on `;`, `&&`, `||` and `|`, argv from
-`shlex`, comments dropped and `\`-continuations, heredocs and `$(…)`/`<(…)` substitutions lifted
-first — and fails the suite when a `curl`/`wget` download is made executable, interpreted,
-unpacked, moved onto `PATH` or handed to an interpreter on stdin without a checksum **bound to that
-path**: a `sha256sum -c` (or `shasum -a 256 -c`) whose sums list — piped in, heredoc'd, or a file an
-earlier statement wrote — names the file that was fetched, carries a digest, and runs before the
-first use of it. A checksum whose failure is swallowed (`… || true`, `… &`, `if ! …`) is not a
-check, because `bash -e` is what makes one a gate. A fetch piped straight into a shell
-(`curl … | sh`, `eval "$(curl …)"`, `bash <(curl …)`) can never satisfy the rule: there is no file
-to hash, so download to a file, check it, then run it.
-
-The scope is the **job**, not the step: a job's `run:` steps are folded in order, because they share
-the workspace and `/tmp` — `curl -o /tmp/x` in one step and `chmod +x /tmp/x; /tmp/x` in the next is
-one fetch-and-exec that no per-step reading can see, and a `sha256sum -c` in a later step is a real
-check of an earlier step's download. A step whose `shell:` is not bash/sh (pwsh, python, cmd) is
-reported **unread** rather than clean. So is a program the guard cannot read — a `$CMD -c` word,
-a script handed to a shell inside a `$(…)`, a heredoc body handed to `python3`/`node` — but only
-where the job holds a fetch the guard itself **reports**: a download no checksum clears, a
-`curl … | sh`, an unresolved transfer, or one no file holds (#2481, #2499). A credited download,
-or an API `curl … | jq` that is no download at all, keeps none of them standing. Exemptions are
-`(workflow, step name, reason)` tuples on `tests/test_workflow_pins.py`'s `EXEMPT_FETCHES`, held
-to the same staleness and posture checks as the install list. Run it by hand with
-`python3 devtools/workflow_guard.py .github/workflows/*.yml`; CI gets **no separate lint step**,
-because `tests/test_workflow_pins.py` already applies it to the whole fleet on every PR.
+`tests/test_workflow_allowlist.py` is the intentionally small structural check on GitHub Actions:
+it YAML-parses every workflow, requires each `uses:` reference to carry a 40-hex commit SHA,
+requires every job to inherit or declare `permissions:`, and confines `pull_request_target` to
+`security-fork.yml`. The project does not interpret workflow `run:` shell in its Python test suite;
+the actionlint/zizmor CI change is maintained separately from this test-only rule.
 
 ## Versioning
 Scheme: a **minor** bump (2.x.0) per release round; **major** (x.0.0) reserved for breaking

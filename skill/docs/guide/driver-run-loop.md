@@ -73,7 +73,7 @@ The host contract (5.2, plan 6):
   top-level `.panopticon/setup-dispatch-request.json`. On Claude Code, run those entries with the
   shipped workflow `skill/workflows/dispatch.js` (`skill/SKILL.md` names the call; it is the
   mandated, templated path — not one-off Agent calls; its enforced/agentType branch, marker-first
-  prompt and reply routing are pinned by `tests/test_workflow_dispatch_script.py`, run through a
+  prompt and reply routing are pinned by `tests/test_dispatch_workflow_script.py`, run through a
   small Node harness rather than left untested as Workflow-tool source usually is; the workflow also
   validates the batch BEFORE it launches anything, so an entry marked `enforced` naming no
   registered shell in `agent` refuses the whole batch instead of quietly running as an unenforced

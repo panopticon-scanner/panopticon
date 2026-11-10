@@ -301,8 +301,7 @@ class TestTheDependenciesRow(_VerbCase):
     # RED -- `setup_flow`, `discovery`, `setup_proposal` and `tools/spotbugs`
     # imported them at module level, so `import scripts.driver` raised
     # ModuleNotFoundError and printed no document.
-    # `tests/test_workflow_pins.py`'s AST guard is what keeps those imports
-    # inside the functions that need them.
+    # These child runs keep those imports inside the functions that need them.
     _WITHOUT_PACKAGE = '''
 import sys
 _absent = sys.argv[1]
