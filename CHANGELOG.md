@@ -15,6 +15,20 @@
   `nvd.api.last.checked` moved past the seed's, which a day with no NVD changes still does.
   `devtools/nvd_cache_compare.py` compares a seeded and a fresh database on a CVE sample. The
   workflow switches to the script in a follow-up.
+- **One import bootstrap, one module name per file (#3505, #3506, part of #1516).** Every
+  module under `skill/scripts/` is now imported as `scripts.*` only, and `skill/scripts/` is a
+  regular package. Each entry script run by path runs `skill/scripts/_bootstrap.py` by its own
+  `__file__` (so it works under `python3 -P` too), which drops `skill/scripts` from `sys.path` and
+  puts `skill/` first; devtools CLIs run it through `devtools/_skill_bootstrap.py`. Gone: the 20
+  per-file `sys.path` writes, the 36 flat-import fallbacks (plus two `__package__` switches) and
+  every `noqa: E402` in `skill/scripts` and `devtools`. Phase children no longer get
+  `skill/scripts` on PYTHONPATH. Before this, an installed skill run by path loaded `diff_map`,
+  `plan_contract` and `repo_config` twice, crashed under `-P` for `collect_usage` and
+  `model_resolver`, and crashed whenever another regular `scripts` package was on PYTHONPATH.
+  `tests/test_import_shape.py` replaces `tests/test_no_per_file_sys_path.py` and the import half
+  of `tests/test_module_identity.py`: no other `sys.path` write, no fallback, no bare import, every
+  entry script bootstraps, `run_path` only for the bootstrap, a shrink-only E402 count, plus the
+  module-identity census and an installed-skill run.
 - **Slimmer Dockerfile tests (#3514, part of #3264).** 25 tests (330 lines) that pinned workflow-file
   shape or tested a lint instead of the image are gone from `tests/test_dockerfile.py` and
   `tests/test_dockerfile_args.py`: the docker-build-pr/docker-publish wiring classes, the ARG
@@ -24,6 +38,12 @@
 - **CI lint covers `devtools/` (#3074).** The lint job's ruff step named only `skill/scripts/`
   and `tests/`, so the repo-root dev tools (the filing, triage and pin CLIs) were never linted in
   CI. It now names `devtools/` too, and `tests/test_layout.py` pins the step's targets.
+- **Security-workflow meta-tests keep behavior and shed self-lint (#3512).**
+  The three security/fork/strictness test modules now pin only gate exit-status
+  propagation, the hostile fork's label/secret/untrusted-checkout boundary,
+  `--security redteam` on every CI scanner and gate, and the runtime
+  strict-integration flag. Broad workflow prose/shape readers and mutation tests
+  of those readers are removed.
 - **The `agy` guard's argv policy paths are authoritative (#3511).**
   `PANOPTICON_READ_SCOPE` and `PANOPTICON_WRITE_ALLOWLIST` can no longer replace the
   read scope or write allowlist named in the hook command, and an invocation without

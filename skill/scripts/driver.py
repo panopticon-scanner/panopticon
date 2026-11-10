@@ -12,27 +12,26 @@ import subprocess
 import sys
 
 
-# #5.0-01: when run directly (`python3 skill/scripts/driver.py run ...`, the
-# documented entrypoint) the package roots are not on sys.path, so the
-# `import scripts.*` below crash with ModuleNotFoundError. Bootstrap the same
-# roots _child_env() puts on PYTHONPATH for subprocesses. Idempotent under
-# pytest, whose conftest already provides them.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))                   # skill/scripts
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # skill
+# #5.0-01: run directly (`python3 skill/scripts/driver.py run ...`, the
+# documented entrypoint), `skill/` is not on sys.path and the `import scripts.*`
+# below would crash with ModuleNotFoundError.
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
 
 
-import scripts.config_schema as config_schema  # noqa: E402
-import scripts.diff_map as diff_map  # noqa: E402
-import scripts.first_contact as first_contact  # noqa: E402
-import scripts.run_manifest as run_manifest  # noqa: E402
-from scripts import hosts, loop_progress, procgroup  # noqa: E402
-from scripts.host_posture import (  # noqa: E402,F401 -- compatibility names for #3402
+import scripts.config_schema as config_schema
+import scripts.diff_map as diff_map
+import scripts.first_contact as first_contact
+import scripts.run_manifest as run_manifest
+from scripts import hosts, loop_progress, procgroup
+from scripts.host_posture import (  # noqa: F401 -- compatibility names for #3402
     _carry_output_schema_shape, _disclose_posture, _emit_posture_disclosure,
     _establish_host_posture, _gating_states, _posture_drift, _surface_refusal,
 )
-import scripts.money as money  # noqa: E402
-import scripts.model_resolver as model_resolver  # noqa: E402
-import scripts.setup_config as setup_config  # noqa: E402
+import scripts.money as money
+import scripts.model_resolver as model_resolver
+import scripts.setup_config as setup_config
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.run_artifacts as run_artifacts

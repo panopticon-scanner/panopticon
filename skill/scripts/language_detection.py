@@ -5,15 +5,8 @@ under the historical #1138 prune only explains why a language-keyed scanner was
 not selected. Dependency/cache trees and dot directories stay unobserved.
 """
 import os
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from scripts import plan_contract
-else:
-    try:
-        from scripts import plan_contract
-    except ModuleNotFoundError:  # standalone html_report import, via tool_cleanup
-        import plan_contract
+from scripts import plan_contract
 
 
 EXTENSIONS = {".py": "python", ".go": "go",

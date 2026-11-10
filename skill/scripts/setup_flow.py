@@ -18,23 +18,21 @@ JSON config is neither written nor read here.
 """
 import json
 import os
-import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from scripts import discovery  # noqa: E402  (P6.5 Slice A: discovery primitives, moved off orchestrator)
-from scripts import grouping_engine  # noqa: E402  (5.2: stage-3 size policy + setup report)
-from scripts import repo_config  # noqa: E402  (#1681: the one place the config names live)
-from scripts import tolerant_json  # noqa: E402  (#2959: the JSON depth bound)
-from scripts import plan_contract  # noqa: E402  (#3409: the artifact directory's name)
-from scripts import setup_config  # noqa: E402  (#3405: refusal, overrides, draft settings)
-from scripts import setup_spine  # noqa: E402  (#3405: the bundled vocabulary paths)
+from scripts import discovery  # P6.5 Slice A: discovery primitives, moved off orchestrator
+from scripts import grouping_engine  # 5.2: stage-3 size policy + setup report
+from scripts import repo_config  # #1681: the one place the config names live
+from scripts import tolerant_json  # #2959: the JSON depth bound
+from scripts import plan_contract  # #3409: the artifact directory's name
+from scripts import setup_config  # #3405: refusal, overrides, draft settings
+from scripts import setup_spine  # #3405: the bundled vocabulary paths
 # #1577 (SEC-D1C): the artifact writes below go through the driver's own
 # confined O_NOFOLLOW writers rather than a plain open(). A target repo can
 # commit any of these paths as a symlink, and first contact vets the
 # `.panopticon` DIRECTORY (#3271), never the leaf. Imported as a module, not as
 # names (tests/test_layout.py rule 1), and this direction only --
 # `phases/setup.py` already calls into this module.
-from scripts.phases import runio  # noqa: E402
+from scripts.phases import runio
 
 
 # _committed_matrix/_matrix_catalog RELOCATED to discovery.py (P6.5 Slice A):

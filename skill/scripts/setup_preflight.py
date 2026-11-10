@@ -158,7 +158,7 @@ def _check_host_shells(host, runner, repo_root=None, envelope=None):
     offer -- the tests, and any future caller that runs outside a driver
     invocation.
     """
-    from scripts import dispatch  # noqa: E402
+    from scripts import dispatch
     resolved_host = host or dispatch._detect_host()
     row = hosts.spec(resolved_host)
     checks: list[tuple[str, bool | None, str]] = []

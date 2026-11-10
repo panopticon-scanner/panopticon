@@ -2,9 +2,8 @@
 from dataclasses import dataclass
 
 
-# Mirrors tools.base.INERT_TEXT_MAX. This module must also import flat when
-# skill/scripts itself is on sys.path, where the `scripts.tools.base` package
-# path does not exist; keep the HTML boundary local and pin equality in tests.
+# Mirrors tools.base.INERT_TEXT_MAX. Kept local so this sentence module stays
+# free of the tools package; tests pin the two equal.
 HTML_DETAIL_MAX = 2000
 HTML_DETAIL_CUT = "…"
 # #2990: how many finding ids `unknown_severity_findings`' sentence names

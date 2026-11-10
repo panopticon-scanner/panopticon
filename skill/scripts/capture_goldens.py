@@ -8,15 +8,16 @@ the whole point is to prove parse() handles what the tools really emit.
 import argparse
 import json
 import os
-import sys
 
 from defusedxml import ElementTree as ET
 from defusedxml.common import DefusedXmlException
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from scripts.tool_capture import _redact_capture  # noqa: E402
-from scripts.tools import ADAPTERS  # noqa: E402
-from scripts import tools_image  # noqa: E402
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
+from scripts.tool_capture import _redact_capture
+from scripts.tools import ADAPTERS
+from scripts import tools_image
 
 # The image layout as configuration (#1654): a hardcoded /opt/panopticon
 # import root above and a fixed TARGETS table below meant that moving a mount

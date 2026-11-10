@@ -1,14 +1,7 @@
 """Shared structural and artifact-root contracts for Panopticon plans."""
-from typing import TYPE_CHECKING
 import os
 
-if TYPE_CHECKING:
-    from scripts import groups_schema  # `import plan_contract` occur in-tree.
-else:
-    try:  # dual import convention (#742): both `scripts.plan_contract` and a bare
-        from scripts import groups_schema  # `import plan_contract` occur in-tree.
-    except ModuleNotFoundError:  # imported flat, with skill/scripts on sys.path
-        import groups_schema
+from scripts import groups_schema
 
 # The artifact directory's name, spelled once (#3409). `artifact_root` below
 # is the vetted path to it; code that needs only the NAME (a dir_fd-relative

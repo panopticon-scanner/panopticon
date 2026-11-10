@@ -14,17 +14,16 @@ import sys
 import tempfile
 from typing import Any, cast
 
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_skill_bootstrap.py"))
 import jsonschema
 
 # The Security upload scopes itself with the SAME gitignore-style matcher the
 # gate uses (`security_gate --exclude` -> `ingest_tools` ->
 # `groups_schema.matched_glob`), so one `--exclude` line means one scope on
-# both. The skill tree is put on the path the way `replay_report.py` does it;
-# this script runs from the repo checkout, not from an installed package.
-_SKILL_DIR = str(Path(__file__).resolve().parents[1] / "skill")
-if _SKILL_DIR not in sys.path:
-    sys.path.append(_SKILL_DIR)   # after the checkout's own entries, never over them
-from scripts import groups_schema  # noqa: E402
+# both.
+from scripts import groups_schema
 
 # Where run_tools mounts the reviewed tree inside the tools image
 # (`run_tools.TARGET_MOUNT`, pinned equal by test): scanners write locations

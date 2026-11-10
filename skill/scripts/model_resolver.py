@@ -1,25 +1,16 @@
 #!/usr/bin/env python3
 """Resolve reviewer role + host to a concrete model identifier."""
-from typing import TYPE_CHECKING, Any
+from typing import Any
 import json
 import os
 import re
 import sys
 
-# This repo has two directories named `scripts` with no __init__.py. When imported flat
-# (skill/scripts on sys.path), the try arm raises ModuleNotFoundError. When run from a
-# context where cwd is also in sys.path, Python resolves the repo-root namespace package
-# and the import raises bare ImportError instead. The fallback handles both.
-if TYPE_CHECKING:
-    from scripts import _version
-    from scripts import hosts
-else:
-    try:
-        from scripts import _version
-        from scripts import hosts
-    except ModuleNotFoundError:
-        import _version
-        import hosts
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
+from scripts import _version
+from scripts import hosts
 
 
 def _load_profiles():

@@ -1,39 +1,19 @@
 #!/usr/bin/env python3
 """Render a CodeReviewReport as a self-contained HTML document."""
-from typing import TYPE_CHECKING, Any
+from typing import Any
 import base64
 import hashlib
 import html
 import json
 import re
 
-if TYPE_CHECKING:
-    import scripts.evidence as evidence
-    import scripts.evidence_sections as evidence_sections
-    import scripts.host_disclosure as host_disclosure
-    import scripts.hosts as hosts
-    import scripts.integrity_messages as integrity_messages
-    import scripts.ocrdb as ocrdb
-    from scripts import build_disclosure, safe_write, tool_cleanup
-else:
-    try:
-        import scripts.evidence as evidence
-        import scripts.evidence_sections as evidence_sections
-        import scripts.host_disclosure as host_disclosure
-        import scripts.hosts as hosts
-        import scripts.integrity_messages as integrity_messages
-        import scripts.ocrdb as ocrdb
-        from scripts import build_disclosure, safe_write, tool_cleanup
-    except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-        import evidence
-        import evidence_sections
-        import host_disclosure
-        import hosts
-        import integrity_messages
-        import ocrdb
-        import build_disclosure
-        import safe_write
-        import tool_cleanup
+import scripts.evidence as evidence
+import scripts.evidence_sections as evidence_sections
+import scripts.host_disclosure as host_disclosure
+import scripts.hosts as hosts
+import scripts.integrity_messages as integrity_messages
+import scripts.ocrdb as ocrdb
+from scripts import build_disclosure, safe_write, tool_cleanup
 
 _CSS = """
 :root {

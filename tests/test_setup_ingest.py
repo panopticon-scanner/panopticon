@@ -405,7 +405,7 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
         self.assertIn("Checkout", groups)
 
     def test_dump_config_yaml_puts_version_first_and_settings_last(self):
-        import setup_proposal as sp
+        import scripts.setup_proposal as sp
         text = sp.dump_config_yaml({"App": {"match": ["src/**"]}},
                                    exclude_paths=["vendor/**"],
                                    settings={"max_per_group": 48, "max_groups": None})
@@ -422,7 +422,7 @@ class TestDraftPreservesTopLevelKeys(unittest.TestCase):
         self.assertEqual(doc["version"], 1)
 
     def test_dump_config_yaml_omits_empty_settings_and_exclusions(self):
-        import setup_proposal as sp
+        import scripts.setup_proposal as sp
         body = sp.dump_config_yaml({"App": {"match": ["src/**"]}}, header=False)
         self.assertEqual(body, "version: 1\ngroups:\n  App:\n    match:\n    - src/**\n")
 

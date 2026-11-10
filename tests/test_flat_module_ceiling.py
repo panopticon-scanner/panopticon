@@ -57,7 +57,9 @@ SURFACES = ("skill/scripts", "devtools", "skill/scripts/tools")
 # (ARC-2990316730; execution moved out in #3406 and it is off the list).
 PENDING: dict[str, int] = {
     "devtools/bump_pins.py": 871,
-    "devtools/reconcile_apply.py": 813,
+    # #3505: +3 / +2 for the import bootstrap block, raised by coordinator
+    # ruling (no line golfing; #3515 retires this ratchet).
+    "devtools/reconcile_apply.py": 816,
     "skill/scripts/diff_map.py": 1215,
     # #3457/#3485: catalog/scope moved out, then the dead panel schedule was deleted
     "skill/scripts/discovery.py": 1209,
@@ -65,7 +67,7 @@ PENDING: dict[str, int] = {
     "skill/scripts/html_report.py": 1568,
     "skill/scripts/ingest_tools.py": 1100,
     "skill/scripts/loop_batch.py": 820,
-    "skill/scripts/run_tools.py": 757,
+    "skill/scripts/run_tools.py": 759,
     "skill/scripts/safe_git.py": 745,
     "skill/scripts/setup_proposal.py": 741,
     "skill/scripts/write_guard_hook.py": 864,

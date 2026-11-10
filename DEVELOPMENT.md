@@ -379,17 +379,18 @@ characters, and matching consumes the whole path.
   the disclosure axis that makes a truncated run visible in the artifact instead of silently
   biased toward "no findings"; it only *produces* the signal — refuse-to-grade-on-divergence and
   panel reorder are SP-B policy, not SP-A.
-- **Two import modes, one module object per file.** `skill/scripts/` has no
-  `__init__.py`: it is the `scripts` namespace package (the repo-root dev tools live in `devtools/`, #3504), reached with `skill/` on
-  the path (`from scripts import x`, what `phases/child._child_env` gives every child), while
-  `skill/scripts/` is on the path too so an entry script run by path can `import x` flat. Importing
-  one file under BOTH names builds two module objects from it, with two sets of module state and
-  two patch targets, so package-qualified is the default and a flat import is a decision.
-  `tests/test_layout.py` owns the flat mode (rule 2, and `FLAT_MODULES` for the modules that must
-  keep it); `tests/test_module_identity.py` gates the rest — the import-time doubled-module
-  census, a shrink-only per-module ceiling on the `sys.path` bootstrap sites, and no import
-  fallback in a package module. Retiring the remaining flat imports is tracked in #1516.
-  Neither mode is a packaging artefact: `pyproject.toml` declares `py-modules = []`, so a build
+- **One import mode, one module object per file (#3505, #3506).** `skill/scripts/` is the
+  regular package `scripts` (the repo-root dev tools live in `devtools/`, #3504), reached with
+  `skill/` on the path: every import is `from scripts import x` or `import scripts.x`. An entry
+  script run by path (`python3 skill/scripts/driver.py ...`) runs `skill/scripts/_bootstrap.py`
+  by its own `__file__` in its `if __name__ == "__main__":` block, before its first `scripts`
+  import; that file drops `skill/scripts` from `sys.path` and puts `skill/` first, so no file
+  can load under two names, and works under `python3 -P`. A devtools CLI runs
+  `devtools/_skill_bootstrap.py`, which runs the same file. `tests/test_import_shape.py` keeps
+  it that way: no other `sys.path` write, no import fallback, no bare import of a skill module,
+  every entry script bootstraps, and the `noqa: E402` count only goes down; it also measures
+  that a driver-shaped process and an installed copy of the skill load each file once.
+  It is not a packaging artefact: `pyproject.toml` declares `py-modules = []`, so a build
   of this project ships no importable code at all — the skill directory and the tools image are
   the delivery vehicles, and `pip install -e ".[dev]"` is for the test and lint tooling.
 - **One Dockerfile stage, and the split is 5.3's** (owner ruling 2026-09-27, #1772). Every
