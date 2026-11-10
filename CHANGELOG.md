@@ -53,10 +53,12 @@
 - **Workflow `run:` guard and shell reader retired (#3513, part of #3264).**
   The 49 `devtools/{workflow,shell}_*.py` modules (18,922 lines) and 49 reader-test
   modules (44,186 lines) are gone. Two product Workflow-template tests that the
-  old filename glob over-matched are retained under accurate names. A four-test
-  structural YAML allowlist now requires 40-hex action pins, effective permissions,
-  and confines `pull_request_target` to `security-fork.yml`. The retained Dockerfile
-  checksum/OSV and JSON scaling checks no longer import the deleted readers.
+  old filename glob over-matched are retained under accurate names. Non-shell
+  import-closure, gate-package, containment-lane, scanner-UID, and pin-PR contracts
+  move to `tests/test_action_pins.py`. A structural YAML allowlist now requires
+  immutable action pins with version comments, effective permissions, and confines
+  `pull_request_target` to `security-fork.yml`. The retained Dockerfile checksum/OSV
+  and JSON scaling checks no longer import the deleted readers.
 - **The `agy` guard's argv policy paths are authoritative (#3511).**
   `PANOPTICON_READ_SCOPE` and `PANOPTICON_WRITE_ALLOWLIST` can no longer replace the
   read scope or write allowlist named in the hook command, and an invocation without

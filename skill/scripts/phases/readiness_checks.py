@@ -116,8 +116,9 @@ SESSION_REMEDY = (
 # package at module level, so importing `scripts.driver` cannot fail on an
 # absent one and the row gets to name it with its `pip install` (#2369).
 #
-# That is held behaviorally: `test_readiness_verb.py` blocks each package in a
-# child interpreter and reads this row back out.
+# `tests/test_action_pins.py` holds that import-time property with an AST walk
+# of every file reached by the driver, while `test_readiness_verb.py` blocks
+# each package in a child interpreter and reads this row back out.
 #
 # Until #2369 the row was reached only for `jsonschema`: `setup_flow`,
 # `discovery` and `setup_proposal` imported `yaml` at module level, and
