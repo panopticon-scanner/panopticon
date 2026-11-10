@@ -60,7 +60,9 @@ Issues = "https://github.com/panopticon-scanner/panopticon/issues"
 py-modules = []
 
 [tool.pytest.ini_options]
-pythonpath = ["skill", "skill/scripts", "devtools", "."]
+# #3522: no "skill/scripts". Skill modules are imported as `scripts.*` only
+# (#3505); a bare entry let a new bare import pass in some test orders only.
+pythonpath = ["skill", "devtools", "."]
 addopts = ["--import-mode=importlib"]
 markers = [
     # #1515: the ONLY tests allowed to reach the Docker daemon. Everything else
