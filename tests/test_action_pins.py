@@ -10,7 +10,6 @@ import importlib.metadata
 import json
 import os
 import re
-import subprocess
 import sys
 import tempfile
 import unittest
@@ -173,6 +172,8 @@ print(json.dumps(sorted({
 
 def files_reached_by(*roots):
     """Every ``skill/scripts`` file loaded by importing ``roots``."""
+    from scripts.tools.exec import run_tool
+
     with tempfile.TemporaryDirectory() as elsewhere:
         env = {
             "PATH": os.path.join(elsewhere, "empty-path"),
@@ -183,20 +184,23 @@ def files_reached_by(*roots):
         }
         for path in (env["PATH"], env["HOME"]):
             os.makedirs(path, exist_ok=True)
-        process = subprocess.run(  # nosec B603
+        stdout, stderr, returncode = run_tool(
             [sys.executable, "-c", _CENSUS, SKILL_SCRIPTS, *roots],
+            timeout=180,
+            ok_codes=(0,),
+            capture_stderr=True,
             cwd=elsewhere,
             env=env,
-            capture_output=True,
-            text=True,
-            timeout=180,
         )
-    if process.returncode != 0:
+    if returncode != 0:
         raise AssertionError(
             "importing %s failed, so the import-chain guards read nothing:\n%s"
-            % (", ".join(roots), process.stdout + process.stderr)
+            % (
+                ", ".join(roots),
+                (stdout + stderr).decode("utf-8", errors="replace"),
+            )
         )
-    return json.loads(process.stdout)
+    return json.loads(stdout.decode("utf-8"))
 
 
 def third_party_imports_under(files):
