@@ -25,6 +25,12 @@
 - **CI lint covers `devtools/` (#3074).** The lint job's ruff step named only `skill/scripts/`
   and `tests/`, so the repo-root dev tools (the filing, triage and pin CLIs) were never linted in
   CI. It now names `devtools/` too, and `tests/test_layout.py` pins the step's targets.
+- **Security-workflow meta-tests keep behavior and shed self-lint (#3512).**
+  The three security/fork/strictness test modules now pin only gate exit-status
+  propagation, the hostile fork's label/secret/untrusted-checkout boundary,
+  `--security redteam` on every CI scanner and gate, and the runtime
+  strict-integration flag. Broad workflow prose/shape readers and mutation tests
+  of those readers are removed.
 - **The `agy` guard's argv policy paths are authoritative (#3511).**
   `PANOPTICON_READ_SCOPE` and `PANOPTICON_WRITE_ALLOWLIST` can no longer replace the
   read scope or write allowlist named in the hook command, and an invocation without
