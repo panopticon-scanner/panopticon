@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Dependabot's five tools-closure bumps and the gate's pip bump, re-resolved (supersedes #3524,
+  #3525).**
+  - anyio 4.15.1 -> 4.16.0; filelock 4.2.4 -> 4.2.7; pip 26.2.2 -> 26.3 (in both
+    `requirements-tools.txt` and `.github/requirements-gate.txt`); platformdirs 4.14.0 -> 4.14.3;
+    python-multipart 0.0.32 -> 0.0.33.
+  - The closure was re-resolved with uv for Python 3.12 on both linux targets, and nothing else
+    moved. The digests were written by `bump_pins.py`, wheels only: Dependabot had written sdist
+    hashes, which failed `bump_pins.py requirements --check` in lint.
 - **The NVD cache sync seeds from yesterday's database (#3417, script half).** The keyed sync
   moves into `.github/scripts/nvd-cache-sync.sh` and starts from the last published
   `panopticon-tools-nvd` image, pulled by digest from our own registry, so a normal day downloads
