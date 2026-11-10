@@ -11,8 +11,6 @@ import io
 import json
 import os
 from pathlib import Path
-import subprocess
-import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -189,32 +187,6 @@ class OneCellIdentityParserTest(unittest.TestCase):
         self.assertIsNone(diagnostics[0]["cell"])
         self.assertEqual([entry["file"] for entry in malformed], [path])
         self.assertIsNone(malformed[0]["cell"])
-
-
-class FlatImportArmTest(unittest.TestCase):
-    """#1765: `cell_of` validates against `groups_schema`, so this module gained
-    a dual-import fallback, and the `except ModuleNotFoundError` arm is reached
-    by nothing in the suite -- every importer today uses `scripts.findings_
-    contract`. `tests/test_layout.py`'s `FLAT_MODULES` does not list this module,
-    so the pin lives here, in the same fresh-interpreter shape #1770 used for
-    `coverage_model`. Round 2 of #1639 P15 is the regression this closes: an
-    import narrowed for four modules at once, silently, because nothing live
-    reached them flat and the suite stayed green.
-    """
-
-    def test_findings_contract_imports_flat_with_only_skill_scripts_on_the_path(self):
-        scripts = os.path.dirname(os.path.abspath(fc.__file__))
-        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
-        env["PYTHONPATH"] = scripts
-        proc = subprocess.run(
-            [sys.executable, "-c",
-             "import findings_contract as fc; "
-             "print(fc.cell_of('findings-a-SEC.json'), fc.cell_of('findings-a-XYZ.json'))"],
-            cwd=scripts, env=env, capture_output=True, text=True, check=False)
-        self.assertEqual(proc.returncode, 0, proc.stderr)
-        # The roster has to be the one that answers, not an empty stand-in: a
-        # fallback that imported a DIFFERENT module would still exit 0.
-        self.assertEqual(proc.stdout.strip(), "['a', 'SEC'] None")
 
 
 class SharedAcceptanceTest(unittest.TestCase):

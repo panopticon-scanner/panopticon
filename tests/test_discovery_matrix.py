@@ -10,12 +10,12 @@ from tests.discovery_test_helpers import (
     repo_with_only_malformed_group, setup_flow, GIT_TIMEOUT,
 )
 
-import scripts.discovery as discovery  # noqa: E402
-import scripts.discovery_catalog as discovery_catalog  # noqa: E402
-import scripts.discovery_scope as discovery_scope  # noqa: E402
-import scripts.groups_schema as groups_schema  # noqa: E402
-import scripts.setup_config as setup_config  # noqa: E402
-import scripts.setup_preflight as setup_preflight  # noqa: E402
+import scripts.discovery as discovery
+import scripts.discovery_catalog as discovery_catalog
+import scripts.discovery_scope as discovery_scope
+import scripts.groups_schema as groups_schema
+import scripts.setup_config as setup_config
+import scripts.setup_preflight as setup_preflight
 orchestrator = discovery   # #run7 COD-X0X: one module identity
 
 

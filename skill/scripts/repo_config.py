@@ -18,7 +18,6 @@ and REFUSES the document if the package is absent, rather than raising, because
 every caller here is documented as never raising and `driver readiness`'s
 `dependencies` row is the place a missing `pyyaml` gets named (#2369).
 """
-import importlib
 import os
 import stat
 from collections.abc import Iterable
@@ -105,9 +104,7 @@ def _committed_count_error(doc):
     # Lazy because setup_proposal imports this module for config names and the
     # version. At read time both modules can share its established #1107 limits
     # without copying the numbers or creating an import-time cycle.
-    module_root = "scripts." if __package__ else ""
-    setup_proposal = importlib.import_module(module_root + "setup_proposal")
-    groups_schema = importlib.import_module(module_root + "groups_schema")
+    from scripts import groups_schema, setup_proposal
     max_groups = setup_proposal._MAX_GROUPS
     max_entries = setup_proposal._MAX_GROUP_ENTRIES
 

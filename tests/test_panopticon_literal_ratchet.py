@@ -30,19 +30,18 @@ HOME: dict[str, int] = {
 # Sites that keep their literal on purpose, pinned like the rest (shrink-only)
 # but not owed. The hooks run as their own `-I` interpreter with no package on
 # sys.path, so they cannot import plan_contract, and a bootstrap would be worse
-# than the literal; repo_config is also imported flat (`gh_transport`), and its
-# two are the retired files' fixed locations; build_disclosure stays import-free
-# by design, so html_report's flat import branch can load it; claim_scope is a
+# than the literal; repo_config's two are the retired files' fixed locations;
+# build_disclosure stays import-free by design; claim_scope is a
 # stdlib-only leaf, which tests/test_claim_scope.py pins (it sits under dispatch
 # and so under every runner). `test_the_standalone_literals_agree`
 # keeps each from drifting off `plan_contract.ARTIFACT_DIR`.
 STANDALONE: dict[str, int] = {
-    "build_disclosure.py": 1,    # PRIOR_RUN; import-free so html_report's flat branch loads it
+    "build_disclosure.py": 1,    # PRIOR_RUN; import-free by design
     "claim_scope.py": 1,         # _ARTIFACT_DIR; a stdlib-only leaf (tests/test_claim_scope.py)
     "codex_read_tools.py": 1,    # EXCLUDED_DIRECTORIES member (runs under -I)
     "guard_rules.py": 1,         # ARTIFACT_DIR, shared by the hook processes
     "read_guard_hook.py": 1,     # DEFAULT_SCOPE_PATH (hook process)
-    "repo_config.py": 2,         # LEGACY_GROUPS_PATH, LEGACY_CONFIG_JSON (imported flat)
+    "repo_config.py": 2,         # LEGACY_GROUPS_PATH, LEGACY_CONFIG_JSON (fixed locations)
     "write_guard_hook.py": 1,    # DEFAULT_ALLOWLIST_PATH (hook process)
 }
 # Constants that contain the string but do not name the artifact directory.

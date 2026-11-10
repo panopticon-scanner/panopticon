@@ -34,15 +34,8 @@ by both methods.
 Stdlib plus `repo_config`, which owns the target config's own dot spelling --
 that name is never spelled here (`tests/test_repo_config_literals.py`).
 """
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from scripts import repo_config
-else:
-    try:
-        from scripts import repo_config
-    except ModuleNotFoundError:
-        import repo_config
+from scripts import repo_config
 
 # Root dot-DIRECTORIES: everything beneath one is surface. DIRS and FILES stay
 # apart so the target's committed config in its dot spelling is reviewable

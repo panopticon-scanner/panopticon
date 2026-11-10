@@ -188,7 +188,7 @@ class _HookLaunch(unittest.TestCase):
              {"tool_name": "Write", "tool_input": {"file_path": self.outside}}),
             ("kimi_guard_hook.py", ["read", self.scope],
              {"tool_name": "Read", "tool_input": {"path": self.outside}}),
-            ("agy_guard_hook.py", [],
+            ("agy_guard_hook.py", [self.scope, self.allowlist],
              {"hook": "PreToolUse", "lastUserInput": "<!-- panopticon-entry: e1 -->",
               "toolCall": {"name": "read_file", "arguments": {"Path": self.outside}}}),
         )

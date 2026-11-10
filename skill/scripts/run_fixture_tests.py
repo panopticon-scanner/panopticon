@@ -17,14 +17,15 @@ from pathlib import Path
 # ARC-3859414366): the resource ceilings from `run_tools`, whose env constants
 # tune them, and the privilege drop from `scanner_config`, the one owner every
 # panopticon container shares since #2150 (ARC-A3A).
-# skill/ is not on sys.path when this file runs as a script, so put it there
-# first: the same bootstrap run_tools.py itself uses. Acyclic and stdlib-only
-# (run_tools imports no part of this module), so a module-level import costs a
-# few tens of milliseconds and keeps the coupling visible.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from scripts import run_tools            # noqa: E402  (needs the path above)
-from scripts import scanner_config       # noqa: E402  (needs the path above)
-from scripts import tools_image          # noqa: E402  (needs the path above)
+# Acyclic and stdlib-only (run_tools imports no part of this module), so a
+# module-level import costs a few tens of milliseconds and keeps the coupling
+# visible.
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
+from scripts import run_tools
+from scripts import scanner_config
+from scripts import tools_image
 
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 DOCKERFILE = REPO_ROOT / "Dockerfile.fixtures"

@@ -32,25 +32,13 @@ import re
 # #1766 (ARC-188610019): package-qualified, so these are the SAME module objects
 # the rest of a driver-shaped process holds -- `scripts.discovery`'s compiled-glob
 # cache and disclosure ledger stay ONE cache and ONE ledger, which is the reason
-# that module already binds its own siblings package-qualified. Safe here without
-# a fallback arm: nothing imports this module flat (`setup_flow`, its last flat
-# importer, now imports the package too), so `scripts` has resolved before this
-# body runs, and tests/test_layout.py's FLAT_MODULES does not ask this module for
-# a flat mode.
+# that module already binds its own siblings package-qualified.
 from scripts import coverage_model
 from scripts import discovery
 from scripts import discovery_catalog
 from scripts import repo_config
-# #2413: qualified too. Every path to `setup_proposal` is package-first now,
-# the seven LAZY sites in `setup_flow` and `discovery` function bodies
-# included, so nothing mints a pair here. Before that they reached it flat and
-# qualifying this line MINTED a second identity at call time rather than
-# retiring one -- #2256 measured that trade and put the flat spelling back.
 from scripts import setup_proposal
-# `tests_axis` stays FLAT for its own reason: it has no `scripts.*` copy in a
-# driver-shaped process, because `discovery` itself imports it flat, so
-# qualifying it here WOULD mint one. The rest of the residual is in #1516.
-import tests_axis
+from scripts import tests_axis
 
 FLOOR = discovery.COMMONS_MIN_FILES     # a layer under this merges back (6)
 MIN_CEILING = 4

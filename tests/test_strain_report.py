@@ -174,16 +174,16 @@ class TestSharedReportContracts(unittest.TestCase):
                 self.assertIn("'BOG'", line)
                 self.assertIn("not an OCRDb domain", line)
 
-    def test_reports_remain_flat_importable_in_a_fresh_interpreter(self):
-        scripts = os.path.join(os.path.dirname(os.path.dirname(__file__)), "skill", "scripts")
+    def test_reports_import_together_in_a_fresh_interpreter(self):
+        skill = os.path.join(os.path.dirname(os.path.dirname(__file__)), "skill")
         code = """import json, sys
 sys.path.insert(0, sys.argv[1])
-import ocrdb, strain_report, x0x_report
+from scripts import ocrdb, strain_report, x0x_report
 finding = {'id': 'f', 'location': {'file': 'a.py'}}
 print(json.dumps([ocrdb.domain_of('SEC-A1A'),
                   strain_report._occurrence(finding, 'r'), x0x_report._occurrence(finding)]))
 """
-        proc = subprocess.run([sys.executable, "-I", "-c", code, scripts],
+        proc = subprocess.run([sys.executable, "-I", "-c", code, skill],
                               capture_output=True, text=True, timeout=10, check=True)
         self.assertEqual(json.loads(proc.stdout), ["SEC",
             {"file": "a.py", "finding_id": "f", "run_id": "r"},

@@ -27,21 +27,11 @@ tool verdict declares. Every admission boundary and every synthesis reader of
 those records calls it. It sits BESIDE the run/cell identity checks, never
 inside them.
 """
-from typing import TYPE_CHECKING
 import os
 
-# The domain roster `cell_of` validates a name's trailing token against. Dual
-# import convention (#742): this module sits in the flat `skill/scripts`
-# namespace beside `plan_contract`, which carries the same fallback, so both
-# `scripts.findings_contract` and a bare `import findings_contract` resolve it.
-# The edge adds no cycle -- `groups_schema` imports nothing from this tree.
-if TYPE_CHECKING:
-    from scripts import groups_schema
-else:
-    try:
-        from scripts import groups_schema
-    except ModuleNotFoundError:   # imported flat, with skill/scripts on sys.path
-        import groups_schema
+# The domain roster `cell_of` validates a name's trailing token against. The
+# edge adds no cycle -- `groups_schema` imports nothing from this tree.
+from scripts import groups_schema
 
 
 # #2104: the one format version agent records are written in. ABSENT reads as

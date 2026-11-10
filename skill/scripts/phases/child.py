@@ -23,17 +23,17 @@ import scripts.loop_progress as loop_progress
 
 
 def _child_env():
-    """Env for subprocessed panopticon CLIs. They do `import scripts.*` (a
-    namespace package) plus BARE imports of both skill/scripts modules (e.g.
-    `import evidence`) and repo-root devtools/ modules (e.g. `import file_issues`),
-    so PYTHONPATH must mirror pyproject's pytest pythonpath: skill, skill/scripts,
-    and <repo>/devtools (#3504)."""
+    """Env for subprocessed panopticon CLIs. They import `scripts.*` from
+    skill/ and repo-root devtools/ modules flat (e.g. `import file_issues`), so
+    PYTHONPATH carries skill and <repo>/devtools (#3504). Not skill/scripts
+    itself: nothing imports a skill module bare since #3505, and each entry
+    script's bootstrap would drop that root anyway."""
     scripts_dir = runio._SCRIPTS_DIR                   # .../skill/scripts
     skill_dir = os.path.dirname(scripts_dir)           # .../skill
     repo_root = os.path.dirname(skill_dir)             # .../panopticon
     repo_devtools = os.path.join(repo_root, "devtools")  # .../panopticon/devtools
     env = executable.sanitize_startup_environment(os.environ)
-    parts = [skill_dir, scripts_dir, repo_devtools]
+    parts = [skill_dir, repo_devtools]
     env["PYTHONPATH"] = os.pathsep.join(os.path.realpath(part) for part in parts)
     # These children execute installed panopticon code with a reviewed tree as
     # cwd. Ambient Python startup controls must not make that tree import code

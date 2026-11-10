@@ -3,8 +3,8 @@ import tempfile
 import unittest
 import yaml
 
-import scripts.groups_schema as groups_schema  # noqa: E402
-import scripts.setup_proposal as sp  # noqa: E402
+import scripts.groups_schema as groups_schema
+import scripts.setup_proposal as sp
 
 DATA = os.path.join(os.path.dirname(__file__), "..", "skill", "data")
 VOCAB = os.path.join(DATA, "capability_vocabulary.yml")
@@ -378,7 +378,7 @@ class TestAssemble(unittest.TestCase):
     def test_assembled_groups_pass_groups_schema(self):
         proposal = self._p([{"capability": "Auth", "match": ["src/auth/**"]}])
         groups, _ = sp.assemble(proposal, self.vocab, self.affinity)
-        parsed, errors = __import__("groups_schema").parse_groups({"groups": groups})
+        parsed, errors = groups_schema.parse_groups({"groups": groups})
         self.assertEqual(errors, [])
         self.assertEqual(parsed["Auth"]["floor"], {"SEC"})
 
