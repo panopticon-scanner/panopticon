@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **No more line-ceiling ratchets (#3515, part of #3264).** `tests/test_flat_module_ceiling.py` (the
+  shrink-only 700-line allowlist for flat modules, devtools and adapters) and rule 5 of
+  `tests/test_layout.py` (the 700-line ceiling for package modules) are gone; module size is a
+  review call, not a test. `test_layout.py`'s import-shape rules and `OneScriptsNamespaceTest` stay.
+  The code-layout guide drops its ceiling paragraph, and the module docstrings that gave the
+  ratchet as a present-tense reason now say it is retired.
 - **One import bootstrap, one module name per file (#3505, #3506, part of #1516).** Every
   module under `skill/scripts/` is now imported as `scripts.*` only, and `skill/scripts/` is a
   regular package. Each entry script run by path runs `skill/scripts/_bootstrap.py` by its own

@@ -21,7 +21,7 @@ still honours the exclusion, which is the half of the ruling that leaves
 and `run_tools --exclude` still get the committed globs as they always have.
 
 Its own module because `discovery.py` is at its line ratchet
-(`tests/test_flat_module_ceiling.py`), and because the policy reads better in one
+(`tests/test_flat_module_ceiling.py`, retired in #3515), and because the policy reads better in one
 place than spread across three call sites. Stdlib-only. `coverage_model` is
 imported inside `sec_surface` rather than at module scope on purpose:
 `coverage_model` imports `discovery` and `discovery` imports THIS module, so a

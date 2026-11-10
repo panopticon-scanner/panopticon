@@ -27,8 +27,8 @@ ws0-god-module-refactor-design.md section 6.3.
    alias of a shared definition from outside the package stays legal and is
    expected to say why (`synth/findings.py` aliases three `scripts.evidence`
    names, per #688: local copies of shared definitions drift).
-5. Size ratchet: no package module exceeds LINE_CEILING lines. Raising the
-   number here is a visible decision; drifting past it is not.
+5. (Retired in #3515: the 700-line size ratchet. Module size is a review
+   call, not a test.)
 6. Every package module imports on its own in a fresh interpreter. `phases/`
    contains two mutual pairs (coverage<->requests, persist<->requests;
    review<->verify dissolved when the tool round moved to verify_tools)
@@ -74,7 +74,6 @@ EXPECTED_PACKAGES = ("synth", "phases", "runners", "probes")  # S1 lands synth; 
 # phases; P6 adds runners; #1627 adds probes
 ENTRY_SCRIPTS = ("synthesize.py", "driver.py", "orchestrate.py",
                  "host_probes.py")   # #1627: the probe registry re-exports nothing
-LINE_CEILING = 700
 _SKIP_DIRS = {"fixtures", "goldens", "__pycache__"}
 
 
@@ -238,17 +237,6 @@ class LayoutTest(unittest.TestCase):
                 offenders += self._re_exports(path, bound)
         self.assertEqual(offenders, [], "re-export of a package sibling (one name, one "
                          "module, one patch target):\n" + "\n".join(offenders))
-
-    def test_rule5_size_ratchet(self):
-        over = []
-        for path in _package_files():
-            with open(path, encoding="utf-8") as fh:
-                n = len(fh.read().splitlines())
-            if n > LINE_CEILING:
-                over.append("%s: %d lines" % (_rel(path), n))
-        self.assertEqual(over, [], "module over the %d-line ceiling; split it or raise "
-                         "LINE_CEILING deliberately:\n%s" % (LINE_CEILING, "\n".join(over)))
-
 
     def test_rule6_every_package_module_imports_standalone(self):
         env = dict(os.environ)
