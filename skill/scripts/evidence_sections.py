@@ -32,7 +32,7 @@ where it does.
 
 Its own module rather than a block inside `evidence.py`: that module and
 `html_report.py` are both pinned at their exact current size by the shrink-only
-ratchet in `tests/test_flat_module_ceiling.py`, whose stated remedy for a module
+ratchet in `tests/test_flat_module_ceiling.py` (retired in #3515), whose stated remedy for a module
 that needs more room is a new module.
 """
 

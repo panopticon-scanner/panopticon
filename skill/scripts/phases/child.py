@@ -3,7 +3,7 @@
 Split out of `phases/runio.py` (which owns the rest of the driver's I/O) when
 bounding the capture -- #1576's reader threads and #1575's process-group kill --
 would have pushed that module past the 700-line ratchet `tests/test_layout.py`
-holds it to. One subject, one module: how a phase child is spawned, how long it
+held it to (retired in #3515). One subject, one module: how a phase child is spawned, how long it
 may run, how much of what it says is kept, and how it is ended.
 
 `_SCRIPTS_DIR` and `DriverError` stay in `runio` and are reached as module

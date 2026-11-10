@@ -1,7 +1,7 @@
 """The `setup-scan` unenforced-dispatch acknowledgement (#1737, AGT-B1D).
 
 Split out of `phases/setup.py` under the 700-line ceiling (`tests/test_layout.py`
-rule 5). One cohesive block with one subject: whether `driver setup` may dispatch
+rule 5, retired in #3515). One cohesive block with one subject: whether `driver setup` may dispatch
 the setup classifier SHELL-LESS, the acceptance file that records the operator
 saying yes, the remedy phrasing the refusal offers, and the discard that happens
 once the posture no longer needs an acceptance. Nothing here reads a setup PHASE,
