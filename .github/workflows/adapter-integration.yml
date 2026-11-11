@@ -52,7 +52,7 @@ jobs:
       # production's own primary group rather than a guessed one. The uid is
       # pinned all the same and travels in as `EXPECTED_UID`, so a uid change
       # in that `useradd` reddens this job instead of drifting past it:
-      # `tests/test_workflow_pins.py` reads the number out of the `Dockerfile`
+      # `tests/test_action_pins.py` reads the number out of the `Dockerfile`
       # and compares it to both the pin and this value.
       SCANNER_USER: scanner
       SCANNER_UID: "1000"
@@ -116,8 +116,8 @@ jobs:
       # the intent; `id -u` inside the container is the proof, and it runs
       # BEFORE the probes so a lane that lost the flag -- or an image whose
       # passwd stopped carrying the user -- is a red job rather than a green
-      # tick over probes run as root. `tests/test_workflow_pins.py` pins the
-      # flag from the file; this is the half a file cannot state.
+      # tick over probes run as root. Since #3513 retired the shell reader no
+      # file test pins the flag, so this runtime check is the whole proof.
       - name: Assert the container runs as the scanner user
         run: |
           docker run --rm \
@@ -247,8 +247,8 @@ jobs:
       # the intent; `id -u` inside the container is the proof, and it runs
       # BEFORE the probes so a lane that lost the flag -- or an image whose
       # passwd stopped carrying the user -- is a red job rather than a green
-      # tick over probes run as root. `tests/test_workflow_pins.py` pins the
-      # flag from the file; this is the half a file cannot state.
+      # tick over probes run as root. Since #3513 retired the shell reader no
+      # file test pins the flag, so this runtime check is the whole proof.
       - name: Assert the container runs as the scanner user
         run: |
           docker run --rm \

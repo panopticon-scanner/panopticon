@@ -37,8 +37,8 @@ on:
     branches: [main]
 
   schedule:
-    # Weekly strict full-tree scan (red by design while the standing set is
-    # dismissed, not fixed), and the nightly `main-audit`: the old push
+    # Weekly strict full-tree scan (its verdict is reported, not gating: see
+    # the "Strict full-tree verdict" step), and the nightly `main-audit`: the old push
     # route, once a day -- delta gate, Security tab upload, alert audit.
     # codeql.yml's nightly runs one hour earlier, so the audit finds both
     # analyses at main's SHA unless a merge lands in between.
@@ -492,15 +492,28 @@ jobs:
             --security redteam \
             ${baseline[@]+"${baseline[@]}"}
 
-      - name: Strict full-tree gate
+      # Owner 2026-11-10: the weekly full-tree verdict is REPORTED, not gating.
+      # It counts the whole standing set, accepted findings included, so it was
+      # red every week and a red run meant nothing. Exit 1 (findings) becomes a
+      # warning plus a summary line; the snapshot below carries the counts and
+      # the week-on-week comparison. Exit 2 (the gate could not evaluate the
+      # captures) still fails the run: a scan that did not happen is not a report.
+      - name: Strict full-tree verdict (reported, not gating)
         if: env.ROUTE == 'strict'
         run: |
+          rc=0
           python controller/skill/scripts/security_gate.py \
             --tools-dir "$RUNNER_TEMP/${{ env.TOOLS_OUT }}" \
             --manifest "$RUNNER_TEMP/panopticon-tools-manifest.json" \
             --exclude '${{ env.FIXTURE_GLOB }}' \
             --exclude '${{ env.GOLDEN_GLOB }}' \
-            --security redteam
+            --security redteam || rc=$?
+          case "$rc" in
+            0) echo "Strict full-tree verdict: **pass**" >> "$GITHUB_STEP_SUMMARY" ;;
+            1) echo "::warning title=Strict full-tree verdict::HIGH/CRITICAL findings on the full tree, accepted ones included. Reported, not gating: see the snapshot summary."
+               echo "Strict full-tree verdict: **fail** (reported, not gating)" >> "$GITHUB_STEP_SUMMARY" ;;
+            *) echo "::error::security_gate.py could not evaluate the full tree (exit $rc)"; exit "$rc" ;;
+          esac
 
       - name: Publish strict security snapshot and summary
         id: strict-report
