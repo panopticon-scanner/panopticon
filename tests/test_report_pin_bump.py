@@ -6,6 +6,7 @@ from types import SimpleNamespace
 import pytest
 
 import bump_pins
+import issue_bot
 from devtools import report_pin_bump as rpt
 
 
@@ -334,7 +335,7 @@ def test_a_failed_lookup_is_red_not_absence(tmp_path, monkeypatch):
      "pin-freshness: trivy 1.0.0 -> 2.0.0", "--body", "The pin-freshness workflow found x"],
 ])
 def test_the_runner_rejects_any_other_command(tmp_path, monkeypatch, command):
-    monkeypatch.setattr(rpt, "resolve", lambda *_a, **_k: pytest.fail("reached resolution"))
+    monkeypatch.setattr(issue_bot, "resolve", lambda *_a, **_k: pytest.fail("reached resolution"))
     with pytest.raises(RuntimeError, match="unexpected"):
         rpt._run(command, tmp_path)
 
@@ -344,7 +345,7 @@ def test_the_runner_uses_a_trusted_gh_and_only_the_token(tmp_path, monkeypatch):
     monkeypatch.setenv("GH_CONFIG_DIR", str(tmp_path / "wrong-account"))
     monkeypatch.setenv("PYTHONPATH", str(tmp_path))
     monkeypatch.setenv("LD_PRELOAD", str(tmp_path / "evil.so"))
-    monkeypatch.setattr(rpt, "resolve", lambda program, cwd, path: SimpleNamespace(
+    monkeypatch.setattr(issue_bot, "resolve", lambda program, cwd, path: SimpleNamespace(
         path="/usr/bin/gh", path_env="/usr/bin:/bin"))
     seen = []
 
@@ -363,7 +364,7 @@ def test_the_runner_uses_a_trusted_gh_and_only_the_token(tmp_path, monkeypatch):
 
 
 def test_a_gh_timeout_is_a_named_failure(tmp_path, monkeypatch):
-    monkeypatch.setattr(rpt, "resolve", lambda program, cwd, path: SimpleNamespace(
+    monkeypatch.setattr(issue_bot, "resolve", lambda program, cwd, path: SimpleNamespace(
         path="/usr/bin/gh", path_env="/usr/bin:/bin"))
 
     def expire(argv, **kwargs):

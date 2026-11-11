@@ -23,8 +23,6 @@ Applying a bump stays a reviewed hand change: `bump_pins.py <family> --write`.
 from __future__ import annotations
 
 import argparse
-import functools
-import json
 import os
 from pathlib import Path
 import re
@@ -35,27 +33,22 @@ if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
     import runpy
     runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_skill_bootstrap.py"))
 import bump_pins
-# The checked-out repository supplies this audited resolver, but it is never
-# searched for the gh executable.
-from scripts.executable import resolve
-from scripts import inert
-from scripts import redact
+import issue_bot
 
-
-TRUSTED_PATH = "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"
-PROCESS_TIMEOUT = 120
-BOT = "github-actions[bot]"
+# The gh plumbing lives in issue_bot (#3563); these names stay for this script's callers.
+TRUSTED_PATH = issue_bot.TRUSTED_PATH
+PROCESS_TIMEOUT = issue_bot.PROCESS_TIMEOUT
+BOT = issue_bot.BOT
+ERROR_TEXT_CAP = issue_bot.ERROR_TEXT_CAP
+PAGE = issue_bot.PAGE
 TITLE_PREFIX = "pin-freshness: "
-# The most of a gh error this script prints (#3420). The text is gh's, not
-# ours, so it is redacted and made inert before it is cut.
-ERROR_TEXT_CAP = 600
 BODY_CAP = 4000
 
-_REPO = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+\Z")
+_REPO = issue_bot.REPO
 _VERSION = re.compile(r"[0-9]+\.[0-9]+\.[0-9]+\Z")
 _SHA = re.compile(r"[0-9a-f]{64}\Z")
 _DIGEST = re.compile(r"sha256:[0-9a-f]{64}\Z")
-_NUMBER = re.compile(r"[1-9][0-9]{0,9}\Z")
+_NUMBER = issue_bot.NUMBER
 _ARCH = re.compile(r"[A-Z0-9]{1,16}\Z")
 
 FAMILIES = ("tinyproxy", "rustup", "trivy", "rust-toolchain")
@@ -64,10 +57,6 @@ DUPLICATE = "Duplicate of #%s; closing."
 _DUPLICATE = re.compile(r"Duplicate of #[1-9][0-9]{0,9}; closing\.\Z")
 _TITLE = re.compile(r"pin-freshness: (tinyproxy|rustup|trivy|rust-toolchain) "
                     r"(\S{1,80}) -> (\S{1,80})( \((checksums changed|pinned is ahead)\))?\Z")
-# One lookup page. A full page could hide an existing issue, and a run that missed it would
-# file a duplicate, so a full page is refused rather than guessed past (#3557 review).
-PAGE = 100
-
 REVIEW = {
     "tinyproxy": ("Review the image at docker.io/%s@<latest digest> and update PROXY_IMAGE in "
                   "%s by hand after testing the egress proxy on linux/amd64 and linux/arm64. "
@@ -203,9 +192,7 @@ def _allowed_command(command: list[str]) -> bool:
     if not isinstance(command, list) or not all(isinstance(a, str) and a for a in command):
         return False
     if command[:2] == ["gh", "api"] and len(command) == 3:
-        match = re.fullmatch(r"repos/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues\?state=open"
-                             r"&creator=github-actions%5Bbot%5D&per_page=100", command[2])
-        return bool(match)
+        return issue_bot.is_lookup(command[2], "open")
     if command[:3] == ["gh", "issue", "create"] and len(command) == 9:
         return (command[3] == "--repo" and bool(_REPO.fullmatch(command[4]))
                 and command[5] == "--title" and bool(_TITLE.fullmatch(command[6]))
@@ -228,95 +215,18 @@ def _body_ok(body: str) -> bool:
 
 
 def _run(command: list[str], cwd: Path) -> subprocess.CompletedProcess[str]:
-    """Run only this script's gh commands with a trusted gh and GH_TOKEN.
-
-    Even a mistaken new call site cannot turn this into a generic process
-    runner; the child gets no ambient PATH or interpreter/loader startup hooks.
-    """
-    if not _allowed_command(command):
-        raise RuntimeError("unexpected pin-report executable or arguments")
-    selected = resolve(command[0], cwd, path=TRUSTED_PATH)
-    env = {"HOME": os.path.expanduser("~"), "PATH": selected.path_env, "LC_ALL": "C"}
-    if os.environ.get("GH_TOKEN"):
-        env["GH_TOKEN"] = os.environ["GH_TOKEN"]
-    elif os.environ.get("GH_CONFIG_DIR"):
-        env["GH_CONFIG_DIR"] = os.environ["GH_CONFIG_DIR"]
-    # Same bounded, injectable subprocess.run partial pattern as
-    # devtools/file_issues.py; the executable is absolute and the environment
-    # is built above rather than inherited from the checkout.
-    runner = functools.partial(subprocess.run, cwd=cwd, env=env,
-                               timeout=PROCESS_TIMEOUT, text=True,
-                               capture_output=True, check=False)
-    try:
-        return runner([selected.path, *command[1:]])
-    except subprocess.TimeoutExpired:
-        raise RuntimeError("gh timed out") from None
+    """Run only this script's gh commands, through issue_bot's trusted runner."""
+    return issue_bot.run_gh(command, cwd, _allowed_command)
 
 
-def _error_text(text: str | None) -> str:
-    """A gh error as one bounded, inert line (#3420).
-
-    The workflow token is masked by value and known secret shapes by
-    `redact`. Every control character, escape and line break is spelled
-    (`\\x1b`, `\\x0a`), so the text can't style the log or start a new
-    line, such as an Actions `::` command. The output is at most
-    ERROR_TEXT_CAP characters, and a cut never splits a spelling.
-    """
-    raw = (text or "").strip()
-    token = os.environ.get("GH_TOKEN", "")
-    if token:
-        raw = raw.replace(token, "[REDACTED]")
-    raw = redact.redact_diagnostic(raw, ERROR_TEXT_CAP + 1)
-    pieces = [inert.spelled(ord(ch)) if ord(ch) in inert.INERT_ESCAPE_CODE_POINTS
-              else ch for ch in raw]
-    if sum(map(len, pieces)) > ERROR_TEXT_CAP:
-        kept, used = [], 0
-        for piece in pieces:
-            if used + len(piece) > ERROR_TEXT_CAP - 3:
-                break
-            kept.append(piece)
-            used += len(piece)
-        pieces = kept + ["..."]
-    return "".join(pieces) or "(no error text)"
-
-
-def _checked(command: list[str], cwd: Path, runner) -> str:
-    result = runner(command, cwd)
-    if result.returncode:
-        raise RuntimeError("gh %s failed: %s" % (command[1], _error_text(result.stderr)))
-    return result.stdout
+_error_text = issue_bot.error_text
+_checked = issue_bot.checked
 
 
 def bot_issues(repo: str, family: str, cwd: Path, runner) -> list[dict]:
-    """This family's open issues authored by the workflow bot, newest first.
-
-    The REST `creator` filter does the author check server-side and each entry
-    is checked again here, so a look-alike issue opened by anyone else never
-    counts: it can neither silence a report nor be edited or closed by it.
-    """
-    lookup = ("repos/%s/issues?state=open&creator=github-actions%%5Bbot%%5D&per_page=%d"
-              % (repo, PAGE))
-    raw = _checked(["gh", "api", lookup], cwd, runner)
-    try:
-        entries = json.loads(raw)
-    except ValueError:
-        raise RuntimeError("gh api returned malformed issue JSON") from None
-    if not isinstance(entries, list):
-        raise RuntimeError("gh api returned malformed issue JSON")
-    if len(entries) >= PAGE:
-        raise RuntimeError("the issue lookup returned a full page of %d; refusing to report "
-                           "rather than risk filing a duplicate" % PAGE)
-    found = []
-    for entry in entries:
-        if not isinstance(entry, dict) or "pull_request" in entry:
-            continue
-        user = entry.get("user")
-        number, title = entry.get("number"), entry.get("title")
-        if (isinstance(user, dict) and user.get("login") == BOT and user.get("type") == "Bot"
-                and isinstance(number, int) and not isinstance(number, bool) and number > 0
-                and isinstance(title, str) and title.startswith(TITLE_PREFIX + family + " ")):
-            found.append({"number": number, "title": title, "body": entry.get("body") or ""})
-    return sorted(found, key=lambda issue: issue["number"], reverse=True)
+    """This family's open issues authored by the workflow bot, newest first."""
+    prefix = TITLE_PREFIX + family + " "
+    return issue_bot.bot_issues(repo, cwd, runner, lambda title: title.startswith(prefix))
 
 
 def report(bump: Bump, repo: str, *, cwd: Path = Path("."), runner=None) -> str:

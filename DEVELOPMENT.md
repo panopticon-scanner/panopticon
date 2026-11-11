@@ -550,6 +550,31 @@ Two reports are warnings rather than bumps: new checksums for the same version (
 archive; verify it before applying), and a pin newer than upstream's latest (check whether the
 release was yanked; `--write` would downgrade it).
 
+### The monthly model-list sweep
+Host model lists go stale as providers ship and retire models (#3563). `model-sweep.yml` runs
+`devtools/report_model_sweep.py` on the 1st of each month. It keeps one issue,
+`model-list sweep due: YYYY-MM`, listing every model table with its last-verified date, stalest
+first, and every host's role -> model rows. It refreshes this month's issue on a re-dispatch,
+leaves it alone once a human has closed it (it never reopens), and closes older sweep issues as
+superseded. It calls no provider API and edits nothing. `python3 devtools/model_inventory.py
+[--json]` prints the same inventory locally.
+
+A table's date is a `models-verified` comment, exactly one line in the comment block directly
+above the table (above a `hosts.<name>:` key in `skill/reference/model-profiles.yml`, or above
+`KNOWN_MODELS` / `MODEL_ALIASES` in the runners):
+
+    # models-verified: 2026-11-10 https://ai.google.dev/gemini-api/docs/models https://...
+
+That is an ISO date and one or more `https://` URLs, nothing else on the line. A malformed or
+doubled marker fails the inventory and the job; a missing one lists the table as unverified. The
+`_*_FALLBACK` dicts in `model_resolver.py` carry no marker: they mirror the YAML under a parity
+pin. No age check fails a build. The job uses the runner image's system `python3` and its
+python3-yaml: if an image drops PyYAML, the job fails naming it.
+
+The gh plumbing both report scripts share (trusted gh, token-only environment, inert errors,
+creator-filtered lookup that refuses a full page) is `devtools/issue_bot.py`. Each script keeps
+its own command allowlist, and none may reopen an issue.
+
 The `rustup` family pins only the bootstrap installer. The `rust-toolchain` family reads Rust's
 stable channel manifest after checking its companion `.sha256` and requires both image Linux GNU
 targets to be available. Changing the rustup installer does not upgrade Rust. Keep `CARGO_AUDIT_VERSION` explicit
