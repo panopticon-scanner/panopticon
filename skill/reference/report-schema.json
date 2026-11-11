@@ -9,6 +9,24 @@
     "findings",
     "cross_panel"
   ],
+  "allOf": [
+    {
+      "if": {
+        "required": ["schema_version"],
+        "properties": {"schema_version": {"minimum": 2}}
+      },
+      "then": {
+        "properties": {
+          "summary": {
+            "required": ["health"],
+            "properties": {
+              "health": {"required": ["basis", "note"]}
+            }
+          }
+        }
+      }
+    }
+  ],
   "properties": {
     "schema_version": {
       "type": "integer",
@@ -1256,6 +1274,44 @@
               "enum": [
                 "gate_eligible"
               ]
+            },
+            "basis": {
+              "type": "object",
+              "description": "#3528: the effective run layout that produced this policy score. These are run records, never requested settings; compare a grade only with a report whose version, review_type and layout_fingerprint match.",
+              "additionalProperties": false,
+              "required": [
+                "review_type",
+                "groups",
+                "cells_planned",
+                "cells_answered",
+                "max_per_group",
+                "max_groups",
+                "layout_fingerprint",
+                "version",
+                "ocrdb_version"
+              ],
+              "properties": {
+                "review_type": {
+                  "type": "string",
+                  "enum": ["full", "delta", "file-scoped"]
+                },
+                "groups": {"type": "integer", "minimum": 0},
+                "cells_planned": {"type": ["integer", "null"], "minimum": 0},
+                "cells_answered": {"type": ["integer", "null"], "minimum": 0},
+                "max_per_group": {"type": ["integer", "null"], "minimum": 1},
+                "max_groups": {"type": ["integer", "null"], "minimum": 1},
+                "layout_fingerprint": {
+                  "type": "string",
+                  "pattern": "^sha256:[0-9a-f]{64}$"
+                },
+                "version": {"type": "string"},
+                "ocrdb_version": {"type": ["string", "null"]}
+              }
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1,
+              "description": "#3528: plain-language warning that the policy score is pending calibration and comparable only across the same version, review type and layout fingerprint."
             }
           }
         },

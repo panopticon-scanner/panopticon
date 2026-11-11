@@ -16,6 +16,12 @@
   - Four workflow comments still named `tests/test_workflow_pins.py`, retired in #3527. They now name
     `tests/test_action_pins.py`, or say that the runtime `id -u` check is the whole proof of the
     container user, since no file test pins the `--user` flag any more.
+- **Health grades now state the effective run basis that made them (#3528, part of #1495).**
+  Report schema v2 records the normalized review type, group and cell counts, effective size
+  policy, a stable group-to-files layout fingerprint, and the Panopticon/OCRDb versions under
+  `summary.health.basis`. JSON, terminal and HTML output warn that the policy score is pending
+  calibration and comparable only across matching bases; older reports still render and explicitly
+  say their basis predates #3528. The score, bands, weights and gate are unchanged.
 - **The replay tests no longer leak `sys.path`; pytest drops `skill/scripts` (#3522, part of #1516).**
   `devtools/replay_report.replay()` installs a checkout's `skill/` on `sys.path` in the calling
   process, and `tests/test_replay_report.py` called it in-process with nothing to put the list back,
