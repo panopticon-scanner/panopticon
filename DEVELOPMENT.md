@@ -508,11 +508,22 @@ verify the publisher's HTTPS checksum against the downloaded artifact before edi
 
 | Family | What it pins | Who bumps it |
 |---|---|---|
-| `rustup` | `Dockerfile`'s `ARG RUSTUP_VERSION` + its two init SHA256s | `pin-freshness.yml`, Mondays, opens a PR |
-| `trivy` | `Dockerfile`'s Trivy version + AMD64 and ARM64 archive SHA256s | `pin-freshness.yml`, Mondays, opens a PR |
-| `rust-toolchain` | `Dockerfile`'s `ARG RUST_TOOLCHAIN_VERSION` | `pin-freshness.yml`, Mondays, opens a PR |
+| `rustup` | `Dockerfile`'s `ARG RUSTUP_VERSION` + its two init SHA256s | you, after `pin-freshness.yml` reports it (Mondays) |
+| `trivy` | `Dockerfile`'s Trivy version + AMD64 and ARM64 archive SHA256s | you, after `pin-freshness.yml` reports it (Mondays) |
+| `rust-toolchain` | `Dockerfile`'s `ARG RUST_TOOLCHAIN_VERSION` | you, after `pin-freshness.yml` reports it (Mondays) |
 | `requirements` | the `--hash=sha256:` lines in `.github/requirements-gate.txt`, `requirements-fixtures.txt` and `requirements-tools.txt` | you, beside the version bump |
 | `gems` | `Dockerfile`'s `ARG <GEM>_VERSION` + `ARG <GEM>_GEM_SHA256` pairs | you; nothing schedules it yet |
+
+`pin-freshness.yml` also checks the egress sidecar's tinyproxy digest (`bump_pins.py tinyproxy`,
+read-only). For each of its four families it runs `devtools/report_pin_bump.py <family>`, which
+verifies the update with `bump_pins`' own checks and then keeps one open issue titled
+`pin-freshness: <family> <pinned> -> <latest>` (#3420). The issue is edited when upstream moves
+again, and closed once the pin catches up. The workflow opens no PR and pushes no branch: letting
+Actions create PRs would also let workflows approve them, so that repository setting stays off.
+Apply a reported bump by hand with `bump_pins.py <family> --write`, through the usual review.
+Two reports are warnings rather than bumps: new checksums for the same version (a re-released
+archive; verify it before applying), and a pin newer than upstream's latest (check whether the
+release was yanked; `--write` would downgrade it).
 
 The `rustup` family pins only the bootstrap installer. The `rust-toolchain` family reads Rust's
 stable channel manifest after checking its companion `.sha256` and requires both image Linux GNU

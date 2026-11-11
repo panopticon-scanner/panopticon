@@ -290,14 +290,14 @@ groups:
       - devtools/dockerfile_args.py
       - devtools/pin_requirements.py
       - devtools/requirement_policy.py
-      - devtools/open_pin_pr.py
+      - devtools/report_pin_bump.py
       tests:
       - tests/test_dockerfile.py
       - tests/test_dockerfile_closures.py
       - tests/test_dockerfile_args.py
       - tests/test_semgrep_rule_corrections.py
       - tests/test_bump_pins.py
-      - tests/test_pin_pr.py
+      - tests/test_report_pin_bump.py
       panels:
       - ARC
       - SEC

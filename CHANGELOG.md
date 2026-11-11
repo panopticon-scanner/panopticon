@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Pin freshness reports through issues, not PRs (#3420).** The weekly check failed every run
+  since 2026-10-05, because opening a PR needs the repository setting that also lets workflows
+  approve PRs, and that stays off. `devtools/report_pin_bump.py` now verifies each family
+  (tinyproxy, rustup, Trivy, Rust toolchain) with `bump_pins`' own checks and keeps one open
+  issue per family: it is edited when upstream moves again and closed once the pin catches up.
+  Nothing is pushed, so the orphan-branch failure is gone with `open_pin_pr.py`.
+
 - **A target's own `exclude:` can no longer improve its certified letter (#3548).** On a full
   review, a per-group `exclude:` that removes a domain the run would otherwise have used makes
   the letter provisional, like a non-default group size (#1495). A domain only the scout asked
