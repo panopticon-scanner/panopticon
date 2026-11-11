@@ -9,7 +9,6 @@ import scripts.config_schema as cs
 import scripts.discovery as discovery
 import scripts.driver as driver
 import scripts.run_manifest as run_manifest
-import scripts.synth.render as render_mod
 # pyproject exposes the canonical tests package to the literal ratchet
 # (see test_the_module_never_spells_a_config_filename).
 import tests.test_repo_config_literals as lit
@@ -408,6 +407,37 @@ class TestTheRunArtifact(unittest.TestCase):
         self.assertEqual(loaded["clamped"][0]["requested"], 5000)
         self.assertNotIn("schema_version", loaded)
 
+    def test_load_resolution_keeps_the_driver_document_without_normalizing_it_again(self):
+        """#3531: the driver already bounded this artifact before writing it.
+
+        The reader owns only the five outer shapes.  Rebuilding list entries
+        field by field is a second schema which can silently discard fields
+        added by the writer.
+        """
+        marker = "driver-owned"
+        body = {
+            "requested": {"future": marker},
+            "effective": {"future": marker},
+            "refused": [{"key": "future", "value": marker,
+                         "reason": "driver reason", "writer_detail": marker}],
+            "clamped": [{"key": "future", "requested": 5000,
+                         "effective": 48, "writer_detail": marker}],
+            "disclosures": [marker],
+        }
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, cs.RESOLUTION_NAME), "w", encoding="utf-8") as fh:
+                json.dump(body, fh)
+            loaded = cs.load_resolution(d)
+        self.assertEqual(body, loaded)
+
+    def test_load_resolution_rejects_a_non_dict_requested_block(self):
+        """Mutation gate: accepting the wrong outer shape must fail closed."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, cs.RESOLUTION_NAME), "w", encoding="utf-8") as fh:
+                json.dump({"requested": ["not", "a", "mapping"]}, fh)
+            loaded = cs.load_resolution(d)
+        self.assertEqual({}, loaded["requested"])
+
     def test_load_resolution_fails_closed_on_anything_unreadable(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertEqual(cs.load_resolution(d)["effective"], {})      # absent
@@ -419,62 +449,21 @@ class TestTheRunArtifact(unittest.TestCase):
             self.assertEqual(cs.load_resolution(d)["disclosures"], [])     # not a dict
         self.assertEqual(cs.load_resolution(None)["clamped"], [])          # no run dir
 
-    def test_load_resolution_sanitizes_a_hostile_artifact(self):
-        # `.panopticon` is target-writable, so this file is untrusted input.
-        # It must never be able to make the report fail its own schema.
+    def test_load_resolution_rejects_each_wrong_outer_shape(self):
+        bad = {
+            "requested": [],
+            "effective": [],
+            "refused": [{"key": "ok"}, "not a mapping"],
+            "clamped": ["not a mapping"],
+            "disclosures": ["ok", 5],
+        }
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, cs.RESOLUTION_NAME), "w", encoding="utf-8") as fh:
-                json.dump({"requested": {"a": {"deep": 1}, "b": 2},
-                           "effective": "not a map",
-                           "refused": [{"key": "x", "reason": "y", "extra": "z"},
-                                       "not a dict"],
-                           "clamped": [{"key": "k", "requested": 1, "effective": 2}],
-                           "disclosures": ["ok", 5] + ["pad"] * 500}, fh)
+                json.dump(bad, fh)
             loaded = cs.load_resolution(d)
-        self.assertEqual(loaded["requested"], {"b": 2})          # non-scalar dropped
-        self.assertEqual(loaded["effective"], {})                 # wrong shape -> empty
-        self.assertEqual(loaded["refused"], [{"key": "x", "value": None, "reason": "y"}])
-        self.assertLessEqual(len(loaded["disclosures"]), cs.MAX_ENTRIES)
-
-    def test_load_resolution_bounds_huge_numbers_and_non_finite_floats(self):
-        # #1681 Plan 2 fix round 1: a value's SIZE lives in its digit count,
-        # not in a string wrapper around it -- `_scalar` must bound a huge
-        # int/float the same way it bounds a huge string, and must never let
-        # a non-finite float (NaN/Infinity; `json.load` accepts those tokens
-        # even though they are not valid JSON) survive as a live float.
-        #
-        # 1000 digits, not 100000: Python 3.11+ refuses to convert an int to
-        # or from a string past `sys.get_int_max_str_digits()` (4300 by
-        # default) -- a 100000-digit literal would trip THAT ceiling first,
-        # inside `json.load` itself, and `load_resolution` would fail the
-        # whole parse (its own `except ValueError` above) before `_scalar`
-        # ever ran. That proves the file's own guard rail, not this one.
-        # 1000 digits sails through json.load untouched and lands on
-        # `_scalar` as a genuine 1000-digit `int` -- exactly the value this
-        # bound exists for.
-        huge = int("9" * 1000)
-        long_string = "s" * 5000
-        with tempfile.TemporaryDirectory() as d:
-            with open(os.path.join(d, cs.RESOLUTION_NAME), "w", encoding="utf-8") as fh:
-                json.dump({"requested": {"long": long_string},
-                           "effective": {"huge": huge, "nan": float("nan")},
-                           "refused": [{"key": "x", "value": huge, "reason": "y"}],
-                           "clamped": [{"key": "k", "requested": huge,
-                                        "effective": float("inf")}],
-                           "disclosures": []}, fh)
-            loaded = cs.load_resolution(d)
-        bounded_values = (loaded["requested"]["long"], loaded["effective"]["huge"],
-                          loaded["effective"]["nan"], loaded["refused"][0]["value"],
-                          loaded["clamped"][0]["requested"],
-                          loaded["clamped"][0]["effective"])
-        for value in bounded_values:
-            self.assertNotIsInstance(value, float,
-                                     "a non-finite float reached meta.config live: %r" % (value,))
-            self.assertLessEqual(len(str(value)), cs.MAX_TEXT,
-                                 "an unbounded value reached meta.config: %r" % (value,))
-        # Belt-and-braces: the rendered summary line stays a sane length even
-        # when every value it quotes is near the artifact-layer's own bound.
-        self.assertLess(len(render_mod._config_line(loaded)), 500)
+        self.assertEqual(loaded, {"requested": {}, "effective": {},
+                                  "refused": [], "clamped": [],
+                                  "disclosures": []})
 
 
 

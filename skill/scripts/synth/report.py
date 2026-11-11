@@ -269,7 +269,8 @@ def _config_block(config):
     target-authored file, so they are DESCRIBED in the published schema
     without being type-pinned by it, for `host_capabilities`' reason: a junk
     config must be readable AS junk, never a lever that makes the report
-    fail its own schema. `load_resolution` has already bounded them.
+    fail its own schema. The driver's `parse_settings` boundary has already
+    bounded them; `load_resolution` keeps only the five expected outer shapes.
     """
     src = config if isinstance(config, dict) else {}
     return {"requested": dict(src.get("requested") or {}),

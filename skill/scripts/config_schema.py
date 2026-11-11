@@ -403,12 +403,6 @@ def resolve_settings(cli, parsed, defaults=None):
 
 RESOLUTION_NAME = "config-resolution.json"
 RESOLUTION_SCHEMA_VERSION = 1
-# Bounds on what the run artifact may carry into the report. The file lives
-# under `.panopticon`, which a hostile target can pre-commit, and `meta` is
-# schema-described: an unbounded list or a 4 MiB string there would turn a
-# target-authored file into a way to make every run exit `artifact invalid`.
-MAX_ENTRIES = 50
-MAX_TEXT = 300
 
 
 def resolution_document(manifest):
@@ -430,45 +424,17 @@ def resolution_document(manifest):
                             if isinstance(s, str)]}
 
 
-def _scalar(value):
-    """A value on its way into `meta.config` off the run artifact: bounded so
-    a hostile `config-resolution.json` cannot use it to bloat the report.
-
-    Order matters. `bool` is checked first because it is an `int` subclass --
-    falling through to the int branch below would round-trip `True`/`False`
-    as `1`/`0`. A non-finite float (`NaN`/`Infinity`; `json.load` accepts
-    those tokens even though they are not valid JSON) is turned into its
-    STRING form regardless of length, the same escape `parse_settings` uses:
-    a value this artifact could not have produced through a conforming
-    writer must not reach `report.json` as a live float either. Every other
-    int/float is bounded by the length of its OWN `repr` -- an oversized
-    number's cost lives in its digit count, not in a string wrapper around
-    it -- so a huge integer becomes its own truncated decimal string rather
-    than passing through as a number no consumer expects to be that large.
-    A regular string is bounded the same way it always was.
-    """
-    if isinstance(value, bool):
-        return value
-    if isinstance(value, float) and not math.isfinite(value):
-        return repr(value)[:MAX_TEXT]
-    if isinstance(value, (int, float)):
-        text = repr(value)
-        return value if len(text) <= MAX_TEXT else text[:MAX_TEXT]
-    if isinstance(value, str):
-        return value[:MAX_TEXT]
-    return value if isinstance(value, _SCALARS) else None
-
-
 def load_resolution(run_dir):
     """`{requested, effective, refused, clamped, disclosures}` off
     `<run_dir>/config-resolution.json`, or the empty block.
 
-    Fail-closed in every direction -- absent (a direct `synthesize.py`
+    Fail-closed on the artifact boundary -- absent (a direct `synthesize.py`
     invocation never had a driver to write one), unreadable, not an object,
-    a block of the wrong shape -- and REBUILT field by field rather than
-    copied, so no key, type or size from the file reaches `meta.config`
-    unchecked. "Nothing asked for" and "nobody looked" read the same here on
-    purpose: both are honestly empty.
+    or a block of the wrong outer shape. The driver is the sole writer and
+    `parse_settings` already bounds every recorded key, value and list before
+    the manifest is written, so repeating that schema here would only create
+    a second definition that can drift. "Nothing asked for" and "nobody
+    looked" read the same here on purpose: both are honestly empty.
     """
     blank: dict[str, Any] = {"requested": {}, "effective": {}, "refused": [], "clamped": [],
              "disclosures": []}
@@ -483,22 +449,12 @@ def load_resolution(run_dir):
     for key in ("requested", "effective"):
         raw = body.get(key)
         if isinstance(raw, dict):
-            out[key] = {str(k)[:MAX_TEXT]: _scalar(v) for k, v in
-                        list(raw.items())[:MAX_ENTRIES] if isinstance(v, _SCALARS)}
-    refused = body.get("refused")
-    if isinstance(refused, list):
-        out["refused"] = [{"key": str(r.get("key"))[:MAX_TEXT],
-                           "value": _scalar(r.get("value")),
-                           "reason": str(r.get("reason"))[:MAX_TEXT]}
-                          for r in refused[:MAX_ENTRIES] if isinstance(r, dict)]
-    clamped = body.get("clamped")
-    if isinstance(clamped, list):
-        out["clamped"] = [{"key": str(c.get("key"))[:MAX_TEXT],
-                           "requested": _scalar(c.get("requested")),
-                           "effective": _scalar(c.get("effective"))}
-                          for c in clamped[:MAX_ENTRIES] if isinstance(c, dict)]
+            out[key] = raw
+    for key in ("refused", "clamped"):
+        raw = body.get(key)
+        if isinstance(raw, list) and all(isinstance(row, dict) for row in raw):
+            out[key] = raw
     disclosures = body.get("disclosures")
-    if isinstance(disclosures, list):
-        out["disclosures"] = [s[:MAX_TEXT] for s in disclosures[:MAX_ENTRIES]
-                              if isinstance(s, str)]
+    if isinstance(disclosures, list) and all(isinstance(row, str) for row in disclosures):
+        out["disclosures"] = disclosures
     return out

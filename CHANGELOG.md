@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Armor audit removes duplicate config normalization and measures installed guard hooks (#3531, #3534; #3173 clusters A/E).**
+  `load_resolution` now keeps the fail-closed read and five outer-shape checks while trusting the
+  driver-bounded artifact instead of maintaining a second field-by-field schema. Headless Claude
+  guard probes rely on their stronger real-CLI canary; session-mode probes still prove both guards,
+  now by launching the exact installed hook command under the trusted interpreter for one allow and
+  one deny. The exhaustive read/write rule matrices remain owned by the hook unit tests.
 - **`.test_durations` refreshed after #3527 (#2933 phase-2 re-measure).** 10,344 tests from the
   3.12 coverage shards of main run 42950791473 (3c5d4659), merged by the `coverage` job. The
   committed profile scored 1.23x max/min there (the warning threshold is 1.15x), with 3.2% of the

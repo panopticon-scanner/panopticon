@@ -190,90 +190,43 @@ def _headless_subject_ok(settings_path):
     return True, ""
 
 
-def _write_row(allowlist_path, path, entry_id):
-    """One Write payload through the real `adjudicate`, bound as `entry_id`
-    (None = the orchestrator, which nothing binds)."""
-    env = {write_guard_hook.ENV_ENTRY_ID: entry_id} if entry_id else {}
-    allowed, _why = write_guard_hook.adjudicate(
-        {"tool_name": "Write", "tool_input": {"file_path": path}},
-        allowlist_path, env=env)
-    return allowed
-
-
 def _round_trip_denies_an_outside_write():
-    """Arm the guard in a throwaway sandbox and confirm it actually denies.
+    """Install the write hook in a sandbox and execute its trusted command.
 
-    Never touches the session's real settings or allowlist: install/uninstall
-    run entirely against paths inside a TemporaryDirectory. Returns
-    (ok, detail).
-
-    #1571: the plan has TWO entries and the rows are driven through
-    `adjudicate` (the function the hook itself calls), because the capability
-    being claimed is "confine a reviewer's Write to the declared out_file" --
-    singular -- and a one-entry flat-membership round-trip cannot tell that
-    apart from "confine it to the batch". The armed file is read and required
-    to be version 2, and a version-1 flat list dropped in its place must be
-    REFUSED: proving a guard that still honours one would prove the batch-wide
-    grant this issue is about.
+    Hook unit tests own the rule matrix. The machine-dependent fact this probe
+    adds is whether the command actually installed here starts under this
+    interpreter and denies an outside write.
     """
-    # Minor 6: the `try` opens BEFORE TemporaryDirectory(), not inside it. This
-    # runs inside driver.run() on EVERY invocation now, and an OSError from the
-    # constructor itself (no space on the temp filesystem, TMPDIR gone, the
-    # process out of file descriptors) would otherwise escape as a traceback and
-    # abort the whole run -- violating this module's contract that a probe which
-    # cannot run resolves to a STATE rather than raising.
     try:
         with tempfile.TemporaryDirectory() as sandbox:
             settings = os.path.join(sandbox, "settings.json")
             allowlist = os.path.join(sandbox, "allowlist.json")
             declared = os.path.join(sandbox, "findings-probe.json")
-            peer = os.path.join(sandbox, "findings-peer.json")
-            for path in (declared, peer):
-                with open(path, "w", encoding="utf-8") as fh:
-                    fh.write("{}")
-            write_guard_hook.install([{"id": "probe-cell", "out_file": declared},
-                                      {"id": "peer-cell", "out_file": peer}],
+            outside = os.path.join(sandbox, "not-declared.json")
+            parent = os.path.join(sandbox, "session.jsonl")
+            with open(parent, "w", encoding="utf-8") as fh:
+                fh.write("")
+            claude_read_guard._fake_subagent(parent, "agent-x", "probe-cell")
+            write_guard_hook.install([{"id": "probe-cell", "out_file": declared}],
                                      settings_path=settings,
                                      allowlist_path=allowlist)
             state = write_guard_hook.guard_state(settings_path=settings,
                                                  allowlist_path=allowlist)
             if not state["armed"]:
                 return False, "install() did not register the PreToolUse hook"
-            with open(allowlist, encoding="utf-8") as fh:
-                document = json.load(fh)
-            if (not isinstance(document, dict)
-                    or document.get("version") != write_guard_hook.ALLOWLIST_VERSION
-                    or not isinstance(document.get("entries"), dict)):
-                return False, ("the armed allowlist is not a version-%d document "
-                               "(per-entry grants), so nothing records whose grant "
-                               "a path is"
-                               % write_guard_hook.ALLOWLIST_VERSION)
-            rows = (
-                ("Write to its own declared out_file", declared, "probe-cell", True),
-                ("Write to a PEER entry's declared out_file", peer, "probe-cell", False),
-                ("Write outside the allowlist",
-                 os.path.join(sandbox, "not-declared.json"), "probe-cell", False),
-                ("Write bound to an entry the allowlist does not name",
-                 declared, "ghost-cell", False),
-                ("the orchestrator's own write", declared, None, True),
-            )
-            for name, path, entry_id, want in rows:
-                if _write_row(allowlist, path, entry_id) != want:
-                    return False, ("the guard %s: %s"
-                                   % ("DENIED" if want else "ALLOWED", name))
-            with open(allowlist, "w", encoding="utf-8") as fh:
-                json.dump(sorted(document["paths"]), fh)
-            if _write_row(allowlist, declared, "probe-cell"):
-                return False, ("the guard ALLOWED a write against a version-1 flat "
-                               "allowlist: a stale file must deny, never widen")
+            ok, detail = claude_read_guard._measure_installed_hook(
+                settings, allowlist, parent, declared, outside, sandbox,
+                hook=write_guard_hook, tool_name="Write",
+                artifact_name="the allowlist",
+                legacy_env="PANOPTICON_WRITE_ALLOWLIST")
+            if not ok:
+                return False, detail
             write_guard_hook.uninstall(settings_path=settings,
                                        allowlist_path=allowlist)
-    except OSError as exc:
+    except (OSError, RuntimeError, ValueError, TypeError) as exc:
         return False, common.failure_detail(
             exc, "the write-guard sandbox round-trip could not run")
-    return True, ("arm/deny round-trip ok: %d payloads adjudicated per entry "
-                  "against a version-%d allowlist, and a version-1 flat list "
-                  "refused" % (len(rows), write_guard_hook.ALLOWLIST_VERSION))
+    return True, detail
 
 
 def probe_write_guard_armed(host, session_root=None, settings_path=None,
@@ -312,20 +265,17 @@ def probe_write_guard_armed(host, session_root=None, settings_path=None,
         ok, detail = _headless_subject_ok(settings_path)
         if not ok:
             return (hosts.REFUTED, WRITE_GUARD_ARMED, detail)
-        ok, detail = _round_trip_denies_an_outside_write()
-        if not ok:
-            return (hosts.REFUTED, WRITE_GUARD_ARMED, detail)
-        # #3218: the round-trip above never meets the CLI's permission layer,
-        # which denied every granted Write on a box whose user settings approve
-        # none. One real launch is what can tell those apart.
+        # #3218/#3531: the real launch drives the installed hooks and the CLI's
+        # permission layer end to end. The session-only sandbox proof below is
+        # strictly weaker and is therefore not repeated in headless mode.
         verdict, canary_detail = (canary or claude_write_canary.round_trip)()
         if verdict == claude_write_canary.REFUTED:
             return (hosts.REFUTED, WRITE_GUARD_ARMED, canary_detail)
         if verdict != claude_write_canary.PROVEN:   # r1: not measured is not a denial
             return (hosts.UNKNOWN, WRITE_GUARD_ARMED, canary_detail)
         return (hosts.PROVEN, WRITE_GUARD_ARMED,
-                "%s; %s; the runner will arm at %s"
-                % (detail, canary_detail, os.path.abspath(settings_path)))
+                "%s; the runner will arm at %s"
+                % (canary_detail, os.path.abspath(settings_path)))
     settings_path, _allowlist_path, _defaults = write_guard_hook._resolve(
         None, None, session_root)
     settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
@@ -398,17 +348,16 @@ def probe_read_guard_armed(host, session_root=None, settings_path=None,
         ok, detail = _headless_subject_ok(settings_path)
         if not ok:
             return (hosts.REFUTED, READ_GUARD_ARMED, detail)
-        verdict, detail = _read_round_trip()
-        if verdict is not None:
-            return (verdict, READ_GUARD_ARMED, detail)
+        # #3531: the shared real-CLI canary exercises the installed read hook
+        # end to end, so do not repeat the weaker session sandbox here.
         cli_verdict, cli_detail = (canary or claude_write_canary.read_round_trip)()
         if cli_verdict == claude_write_canary.REFUTED:
             return (hosts.REFUTED, READ_GUARD_ARMED, cli_detail)
         if cli_verdict != claude_write_canary.PROVEN:
             return (hosts.UNKNOWN, READ_GUARD_ARMED, cli_detail)
         return (hosts.PROVEN, READ_GUARD_ARMED,
-                "%s; %s; the runner will arm at %s"
-                % (detail, cli_detail, os.path.abspath(settings_path)))
+                "%s; the runner will arm at %s"
+                % (cli_detail, os.path.abspath(settings_path)))
     settings_path, _scope_path, _defaults = read_guard_hook._resolve(None, None, session_root)
     settings_dir = os.path.dirname(os.path.abspath(settings_path)) or "."
     if not os.path.isfile(settings_path):
