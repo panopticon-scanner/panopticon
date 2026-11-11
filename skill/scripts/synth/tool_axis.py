@@ -214,6 +214,9 @@ class Reconciled:
     # NAME the caveat, and must not have to read a section. The gate itself
     # moves through `integrity_ok`, because the same fact is in that dict.
     delta_scope_suppressed_git_drivers: list | None = None
+    # #3548: the per-group coverage records, as `coverage_io.load_coverage_files` read them.
+    # `health_basis` reads what a committed `panels:` / `exclude:` changed off them.
+    coverages: list = field(default_factory=list)
 
 
 def tools_ran_from_dispositions(dispositions):
@@ -634,4 +637,4 @@ def reconcile(plan, tools, resolved, run=None):
                       tools_apps=app_trace.repair(manifest_dict.get("apps")),
                       tools_manifest_invalid=tools.manifest_invalid,
                       dependency_audit_gap=dependency_audit_gap,
-                      gated_suppressed=gated)
+                      gated_suppressed=gated, coverages=list(plan.coverages or []))

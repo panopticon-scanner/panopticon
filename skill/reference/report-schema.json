@@ -1311,7 +1311,29 @@
                     "custom",
                     "unknown"
                   ],
-                  "description": "#1495: whether this run used the default scan profile (max_per_group equal to the default). A full review at a custom profile carries its letter in provisional_grade. A delta or file-scoped review stamps its profile too but keeps its letter (out of scope for #1495). Absent in reports that predate #1495."
+                  "description": "#1495: whether this run used the default scan profile (max_per_group equal to the default). Since #3548 a committed per-group exclude that removed a domain the fixed floors would have run also makes it custom. A full review at a custom profile carries its letter in provisional_grade. A delta or file-scoped review stamps its profile too but keeps its letter (out of scope for #1495). Absent in reports that predate #1495."
+                },
+                "config_levers": {
+                  "type": "object",
+                  "description": "#3548: what the target's committed panopticon.yml changed about review effort, whether or not it moved the letter. Each list holds sorted group:DOMAIN cells (the first 256) and is null when no coverage record measured it. Only domain_exclude moves the letter; the scout list varies with the scout and is disclosure only. Absent in reports that predate #3548.",
+                  "additionalProperties": false,
+                  "required": ["domain_exclude", "domain_exclude_scout", "panels_added", "exclude_paths"],
+                  "properties": {
+                    "domain_exclude": {"type": ["array", "null"], "maxItems": 256, "items": {"type": "string", "minLength": 3}},
+                    "domain_exclude_scout": {"type": ["array", "null"], "maxItems": 256, "items": {"type": "string", "minLength": 3}},
+                    "panels_added": {"type": ["array", "null"], "maxItems": 256, "items": {"type": "string", "minLength": 3}},
+                    "exclude_paths": {
+                      "type": ["object", "null"],
+                      "description": "Committed exclude_paths: glob count, files no domain reviewed, and code files kept for SEC review only. A count is null when discovery did not record it; the object is null when nothing was committed.",
+                      "additionalProperties": false,
+                      "required": ["globs", "pruned", "sec_carved"],
+                      "properties": {
+                        "globs": {"type": "integer", "minimum": 0},
+                        "pruned": {"type": ["integer", "null"], "minimum": 0},
+                        "sec_carved": {"type": ["integer", "null"], "minimum": 0}
+                      }
+                    }
+                  }
                 },
                 "version": {"type": "string"},
                 "ocrdb_version": {"type": ["string", "null"]}

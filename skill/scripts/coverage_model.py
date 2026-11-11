@@ -343,6 +343,30 @@ def applicable_sec_floor(files):
     return frozenset({"SEC"}) if has_sec_code_surface(files) else frozenset()
 
 
+def config_levers(floor, scout_requested, exclude, global_floor=GLOBAL_FLOOR,
+                  signal_floor=frozenset()):
+    """What a group's committed `panels:` and `exclude:` changed (#3548), as sorted lists.
+
+    - `exclude_deterministic`: excluded domains that would otherwise have run off a fixed
+      input -- the committed floor, the surface-gated global floor or the SEC floor. This is
+      the part that moves the letter, because the same pinned repo and config always give it.
+    - `exclude_scout`: excluded domains only the scout asked for. The scout is an LLM, so the
+      letter never reads this list; it is named in `coverage_note` instead.
+    - `panels_added`: committed `panels:` domains the fixed floors would not have run anyway.
+
+    NON_EXCLUDABLE domains never count: a committed `exclude: [SEC]` removes nothing (#1084).
+    Pure; arguments are the same sets `effective_panels` takes, before any netting.
+    """
+    fixed = set(global_floor) | set(signal_floor)
+    deterministic = set(floor) | fixed
+    applied = set(exclude) - NON_EXCLUDABLE
+    return {
+        "exclude_deterministic": sorted(applied & deterministic),
+        "exclude_scout": sorted((applied & set(scout_requested)) - deterministic),
+        "panels_added": sorted(set(floor) - fixed),
+    }
+
+
 def effective_panels(floor, scout_added, exclude, global_floor=GLOBAL_FLOOR,
                      signal_floor=frozenset()):
     """Return (effective_set, disclosure_dict).

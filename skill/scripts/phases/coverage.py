@@ -402,6 +402,11 @@ def coverage_execute(review_root, manifest):
             "sec_floor_applied": sorted(sec_floor),     # #3338: code group
             "sec_carve_out": carved,                    # #1757: SEC-only by policy
             "effective": sorted(effective),             # code surface -> SEC forced on
+            # #3548: what the committed `panels:` / `exclude:` changed. The deterministic
+            # exclude list is what `synth.health_basis` reads for the letter.
+            **coverage_model.config_levers(
+                floor, {d for d in raw if d in groups_schema.DOMAINS},
+                spec.get("exclude", set()), global_floor=gated_floor, signal_floor=sec_floor),
             "scout_file": os.path.abspath(scout_path),
             "run_id": manifest["run_id"],
         }

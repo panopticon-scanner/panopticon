@@ -101,6 +101,9 @@ class RunConfig:
     # None is honest for a hand-built/legacy run that recorded neither.
     max_per_group: int | None = None
     max_groups: int | None = None
+    # #3548: what the target's committed `exclude_paths:` removed, off discovery's own
+    # record. None when the run committed none (or predates the record).
+    exclude_paths: dict | None = None
 
     @classmethod
     def from_args(cls, args, groups_json, timestamp, host_capabilities=None,
@@ -157,6 +160,7 @@ class RunConfig:
                        groups_json, config, "max_per_group"),
                    max_groups=health_basis_mod.effective_size(
                        groups_json, config, "max_groups"),
+                   exclude_paths=health_basis_mod.exclude_paths_record(groups_json),
                    gate_security_mode=plan_mod.gate_security_mode(args))
 
 

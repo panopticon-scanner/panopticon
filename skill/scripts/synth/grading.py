@@ -102,7 +102,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
             integrity_ok=True, verdicts_unloadable=0, verdicts_unanswered=0,
             missing_floor=0, tools_manifest_invalid=None, tools_network_excluded=None,
             delta_scope_suppressed_git_drivers=None, tools_file_partial=None,
-            delta_zero_hunks=None, dependency_audit_gap=False, custom_profile=None):
+            delta_zero_hunks=None, dependency_audit_gap=False, custom_profile=None,
+            config_notes=None):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
     (+ requested-absent tools + artifact integrity + verdict loadability +
     missing FLOOR review cells); grade is holistic (provisional on ANY gap).
@@ -176,6 +177,11 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     else:
         gate = base_gate                                      # FAIL/OFF/PASS unchanged
 
+    # #3548: one reason or a list of them (a custom cap, a committed `exclude:` that bit). Each
+    # is a sentence, so they join as sentences: the first stays lower-case after the prefix.
+    reasons = [r for r in ([custom_profile] if isinstance(custom_profile, str)
+                           else custom_profile or ()) if r]
+    custom_profile = " ".join(reasons[:1] + [r[:1].upper() + r[1:] for r in reasons[1:]])
     # #1495: a non-default scan profile moves the LETTER only, the way an incomplete panel does.
     # The gate and coverage_certified do not see it: the findings and the coverage are what
     # they are, only the letter is not comparable with the bands.
@@ -238,6 +244,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         gap = "partial scanner file coverage: %s" % ", ".join(sorted(tools_file_partial))
         note = "%s; %s" % (note, gap) if note else gap
     note = coverage_model.with_asset_skip_note(note, asset_skips)     # #3283: disclosed, not counted
+    # #3548: config disclosures that move nothing (a scout-only exclude, `exclude_paths:`).
+    note = "; ".join(filter(None, (note, *(config_notes or ())))) or None
 
     return {"gate": gate, "overall_grade": cert_grade,
             "provisional_grade": provisional,
@@ -663,6 +671,7 @@ def grade_report(run, resolved, reconciled, delta=None):
             resolved.active, run.fail_on, run.gate_unverified)
         delta_zero_hunks = delta_mod.delta_gate_gap(
             delta, len(would_have_judged), run.gate_scope)
+    coverages = getattr(reconciled, "coverages", None)
     cert = certify(overall, gate_eligible, run.fail_on, reconciled.panels_incomplete,
                    reconciled.tools_absent,
                    integrity_ok=reconciled.integrity_ok,
@@ -676,7 +685,8 @@ def grade_report(run, resolved, reconciled, delta=None):
                    tools_file_partial=reconciled.coverage.get("tools_file_partial"),
                    delta_zero_hunks=delta_zero_hunks,
                    dependency_audit_gap=getattr(reconciled, "dependency_audit_gap", False),
-                   custom_profile=health_basis.custom_profile_reason(run))
+                   custom_profile=health_basis.custom_profile_reasons(run, coverages),
+                   config_notes=health_basis.config_notes(run, coverages))
     summary = {
         "overall_grade": cert["overall_grade"],
         "provisional_grade": cert["provisional_grade"],
