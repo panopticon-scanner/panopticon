@@ -1,6 +1,6 @@
 name: Security Scan (fork)
 
-on:
+on:  # zizmor: ignore[dangerous-triggers] by design (#1900): base-repo definition judges the PR; nothing runs over fork source until a maintainer approves (see below)
   # The fork half of the security gate (#1900), kept OUT of security.yml on
   # purpose. This file runs under `pull_request_target`, which means the BASE
   # repository's workflow definition judges the PR and the PR patch can never

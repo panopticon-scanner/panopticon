@@ -24,6 +24,8 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up Python
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -38,6 +40,16 @@ jobs:
         run: python -m ruff check skill/scripts/ devtools/ tests/
       - name: Type check
         run: python -m mypy skill/scripts devtools
+      # #3264 (audit I4): the workflow guard's replacement, beside the small
+      # structural rules in tests/test_workflow_allowlist.py. actionlint checks
+      # workflow syntax and expressions, and runs the runner's shellcheck over
+      # every `run:` block. zizmor audits the security shape (credential
+      # persistence, template injection, dangerous triggers); --offline needs no
+      # token, and it fails on medium-or-higher findings only.
+      - name: Lint workflows (actionlint)
+        run: actionlint
+      - name: Audit workflows (zizmor)
+        run: zizmor --offline --min-severity medium .github/workflows/
 
   # #2933. Phase 1 (#3085) split the suite by measured duration; phase 2 shards
   # the coverage run too and gates on the COMBINED data:
@@ -80,6 +92,8 @@ jobs:
         group: [1, 2, 3]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up Python 3.12
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -117,6 +131,8 @@ jobs:
       PY: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -154,6 +170,8 @@ jobs:
       COV_ARGS: ${{ matrix.python-version == '3.12' && '--cov --cov-report= --cov-fail-under=0' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -166,7 +184,9 @@ jobs:
         run: echo "nproc=$(nproc); $(lscpu | grep -m1 'Model name')"
       - name: Test (serial timing/performance)
         run: |
+          # $COV_ARGS is a flag list (empty on the non-coverage legs): it splits on purpose.
           mkdir -p shards
+          # shellcheck disable=SC2086
           python -m pytest tests/ -q -m "serial" $COV_ARGS -p tests.ci_shard_manifest --shard-manifest "shards/manifest-$PY-serial.json"
           if [ -n "$COV_ARGS" ]; then mv .coverage shards/.coverage.serial; fi
       - name: Upload shard data
@@ -184,6 +204,8 @@ jobs:
     needs: [test-cov, test-serial]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up Python 3.12
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
@@ -233,6 +255,8 @@ jobs:
     if: ${{ !cancelled() }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Set up Python 3.12
         uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
