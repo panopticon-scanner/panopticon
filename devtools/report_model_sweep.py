@@ -73,7 +73,7 @@ def body(tables: list, today: datetime.date) -> str:
         lines.append("| `%s` | %s | %s | `%s:%d` | %s |" % (
             t.name, marker.date.isoformat() if marker else "**unverified**",
             max(0, (today - marker.date).days) if marker else "-", t.path, t.line,
-            " ".join(marker.urls) if marker else "-"))
+            _cell(" ".join(marker.urls)) if marker else "-"))
     lines += ["", "## Models", "", "| host | role | model | allowlisted | detail |",
               "|---|---|---|---|---|"]
     for t in tables:

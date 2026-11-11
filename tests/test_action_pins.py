@@ -657,6 +657,8 @@ class TestTheModelSweepJob(unittest.TestCase):
     """#3563: one monthly sweep issue, issues:write only, no push, no PR, no provider call."""
 
     RUN = "python3 devtools/report_model_sweep.py"
+    # #3565 review: word-bounded, so `pip3 install`, pipx and uv count, not just `pip install`.
+    FORBIDDEN = re.compile(r"\b(pip3?|pipx|uv|curl|wget)\b|git push|\bgh pr\b|--write")
 
     @classmethod
     def _defects(cls, document):
@@ -678,6 +680,9 @@ class TestTheModelSweepJob(unittest.TestCase):
             defects.append("job permissions")
         if "env" in job:
             defects.append("job-level env")
+        # #3565 review: a job-level condition or continue-on-error could skip or mute the run.
+        if "if" in job or "continue-on-error" in job:
+            defects.append("job condition")
         names = [str(step["uses"]).split("@", 1)[0] for step in steps if "uses" in step]
         if names != ["actions/checkout"]:
             defects.append("action set")
@@ -696,8 +701,7 @@ class TestTheModelSweepJob(unittest.TestCase):
             defects.append("report condition")
         if any("GH_TOKEN" in (step.get("env") or {}) for step in steps if step not in report):
             defects.append("token outside the report step")
-        if any(word in step.get("run", "") for step in steps
-               for word in ("git push", "gh pr", "--write", "curl", "pip install")):
+        if any(cls.FORBIDDEN.search(str(step.get("run", ""))) for step in steps):
             defects.append("writes, pushes or fetches")
         return defects
 
@@ -740,6 +744,15 @@ class TestTheModelSweepJob(unittest.TestCase):
              "writes, pushes or fetches"),
             (lambda d: job(d)["steps"].append({"run": "git push origin HEAD"}),
              "writes, pushes or fetches"),
+            (lambda d: job(d)["steps"].append({"run": "pip3 install pyyaml"}),
+             "writes, pushes or fetches"),
+            (lambda d: job(d)["steps"].append({"run": "pipx run x"}), "writes, pushes or fetches"),
+            (lambda d: job(d)["steps"].append({"run": "uv pip install pyyaml"}),
+             "writes, pushes or fetches"),
+            (lambda d: job(d)["steps"].append({"run": "wget https://e.test/x"}),
+             "writes, pushes or fetches"),
+            (lambda d: job(d).update({"if": "false"}), "job condition"),
+            (lambda d: job(d).update({"continue-on-error": True}), "job condition"),
         )
         for mutate, expected in cases:
             with self.subTest(expected=expected):

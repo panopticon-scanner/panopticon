@@ -159,16 +159,33 @@ def test_sets_are_read_as_literals_including_annotated(tmp_path):
     assert tables["aliases:gemini"].members == {"auto", "pro"}
 
 
+WHERE = r"skill/scripts/runners/gemini.py:1 \(KNOWN_MODELS\) "
+
+
 @pytest.mark.parametrize("text, message", [
-    ("KNOWN_MODELS = set({'a'})\n", "not a literal frozenset"),
-    ("KNOWN_MODELS = frozenset(load())\n", "malformed node"),
-    ("KNOWN_MODELS = frozenset({1})\n", "non-string"),
+    ("KNOWN_MODELS = set({'a'})\n", WHERE + "is not a frozenset of a set display"),
+    ("KNOWN_MODELS = frozenset(load())\n", WHERE + "is not a frozenset of a set display"),
+    ("KNOWN_MODELS = frozenset('abc')\n", WHERE + "is not a frozenset of a set display"),
+    ("KNOWN_MODELS = frozenset(['a'])\n", WHERE + "is not a frozenset of a set display"),
+    ("KNOWN_MODELS = frozenset({1})\n", WHERE + "holds something other than string"),
+    ("KNOWN_MODELS = frozenset({'a', ('b', ['c'])})\n",
+     WHERE + "holds something other than string"),
+    ("KNOWN_MODELS = frozenset({'a', NAME})\n", WHERE + "holds something other than string"),
+    ("KNOWN_MODELS = frozenset({'a', *more})\n", WHERE + "holds something other than string"),
     ("OTHER = frozenset({'a'})\n", "no module-level KNOWN_MODELS"),
     ("def f():\n    KNOWN_MODELS = frozenset({'a'})\n", "no module-level KNOWN_MODELS"),
 ])
-def test_a_set_out_of_shape_is_an_error(tmp_path, text, message):
+def test_a_set_out_of_shape_is_an_error_naming_the_file(tmp_path, text, message):
     with pytest.raises(ValueError, match=message):
         mi.inventory(tree(tmp_path, gemini_py=text), TODAY)
+
+
+def test_a_set_out_of_shape_exits_1_through_main_not_a_traceback(tmp_path, capsys, monkeypatch):
+    root = tree(tmp_path, gemini_py="KNOWN_MODELS = frozenset({'a', ('b', ['c'])})\n")
+    real = mi.inventory
+    monkeypatch.setattr(mi, "inventory", lambda: real(root, TODAY))
+    assert mi.main([]) == 1
+    assert "runners/gemini.py:1 (KNOWN_MODELS)" in capsys.readouterr().err
 
 
 def test_the_set_module_is_never_imported(tmp_path):

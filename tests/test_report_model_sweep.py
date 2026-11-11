@@ -207,6 +207,15 @@ def test_the_body_lists_stalest_first_with_ages_rows_and_the_checklist():
     assert text.count("- [ ] ") == len(rms.CHECKLIST)
 
 
+def test_a_pipe_in_a_marker_url_cannot_break_the_table_row():
+    rows = tables()
+    rows[0].marker = mi.Marker(datetime.date(2026, 11, 10), ("https://e.test/a|b",))
+    text = rms.body(rows, TODAY)
+    row = next(line for line in text.splitlines() if line.startswith("| `profiles:gemini`"))
+    assert row.endswith("| https://e.test/a\\|b |")
+    assert row.replace("\\|", "").count("|") == 6
+
+
 def test_a_body_that_fails_validation_is_refused():
     rows = tables()
     rows[1].rows[0]["model"] = "x\x1b[2J"

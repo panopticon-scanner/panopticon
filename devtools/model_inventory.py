@@ -167,14 +167,18 @@ def set_table(root: str, name: str, rel: str, target: str,
         if target not in names:
             continue
         value = node.value
+        where = "%s:%d (%s)" % (rel, node.lineno, target)
+        # #3565 review: a set display of string constants and nothing else, so `frozenset('abc')`
+        # (three letters) or a nested value is refused by name, never literal_eval'd.
         if not (isinstance(value, ast.Call) and isinstance(value.func, ast.Name)
                 and value.func.id == "frozenset" and len(value.args) == 1
-                and not value.keywords):
-            raise ValueError("%s %s is not a literal frozenset" % (rel, target))
-        members = ast.literal_eval(value.args[0])
-        if not all(isinstance(m, str) for m in members):
-            raise ValueError("%s %s holds a non-string" % (rel, target))
-        where = "%s:%d (%s)" % (rel, node.lineno, target)
+                and not value.keywords and isinstance(value.args[0], ast.Set)):
+            raise ValueError("%s is not a frozenset of a set display" % where)
+        members = set()
+        for elt in value.args[0].elts:
+            if not (isinstance(elt, ast.Constant) and isinstance(elt.value, str)):
+                raise ValueError("%s holds something other than string constants" % where)
+            members.add(elt.value)
         return Table(name, rel, node.lineno,
                      marker_above(text.splitlines(), node.lineno, where, today),
                      members=frozenset(members))
