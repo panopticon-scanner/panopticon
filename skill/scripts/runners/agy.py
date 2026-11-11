@@ -17,6 +17,7 @@ import tempfile
 
 import scripts.agy_guard_hook as agy_guard_hook
 import scripts.hosts as hosts
+import scripts.model_resolver as model_resolver
 import scripts.redact as redact
 import scripts.runners.agy_home as agy_home
 import scripts.runners.base as base
@@ -61,15 +62,9 @@ KNOWN_MODELS = frozenset({
 })
 
 
-# #3564: the levels `agy --effort` accepts (https://antigravity.google/docs/cli/commands/effort/,
-# read 2026-11-11). `xhigh` and `max` exist only on models that publish them; the CLI
-# rejects a level the model lacks by name, so this is the documented superset.
-AGY_EFFORTS = ("low", "medium", "high", "xhigh", "max")
-
-
-def _combined_slug(model):
-    """Whether `model` already names an effort (`gemini-4-argon-high`)."""
-    return any(model.endswith("-" + level) for level in AGY_EFFORTS)
+# #3564: the documented `agy --effort` levels, owned by the resolver beside its tables.
+AGY_EFFORTS = model_resolver.AGY_EFFORTS
+_combined_slug = model_resolver.names_effort
 
 
 def _validate_flag_value(value, label):

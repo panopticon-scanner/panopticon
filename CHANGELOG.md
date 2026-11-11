@@ -9,6 +9,9 @@
   effort, or an effort beside a model that already names one, fails the entry before launch.
   The `agy-model-bound` probe passes `--effort` on its `/model` check and reads back
   `/effort`; it reports UNKNOWN until the owner's capture shows which field carries the level.
+  A `PANOPTICON_MODEL_*` override that gives agy codex's `model_reasoning_effort` (or another
+  host agy's `effort`), or an agy effort outside the documented levels, is refused at driver
+  start instead of silently running at the model's default effort.
 
 - **Every model table must carry a `models-verified` marker (#3569).** A test requires one on
   each table except `profiles:openrouter`, which is exempt until #3568 decides its fate, and the

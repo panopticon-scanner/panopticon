@@ -54,8 +54,8 @@ hosts:
       model_reasoning_effort: high
     setup_scan:
       model: null
-  # Carbon is available in Antigravity, but this runner carries only a model
-  # field and cannot bind Antigravity's separate effort input.
+  # Carbon is a base ID; its effort is the separate `effort` key, which the agy
+  # runner passes as `--effort <level>` (#3564).
   # models-verified: 2026-11-11 https://antigravity.google/docs/models https://antigravity.google/docs/enterprise https://antigravity.google/docs/cli/commands/effort/ https://antigravity.google/docs/cli/reference/
   agy:
     scout:

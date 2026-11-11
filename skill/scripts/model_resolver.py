@@ -176,8 +176,44 @@ def is_effort_word(value):
     return isinstance(value, str) and re.fullmatch(r"[a-z]{1,32}", value) is not None
 
 
-def validate_env_overrides():
-    """Check every live role before a driver run can probe or dispatch."""
+# #3564: the levels `agy --effort` accepts (https://antigravity.google/docs/cli/commands/effort/,
+# read 2026-11-11). `xhigh` and `max` exist only on models that publish them; the CLI
+# rejects a level the model lacks by name, so this is the documented superset.
+AGY_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# Each host's effort key; the other host's key would be silently dropped (#3571 review).
+_EFFORT_KEYS = {"codex": "model_reasoning_effort", "agy": "effort"}
+
+
+def names_effort(model):
+    """Whether an agy model ID already names an effort (`gemini-4-argon-high`)."""
+    return isinstance(model, str) and any(model.endswith("-" + level) for level in AGY_EFFORTS)
+
+
+def effort_key_problem(host, cfg):
+    """Why `cfg` carries an effort `host` would drop or refuse, or None (#3571 review).
+
+    The values are never echoed: an override may hold anything."""
+    if not isinstance(cfg, dict):
+        return None
+    for other_host, key in _EFFORT_KEYS.items():
+        if key in cfg and host is not None and host != other_host:
+            return ("carries %s, which only %s reads; %s would run at its default effort"
+                    % (key, other_host, host))
+    if "effort" in cfg:
+        if cfg["effort"] not in AGY_EFFORTS:
+            return "effort must be one of %s" % ", ".join(AGY_EFFORTS)
+        if not cfg.get("model"):
+            return "effort is set with no model to apply it to"
+        if names_effort(cfg.get("model")):
+            return "effort is set beside a model ID that already names one"
+    return None
+
+
+def validate_env_overrides(host=None):
+    """Check every live role before a driver run can probe or dispatch.
+
+    `host` is the run's host when the driver knows it; the cross-host effort keys
+    are refused then, and again at use by `entry_policy` for a resumed run."""
     # The fallback table is pinned to dispatch.ROLE_FILES by the resolver tests.
     # It also includes setup_scan, used by `driver loop --setup`.
     for role in _CLAUDE_FALLBACK:
@@ -187,6 +223,9 @@ def validate_env_overrides():
             # Named, never echoed, like the malformed-object refusal above.
             raise ValueError("PANOPTICON_MODEL_%s: model_reasoning_effort must be a "
                              "lowercase word" % role.upper())
+        problem = effort_key_problem(host, override)
+        if problem:
+            raise ValueError("PANOPTICON_MODEL_%s: %s" % (role.upper(), problem))
 
 
 _KIMI_TIERS = ("primary", "secondary")
@@ -283,6 +322,11 @@ def entry_policy(host, role):
     passes as `--effort` (#3564). The host name is decided here, in the
     resolver that owns the per-host tables, never in a phase."""
     cfg = resolve_model(host, role)
+    if host in _EFFORT_KEYS:
+        # #3571 review: refused at use too, for a resumed run that named no --host.
+        problem = effort_key_problem(host, cfg)
+        if problem:
+            raise ValueError("model policy for %s %s %s" % (host, role, problem))
     extra = {"codex": ("model_reasoning_effort",), "agy": ("effort",)}.get(host, ())
     return {"model": cfg.get("model"), **{key: cfg[key] for key in extra if cfg.get(key)}}
 
