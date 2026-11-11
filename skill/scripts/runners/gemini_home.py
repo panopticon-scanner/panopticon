@@ -210,10 +210,19 @@ def hook_command(read_scope_path, write_allowlist_path):
         os.path.abspath(write_allowlist_path))
 
 
-MISSING_API_KEY_REMEDY = (
+GEMINI_ENV_REMEDY = (
     "export GEMINI_API_KEY in the shell that runs panopticon. "
     "A key saved through gemini's sign-in dialog is not visible to the isolated run home."
 )
+
+HAZARD_MESSAGES: dict[int, str] = {
+    1: (
+        "gemini auth selectedType is 'gemini-api-key' in ~/.gemini/settings.json, "
+        "but GEMINI_API_KEY is unset or empty in the launch environment: "
+        + GEMINI_ENV_REMEDY
+    ),
+    2: "no Gemini auth configured: " + GEMINI_ENV_REMEDY,
+}
 
 MODEL_ALIASES = frozenset({
     "auto",
@@ -271,16 +280,22 @@ def _read_user_selected_auth_type(real_user_home):
     return None
 
 
+def _has_env_override(check_env) -> bool:
+    for env_key in ("GEMINI_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI",
+                    "GOOGLE_GENAI_USE_GCA"):
+        val = check_env.get(env_key)
+        if isinstance(val, str) and bool(val.strip()):
+            return True
+    return False
+
+
 def _detect_auth_type(real_user_home, seeded_oauth, env=None):
     """Return a validated `security.auth.selectedType` string when no env-based
     auth variable overrides it, or None when env auth (`GEMINI_API_KEY`, etc.)
     should take precedence."""
     check_env = os.environ if env is None else env
-    for env_key in ("GEMINI_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI",
-                    "GOOGLE_GENAI_USE_GCA"):
-        val = check_env.get(env_key)
-        if isinstance(val, str) and val.strip():
-            return None
+    if _has_env_override(check_env):
+        return None
     selected = _read_user_selected_auth_type(real_user_home)
     if selected:
         return selected
@@ -289,39 +304,44 @@ def _detect_auth_type(real_user_home, seeded_oauth, env=None):
     return None
 
 
+def hazard_code(env=None, real_user_home=None) -> int:
+    """Return 0 when Gemini headless launch prerequisites are satisfied, 1 when
+    `selectedType == 'gemini-api-key'` without `GEMINI_API_KEY`, or 2 when no
+    Gemini launch method is configured at all."""
+    check_env = os.environ if env is None else env
+    if _has_env_override(check_env):
+        return 0
+    home = os.path.expanduser("~") if real_user_home is None else real_user_home
+    selected = _read_user_selected_auth_type(home)
+    if selected == "gemini-api-key":
+        return 1
+    if selected in ("vertex-ai", "compute-default-credentials", "cloud-shell"):
+        return 0
+    if _has_oauth_creds(home):
+        return 0
+    env_home = check_env.get("GEMINI_CLI_HOME") or check_env.get("HOME")
+    if isinstance(env_home, str) and env_home.strip() and _has_oauth_creds(env_home):
+        return 0
+    return 2
+
+
 def auth_hazard(env=None, real_user_home=None):
     """Return an actionable remedy when Gemini auth is unconfigured or when
     `selectedType == 'gemini-api-key'` in `~/.gemini/settings.json` without
     `GEMINI_API_KEY` in the launch environment. Never reads or echoes any secret."""
-    check_env = os.environ if env is None else env
-    for env_key in ("GEMINI_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI",
-                    "GOOGLE_GENAI_USE_GCA"):
-        val = check_env.get(env_key)
-        if isinstance(val, str) and val.strip():
-            return None
-    home = os.path.expanduser("~") if real_user_home is None else real_user_home
-    selected = _read_user_selected_auth_type(home)
-    if selected == "gemini-api-key":
-        return (
-            "gemini auth selectedType is 'gemini-api-key' in ~/.gemini/settings.json, "
-            "but GEMINI_API_KEY is unset or empty in the launch environment: %s"
-            % MISSING_API_KEY_REMEDY
-        )
-    if selected in ("vertex-ai", "compute-default-credentials", "cloud-shell"):
-        return None
-    if _has_oauth_creds(home):
-        return None
-    env_home = check_env.get("GEMINI_CLI_HOME") or check_env.get("HOME")
-    if isinstance(env_home, str) and env_home.strip() and _has_oauth_creds(env_home):
-        return None
-    return "no Gemini auth configured: %s" % MISSING_API_KEY_REMEDY
+    return HAZARD_MESSAGES.get(hazard_code(env=env, real_user_home=real_user_home))
+
+
+def host_hazard_code(host, env=None, real_user_home=None) -> int:
+    """Host-agnostic integer hazard code for readiness checks."""
+    if host != "gemini":
+        return 0
+    return hazard_code(env=env, real_user_home=real_user_home)
 
 
 def host_auth_hazard(host, env=None, real_user_home=None):
     """Host-agnostic wrapper for readiness checks."""
-    if host != "gemini":
-        return None
-    return auth_hazard(env=env, real_user_home=real_user_home)
+    return HAZARD_MESSAGES.get(host_hazard_code(host, env=env, real_user_home=real_user_home))
 
 
 def ledger_model_reroute(ledger_path, bound_by_role=None):

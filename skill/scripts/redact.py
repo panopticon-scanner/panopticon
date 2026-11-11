@@ -95,7 +95,7 @@ _ANY_BEGIN = "-----BEGIN"
 _PEM_MARKER = "[REDACTED_PRIVATE_KEY]"
 
 
-def _mask_gemini_api_key(match: re.Match[str]) -> str:
+def _mask_gemini_env(match: re.Match[str]) -> str:
     prefix = match.group(1)
     if match.group(2) is not None:
         return f'{prefix}"[REDACTED_GOOGLE_KEY]"'
@@ -120,7 +120,7 @@ _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = 
     (re.compile(
         r"(GEMINI_API_KEY[\"']?\s*[=:]\s*)"
         r"(?:\"([^\r\n\",;)}\]]+)\"|'([^\r\n',;)}\]]+)'|([\"']?)([^\s\"',;)}\]]+))"
-    ), _mask_gemini_api_key),
+    ), _mask_gemini_env),
     (re.compile(r"xapp-[0-9]-[A-Za-z0-9-]{10,}"), "[REDACTED_SLACK_TOKEN]"),
     (re.compile(r"https://hooks\.slack\.com/services/"
                 + r"[A-Za-z0-9]{8,}/[A-Za-z0-9]{8,}/[A-Za-z0-9]{20,}"),

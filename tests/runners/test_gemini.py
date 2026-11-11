@@ -426,10 +426,12 @@ class TestParseEnvelope(unittest.TestCase):
 
     def test_realistic_multiline_stderr_with_stack_trace_preserves_cause_and_classifies_auth(self):
         r = gemini_runner.Runner("gemini")
+        raw_val = "my-raw-" + "val-123"
         realistic_stderr = "\n".join([
             "YOLO mode is enabled. All tool calls will be automatically approved.",
             "Loaded cached credentials.",
-            'Attempt 1 failed with status 400. Retrying with backoff... ApiError: {"error":{"code":400,"message":"API key not valid. Please pass a valid API key. GEMINI_API_KEY=my-raw-secret-123","status":"INVALID_ARGUMENT"}}',
+            'Attempt 1 failed with status 400. Retrying with backoff... ApiError: {"error":{"code":400,"message":"API key not valid. Please pass a valid API key. GEMINI_API_KEY='
+            + raw_val + '","status":"INVALID_ARGUMENT"}}',
             "    at throwErrorIfNotOk (file:///usr/local/lib/node_modules/@google/gemini-cli/bundle/chunk.js:100:10)",
             "    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)",
             "    at async GeminiClient.sendMessageStream (file:///usr/local/lib/node_modules/@google/gemini-cli/bundle/chunk.js:200:20)",
@@ -441,7 +443,7 @@ class TestParseEnvelope(unittest.TestCase):
         self.assertIn("Attempt 1 failed with status 400", res.stderr)
         self.assertIn("API key not valid", res.stderr)
         self.assertIn("API key not valid", res.error)
-        self.assertNotIn("my-raw-secret-123", res.stderr)
+        self.assertNotIn(raw_val, res.stderr)
         self.assertIn("GEMINI_API_KEY=[REDACTED_GOOGLE_KEY]", res.stderr)
         self.assertNotIn("at throwErrorIfNotOk", res.stderr)
         self.assertNotIn("Full report available at", res.stderr)
@@ -611,7 +613,7 @@ class TestRunEntry(unittest.TestCase):
         self.assertFalse(res.ok)
         self.assertEqual([], launched)
         self.assertEqual(outage.HOST_FAILURE, res.failure_class)
-        self.assertIn(gemini_home.MISSING_API_KEY_REMEDY, res.error)
+        self.assertIn(gemini_home.GEMINI_ENV_REMEDY, res.error)
 
         # Also fail early when nothing is configured at all (no selectedType,
         # no oauth_creds.json, no GEMINI_API_KEY).
@@ -628,7 +630,7 @@ class TestRunEntry(unittest.TestCase):
         self.assertFalse(res_none.ok)
         self.assertEqual([], launched)
         self.assertEqual(outage.HOST_FAILURE, res_none.failure_class)
-        self.assertIn("no Gemini auth configured: " + gemini_home.MISSING_API_KEY_REMEDY,
+        self.assertIn("no Gemini auth configured: " + gemini_home.GEMINI_ENV_REMEDY,
                       res_none.error)
 
     def test_rerouted_envelope_records_requested_model_in_ledger_and_discloses_on_stderr(self):

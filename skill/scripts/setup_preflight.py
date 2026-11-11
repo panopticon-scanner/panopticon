@@ -22,6 +22,8 @@ import scripts.runners.gemini_home as gemini_home
 from scripts import tools_image  # #3407: the local image name
 
 host_auth_hazard = gemini_home.host_auth_hazard
+host_hazard_code = gemini_home.host_hazard_code
+HAZARD_MESSAGES = gemini_home.HAZARD_MESSAGES
 
 
 # The roles the DRIVER dispatches and therefore needs registered shells for.

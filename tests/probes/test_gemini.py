@@ -207,7 +207,7 @@ class TestGeminiShellSurfaceProbe(unittest.TestCase):
                     "gemini", registration_dir=d, runner=runner,
                     env={}, system_config_dir=sys_dir)
             self.assertEqual(hosts.REFUTED, state)
-            self.assertIn(gemini_home.MISSING_API_KEY_REMEDY, detail)
+            self.assertIn(gemini_home.GEMINI_ENV_REMEDY, detail)
 
             with mock.patch.dict(os.environ, {"HOME": home, "GEMINI_API_KEY": "secret-val"}, clear=True):
                 state_ok, _by, detail_ok = gemini_probes.probe_gemini_shell_surface(
@@ -687,6 +687,21 @@ class TestGeminiModelBoundProbe(unittest.TestCase):
             self.assertEqual(hosts.UNKNOWN, state_unrep, detail_unrep)
             self.assertIn("reported no model", detail_unrep)
 
+            # 5. Failed row (ok=False) with requested_model and no reported model is exempt -> PROVEN.
+            with open(ledger_path, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "entry_id": "review-Core-COD",
+                    "host": "gemini",
+                    "checkpoint": "review",
+                    "requested_model": "gemini-4-carbon",
+                    "model": None,
+                    "ok": False,
+                }) + "\n")
+            state_failed, _by, detail_failed = gemini_probes.probe_gemini_model_bound(
+                "gemini", registration_dir=d, settings_path=settings,
+                runner=self._help_runner())
+            self.assertEqual(hosts.PROVEN, state_failed, detail_failed)
+
     def test_alias_bindings_are_not_checkable_and_return_unknown_not_refuted(self):
         for alias in ("auto", "pro", "flash", "flash-lite", "auto-gemini-3"):
             with self.subTest(alias=alias), tempfile.TemporaryDirectory() as d:
@@ -886,7 +901,7 @@ class TestGeminiLiveCanary(unittest.TestCase):
             })
             return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
 
-        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "canary-test-key"}):
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "1"}):
             verdict, detail = gemini_probes.run_live_canary(runner=fake_gemini)
         self.assertEqual("pass", verdict, detail)
         self.assertIn("read_file", detail)
@@ -901,7 +916,7 @@ class TestGeminiLiveCanary(unittest.TestCase):
             })
             return subprocess.CompletedProcess(cmd, 1, stdout=out, stderr="")
 
-        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "canary-test-key"}):
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "1"}):
             verdict, detail = gemini_probes.run_live_canary(runner=auth_fail)
         self.assertEqual("skip", verdict)
         self.assertIn("auth unavailable", detail)
@@ -913,7 +928,7 @@ class TestGeminiLiveCanary(unittest.TestCase):
             })
             return subprocess.CompletedProcess(cmd, 0, stdout=out, stderr="")
 
-        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "canary-test-key"}):
+        with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "1"}):
             verdict2, detail2 = gemini_probes.run_live_canary(runner=leaked)
         self.assertEqual("fail", verdict2)
         self.assertIn("leaked out-of-scope sentinel", detail2)

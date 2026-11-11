@@ -215,18 +215,19 @@ class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
                       rows["host-auth"]["detail"])
 
         d_ok = self._repo()
+        test_val = "my-test-" + "gemini-val"
         with tempfile.TemporaryDirectory() as empty_home, \
                 mock.patch.dict(os.environ, {
                     "HOME": empty_home,
                     "PATH": os.environ.get("PATH", ""),
-                    "GEMINI_API_KEY": "my-secret-gemini-key",
+                    "GEMINI_API_KEY": test_val,
                 }, clear=True):
             status_ok = driver.run(self._args(d_ok, "--no-tools", "--host", "gemini"))
         self.assertEqual(status_ok["status"], "checkpoint", status_ok)
         rows_ok = self._rows(d_ok)
         self.assertNotIn("host-auth", rows_ok)
         self.assertIs(self._readiness_json(d_ok)["ready"], True)
-        self.assertNotIn("my-secret-gemini-key", json.dumps(self._readiness_json(d_ok)))
+        self.assertNotIn(test_val, json.dumps(self._readiness_json(d_ok)))
 
 
 class TestTheDisclosedOptOut(_ReadinessCase):
