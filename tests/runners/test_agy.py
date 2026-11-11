@@ -14,18 +14,26 @@ import scripts.runners.base as base
 import scripts.runners.outage as outage
 
 
+# #3550: agy's DOCUMENTED `--output-format json` envelope (field table at
+# https://antigravity.google/docs/cli/headless/, read 2026-11-11). It carries no model:
+# the old fixture here was Gemini CLI's shape, which is how every real ledger row's
+# `model: null` passed every test.
 ENVELOPE = json.dumps({
+    "conversation_id": "2c8d8cf2-070f-416c-90bf-5a1983debf98",
+    "status": "SUCCESS",
+    "response": "the final reply",
+    "duration_seconds": 7.16,
+    "num_turns": 1,
+    "usage": {"input_tokens": 100, "output_tokens": 25, "thinking_tokens": 15,
+              "cache_read_tokens": 40, "total_tokens": 180},
+})
+# Not agy's shape: Gemini CLI's `stats.models`, kept as a tolerant fallback only.
+GEMINI_SHAPED_ENVELOPE = json.dumps({
     "session_id": "2c8d8cf2-070f-416c-90bf-5a1983debf98",
     "response": "the final reply",
-    "stats": {
-        "models": {
-            "gemini-4-argon-high": {
-                "api": {"totalRequests": 1, "totalErrors": 0, "totalLatencyMs": 420},
-                "tokens": {"input": 100, "prompt": 140, "candidates": 25,
-                           "total": 180, "cached": 40, "thoughts": 15, "tool": 0},
-            }
-        }
-    },
+    "stats": {"models": {"gemini-4-argon-high": {
+        "tokens": {"input": 100, "prompt": 140, "candidates": 25,
+                   "total": 180, "cached": 40, "thoughts": 15, "tool": 0}}}},
 })
 
 
@@ -215,7 +223,7 @@ class TestParseEnvelope(unittest.TestCase):
         self.assertTrue(res.ok)
         self.assertEqual(res.text, "the final reply")
         self.assertEqual(res.session_id, "2c8d8cf2-070f-416c-90bf-5a1983debf98")
-        self.assertEqual(res.model, "gemini-4-argon-high")
+        self.assertIsNone(res.model)       # #3550: agy reports no answering model
         self.assertIsNone(res.cost_usd)
         self.assertEqual(res.usage, {
             "input_tokens": 100,
@@ -235,6 +243,88 @@ class TestParseEnvelope(unittest.TestCase):
         self.assertIn("429 rate limit", res.error)
         self.assertNotIn("sk-ant-", res.stderr)
         self.assertEqual(outage.HOST_FAILURE, res.failure_class)
+
+
+class TestTheDocumentedEnvelope(unittest.TestCase):
+    """#3550: what agy's real envelope yields, and the tolerant fallbacks."""
+
+    def test_the_documented_envelope_maps_usage_and_reports_no_model(self):
+        res = agy_runner.parse_envelope(ENVELOPE, 0, entry_id="e")
+        self.assertTrue(res.ok)
+        self.assertIsNone(res.model)
+        self.assertEqual("2c8d8cf2-070f-416c-90bf-5a1983debf98", res.session_id)
+        self.assertEqual({"input_tokens": 100, "output_tokens": 25, "thinking_tokens": 15,
+                          "cache_read_input_tokens": 40, "cache_read_tokens": 40,
+                          "cache_creation_input_tokens": 0, "total_tokens": 180}, res.usage)
+
+    def test_a_future_model_field_is_still_picked_up(self):
+        for raw, model in ((GEMINI_SHAPED_ENVELOPE, "gemini-4-argon-high"),
+                           (json.dumps(dict(json.loads(ENVELOPE), model="gemini-4-carbon")),
+                            "gemini-4-carbon")):
+            with self.subTest(model=model):
+                self.assertEqual(model, agy_runner.parse_envelope(raw, 0, entry_id="e").model)
+
+    def test_the_disclosure_cites_the_documented_envelope(self):
+        self.assertIn("reports no answering model", agy_runner.NO_ANSWERING_MODEL)
+        self.assertIn("https://antigravity.google/docs/cli/headless/",
+                      agy_runner.NO_ANSWERING_MODEL)
+
+    def test_the_carbon_effort_slugs_are_known_but_not_defaults(self):
+        for slug in ("gemini-4-carbon-low", "gemini-4-carbon-medium", "gemini-4-carbon-high"):
+            self.assertIn(slug, agy_runner.KNOWN_MODELS)
+
+
+class TestTheLedgerRowForAgy(unittest.TestCase):
+    """#3550: an agy row names what was bound; `model` stays null and is never invented."""
+
+    TIMING = {"started_at": "2026-11-11T00:00:00Z", "finished_at": "2026-11-11T00:00:01Z",
+              "duration_ms": 1000}
+
+    def _row(self, entry, raw=ENVELOPE):
+        import contextlib
+        import io
+        import scripts.ledger as ledger
+        res = agy_runner.parse_envelope(raw, 0, entry_id=entry["id"])
+        with tempfile.TemporaryDirectory() as d:
+            led = ledger.Ledger(d)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                led.record(entry, "review", res, "headless", "agy", timing=self.TIMING)
+            with open(led.path, encoding="utf-8") as fh:
+                row = json.loads(fh.readline())
+            usage = led.usage_document()
+        return row, err.getvalue(), usage
+
+    def test_the_row_carries_the_bound_model_and_effort_with_model_null(self):
+        row, err, usage = self._row(_entry(False, model="gemini-4-carbon", effort="high"))
+        self.assertIsNone(row["model"])
+        self.assertEqual("gemini-4-carbon", row["requested_model"])
+        self.assertEqual("high", row["requested_effort"])
+        self.assertEqual(100, row["usage"]["input_tokens"])
+        self.assertEqual("", err)
+        self.assertEqual({}, usage["by_model"])          # no split is claimed
+
+    def test_no_effort_means_no_requested_effort(self):
+        row, _err, _usage = self._row(_entry(False, model="gemini-3.8-flash-medium"))
+        self.assertEqual("gemini-3.8-flash-medium", row["requested_model"])
+        self.assertNotIn("requested_effort", row)
+
+    def test_an_unbound_entry_writes_neither(self):
+        row, _err, _usage = self._row(_entry(False, model=None))
+        self.assertNotIn("requested_model", row)
+        self.assertNotIn("requested_effort", row)
+
+    def test_a_reported_model_that_differs_is_said_loudly(self):
+        raw = json.dumps(dict(json.loads(ENVELOPE), model="gemini-3.8-flash-lite"))
+        row, err, _usage = self._row(_entry(False, model="gemini-4-carbon", effort="high"), raw)
+        self.assertEqual("gemini-3.8-flash-lite", row["model"])
+        self.assertIn("host 'agy' reported model 'gemini-3.8-flash-lite', "
+                      "bound 'gemini-4-carbon'", err)
+
+    def test_a_reported_model_that_matches_is_quiet(self):
+        raw = json.dumps(dict(json.loads(ENVELOPE), model="gemini-4-carbon"))
+        _row, err, _usage = self._row(_entry(False, model="gemini-4-carbon"), raw)
+        self.assertEqual("", err)
 
 
 class TestRunEntry(unittest.TestCase):
@@ -263,7 +353,7 @@ class TestRunEntry(unittest.TestCase):
                 res = r.run_entry(_entry(True), self._env())
         self.assertTrue(res.ok)
         self.assertEqual(res.text, "the final reply")
-        self.assertEqual(res.model, "gemini-4-argon-high")
+        self.assertIsNone(res.model)       # #3550: agy reports no answering model
         self.assertEqual(res.usage["input_tokens"], 100)
         child_env = seen["kw"]["env"]
         self.assertEqual(child_env["HOME"], r.run_home)

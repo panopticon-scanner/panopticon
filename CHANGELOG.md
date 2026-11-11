@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **agy ledger rows explain their null model (#3550).** agy's JSON envelope reports no
+  answering model, so every agy row had `model: null` and `usage.json` had an empty `by_model`,
+  with nothing saying why. Rows now carry the bound `requested_model` and `requested_effort`;
+  `model` stays null rather than guessed, and the `agy-model-bound` and `agy-usage-envelope`
+  probe details state the gap. The agy test envelopes now use agy's documented shape; they
+  were Gemini CLI's, which is how the null passed every test. The Carbon effort slugs
+  (`gemini-4-carbon-low`, `-medium`, `-high`) join the agy allowlist; they are not defaults.
 - **agy's domain roles move to `gemini-4-carbon` at high effort (#3564).** `domain_panel` and
   `domain_advisor` on agy were `gemini-4-argon-high`; they are now the base model
   `gemini-4-carbon` with `effort: high`, which the runner passes as its own `--effort high`

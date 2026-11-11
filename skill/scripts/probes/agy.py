@@ -587,11 +587,13 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
     if faults:
         return (hosts.REFUTED, AGY_MODEL_BOUND, "; ".join(faults))
     if pending:
-        return (hosts.UNKNOWN, AGY_MODEL_BOUND, EFFORT_READBACK_PENDING % ", ".join(pending))
+        return (hosts.UNKNOWN, AGY_MODEL_BOUND, "%s; %s" % (
+            EFFORT_READBACK_PENDING % ", ".join(pending), agy_runner.NO_ANSWERING_MODEL))
     verified = sorted({check[2] for check in runtime_checks})
     return (hosts.PROVEN, AGY_MODEL_BOUND,
             "all %d driver roles match frontmatter tiers and runtime `/model` "
-            "resolution (%s)" % (len(common.DRIVER_ROLES), ", ".join(verified)))
+            "resolution (%s); %s" % (len(common.DRIVER_ROLES), ", ".join(verified),
+                                     agy_runner.NO_ANSWERING_MODEL))
 
 
 def _effort_readback(role, agent_name, model, effort, home, runner):
@@ -708,8 +710,10 @@ def probe_agy_usage_envelope(host, settings_path=None, *, runner=None):
     if ok is False:
         return (hosts.REFUTED, AGY_USAGE_ENVELOPE, detail)
     if ok is None:
-        return (hosts.UNKNOWN, AGY_USAGE_ENVELOPE, detail)
+        return (hosts.UNKNOWN, AGY_USAGE_ENVELOPE,
+                "%s; %s" % (detail, agy_runner.NO_ANSWERING_MODEL))
     return (hosts.PROVEN, AGY_USAGE_ENVELOPE,
             "`agy --help` advertises %s, parse_envelope maps usage, "
-            "and %s"
-            % (", ".join(agy_runner.Runner.ENVELOPE_FLAGS), detail))
+            "and %s; %s"
+            % (", ".join(agy_runner.Runner.ENVELOPE_FLAGS), detail,
+               agy_runner.NO_ANSWERING_MODEL))

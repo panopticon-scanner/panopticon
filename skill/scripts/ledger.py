@@ -227,6 +227,17 @@ class Ledger:
                 print("driver loop: %s: model rerouted by host %r: bound %r, envelope reported %r"
                       % (entry.get("id"), host, bound_model, result.model),
                       file=sys.stderr, flush=True)
+        if host == "agy" and isinstance(bound_model, str) and bound_model:
+            # #3550: agy's envelope reports no answering model (agy_runner.NO_ANSWERING_MODEL),
+            # so the row names what was bound and leaves `model` null rather than invent one.
+            line["requested_model"] = bound_model
+            effort = entry.get("effort")
+            if isinstance(effort, str) and effort:
+                line["requested_effort"] = effort
+            if isinstance(result.model, str) and result.model and result.model != bound_model:
+                print("driver loop: %s: host %r reported model %r, bound %r"
+                      % (entry.get("id"), host, result.model, bound_model),
+                      file=sys.stderr, flush=True)
         # Host errors and persistence refusals can quote credentials. Redact at
         # the single writer, preserving null when the row has no error (#1709).
         if line["error"] is not None:
