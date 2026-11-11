@@ -270,10 +270,10 @@ class TestTheKimiFamily(_FamilyCase):
         home = os.path.join(self.root, "real-home")
         os.makedirs(home)
         with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
-            fh.write('default_model = "kimi-code/k3"\n\n'
-                     '[models."kimi-code/k3"]\nmodel = "k3"\n\n'
-                     '[models."kimi-code/kimi-for-coding"]\n'
-                     'model = "kimi-for-coding"\n')
+            fh.write('default_model = "kimi-code/k3.1-pro"\n\n'
+                     '[models."kimi-code/k3.1-pro"]\nmodel = "k3.1-pro"\n\n'
+                     '[models."kimi-code/k3-256k"]\n'
+                     'model = "k3-256k"\n')
         with open(os.path.join(home, "credentials"), "w", encoding="utf-8") as fh:
             fh.write("fixture")
         return home

@@ -28,13 +28,13 @@ _prepared = partial(prepared_kimi, include_coding_alias=False)
 
 
 class TestSharedKimiFixture(unittest.TestCase):
-    def test_surface_home_has_only_k3_and_the_default_launcher_is_guarded(self):
+    def test_surface_home_has_only_k3_1_pro_and_the_default_launcher_is_guarded(self):
         with tempfile.TemporaryDirectory() as directory:
             prepared = _prepared(directory)
             try:
                 self.assertIsNone(prepared.runner)
                 with open(os.path.join(directory, "real-home", "config.toml"), "rb") as fh:
-                    self.assertEqual(set(tomllib.load(fh)["models"]), {"kimi-code/k3"})
+                    self.assertEqual(set(tomllib.load(fh)["models"]), {"kimi-code/k3.1-pro"})
                 with self.assertRaises(base.LaunchRefused):
                     kimi_runner.DEFAULT_RUNNER(["kimi", "--version"])
             finally:
@@ -56,7 +56,7 @@ class TestSkillsDirectory(unittest.TestCase):
     def test_every_entry_carries_the_skills_dir_before_the_prompt_flag(self):
         for enforced in (True, False):
             with self.subTest(enforced=enforced):
-                cmd = self.r.command(_entry(enforced), "kimi-code/k3")
+                cmd = self.r.command(_entry(enforced), "kimi-code/k3.1-pro")
                 flags = [a for a in cmd if a.startswith("--skills-dir")]
                 # EQUALS form, for the same 0.42.0 parsing reason
                 # `--agent-file=` uses it: the space form after -p misparses.
@@ -78,7 +78,7 @@ class TestSkillsDirectory(unittest.TestCase):
         # `prepare` already hard-raises on a missing guard hook; same shape.
         unprepared = kimi_runner.Runner("kimi")
         with self.assertRaises(RuntimeError) as raised:
-            unprepared.command(_entry(True), "kimi-code/k3")
+            unprepared.command(_entry(True), "kimi-code/k3.1-pro")
         self.assertIn("not prepared", str(raised.exception))
 
     def test_a_clean_teardown_forgets_the_directory_it_deleted(self):

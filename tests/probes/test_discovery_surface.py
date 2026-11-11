@@ -285,7 +285,7 @@ class TestTheControlsAreLive(unittest.TestCase):
             try:
                 argv = runner.command({"id": "e", "agent": "panopticon-domain-panel",
                                        "enforced": True, "prompt": "review"},
-                                      "gemini-3.6-flash")
+                                      "gemini-3.8-flash")
                 self.assertTrue(probes_common.control_is_on(
                     "gemini:admin-policy-tier", argv), argv)
                 self.assertTrue(os.path.isdir(os.path.join(runner.workspace_dir, ".git")))

@@ -16,7 +16,7 @@ The one difference from a reviewer's launch is the shell: `--agent` names a
 session-only shell defined by `--agents` (the same four tools as a reviewer's,
 on the cheapest model), because the registered shells live in the operator's
 user scope, may not be registered yet when the probe runs, and bind a
-reviewer's model. Measured cost: one haiku turn pair, about $0.0005 and 5-8 s.
+reviewer's model. Measured cost: one fixed Haiku 5.5 turn pair.
 """
 import json
 import os
@@ -28,7 +28,7 @@ from scripts.runners import children
 from scripts.runners import claude as claude_runner
 
 CANARY_AGENT = "panopticon-write-canary"
-CANARY_MODEL = "haiku"
+CANARY_MODEL = "claude-haiku-5-5"
 CANARY_TOOLS = ("Read", "Glob", "Grep", "Write")
 CANARY_MAX_TURNS = 6
 CANARY_TIMEOUT = 180

@@ -288,7 +288,7 @@ def test_no_override_surface_measurement_builds_every_role_launch(tmp_path):
 
     registered = tmp_path / "registered"
     dispatch.emit_host_agents("codex", str(registered))
-    catalog = [{"slug": "gpt-6-luna"}, {"slug": "gpt-6-sol"}]
+    catalog = [{"slug": "gpt-6-luna"}, {"slug": "gpt-6.1-sol"}]
 
     def inspect(entry, env, root, run_dir, **kwargs):
         argv = codex_host.command(

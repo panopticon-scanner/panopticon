@@ -58,6 +58,20 @@ def _fixture_user_home(root):
     return home, agents_dir
 
 
+class TestAgyModelCatalogue(unittest.TestCase):
+    def test_known_models_cover_current_catalogue_and_pending_retirements(self):
+        current = {
+            "gemini-4-carbon", "gemini-4-argon", "gemini-3.8-flash",
+            "gemini-3.7-flash", "gemini-3.6-flash", "gemini-3.1-pro-preview",
+            "claude-sonnet-5-5", "claude-opus-5-5",
+            *("claude-sonnet-5-5-%s" % level for level in ("low", "medium", "high", "max")),
+            *("claude-opus-5-5-%s" % level for level in ("low", "medium", "high", "max")),
+        }
+        self.assertTrue(current.issubset(agy_runner.KNOWN_MODELS))
+        self.assertTrue({"claude-sonnet-4-6", "claude-opus-4-6-thinking",
+                         "gpt-oss-120b-medium"}.issubset(agy_runner.KNOWN_MODELS))
+
+
 class TestAgyHomeIsolationAndGitCeiling(unittest.TestCase):
     """Changes 1, 2, and 3: minimal auth link, Git ceiling in <run_home>/workspace,
     and single '*' PreToolUse matcher."""

@@ -61,19 +61,18 @@ ALLOWED_GEMINI_ENV_KEYS = frozenset({
     "GEMINI_API_KEY_AUTH_MECHANISM",
 })
 
+# models-verified: 2026-11-11 https://aistudio.google.com/docs/models/gemini-4-carbon https://ai.google.dev/gemini-api/docs/models https://ai.google.dev/gemini-api/docs/deprecations https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/config/models.ts
 KNOWN_MODELS = frozenset({
     "gemini-4-carbon",
     "gemini-4-argon",
     "gemini-3.8-flash",
+    "gemini-3.7-flash",
     "gemini-3.6-flash",
     "gemini-3.5-flash",
     "gemini-3.5-flash-lite",
     "gemini-3.1-pro-preview",
     "gemini-3.1-pro-preview-customtools",
     "gemini-3.1-flash-lite",
-    "gemini-3.1-flash-lite-preview",
-    "gemini-3-pro-preview",
-    "gemini-3-flash",
     "gemini-3-flash-preview",
     "gemma-4-31b-it",
     "gemma-4-26b-a4b-it",
@@ -81,7 +80,6 @@ KNOWN_MODELS = frozenset({
     "pro",
     "flash",
     "flash-lite",
-    "auto-gemini-3",
 })
 
 EXIT_CODE_NAMES = {

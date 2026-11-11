@@ -108,7 +108,7 @@ def _kimi_armed_home(sandbox):
     fixture_home = os.path.join(sandbox, "fixture-home")
     os.makedirs(fixture_home, exist_ok=True)
     with open(os.path.join(fixture_home, "config.toml"), "w", encoding="utf-8") as fh:
-        fh.write('default_model = "kimi-code/k3"\n')
+        fh.write('default_model = "kimi-code/k3.1-pro"\n')
     run_dir = os.path.join(sandbox, "run")
     os.makedirs(run_dir, exist_ok=True)
     scope_path = os.path.join(run_dir, "read-scope.json")

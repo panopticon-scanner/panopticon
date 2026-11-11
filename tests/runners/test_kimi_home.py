@@ -61,8 +61,8 @@ class TestPrepare(unittest.TestCase):
                               [h["command"] for h in hooks
                                if h["matcher"] == kimi_home.WRITE_MATCHER][0])
                 # the fixture's own values survive the merge
-                self.assertEqual(config["models"]["kimi-code/k3"]["model"], "k3")
-                self.assertEqual(r.configured, {"kimi-code/k3", "kimi-code/kimi-for-coding"})
+                self.assertEqual(config["models"]["kimi-code/k3.1-pro"]["model"], "k3.1-pro")
+                self.assertEqual(r.configured, {"kimi-code/k3.1-pro", "kimi-code/k3-256k"})
                 # Idempotent in the sense that survived N2: a second prepare
                 # arms the same configuration. It does so in a FRESH home --
                 # reuse would have to trust the pointer file -- so the first

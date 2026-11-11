@@ -27,13 +27,33 @@ DEFAULT_RUNNER = None
 _SAFE_TOKEN_RE = re.compile(r"\A[A-Za-z0-9._:-]+\Z")
 _NESTED_MARKERS = ("ANTIGRAVITY_CLI", "ANTIGRAVITY_CLI_ALIAS")
 
+# The 4.6 and GPT-OSS rows retire on 2026-11-18; keep them until that date so
+# currently supported Free/Plus runs do not fail closed a week early.
+# models-verified: 2026-11-11 https://antigravity.google/docs/models https://antigravity.google/docs/enterprise
 KNOWN_MODELS = frozenset({
+    "gemini-4-carbon",
+    "gemini-4-argon",
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.6-flash",
+    "gemini-3.1-pro-preview",
     "gemini-3.8-flash-lite",
     "gemini-3.8-flash-low",
     "gemini-3.8-flash-medium",
     "gemini-3.8-flash-high",
     "gemini-4-argon-low",
     "gemini-4-argon-high",
+    "claude-sonnet-5-5",
+    "claude-sonnet-5-5-low",
+    "claude-sonnet-5-5-medium",
+    "claude-sonnet-5-5-high",
+    "claude-sonnet-5-5-max",
+    "claude-opus-5-5",
+    "claude-opus-5-5-low",
+    "claude-opus-5-5-medium",
+    "claude-opus-5-5-high",
+    "claude-opus-5-5-max",
+    # Retire after 2026-11-18, matching the provider removal date above.
     "claude-sonnet-4-6",
     "claude-opus-4-6-thinking",
     "gpt-oss-120b-medium",

@@ -9,6 +9,22 @@
   automatically. The gh code shared with the pin-freshness report moved to `devtools/issue_bot.py`
   unchanged.
 
+- **Claude roles now bind fixed Claude 5.5 IDs (#3563).** Scouts and advisors
+  use `claude-haiku-5-5`, domain panels use `claude-sonnet-5-5`, and domain
+  advisors use `claude-opus-5-5`, so a release no longer follows moving CLI aliases.
+- **Kimi roles now use the current fixed model IDs (#3563).** Scouts bind
+  `k3-256k`; advisors and both domain roles bind `k3.1-pro`. The installed
+  `~/.kimi-code/config.toml` `[models]` table must define both aliases, or
+  `resolve_cli_alias` refuses the launch.
+- **Codex reviewer roles now bind GPT-6.1 Sol (#3563).** The scout remains on
+  `gpt-6-luna`, and the existing per-role reasoning efforts are unchanged.
+- **Gemini scout and advisor roles now bind Gemini 3.8 Flash (#3563).** The
+  domain roles remain on Gemini 4 Carbon. `gemini-3.1-flash-lite-preview`,
+  `gemini-3-pro-preview`, `gemini-3-flash`, and `auto-gemini-3` were removed;
+  a config naming one now gets a loud refusal before launch.
+- **Antigravity's model catalogue now covers its current models (#3563).**
+  Existing Argon/3.8 defaults stay fixed because the runner does not yet carry
+  a separate effort input; 4.6 and GPT-OSS remain until their 2026-11-18 removal.
 - **More disk headroom for the Dockerfile PR build (#3441).** Its `load: true` import of
   the tools image intermittently ran out of space. The job now removes preinstalled
   toolchains it never uses before building, and logs the free disk and the image's layer IDs

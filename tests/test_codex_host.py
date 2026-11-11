@@ -1083,13 +1083,13 @@ def test_launch_cwd_refuses_an_unregistered_or_absent_scratch(tmp_path):
 
 
 # #2879: the reasoning effort binds from the entry beside its model. The rows mirror what
-# `codex debug models --bundled` lists (codex-cli 0.166.0): luna stops at max, sol reaches ultra.
+# `codex debug models --bundled` lists: luna stops at max, 6.1 Sol reaches ultra.
 _LEVELS = {"gpt-6-luna": ("low", "medium", "high", "xhigh", "max"),
-           "gpt-6-sol": ("low", "medium", "high", "xhigh", "max", "ultra")}
+           "gpt-6.1-sol": ("low", "medium", "high", "xhigh", "max", "ultra")}
 _ROLES = {"scout": ("panopticon-scout", "gpt-6-luna", "medium"),
-          "advisor": ("panopticon-advisor", "gpt-6-sol", "high"),
-          "domain_panel": ("panopticon-domain-panel", "gpt-6-sol", "high"),
-          "domain_advisor": ("panopticon-domain-advisor", "gpt-6-sol", "high")}
+          "advisor": ("panopticon-advisor", "gpt-6.1-sol", "high"),
+          "domain_panel": ("panopticon-domain-panel", "gpt-6.1-sol", "high"),
+          "domain_advisor": ("panopticon-domain-advisor", "gpt-6.1-sol", "high")}
 
 
 def _rows(levels=True):
