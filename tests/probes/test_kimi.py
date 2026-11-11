@@ -366,14 +366,14 @@ class TestKimiWriteGuardProbe(unittest.TestCase):
 
 
 class TestKimiModelAliasProbe(unittest.TestCase):
-    CONFIGURED = frozenset({"kimi-code/k3", "kimi-code/kimi-for-coding"})
+    CONFIGURED = frozenset({"kimi-code/k3.1-pro", "kimi-code/k3-256k"})
 
     def test_every_role_binding_a_configured_alias_is_proven(self):
         state, by, detail = kimi_probes.probe_kimi_model_alias(
             "kimi", configured=self.CONFIGURED)
         self.assertEqual(hosts.PROVEN, state)
         self.assertEqual(kimi_probes.KIMI_MODEL_ALIAS, by)
-        self.assertIn("kimi-code/k3", detail)
+        self.assertIn("kimi-code/k3.1-pro", detail)
 
     def _profile_model(self, role):
         """The FILE's own value for this role -- the declaration that licenses
@@ -431,7 +431,7 @@ class TestKimiModelAliasProbe(unittest.TestCase):
 
     def test_an_unresolvable_role_is_refuted_and_named(self):
         state, _by, detail = kimi_probes.probe_kimi_model_alias(
-            "kimi", configured=frozenset({"kimi-code/k3"}))
+            "kimi", configured=frozenset({"kimi-code/k3.1-pro"}))
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("scout", detail)
 
@@ -614,8 +614,8 @@ class TestKimiLaunchGuard(unittest.TestCase):
             home = os.path.join(d, "fixture-home")
             os.makedirs(home)
             with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
-                fh.write('default_model = "kimi-code/k3"\n'
-                         '[models."kimi-code/k3"]\nmodel = "k3"\n')
+                fh.write('default_model = "kimi-code/k3.1-pro"\n'
+                         '[models."kimi-code/k3.1-pro"]\nmodel = "k3.1-pro"\n')
             with mock.patch.dict(os.environ, {"KIMI_CODE_HOME": home}):
                 runner = kimi_runner.Runner("kimi")           # nothing injected
                 runner.prepare(os.path.join(d, "run"), review_root=d)

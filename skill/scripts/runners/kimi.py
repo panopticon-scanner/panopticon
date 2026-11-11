@@ -10,8 +10,8 @@ MODEL BINDING. Entry models are the primary/secondary TIERS
 (phases/requests.bound_policy via model_resolver). Kimi agent files cannot bind
 a model (unknown frontmatter fields are ignored), so the runner binds ``-m
 <alias>`` on every entry -- enforced or not -- resolving tier -> profile alias
--> the full alias the installed config's [models] table defines (``k3`` ->
-``kimi-code/k3``). An unresolvable model is a failed entry, never a silent
+-> the full alias the installed config's [models] table defines (``k3.1-pro`` ->
+``kimi-code/k3.1-pro``). An unresolvable model is a failed entry, never a silent
 session-model fallback. The alias that REALLY ran is read back from the
 session's wire file, which is also the usage ledger's source:
 ``usage.record{usageScope: "turn"}`` events, one per LLM request, summed.
@@ -84,7 +84,7 @@ _NESTED_MARKERS = ("KIMI_SESSION_ID", "KIMI_CODE_VERSION")
 
 def _tier_aliases():
     """{tier: profile alias} from the one resolver, over every driver role --
-    {primary: kimi-for-coding, secondary: k3} today. Derived, never hand-kept:
+    {primary: k3-256k, secondary: k3.1-pro} today. Derived, never hand-kept:
     model-profiles.yml is the source of truth and a profile change must not
     strand this runner on a stale table."""
     out: dict[str, str] = {}
@@ -100,7 +100,7 @@ def resolve_cli_alias(model, configured, tier_aliases=None):
     """The full alias the installed CLI knows for an entry's model, or None.
 
     `model` is what the entry carries: a tier (primary|secondary), a profile
-    alias (k3), or a full configured alias (kimi-code/k3). `configured` is the
+    alias (k3.1-pro), or a full configured alias (kimi-code/k3.1-pro). `configured` is the
     set of alias names the installed config's [models] table defines. No
     guessing: anything that does not resolve is None, and the runner fails
     the entry rather than letting the session's default model silently win.

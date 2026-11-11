@@ -132,12 +132,12 @@ class TestParseEnvelope(unittest.TestCase):
 
 class TestAliases(unittest.TestCase):
     def test_tiers_resolve_through_the_profile_aliases(self):
-        self.assertEqual(kimi_runner.resolve_cli_alias("secondary", CONFIGURED), "kimi-code/k3")
-        self.assertEqual(kimi_runner.resolve_cli_alias("primary", CONFIGURED), "kimi-code/kimi-for-coding")
+        self.assertEqual(kimi_runner.resolve_cli_alias("secondary", CONFIGURED), "kimi-code/k3.1-pro")
+        self.assertEqual(kimi_runner.resolve_cli_alias("primary", CONFIGURED), "kimi-code/k3-256k")
 
     def test_full_and_short_aliases_resolve_when_configured(self):
-        self.assertEqual(kimi_runner.resolve_cli_alias("k3", CONFIGURED), "kimi-code/k3")
-        self.assertEqual(kimi_runner.resolve_cli_alias("kimi-code/k3", CONFIGURED), "kimi-code/k3")
+        self.assertEqual(kimi_runner.resolve_cli_alias("k3.1-pro", CONFIGURED), "kimi-code/k3.1-pro")
+        self.assertEqual(kimi_runner.resolve_cli_alias("kimi-code/k3.1-pro", CONFIGURED), "kimi-code/k3.1-pro")
 
     def test_an_unresolvable_model_is_none_never_a_guess(self):
         self.assertIsNone(kimi_runner.resolve_cli_alias("bogus", CONFIGURED))
@@ -146,8 +146,8 @@ class TestAliases(unittest.TestCase):
 
     def test_tier_aliases_derive_from_model_resolver(self):
         tiers = kimi_runner._tier_aliases()
-        self.assertEqual(tiers.get("primary"), "kimi-for-coding")
-        self.assertEqual(tiers.get("secondary"), "k3")
+        self.assertEqual(tiers.get("primary"), "k3-256k")
+        self.assertEqual(tiers.get("secondary"), "k3.1-pro")
 
 
 class TestRunEntry(unittest.TestCase):

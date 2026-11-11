@@ -14,7 +14,7 @@ STREAM = "\n".join([
     json.dumps({"role": "meta", "type": "session.resume_hint",
                 "session_id": "session_test-1", "command": "kimi -r session_test-1"}),
 ])
-CONFIGURED = frozenset({"kimi-code/k3", "kimi-code/kimi-for-coding"})
+CONFIGURED = frozenset({"kimi-code/k3.1-pro", "kimi-code/k3-256k"})
 
 
 def _entry(enforced, model="secondary"):

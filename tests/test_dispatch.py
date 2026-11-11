@@ -771,8 +771,8 @@ class TestEmitHostAgents(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             dispatch.emit_host_agents("gemini", d)
             expected = {
-                "panopticon-scout.toml": "gemini-3.6-flash",
-                "panopticon-advisor.toml": "gemini-3.6-flash",
+                "panopticon-scout.toml": "gemini-3.8-flash",
+                "panopticon-advisor.toml": "gemini-3.8-flash",
                 "panopticon-domain-panel.toml": "gemini-4-carbon",
                 "panopticon-domain-advisor.toml": "gemini-4-carbon",
                 "panopticon-setup-scan.toml": "inherit",
@@ -790,9 +790,9 @@ class TestEmitHostAgents(unittest.TestCase):
             self.assertTrue(all(path.endswith(".toml") for path in written))
             expected = {
                 "panopticon-scout": ("gpt-6-luna", "medium"),
-                "panopticon-advisor": ("gpt-6-sol", "high"),
-                "panopticon-domain-panel": ("gpt-6-sol", "high"),
-                "panopticon-domain-advisor": ("gpt-6-sol", "high"),
+                "panopticon-advisor": ("gpt-6.1-sol", "high"),
+                "panopticon-domain-panel": ("gpt-6.1-sol", "high"),
+                "panopticon-domain-advisor": ("gpt-6.1-sol", "high"),
             }
             for name, (model, effort) in expected.items():
                 with self.subTest(name=name), \

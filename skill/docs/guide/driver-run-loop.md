@@ -291,12 +291,12 @@ identity and reasoning settings; effective-surface probes check the result rathe
 alone. Nothing changes another host's runner or the calling session's configuration.
 
 The role profile keeps scout on `gpt-6-luna`/medium. Advisor, domain-panel, and domain-advisor use
-the explicit `gpt-6-sol`/high slug. An unavailable or ambiguous model fails closed rather than
+the explicit `gpt-6.1-sol`/high slug. An unavailable or ambiguous model fails closed rather than
 silently selecting another tier; if your Codex build's catalog (`codex debug models --bundled`)
 spells the tier differently, set `PANOPTICON_MODEL_<ROLE>` — e.g. `PANOPTICON_MODEL_DOMAIN_PANEL` —
 to a slug it lists, which is what the refusal itself names.
 Each override accepts either a plain model ID or a JSON object such as
-`{"model":"gpt-6-sol","model_reasoning_effort":"high"}`. Surrounding whitespace is allowed.
+`{"model":"gpt-6.1-sol","model_reasoning_effort":"high"}`. Surrounding whitespace is allowed.
 On Codex the effort binds beside the model (#2879): it must be a lowercase word, and a launch
 refuses an effort the model's catalog row does not list in `supported_reasoning_levels`, naming
 the model and the levels it does list.

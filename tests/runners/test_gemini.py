@@ -281,13 +281,19 @@ class TestCommand(unittest.TestCase):
             finally:
                 self.r.system_config_dir = None
 
-    def test_known_models_excludes_retired_gemini_2_5_models(self):
+    def test_known_models_excludes_retired_shutdown_and_legacy_models(self):
         for retired in ("gemini-2.5-pro", "gemini-2.5-flash",
-                        "gemini-2.5-flash-lite", "auto-gemini-2.5"):
+                        "gemini-2.5-flash-lite", "auto-gemini-2.5",
+                        "gemini-3.1-flash-lite-preview", "gemini-3-pro-preview",
+                        "gemini-3-flash", "auto-gemini-3"):
             self.assertNotIn(retired, gemini_runner.KNOWN_MODELS)
-        for current in ("gemini-3.6-flash", "gemini-3.8-flash",
+        for current in ("gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash",
                         "gemini-3.5-flash-lite", "gemini-4-argon", "gemini-4-carbon"):
             self.assertIn(current, gemini_runner.KNOWN_MODELS)
+
+    def test_model_aliases_match_the_current_upstream_aliases(self):
+        self.assertEqual(gemini_home.MODEL_ALIASES,
+                         frozenset({"auto", "pro", "flash", "flash-lite"}))
 
 
 class TestParseEnvelope(unittest.TestCase):
@@ -702,7 +708,7 @@ class TestRunEntry(unittest.TestCase):
 
                 # Aliases in MODEL_ALIASES are not flagged as reroutes on stderr.
                 stderr_alias = io.StringIO()
-                for alias in ("auto", "pro", "flash", "flash-lite", "auto-gemini-3"):
+                for alias in ("auto", "pro", "flash", "flash-lite"):
                     entry_alias = _entry(True, model=alias)
                     res_alias = r.run_entry(entry_alias, self._env())
                     with contextlib.redirect_stderr(stderr_alias):

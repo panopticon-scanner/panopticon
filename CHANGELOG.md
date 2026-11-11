@@ -9,6 +9,16 @@
   automatically. The gh code shared with the pin-freshness report moved to `devtools/issue_bot.py`
   unchanged.
 
+- **Kimi roles now use the current fixed model IDs (#3563).** Scouts bind
+  `k3-256k`; advisors and both domain roles bind `k3.1-pro`.
+- **Codex reviewer roles now bind GPT-6.1 Sol (#3563).** The scout remains on
+  `gpt-6-luna`, and the existing per-role reasoning efforts are unchanged.
+- **Gemini scout and advisor roles now bind Gemini 3.8 Flash (#3563).** The
+  domain roles remain on Gemini 4 Carbon; shutdown and legacy catalogue rows
+  were removed so stale IDs fail before launch.
+- **Antigravity's model catalogue now covers its current models (#3563).**
+  Existing Argon/3.8 defaults stay fixed because the runner does not yet carry
+  a separate effort input; 4.6 and GPT-OSS remain until their 2026-11-18 removal.
 - **More disk headroom for the Dockerfile PR build (#3441).** Its `load: true` import of
   the tools image intermittently ran out of space. The job now removes preinstalled
   toolchains it never uses before building, and logs the free disk and the image's layer IDs

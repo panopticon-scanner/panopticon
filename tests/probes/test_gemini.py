@@ -547,7 +547,7 @@ class TestGeminiModelBoundProbe(unittest.TestCase):
                 "gemini", registration_dir=d, runner=self._help_runner())
         self.assertEqual(hosts.PROVEN, state, detail)
         self.assertEqual(gemini_probes.GEMINI_MODEL_BOUND, by)
-        self.assertIn("gemini-3.6-flash", detail)
+        self.assertIn("gemini-3.8-flash", detail)
         self.assertIn("gemini-4-carbon", detail)
 
     def test_policy_model_header_drift_refutes(self):
@@ -723,7 +723,7 @@ class TestGeminiModelBoundProbe(unittest.TestCase):
             self.assertEqual(hosts.PROVEN, state_failed, detail_failed)
 
     def test_alias_bindings_are_not_checkable_and_return_unknown_not_refuted(self):
-        for alias in ("auto", "pro", "flash", "flash-lite", "auto-gemini-3"):
+        for alias in ("auto", "pro", "flash", "flash-lite"):
             with self.subTest(alias=alias), tempfile.TemporaryDirectory() as d:
                 with mock.patch.object(model_resolver, "registration_model",
                                        side_effect=lambda h, r, a=alias: None if r == "setup_scan" else a), \
@@ -774,7 +774,7 @@ class TestGeminiModelBoundProbe(unittest.TestCase):
                 with open(p, encoding="utf-8") as fh:
                     text = fh.read()
                 text = text.replace(
-                    "# panopticon-model: gemini-3.6-flash",
+                    "# panopticon-model: gemini-3.8-flash",
                     "# panopticon-model: inherit",
                 ).replace(
                     "# panopticon-model: gemini-4-carbon",
@@ -896,6 +896,7 @@ class TestGeminiLiveCanary(unittest.TestCase):
             self.assertIn("--approval-mode", cmd)
             self.assertEqual(cmd[cmd.index("--approval-mode") + 1], "yolo")
             self.assertIn("--admin-policy", cmd)
+            self.assertEqual(cmd[cmd.index("-m") + 1], "gemini-3.8-flash")
             policy_path = cmd[cmd.index("--admin-policy") + 1]
             self.assertTrue(os.path.isfile(policy_path))
             env = kw.get("env") or {}
@@ -912,7 +913,7 @@ class TestGeminiLiveCanary(unittest.TestCase):
                 "response": "allowed_value = 42",
                 "stats": {
                     "models": {
-                        "gemini-3.6-flash": {
+                        "gemini-3.8-flash": {
                             "tokens": {"input": 10, "prompt": 10, "candidates": 5,
                                        "cached": 0, "thoughts": 0, "total": 15}
                         }

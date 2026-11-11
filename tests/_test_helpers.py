@@ -174,11 +174,11 @@ def kimi_fixture_home(directory, *, include_coding_alias=True):
     """Create a disposable Kimi home, never using the operator's home."""
     home = os.path.join(directory, "real-home")
     os.makedirs(home)
-    config = ('default_model = "kimi-code/k3"\n\n'
-              '[models."kimi-code/k3"]\nmodel = "k3"\n')
+    config = ('default_model = "kimi-code/k3.1-pro"\n\n'
+              '[models."kimi-code/k3.1-pro"]\nmodel = "k3.1-pro"\n')
     if include_coding_alias:
-        config += ('\n[models."kimi-code/kimi-for-coding"]\n'
-                   'model = "kimi-for-coding"\n')
+        config += ('\n[models."kimi-code/k3-256k"]\n'
+                   'model = "k3-256k"\n')
     with open(os.path.join(home, "config.toml"), "w", encoding="utf-8") as fh:
         fh.write(config)
     with open(os.path.join(home, "credentials"), "w", encoding="utf-8") as fh:

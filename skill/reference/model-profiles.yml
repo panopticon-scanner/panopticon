@@ -1,23 +1,24 @@
 hosts:
+  # models-verified: 2026-11-11 https://www.kimi.com/code/docs/en/kimi-code/models
   kimi:
     scout:
       model: primary
-      alias: kimi-for-coding
+      alias: k3-256k
       max_context_size: 131072
       max_output_size: 16384
     advisor:
       model: secondary
-      alias: k3
+      alias: k3.1-pro
       max_context_size: 524288
       max_output_size: 32768
     domain_panel:
       model: secondary
-      alias: k3
+      alias: k3.1-pro
       max_context_size: 131072
       max_output_size: 16384
     domain_advisor:
       model: secondary
-      alias: k3
+      alias: k3.1-pro
       max_context_size: 524288
       max_output_size: 32768
     # R-F4-2 (#1737): `driver setup`'s one-off classifier inherits the
@@ -35,21 +36,25 @@ hosts:
       model: opus
     setup_scan:
       model: null
+  # models-verified: 2026-11-11 https://developers.openai.com/api/docs/models
   codex:
     scout:
       model: gpt-6-luna
       model_reasoning_effort: medium
     advisor:
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       model_reasoning_effort: high
     domain_panel:
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       model_reasoning_effort: high
     domain_advisor:
-      model: gpt-6-sol
+      model: gpt-6.1-sol
       model_reasoning_effort: high
     setup_scan:
       model: null
+  # Carbon is available in Antigravity, but this runner carries only a model
+  # field and cannot bind Antigravity's separate effort input.
+  # models-verified: 2026-11-11 https://antigravity.google/docs/models https://antigravity.google/docs/enterprise
   agy:
     scout:
       model: gemini-3.8-flash-medium
@@ -65,18 +70,15 @@ hosts:
       tier: pro
     setup_scan:
       model: null
-  # Google Gemini lineup (https://aistudio.google.com/docs/models,
-  # https://ai.google.dev/gemini-api/docs/models, and
-  # https://ai.google.dev/gemini-api/docs/deprecations, read 2026-11-10):
-  # `gemini-4-carbon` is the Pro-class flagship reasoning model (`domain_panel`,
-  # `domain_advisor`); `gemini-3.6-flash` is the stable Flash model (`scout`,
-  # `advisor`). `gemini-2.5-pro` and `gemini-2.5-flash` are deprecated and
-  # auto-route to `gemini-3.8-flash` and `gemini-3.5-flash-lite` from 2026-12-01.
+  # `gemini-4-carbon` is the flagship reasoning model (`domain_panel`,
+  # `domain_advisor`); `gemini-3.8-flash` is the stable Flash model (`scout`,
+  # `advisor`).
+  # models-verified: 2026-11-11 https://aistudio.google.com/docs/models/gemini-4-carbon https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash https://ai.google.dev/gemini-api/docs/deprecations
   gemini:
     scout:
-      model: gemini-3.6-flash
+      model: gemini-3.8-flash
     advisor:
-      model: gemini-3.6-flash
+      model: gemini-3.8-flash
     domain_panel:
       model: gemini-4-carbon
     domain_advisor:

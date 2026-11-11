@@ -71,13 +71,13 @@ def _profiles():
 # write no model line for it and the model-binding probes read None-on-both-sides
 # as agreement rather than as a shell that binds nothing.
 _KIMI_FALLBACK: dict[str, dict[str, Any]] = {
-    "scout": {"model": "primary", "alias": "kimi-for-coding",
+    "scout": {"model": "primary", "alias": "k3-256k",
               "max_context_size": 131072, "max_output_size": 16384},
-    "advisor": {"model": "secondary", "alias": "k3",
+    "advisor": {"model": "secondary", "alias": "k3.1-pro",
                 "max_context_size": 524288, "max_output_size": 32768},
-    "domain_panel": {"model": "secondary", "alias": "k3",
+    "domain_panel": {"model": "secondary", "alias": "k3.1-pro",
                      "max_context_size": 131072, "max_output_size": 16384},
-    "domain_advisor": {"model": "secondary", "alias": "k3",
+    "domain_advisor": {"model": "secondary", "alias": "k3.1-pro",
                        "max_context_size": 524288, "max_output_size": 32768},
     "setup_scan": {"model": None},
 }
@@ -93,9 +93,9 @@ _CLAUDE_FALLBACK = {
 }
 _CODEX_FALLBACK = {
     "scout": {"model": "gpt-6-luna", "model_reasoning_effort": "medium"},
-    "advisor": {"model": "gpt-6-sol", "model_reasoning_effort": "high"},
-    "domain_panel": {"model": "gpt-6-sol", "model_reasoning_effort": "high"},
-    "domain_advisor": {"model": "gpt-6-sol", "model_reasoning_effort": "high"},
+    "advisor": {"model": "gpt-6.1-sol", "model_reasoning_effort": "high"},
+    "domain_panel": {"model": "gpt-6.1-sol", "model_reasoning_effort": "high"},
+    "domain_advisor": {"model": "gpt-6.1-sol", "model_reasoning_effort": "high"},
     "setup_scan": {"model": None},
 }
 _AGY_FALLBACK: dict[str, dict[str, Any]] = {
@@ -105,14 +105,12 @@ _AGY_FALLBACK: dict[str, dict[str, Any]] = {
     "domain_advisor": {"model": "gemini-4-argon-high", "tier": "pro"},
     "setup_scan": {"model": None},
 }
-# Google Gemini lineup (https://aistudio.google.com/docs/models,
-# https://ai.google.dev/gemini-api/docs/models, and
-# https://ai.google.dev/gemini-api/docs/deprecations, read 2026-11-10):
-# `gemini-4-carbon` is the Pro-class flagship reasoning model; `gemini-3.6-flash`
-# is the stable Flash model (`gemini-2.5-pro` and `gemini-2.5-flash` are deprecated).
+# Google Gemini lineup: `gemini-4-carbon` is the flagship reasoning model and
+# `gemini-3.8-flash` is the current stable Flash model (verified in the marked
+# source-of-truth profile table).
 _GEMINI_FALLBACK: dict[str, dict[str, Any]] = {
-    "scout": {"model": "gemini-3.6-flash"},
-    "advisor": {"model": "gemini-3.6-flash"},
+    "scout": {"model": "gemini-3.8-flash"},
+    "advisor": {"model": "gemini-3.8-flash"},
     "domain_panel": {"model": "gemini-4-carbon"},
     "domain_advisor": {"model": "gemini-4-carbon"},
     "setup_scan": {"model": None},
@@ -131,19 +129,19 @@ def _hardcoded_fallback(host, role):
         return {"model": None}
     if host == "kimi":
         return _KIMI_FALLBACK.get(role, {"model": "primary",
-                                         "alias": "kimi-for-coding",
+                                         "alias": "k3-256k",
                                          "max_context_size": 131072,
                                          "max_output_size": 8192})
     if host == "claude":
         return _CLAUDE_FALLBACK.get(role, {"model": "sonnet"})
     if host == "codex":
-        return _CODEX_FALLBACK.get(role, {"model": "gpt-6-sol",
+        return _CODEX_FALLBACK.get(role, {"model": "gpt-6.1-sol",
                                           "model_reasoning_effort": "medium"})
     if host == "agy":
         return _AGY_FALLBACK.get(role, {"model": "gemini-4-argon-high",
                                          "tier": "pro"})
     if host == "gemini":
-        return _GEMINI_FALLBACK.get(role, {"model": "gemini-3.6-flash"})
+        return _GEMINI_FALLBACK.get(role, {"model": "gemini-3.8-flash"})
     return {"model": None}
 
 
@@ -193,7 +191,14 @@ def validate_env_overrides():
 _KIMI_TIERS = ("primary", "secondary")
 # Concrete Kimi aliases predate the primary/secondary contract and are still
 # valid in an agent file's model_preference — just not as a dispatch value.
-_KIMI_ALIAS_TIER = {"kimi-for-coding": "primary", "k3": "secondary"}
+# Keep the previous generation here for explicit compatibility while the
+# profile itself selects the current fixed IDs.
+_KIMI_ALIAS_TIER = {
+    "k3-256k": "primary",
+    "kimi-for-coding": "primary",
+    "k3.1-pro": "secondary",
+    "k3": "secondary",
+}
 
 
 def registration_config(host, role):
@@ -220,9 +225,8 @@ def _normalize_kimi_model(cfg, role):
     """Force a Kimi dispatch value into the primary/secondary contract.
 
     Kimi's Agent/AgentSwarm `model` parameter accepts only those two tiers, so
-    an override naming a concrete alias (`k3` was this very role's alias
-    before the tiers existed) would otherwise reach the manifest and fail at
-    dispatch time.
+    an override naming a concrete alias (`k3.1-pro` for reviewer roles) would
+    otherwise reach the manifest and fail at dispatch time.
     """
     model = cfg.get("model")
     if model in _KIMI_TIERS:

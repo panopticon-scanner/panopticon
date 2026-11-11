@@ -224,12 +224,12 @@ HAZARD_MESSAGES: dict[int, str] = {
     2: "no Gemini auth configured: " + GEMINI_ENV_REMEDY,
 }
 
+# models-verified: 2026-11-11 https://github.com/google-gemini/gemini-cli/blob/main/packages/core/src/config/models.ts
 MODEL_ALIASES = frozenset({
     "auto",
     "pro",
     "flash",
     "flash-lite",
-    "auto-gemini-3",
 })
 
 

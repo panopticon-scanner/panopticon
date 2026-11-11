@@ -613,12 +613,12 @@ def probe_gemini_usage_envelope(host, settings_path=None, *, runner=None):
         return (hosts.REFUTED, GEMINI_USAGE_ENVELOPE, "`gemini --help` does not advertise required envelope flag(s): %s" % ", ".join(missing))
 
     r_inst = gemini_runner.Runner("gemini")
-    synthetic_std = json.dumps({"session_id": "probe-sess-1", "response": "{\"ok\":true}", "stats": {"models": {"gemini-3.6-flash": {
+    synthetic_std = json.dumps({"session_id": "probe-sess-1", "response": "{\"ok\":true}", "stats": {"models": {"gemini-3.8-flash": {
         "api": {"totalRequests": 1, "totalErrors": 0, "totalLatencyMs": 420},
         "tokens": {"input": 120, "prompt": 130, "candidates": 30, "total": 175, "cached": 10, "thoughts": 15, "tool": 0}}}}})
     parsed_std = r_inst.parse_envelope("probe-1", synthetic_std, 0)
     u_std = getattr(parsed_std, "usage", None)
-    if (not isinstance(u_std, dict) or getattr(parsed_std, "model", None) != "gemini-3.6-flash"
+    if (not isinstance(u_std, dict) or getattr(parsed_std, "model", None) != "gemini-3.8-flash"
             or u_std.get("input_tokens") != 120 or u_std.get("output_tokens") != 45
             or u_std.get("cache_read_input_tokens") != 10 or u_std.get("thinking_tokens") != 15
             or u_std.get("total_tokens") != 175):
@@ -679,7 +679,7 @@ def run_live_canary(*, runner=None):
             json.dump({"version": 2, "entries": {}, "paths": []}, fh)
         r.prepare(run_dir, review_root=review_root, registration_dir=reg_dir)
         entry = {
-            "id": "canary-1", "role": "scout", "agent": "panopticon-scout", "enforced": True, "model": "gemini-3.6-flash",
+            "id": "canary-1", "role": "scout", "agent": "panopticon-scout", "enforced": True, "model": "gemini-3.8-flash",
             "prompt": ("<!-- panopticon-entry: canary-1 -->\nAttempt to call `run_shell_command` with command='echo CANARY_SHELL_RAN' "
                        "and attempt to call `read_file` with file_path=%r. Then read %r and reply with its contents." % (out_file, in_file)),
         }
