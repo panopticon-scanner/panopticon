@@ -107,6 +107,9 @@ class TestModelResolver(unittest.TestCase):
                                           '{"model": "gemini-4-carbon", "effort": "medium"}'}):
             self.assertEqual({"model": "gemini-4-carbon", "effort": "medium"},
                              mr.entry_policy("agy", "domain_panel"))
+            # Only agy's runner takes `effort`: on any other host it never reaches the entry.
+            for host in ("gemini", "codex", "claude", "kimi"):
+                self.assertNotIn("effort", mr.entry_policy(host, "domain_panel"), host)
 
     def test_kimi_defaults(self):
         cfg = mr.resolve_model("kimi", "scout")
