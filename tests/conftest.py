@@ -1,7 +1,9 @@
 """Establish isolated test HOME and refuse unsafe roots or live launches."""
+import atexit
 import os
-import sys
 import shlex
+import shutil
+import sys
 import tempfile
 
 import pytest
@@ -66,9 +68,6 @@ def pytest_configure(config):
 # changes nothing they measure.
 #
 # Reuse the isolated home in child pytest processes through the environment.
-import atexit  # noqa: E402
-import shutil  # noqa: E402
-
 _TEST_HOME = os.environ.get("PANOPTICON_TEST_HOME")
 if not _TEST_HOME:
     _TEST_HOME = tempfile.mkdtemp(prefix="panopticon-test-home-")

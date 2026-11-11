@@ -27,8 +27,8 @@ ws0-god-module-refactor-design.md section 6.3.
    alias of a shared definition from outside the package stays legal and is
    expected to say why (`synth/findings.py` aliases three `scripts.evidence`
    names, per #688: local copies of shared definitions drift).
-5. Size ratchet: no package module exceeds LINE_CEILING lines. Raising the
-   number here is a visible decision; drifting past it is not.
+5. (Retired in #3515: the 700-line size ratchet. Module size is a review
+   call, not a test.)
 6. Every package module imports on its own in a fresh interpreter. `phases/`
    contains two mutual pairs (coverage<->requests, persist<->requests;
    review<->verify dissolved when the tool round moved to verify_tools)
@@ -74,7 +74,6 @@ EXPECTED_PACKAGES = ("synth", "phases", "runners", "probes")  # S1 lands synth; 
 # phases; P6 adds runners; #1627 adds probes
 ENTRY_SCRIPTS = ("synthesize.py", "driver.py", "orchestrate.py",
                  "host_probes.py")   # #1627: the probe registry re-exports nothing
-LINE_CEILING = 700
 _SKIP_DIRS = {"fixtures", "goldens", "__pycache__"}
 
 
@@ -239,17 +238,6 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual(offenders, [], "re-export of a package sibling (one name, one "
                          "module, one patch target):\n" + "\n".join(offenders))
 
-    def test_rule5_size_ratchet(self):
-        over = []
-        for path in _package_files():
-            with open(path, encoding="utf-8") as fh:
-                n = len(fh.read().splitlines())
-            if n > LINE_CEILING:
-                over.append("%s: %d lines" % (_rel(path), n))
-        self.assertEqual(over, [], "module over the %d-line ceiling; split it or raise "
-                         "LINE_CEILING deliberately:\n%s" % (LINE_CEILING, "\n".join(over)))
-
-
     def test_rule6_every_package_module_imports_standalone(self):
         env = dict(os.environ)
         env["PYTHONPATH"] = os.pathsep.join(
@@ -278,64 +266,6 @@ class LayoutTest(unittest.TestCase):
         self.assertEqual(failures, [], "module does not import on its own (a `from .x "
                          "import Y` in an import cycle is the usual cause):\n"
                          + "\n".join(failures))
-
-
-class FlatImportModeTest(unittest.TestCase):
-    """The modules that carry a flat-import fallback still import flat.
-
-    #1639 P15 fix round 3, R2-5. `skill/scripts` is also on sys.path in
-    several live paths (`discovery` imports `diff_map`, `plan_contract` and
-    `repo_config` flat; `setup_proposal` imports `coverage_model` and
-    `groups_schema` flat -- #1766 retired `setup_flow`'s six flat imports,
-    `dispatch`'s `model_resolver` and `grouping_engine`'s three), and the
-    modules under `skill/scripts/` carry `try: from scripts.x import ... except
-    ModuleNotFoundError: from x import ...` for it. How many there are is not
-    written down here on purpose: it went stale twice, and
-    `tests/test_module_identity.py` now censuses both that shape and the doubled
-    modules it exists to avoid. Round 2 added a package-qualified import to
-    `evidence` and `x0x_report` with no fallback, which narrowed the mode for
-    four modules at once -- silently, because nothing live reaches those four
-    flat today and the suite stayed green.
-
-    A fresh interpreter per module, run FROM skill/scripts with only that
-    directory on the path -- the real shape of the mode (a script in that
-    directory executed directly), and the one where the package-qualified name
-    is unreachable, which is the whole point.
-    """
-
-    # #1735 adds three: `safe_write` (the no-follow artifact open, reached by
-    # the flat-importable modules below), and `discovery` / `collect_usage`,
-    # which now carry the same `try: from scripts import ... except
-    # ModuleNotFoundError` FALLBACK for it. Not the mode the driver's own
-    # children run in -- `phases/child._child_env` puts `skill/` on PYTHONPATH,
-    # so they take the packaged branch. The flat branch answers a direct
-    # `python3 skill/scripts/discovery.py` with no PYTHONPATH, and nothing else
-    # pins that it still works.
-    FLAT_MODULES = ("evidence", "x0x_report", "citations", "html_report",
-                    "ocrdb", "plan_contract", "host_disclosure",
-                    "model_resolver", "redact", "safe_write",
-                    "discovery", "collect_usage", "evidence_sections")
-
-    def test_every_flat_importable_module_still_imports_flat(self):
-        env = dict(os.environ)
-        env["PYTHONPATH"] = SCRIPTS         # deliberately NOT SKILL_ROOT
-        failures = []
-        for mod in self.FLAT_MODULES:
-            command = [sys.executable, "-c", "import " + mod]
-            try:
-                r = subprocess.run(  # nosec B603
-                    command, capture_output=True, text=True, timeout=30,
-                    env=env, cwd=SCRIPTS)
-            except subprocess.TimeoutExpired as exc:
-                self.fail("module=%s command=%r timed out: %s" % (mod, command, exc))
-            if r.returncode != 0:
-                failures.append("%s: %s"
-                                % (mod, (r.stderr.strip().splitlines() or [""])[-1]))
-        self.assertEqual(failures, [], "these modules no longer import with only "
-                         "skill/scripts on sys.path; add the `except "
-                         "ModuleNotFoundError` fallback the file already uses "
-                         "three lines above (and never for a PACKAGE module --"
-                         " rule 2):\n" + "\n".join(failures))
 
 
 class ScriptsDirTest(unittest.TestCase):
@@ -369,7 +299,7 @@ class OneScriptsNamespaceTest(unittest.TestCase):
 
     def test_no_repo_root_scripts_directory(self):
         self.assertFalse(os.path.exists(os.path.join(REPO_ROOT, "scripts")))
-        self.assertTrue(os.path.isfile(os.path.join(REPO_ROOT, "devtools", "workflow_guard.py")))
+        self.assertTrue(os.path.isfile(os.path.join(REPO_ROOT, "devtools", "gh_transport.py")))
 
     def test_pyproject_paths_name_devtools_not_a_root_scripts(self):
         import tomllib

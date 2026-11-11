@@ -5,15 +5,8 @@ This module owns their shared row selection and bounds so neither view drifts.
 """
 from collections.abc import Callable
 import json
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from scripts import language_detection
-else:
-    try:
-        from scripts import language_detection
-    except ModuleNotFoundError:  # standalone html_report import
-        import language_detection
+from scripts import language_detection
 
 
 ROWS_SHOWN = 5

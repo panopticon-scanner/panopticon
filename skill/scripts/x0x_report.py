@@ -11,31 +11,16 @@ not emitter output, so this emitter omits them (the schema leaves both optional 
 ``additionalProperties`` open). Capturing a reviewer-supplied ``would_file_as`` on
 X0X findings is a separate, reviewer-side follow-on.
 """
-from typing import TYPE_CHECKING
 from typing import Any
 import json
 import re
 import sys
 
-if TYPE_CHECKING:
-    import scripts.evidence as evidence
-    import scripts.inert as inert
-    import scripts.ocrdb as ocrdb
-    import scripts.redact as redact
-    import scripts.report_records as report_records
-else:
-    try:
-        import scripts.evidence as evidence
-        import scripts.inert as inert
-        import scripts.ocrdb as ocrdb
-        import scripts.redact as redact
-        import scripts.report_records as report_records
-    except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-        import evidence
-        import inert
-        import ocrdb
-        import redact
-        import report_records
+import scripts.evidence as evidence
+import scripts.inert as inert
+import scripts.ocrdb as ocrdb
+import scripts.redact as redact
+import scripts.report_records as report_records
 
 SCHEMA_VERSION = 1
 FAILURE_LOG_SUFFIX = "-failures.json"

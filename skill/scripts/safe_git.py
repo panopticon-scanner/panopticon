@@ -44,25 +44,12 @@ a pathspec after `--`, a ref, a resolved SHA -- never sits where git reads a
 global option. What the target controls is its repository, and that is what
 the environment scrub, the pins and the preflight bound.
 """
-from typing import TYPE_CHECKING
 import os
 import subprocess
 import tempfile
 import time
 
-# Same dual-import seam as `diff_map`, on the same module: `discovery.py` runs
-# as a standalone CLI with only skill/scripts on sys.path, where `scripts` does
-# not resolve as a package. Under pytest (conftest) and under driver.py's own
-# bootstrap the try arm wins and binds the SAME module object every other
-# caller patches.
-if TYPE_CHECKING:
-    from scripts import executable, safe_git_shapes
-else:
-    try:
-        from scripts import executable, safe_git_shapes
-    except ModuleNotFoundError:
-        import executable
-        import safe_git_shapes
+from scripts import executable, safe_git_shapes
 
 _MAX_REPOSITORIES = 64
 

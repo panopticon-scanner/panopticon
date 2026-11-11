@@ -49,9 +49,8 @@ def install_statements(text, pattern):
     arch switches arrive as fragments. That is fine here and safe in the
     direction that matters -- splitting can only ever produce MORE statements
     to check, never hide one, and no fragment of a quoted string is going to
-    match an install pattern and pass. `tests/test_workflow_pins.py` needs the
-    quote-aware reader because it reports the offending command back; this
-    only has to find them all.
+    match an install pattern and pass. This bounded Dockerfile rule only has
+    to find them all.
     """
     found = []
     for command in dockerfile_commands(text):

@@ -2,8 +2,7 @@
 
 #3270 adds the provenance lines: the tools image a scan was dispatched by, and
 every external app the run launched. They read `meta.tools.image` and
-`meta.apps`, which synth has repaired; this module stays import-free so
-html_report's flat import branch can load it.
+`meta.apps`, which synth has repaired; this module stays import-free.
 
 The rest is for the adapter that executes the target's build.
 

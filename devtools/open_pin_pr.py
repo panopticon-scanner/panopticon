@@ -12,15 +12,14 @@ import subprocess
 import sys
 from urllib.parse import parse_qs, quote
 
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_skill_bootstrap.py"))
 # The checked-out repository supplies this audited resolver, but it is never
-# searched for the git/gh executable. Match the import convention in
-# devtools/file_issues.py when this file is launched directly by Actions.
-_SKILL_SCRIPTS = Path(__file__).resolve().parents[1] / "skill" / "scripts"
-if str(_SKILL_SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(_SKILL_SCRIPTS))
-from executable import resolve  # noqa: E402
-import inert  # noqa: E402
-import redact  # noqa: E402
+# searched for the git/gh executable.
+from scripts.executable import resolve
+from scripts import inert
+from scripts import redact
 
 
 TRUSTED_PATH = "/usr/local/bin:/usr/bin:/bin:/opt/homebrew/bin"

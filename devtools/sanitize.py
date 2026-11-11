@@ -3,7 +3,6 @@
 import os
 import re
 import subprocess
-import sys
 
 # scrub() is the last sanitizer applied to text before it is posted to a PUBLIC
 # GitHub issue, and it is the one sanitizer all FOUR public posters share:
@@ -21,11 +20,7 @@ import sys
 # the patterns, and a second list here would drift. Unconditional by design -- a
 # scrub() that skipped redaction because an optional import failed would fail
 # OPEN, silently, on the one path where that is least acceptable.
-_SKILL = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                      "skill")
-if _SKILL not in sys.path:
-    sys.path.insert(0, _SKILL)
-import scripts.redact as _redact  # noqa: E402
+import scripts.redact as _redact
 
 _REPO_ROOT_CACHE = None
 # A degenerate root is not a lesser evil than no root: '/' deletes every '/' in

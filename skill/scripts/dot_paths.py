@@ -22,7 +22,7 @@ pruning those claims was rejected, and .git / .venv / cache / scratch noise
 stays pruned.
 
 The policy lives in its own module because `discovery.py` is at its size
-ratchet (`tests/test_flat_module_ceiling.py`), and the ratchet's answer to a
+ratchet (`tests/test_flat_module_ceiling.py`, retired in #3515), and the ratchet's answer to a
 module that needs more room is a split, never a raised pin. All three
 directions are pinned against the shipped files by
 `tests/test_discovery_catalog.py`: every dot-leading catalog glob and the small
@@ -34,15 +34,8 @@ by both methods.
 Stdlib plus `repo_config`, which owns the target config's own dot spelling --
 that name is never spelled here (`tests/test_repo_config_literals.py`).
 """
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from scripts import repo_config
-else:
-    try:
-        from scripts import repo_config
-    except ModuleNotFoundError:
-        import repo_config
+from scripts import repo_config
 
 # Root dot-DIRECTORIES: everything beneath one is surface. DIRS and FILES stay
 # apart so the target's committed config in its dot spelling is reviewable

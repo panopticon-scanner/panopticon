@@ -38,19 +38,11 @@ evidence as-is. It does NOT adjudicate. The disposition (`boundary` /
 exists precisely because X0X could only ever argue `new_code` while OCRDb's
 vocabulary already had the other three.
 """
-from typing import TYPE_CHECKING, Any
+from typing import Any
 import os
 import sys
 
-if TYPE_CHECKING:
-    from scripts import ocrdb, report_records, safe_write
-else:
-    try:
-        from scripts import ocrdb, report_records, safe_write
-    except ModuleNotFoundError:  # imported flat, with skill/scripts itself on sys.path
-        import ocrdb
-        import report_records
-        import safe_write
+from scripts import ocrdb, report_records, safe_write
 
 SCHEMA_VERSION = 1
 
@@ -65,9 +57,8 @@ def _one_line(value, cap=_DIAG_MAX):
     which is what makes a control character inert.
 
     A deliberate local copy of `x0x_report._one_line`: both are top-level script
-    modules, `x0x_report` is flat-importable (`tests/test_layout.py`
-    `FlatImportModeTest`), and neither should import the other for four lines of
-    text handling.
+    modules, and neither should import the other for four lines of text
+    handling.
     """
     text = " ".join(str(value or "").split())
     return (text[:cap - 1] + "\u2026") if len(text) > cap else text

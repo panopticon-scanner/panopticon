@@ -6,7 +6,7 @@ at all: turning one `HostSpec.Surface` pattern into candidate paths under a
 review root, within caps, without following a link or opening a file.
 
 Its own module because `common` was 742 lines with it inline, past
-tests/test_layout.py's LINE_CEILING (spec §10 says exactly this: "if it
+tests/test_layout.py's LINE_CEILING (retired in #3515; spec §10 says exactly this: "if it
 crosses LINE_CEILING, the scan moves to a new `probes/surface.py`"). It
 imports nothing from `common`, so the import runs one way and `common` can
 read it as `surface.<name>` -- one definition, one patch target (layout rule

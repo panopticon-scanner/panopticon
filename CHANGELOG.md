@@ -3,6 +3,46 @@
 ## Unreleased
 
 - **Google Gemini CLI (`gemini`, `@google/gemini-cli`) is restored as a 5/5 first-class host (#3494, restoring the row #1621 had retired).** `HOSTS["gemini"]` is driver-selectable with `self_write_delivery = True` and `self_write_requires_tool_policy = True`, backed by `skill/scripts/runners/gemini.py`, `skill/scripts/runners/gemini_home.py`, `skill/scripts/gemini_guard_hook.py` and five capability probes in `skill/scripts/probes/gemini.py` (`gemini-shell-surface`, `gemini-read-guard-armed`, `gemini-write-guard-armed`, `gemini-model-bound`, `gemini-usage-envelope`). Each headless run refuses at launch time if the system config dir contains `system-defaults.json`, `settings.json`, or `policies/` (`gemini-shell-surface` and `Runner.command()`), scrubs inherited `GEMINI_*`/`GEMINI_CLI_*` env vars (preserving only `ALLOWED_GEMINI_ENV_KEYS`), escapes `@` tokens in `-p` as `\@` so `handleAtCommand` cannot invoke `ReadManyFilesTool`, and builds an isolated per-run home (`GEMINI_CLI_HOME`) outside `review_root` and outside `.panopticon` that copies only `oauth_creds.json` and `google_accounts.json` (`0600`, `O_NOFOLLOW | O_NONBLOCK`, `S_ISREG`), writes `<run_home>/.gemini/settings.json` locking user-level MCP (`mcpServers = {}`, `mcp.allowed = []`), skills (`skills.enabled = false`), subagents (`experimental.enableAgents = false`), plan mode (`general.plan.enabled = false`), folder trust (`security.folderTrust.enabled = false`) and startup include-dir memory (`context.loadMemoryFromIncludeDirectories = false`, omitting `context.fileName` because `setGeminiMdFilename` is additive), seeds a minimal Git ceiling at `<run_home>/workspace/.git` (`cwd` on every launch), emits TOML Tier 5 `--admin-policy` role shells to `~/.gemini/cli-agents` (allow `priority = 900`, explicit deny `priority = 950`, catch-all `toolName = "*"` deny `priority = 100`, and MCP wildcard deny `priority = 950`, coexisting with `agy`, dropping `write_file` to read-only `unenforced.toml` whenever `tool_policy_enforced` is not `proven`), and arms a single wildcard `BeforeTool` hook (`"matcher": "*"`) enforcing a strict tool-name and per-tool `TOOL_INPUT_KEYS` parameter allowlist, `PANOPTICON_ENTRY_ID` binding, authoritative `argv` policy paths, explicit absolute paths, `include_pattern` / git-pathspec-magic refusal, per-entry read scope and v2 write allowlist grants.
+- **The replay tests no longer leak `sys.path`; pytest drops `skill/scripts` (#3522, part of #1516).**
+  `devtools/replay_report.replay()` installs a checkout's `skill/` on `sys.path` in the calling
+  process, and `tests/test_replay_report.py` called it in-process with nothing to put the list back,
+  so every later test in that worker ran on a different import path. That is how an order-dependent
+  bare import stayed green on main until #3521. An autouse fixture now hands each test there a copy
+  of `sys.path`. Pytest's `pythonpath` drops `skill/scripts`: since #3505 nothing imports a skill
+  module by its bare name, and the entry only let a new bare import pass in some test orders.
+- **The NVD cache sync seeds from yesterday's database (#3417, script half).** The keyed sync
+  moves into `.github/scripts/nvd-cache-sync.sh` and starts from the last published
+  `panopticon-tools-nvd` image, pulled by digest from our own registry, so a normal day downloads
+  only what NVD changed instead of all ~417,000 records. It falls back to a full download, saying
+  why, when there is no seed, the seed carries no marker or was made by another dependency-check,
+  its `nvd.api.last.modified` is over 90 days old, or its last full build is 30 days old; a
+  scheduled run also rebuilds in full every Sunday once the last full build is a week old, and
+  `NVD_FULL_REBUILD=1` forces one. Every update passes `--nvdValidForHours 0` (10.0.3 otherwise
+  skips an update, exit 0, when the seed was checked under 4 h ago). The #3251 guard survives
+  seeding: a seeded database is published only when the update exited 0 and
+  `nvd.api.last.checked` moved past the seed's, which a day with no NVD changes still does.
+  `devtools/nvd_cache_compare.py` compares a seeded and a fresh database on a CVE sample. The
+  workflow switches to the script in a follow-up.
+- **No more line-ceiling ratchets (#3515, part of #3264).** `tests/test_flat_module_ceiling.py` (the
+  shrink-only 700-line allowlist for flat modules, devtools and adapters) and rule 5 of
+  `tests/test_layout.py` (the 700-line ceiling for package modules) are gone; module size is a
+  review call, not a test. `test_layout.py`'s import-shape rules and `OneScriptsNamespaceTest` stay.
+  The code-layout guide drops its ceiling paragraph, and the module docstrings that gave the
+  ratchet as a present-tense reason now say it is retired.
+- **One import bootstrap, one module name per file (#3505, #3506, part of #1516).** Every
+  module under `skill/scripts/` is now imported as `scripts.*` only, and `skill/scripts/` is a
+  regular package. Each entry script run by path runs `skill/scripts/_bootstrap.py` by its own
+  `__file__` (so it works under `python3 -P` too), which drops `skill/scripts` from `sys.path` and
+  puts `skill/` first; devtools CLIs run it through `devtools/_skill_bootstrap.py`. Gone: the 20
+  per-file `sys.path` writes, the 36 flat-import fallbacks (plus two `__package__` switches) and
+  every `noqa: E402` in `skill/scripts` and `devtools`. Phase children no longer get
+  `skill/scripts` on PYTHONPATH. Before this, an installed skill run by path loaded `diff_map`,
+  `plan_contract` and `repo_config` twice, crashed under `-P` for `collect_usage` and
+  `model_resolver`, and crashed whenever another regular `scripts` package was on PYTHONPATH.
+  `tests/test_import_shape.py` replaces `tests/test_no_per_file_sys_path.py` and the import half
+  of `tests/test_module_identity.py`: no other `sys.path` write, no fallback, no bare import, every
+  entry script bootstraps, `run_path` only for the bootstrap, a shrink-only E402 count, plus the
+  module-identity census and an installed-skill run.
 - **Slimmer Dockerfile tests (#3514, part of #3264).** 25 tests (330 lines) that pinned workflow-file
   shape or tested a lint instead of the image are gone from `tests/test_dockerfile.py` and
   `tests/test_dockerfile_args.py`: the docker-build-pr/docker-publish wiring classes, the ARG
@@ -12,6 +52,21 @@
 - **CI lint covers `devtools/` (#3074).** The lint job's ruff step named only `skill/scripts/`
   and `tests/`, so the repo-root dev tools (the filing, triage and pin CLIs) were never linted in
   CI. It now names `devtools/` too, and `tests/test_layout.py` pins the step's targets.
+- **Security-workflow meta-tests keep behavior and shed self-lint (#3512).**
+  The three security/fork/strictness test modules now pin only gate exit-status
+  propagation, the hostile fork's label/secret/untrusted-checkout boundary,
+  `--security redteam` on every CI scanner and gate, and the runtime
+  strict-integration flag. Broad workflow prose/shape readers and mutation tests
+  of those readers are removed.
+- **Workflow `run:` guard and shell reader retired (#3513, part of #3264).**
+  The 49 `devtools/{workflow,shell}_*.py` modules (18,922 lines) and 49 reader-test
+  modules (44,186 lines) are gone. Two product Workflow-template tests that the
+  old filename glob over-matched are retained under accurate names. Non-shell
+  import-closure, gate-package, containment-lane, scanner-UID, and pin-PR contracts
+  move to `tests/test_action_pins.py`. A structural YAML allowlist now requires
+  immutable action pins with version comments, effective permissions, and confines
+  `pull_request_target` to `security-fork.yml`. The retained Dockerfile checksum/OSV
+  and JSON scaling checks no longer import the deleted readers.
 - **The `agy` guard's argv policy paths are authoritative (#3511).**
   `PANOPTICON_READ_SCOPE` and `PANOPTICON_WRITE_ALLOWLIST` can no longer replace the
   read scope or write allowlist named in the hook command, and an invocation without

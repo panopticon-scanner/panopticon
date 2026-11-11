@@ -112,13 +112,14 @@ class TestOneImplementation(unittest.TestCase):
         self.assertIs(runio._confine_artifact_path,
                       safe_write.confine_artifact_path)
 
-    def test_flat_consumers_can_import_the_guard_without_the_phases_package(self):
-        scripts = os.path.dirname(os.path.abspath(safe_write.__file__))
-        probe = ("import sys; sys.path.insert(0, sys.argv[1]); import safe_write; "
+    def test_consumers_can_import_the_guard_without_the_phases_package(self):
+        skill = os.path.dirname(os.path.dirname(os.path.abspath(safe_write.__file__)))
+        probe = ("import sys; sys.path.insert(0, sys.argv[1]); "
+                 "import scripts.safe_write as safe_write; "
                  "safe_write.confine_artifact_path('/repo/.panopticon/report.json'); "
                  "assert not any(m.startswith('scripts.phases') for m in sys.modules)")
         with tempfile.TemporaryDirectory() as root:
-            subprocess.run([sys.executable, "-I", "-c", probe, scripts], cwd=root,
+            subprocess.run([sys.executable, "-I", "-c", probe, skill], cwd=root,
                            check=True, capture_output=True, timeout=30)
 
 

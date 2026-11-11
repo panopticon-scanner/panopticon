@@ -23,7 +23,7 @@ import scripts.tool_capture as tool_capture
 import scripts.tolerant_json as tolerant_json
 import scripts.tools.base as tools_base
 from scripts.tools.legacy_sarif import LegacySarifAdapter
-from tests.test_shell_reader import LinearGrowth
+from tests._test_helpers import LinearGrowth
 
 TOO_DEEP = "nested deeper than 64 levels"
 CRASHED_MAIN = 100_000       # past every supported interpreter's codec

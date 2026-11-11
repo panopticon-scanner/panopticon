@@ -41,7 +41,6 @@ Usage:
     python3 skill/scripts/collect_usage.py --run-dir .panopticon/runs/<tag>
     python3 skill/scripts/collect_usage.py --run-dir <dir> --dry-run
 """
-from typing import TYPE_CHECKING
 import argparse
 import glob
 import hashlib
@@ -50,15 +49,10 @@ import os
 import re
 import sys
 
-if TYPE_CHECKING:                          # #1735: the no-follow artifact open
-    from scripts import claim_scope, plan_contract, safe_write
-else:
-    try:
-        from scripts import claim_scope, plan_contract, safe_write
-    except ModuleNotFoundError:            # fallback: imported with only
-        import claim_scope                 # skill/scripts on sys.path
-        import plan_contract
-        import safe_write
+if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
+    import runpy
+    runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
+from scripts import claim_scope, plan_contract, safe_write
 
 USAGE_FIELDS = ("input_tokens", "output_tokens",
                 "cache_creation_input_tokens", "cache_read_input_tokens")

@@ -608,16 +608,16 @@ class TestTheAdapterReadsTheIngestPolicy(unittest.TestCase):
                          [f["category"] for f in findings])
 
 
-# #2957: the notification texts Semgrep 1.179.0 wrote on the forge (the pinned
-# scanner, the vendored rules, the adapter's argv). Only the rules root and the
-# target directory are respelled to the container's: `opt.semgrep-rules.` and
-# `/src/`. Three timeouts on one file abandon it; one does not.
+# #2957: the notification shapes Semgrep 1.179.0 wrote on the forge (the pinned
+# scanner, the vendored rules, the adapter's argv). The roots are respelled to
+# the container's and the retired workflow-guard path to a retained test path.
+# Three timeouts on one file abandon it; one does not.
 _RULES = "opt.semgrep-rules.python."
 _TIMED_OUT = (
     ("boto3.security.hardcoded-token", "big_concat.py"),
     ("lang.security.audit.eval-detected", "big_concat.py"),
     ("lang.security.audit.insecure-file-permissions", "big_concat.py"),
-    ("lang.security.audit.dangerous-system-call-tainted-env-args", "tests/test_workflow_guard.py"),
+    ("lang.security.audit.dangerous-system-call-tainted-env-args", "tests/_test_helpers.py"),
 )
 _MISSING_PLUGIN = {"descriptor": {"id": "Missing plugin"}, "level": "note", "message": {"text": (
     "Missing plugin for rule opt.semgrep-rules.elixir.lang.best-practice.deprecated_bnot_operator:\n"
@@ -672,7 +672,7 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
                 dispositions=dispositions)))
 
     def test_real_timeout_notes_reach_the_report_and_withhold_certification(self):
-        paths = ("small.py", "tests/test_workflow_guard.py")
+        paths = ("small.py", "tests/_test_helpers.py")
         findings, disposition, diagnostic = self._ingest(
             _semgrep_capture(_real_timeouts() + [_MISSING_PLUGIN], paths))
         facts = disposition["file_coverage"]
@@ -685,7 +685,7 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
                            _RULES + "lang.security.audit.eval-detected",
                            _RULES + "lang.security.audit.insecure-file-permissions",
                        ], "rules_omitted": 0},
-                      {"file": "tests/test_workflow_guard.py", "reason": "rule_timeout",
+                      {"file": "tests/_test_helpers.py", "reason": "rule_timeout",
                        "rule_timeouts": 1,
                        "rules": [_RULES +
                                  "lang.security.audit.dangerous-system-call-tainted-env-args"],

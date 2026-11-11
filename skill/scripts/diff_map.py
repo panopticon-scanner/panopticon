@@ -2,7 +2,7 @@
 changed-line-range map, and classify findings against it. Stdlib only; pure
 functions plus thin git/gh subprocess wrappers.
 """
-from typing import TYPE_CHECKING, NoReturn
+from typing import NoReturn
 import hashlib
 import json as _json
 import os
@@ -15,24 +15,8 @@ import tempfile
 
 import uuid
 
-# This repo has two directories named `scripts` with no __init__.py (repo-root
-# scripts/ and skill/scripts/). When imported flat (skill/scripts on
-# sys.path -- the standalone-script shape, e.g. discovery.py's own bootstrap),
-# the try arm raises ModuleNotFoundError. When `scripts` resolves as a
-# namespace package (pytest via conftest.py, or driver.py's own bootstrap
-# importing this module as `scripts.diff_map`), it succeeds and binds the
-# SAME module object every other caller sees -- see host_disclosure.py for the
-# same fallback on the same seam.
-if TYPE_CHECKING:
-    import scripts.repo_config as repo_config
-    import scripts.safe_git as safe_git
-else:
-    try:
-        import scripts.repo_config as repo_config
-        import scripts.safe_git as safe_git
-    except ModuleNotFoundError:
-        import repo_config
-        import safe_git
+import scripts.repo_config as repo_config
+import scripts.safe_git as safe_git
 executable = safe_git.executable   # #3222: the module safe_git resolves its own git with
 
 class DiffMapError(Exception):

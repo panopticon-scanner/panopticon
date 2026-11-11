@@ -11,18 +11,14 @@ test that patches one must patch THIS module, where the code reads it.
 import functools
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import time
 
-# The standalone CLI bootstrap triage.py uses: anchor on this checkout so the
-# owner of the legacy config name is found from any cwd.
-_SKILL_SCRIPTS = Path(__file__).resolve().parents[1] / "skill" / "scripts"
-if str(_SKILL_SCRIPTS) not in sys.path:
-    sys.path.insert(0, str(_SKILL_SCRIPTS))
-from repo_config import LEGACY_CONFIG_JSON  # noqa: E402
+# This checkout's owner of the legacy config name; the CLI that imports this
+# module put `skill/` on sys.path (devtools/_skill_bootstrap.py).
+from scripts.repo_config import LEGACY_CONFIG_JSON
 
 
 # The repository the filing tools file against and link into (#3407): one

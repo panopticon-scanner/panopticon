@@ -384,6 +384,8 @@ class TestTheModuleStaysPure(unittest.TestCase):
                 names |= {a.name.split(".")[0] for a in node.names}
             elif isinstance(node, ast.ImportFrom) and node.module:
                 names.add(node.module.split(".")[0])
+                if node.module == "scripts":    # `from scripts import hosts` (#3505)
+                    names |= {a.name for a in node.names}
         return names
 
     def _called(self, module):

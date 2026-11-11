@@ -16,6 +16,7 @@ import inspect
 import io
 import json
 import os
+import sys
 import tempfile
 import unittest
 import unittest.mock
@@ -167,7 +168,7 @@ class TestMainStatusClassification(unittest.TestCase):
             out = io.StringIO()
             with unittest.mock.patch.object(cg, "ADAPTERS", adapters), \
                  unittest.mock.patch.object(cg, "TARGETS", targets), \
-                 unittest.mock.patch.object(cg.sys, "argv", argv), \
+                 unittest.mock.patch.object(sys, "argv", argv), \
                  contextlib.redirect_stdout(out):
                 cg.main()
             return json.loads(out.getvalue()), sorted(os.listdir(out_dir))
@@ -298,7 +299,7 @@ class TestRedactBeforeWrite(unittest.TestCase):
         out = io.StringIO()
         with unittest.mock.patch.object(cg, "ADAPTERS", {"t": adapter}), \
              unittest.mock.patch.object(cg, "TARGETS", {"t": target}), \
-             unittest.mock.patch.object(cg.sys, "argv",
+             unittest.mock.patch.object(sys, "argv",
                                         ["capture_goldens.py", out_dir]), \
              contextlib.redirect_stdout(out):
             cg.main()
@@ -437,7 +438,8 @@ class TestImportRootFromFile(unittest.TestCase):
     def test_no_hardcoded_opt_panopticon_import_root_literal(self):
         src = inspect.getsource(cg)
         self.assertNotIn('"/opt/panopticon"', src)
-        self.assertIn("os.path.abspath(__file__)", src)
+        # #3505: the bootstrap it runs by path is found from its own location.
+        self.assertIn("os.path.dirname(os.path.realpath(__file__))", src)
 
 
 class TestTargetsFunction(unittest.TestCase):
@@ -514,7 +516,7 @@ class TestMainRootConfiguration(unittest.TestCase):
             clean_env.update(env or {})
             with unittest.mock.patch.object(cg, "ADAPTERS", adapters), \
                  unittest.mock.patch.dict(os.environ, clean_env, clear=True), \
-                 unittest.mock.patch.object(cg.sys, "argv", argv), \
+                 unittest.mock.patch.object(sys, "argv", argv), \
                  contextlib.redirect_stdout(out):
                 cg.main()
             return json.loads(out.getvalue())
