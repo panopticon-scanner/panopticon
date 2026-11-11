@@ -427,6 +427,18 @@ class TestUnknownHostsAreRefused(unittest.TestCase):
         self.assertEqual(mr.registration_config("generic", "scout"), {"model": None})
         self.assertIsNone(mr.registration_model("generic", "scout"))
 
+    def test_a_stale_profile_cannot_make_an_unregistered_host_resolvable(self):
+        stale = {"hosts": {"someday": {"scout": {"model": "x"}}}}
+        expected = ("unknown host 'someday' "
+                    "(known: agy|claude|codex|gemini|generic|kimi)")
+        with patch.object(mr, "_profiles", return_value=stale):
+            for entry in (mr.registration_config, mr.registration_model,
+                          mr.resolve_model):
+                with self.subTest(entry=entry.__name__):
+                    with self.assertRaises(ValueError) as caught:
+                        entry("someday", "scout")
+                    self.assertEqual(str(caught.exception), expected)
+
     def test_resolution_refuses_before_cli_and_environment_overrides(self):
         for resolver in (mr.resolve_model, mr._resolve_raw):
             with self.subTest(entry=resolver.__name__, override="cli"):
