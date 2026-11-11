@@ -1565,6 +1565,7 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
             self.assertIn(flag, cmd)
         self.assertEqual(cmd[cmd.index("--setting-sources") + 1], "user")
         self.assertEqual(cmd[cmd.index("--agent") + 1], canary.CANARY_AGENT)
+        self.assertEqual(canary.CANARY_MODEL, "claude-haiku-5-5")
         grants = [a for a in cmd if a.startswith(claude_runner.GRANT_PREFIX)]
         self.assertEqual(len(grants), 1)
         self.assertTrue(grants[0].endswith("findings-canary-COD.json)"))

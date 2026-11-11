@@ -82,13 +82,13 @@ _KIMI_FALLBACK: dict[str, dict[str, Any]] = {
     "setup_scan": {"model": None},
 }
 _CLAUDE_FALLBACK = {
-    "scout": {"model": "haiku"},
-    "advisor": {"model": "haiku"},   # #1029: per-finding tool-advisor is narrow
+    "scout": {"model": "claude-haiku-5-5"},
+    "advisor": {"model": "claude-haiku-5-5"},  # #1029: tool-advisor is narrow
     # #1036: the 5.0 matrix roles, moved here so model_resolver is the single
     # owner of the claude role->model map (dispatch's emit path used to keep a
     # duplicate EMIT_MODEL_POLICY dict — #1029 had to edit both).
-    "domain_panel": {"model": "sonnet"},
-    "domain_advisor": {"model": "opus"},
+    "domain_panel": {"model": "claude-sonnet-5-5"},
+    "domain_advisor": {"model": "claude-opus-5-5"},
     "setup_scan": {"model": None},
 }
 _CODEX_FALLBACK = {
@@ -133,7 +133,7 @@ def _hardcoded_fallback(host, role):
                                          "max_context_size": 131072,
                                          "max_output_size": 8192})
     if host == "claude":
-        return _CLAUDE_FALLBACK.get(role, {"model": "sonnet"})
+        return _CLAUDE_FALLBACK.get(role, {"model": "claude-sonnet-5-5"})
     if host == "codex":
         return _CODEX_FALLBACK.get(role, {"model": "gpt-6.1-sol",
                                           "model_reasoning_effort": "medium"})

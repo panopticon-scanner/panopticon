@@ -721,7 +721,7 @@ class TestEmitHostAgents(unittest.TestCase):
             # domain_panel holds scoped Write (#436): it self-writes its
             # out_file; the write-guard hook (Tasks 4-5) confines the write.
             self.assertIn("tools: Read, Grep, Glob, Write", text)
-            self.assertIn("model: sonnet", text)
+            self.assertIn("model: claude-sonnet-5-5", text)
             self.assertNotIn("Bash", text.split("---")[1])  # no forbidden tool in frontmatter
             body = text.split("---", 2)[2]
             self.assertIn("Follow the dispatched task", body)
@@ -730,13 +730,10 @@ class TestEmitHostAgents(unittest.TestCase):
     def test_claude_models_follow_policy(self):
         with tempfile.TemporaryDirectory() as d:
             dispatch.emit_host_agents("claude", d)
-            for fname, model in (("panopticon-scout.md", "haiku"),
-                                                                  ("panopticon-domain-panel.md", "sonnet"),
-                                 # #1029: tool-advisor -> haiku; the cell
-                                 # domain-advisor (incl. backup) stays opus.
-                                 ("panopticon-advisor.md", "haiku"),
-                                 ("panopticon-domain-panel.md", "sonnet"),
-                                 ("panopticon-domain-advisor.md", "opus")):
+            for fname, model in (("panopticon-scout.md", "claude-haiku-5-5"),
+                                 ("panopticon-advisor.md", "claude-haiku-5-5"),
+                                 ("panopticon-domain-panel.md", "claude-sonnet-5-5"),
+                                 ("panopticon-domain-advisor.md", "claude-opus-5-5")):
                 with open(os.path.join(d, fname), encoding="utf-8") as fh:
                     self.assertIn("model: %s" % model, fh.read(), fname)
 
@@ -958,14 +955,14 @@ class TestEmitHostAgents(unittest.TestCase):
             self.assertTrue(os.path.isfile(os.path.join(d, "panopticon-scout.md")))
 
     def test_emission_ignores_ambient_model_env_overrides(self):
-        # The advisor policy model is haiku (#1029); set the env override to a
+        # The advisor policy model is fixed Haiku 5.5 (#3563); set the env override to a
         # DIFFERENT value so the test still proves emission ignores the env.
         with tempfile.TemporaryDirectory() as d, \
              mock.patch.dict(os.environ, {"PANOPTICON_MODEL_ADVISOR": "opus"}):
             dispatch.emit_host_agents("claude", d)
             with open(os.path.join(d, "panopticon-advisor.md"), encoding="utf-8") as fh:
                 text = fh.read()
-        self.assertIn("model: haiku", text)
+        self.assertIn("model: claude-haiku-5-5", text)
         self.assertNotIn("model: opus", text)
 
 

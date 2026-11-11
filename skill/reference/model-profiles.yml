@@ -25,15 +25,16 @@ hosts:
     # session's model. An explicit null, so the parity test sees a decision.
     setup_scan:
       model: null
+  # models-verified: 2026-11-11 https://platform.claude.com/docs/en/models/overview https://platform.claude.com/docs/en/about-claude/models/model-ids-and-versions
   claude:
     scout:
-      model: haiku
+      model: claude-haiku-5-5
     advisor:
-      model: haiku
+      model: claude-haiku-5-5
     domain_panel:
-      model: sonnet
+      model: claude-sonnet-5-5
     domain_advisor:
-      model: opus
+      model: claude-opus-5-5
     setup_scan:
       model: null
   # models-verified: 2026-11-11 https://developers.openai.com/api/docs/models

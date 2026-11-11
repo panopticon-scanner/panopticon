@@ -60,7 +60,8 @@ class TestModelResolver(unittest.TestCase):
         # #run7 TST-A2C: the per-host default arm for an UNKNOWN role was
         # untested -- every other test uses a role present in the lookup dict.
         self.assertEqual(mr._hardcoded_fallback("kimi", "banana")["model"], "primary")
-        self.assertEqual(mr._hardcoded_fallback("claude", "banana")["model"], "sonnet")
+        self.assertEqual(mr._hardcoded_fallback("claude", "banana")["model"],
+                         "claude-sonnet-5-5")
         self.assertEqual(mr._hardcoded_fallback("codex", "banana"),
                          {"model": "gpt-6.1-sol", "model_reasoning_effort": "medium"})
         self.assertEqual(mr._hardcoded_fallback("agy", "banana"),
@@ -105,20 +106,16 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(mr.resolve_model("kimi", "domain_advisor")["model"], "secondary")
         self.assertEqual(mr.resolve_model("kimi", "advisor")["model"], "secondary")
 
-    def test_claude_defaults_preserved(self):
-        """Regression guard for the Kimi work: Claude must be untouched.
-
-        Deliberately covers what test_claude_defaults does not — that the
-        Kimi-only primary/secondary normalization never runs for Claude, so
-        concrete model ids survive every override path.
-        """
+    def test_claude_overrides_remain_concrete_and_registration_stays_fixed(self):
+        """One-run overrides survive while persisted shells stay reproducible."""
         self.assertEqual(
             mr.resolve_model("claude", "domain_panel", {"domain_panel": "opus"})["model"],
             "opus")
         with patch.dict(os.environ, {"PANOPTICON_MODEL_ADVISOR": "sonnet"},
                         clear=False):
             self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "sonnet")
-        self.assertEqual(mr.registration_model("claude", "domain_panel"), "sonnet")
+        self.assertEqual(mr.registration_model("claude", "domain_panel"),
+                         "claude-sonnet-5-5")
 
     def test_kimi_override_is_normalized_to_a_dispatch_tier(self):
         # k3.1-pro is the reviewer roles' concrete alias, so passing it as a --model
@@ -142,11 +139,22 @@ class TestModelResolver(unittest.TestCase):
             self.assertEqual(mr.registration_model("kimi", "scout"), "primary")
 
     def test_claude_defaults(self):
-        self.assertEqual(mr.resolve_model("claude", "scout")["model"], "haiku")
-        self.assertEqual(mr.resolve_model("claude", "domain_panel")["model"], "sonnet")
-        self.assertEqual(mr.resolve_model("claude", "domain_advisor")["model"], "opus")
+        self.assertEqual(mr.resolve_model("claude", "scout")["model"], "claude-haiku-5-5")
+        self.assertEqual(mr.resolve_model("claude", "domain_panel")["model"],
+                         "claude-sonnet-5-5")
+        self.assertEqual(mr.resolve_model("claude", "domain_advisor")["model"],
+                         "claude-opus-5-5")
         # #1029: the per-finding tool-advisor is narrow single-claim work -> haiku
-        self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "haiku")
+        self.assertEqual(mr.resolve_model("claude", "advisor")["model"],
+                         "claude-haiku-5-5")
+
+    def test_claude_defaults_are_fixed_ids_never_moving_aliases(self):
+        aliases = {"haiku", "sonnet", "opus"}
+        defaults = {
+            mr.registration_model("claude", role)
+            for role in dispatch.ROLE_FILES
+        }
+        self.assertTrue(aliases.isdisjoint(defaults))
 
     def test_codex_defaults(self):
         self.assertEqual(mr.resolve_model("codex", "scout")["model"], "gpt-6-luna")
@@ -296,17 +304,22 @@ class TestModelResolver(unittest.TestCase):
 
     def test_claude_fallback_matches_policy_without_yaml(self):
         with patch.object(mr, "_PROFILES", {}):
-            self.assertEqual(mr.resolve_model("claude", "advisor")["model"], "haiku")
+            self.assertEqual(mr.resolve_model("claude", "advisor")["model"],
+                             "claude-haiku-5-5")
 
     def test_claude_registration_model_covers_matrix_roles(self):   # #1036
         # domain_panel/domain_advisor now resolve via model_resolver (the single
         # owner that dispatch's emit path reads), both with the yml present and
         # via the hardcoded fallback — no more duplicate EMIT_MODEL_POLICY dict.
-        self.assertEqual(mr.registration_model("claude", "domain_panel"), "sonnet")
-        self.assertEqual(mr.registration_model("claude", "domain_advisor"), "opus")
+        self.assertEqual(mr.registration_model("claude", "domain_panel"),
+                         "claude-sonnet-5-5")
+        self.assertEqual(mr.registration_model("claude", "domain_advisor"),
+                         "claude-opus-5-5")
         with patch.object(mr, "_PROFILES", {}):   # yml absent -> fallback
-            self.assertEqual(mr.registration_model("claude", "domain_panel"), "sonnet")
-            self.assertEqual(mr.registration_model("claude", "domain_advisor"), "opus")
+            self.assertEqual(mr.registration_model("claude", "domain_panel"),
+                             "claude-sonnet-5-5")
+            self.assertEqual(mr.registration_model("claude", "domain_advisor"),
+                             "claude-opus-5-5")
 
 
 class TestUnknownHostsStayUnknown(unittest.TestCase):

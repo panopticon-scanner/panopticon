@@ -9,6 +9,9 @@
   automatically. The gh code shared with the pin-freshness report moved to `devtools/issue_bot.py`
   unchanged.
 
+- **Claude roles now bind fixed Claude 5.5 IDs (#3563).** Scouts and advisors
+  use `claude-haiku-5-5`, domain panels use `claude-sonnet-5-5`, and domain
+  advisors use `claude-opus-5-5`, so a release no longer follows moving CLI aliases.
 - **Kimi roles now use the current fixed model IDs (#3563).** Scouts bind
   `k3-256k`; advisors and both domain roles bind `k3.1-pro`.
 - **Codex reviewer roles now bind GPT-6.1 Sol (#3563).** The scout remains on
