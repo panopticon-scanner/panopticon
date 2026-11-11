@@ -75,7 +75,7 @@ def _write(path, text):
 
 def _run(curl_rc=0, sha_rc=0, sync_rc=0, db=False, modified=None, checked=None,
          java_rc=0, the_seed=None, weekday=3, event="schedule", full_rebuild=False,
-         props="data.user=dc-user\\ndata.password=a=b\\n", link_after=False):
+         props="data.user=dc-user\\ndata.password=a=b\\n", link_after=False, key=KEY):
     """Run the script with stubbed tools; return a dict describing the run.
 
     `the_seed` is None for "no seed image" (the digest lookup fails), else a
@@ -162,7 +162,9 @@ timeout() {
         env = {"PATH": os.environ.get("PATH", ""), "HOME": tmp,
                "DC_VERSION": "10.0.3", "DC_SHA256": "0" * 64,
                "REGISTRY": "ghcr.io", "NVD_IMAGE": "owner/repo-tools-nvd",
-               "NVD_API_KEY": KEY, "GITHUB_EVENT_NAME": event}
+               "GITHUB_EVENT_NAME": event}
+        if key is not None:
+            env["NVD_API_KEY"] = key
         if full_rebuild:
             env["NVD_FULL_REBUILD"] = "1"
         with open(SCRIPT, encoding="utf-8") as fh:
@@ -227,6 +229,14 @@ class TestTheKeyedSyncVerifiesFailClosed(unittest.TestCase):
         self.assertEqual(run["rc"], 0, run["out"])
         self.assertEqual(run["dc"][run["dc"].index("--nvdApiKey") + 1], KEY)
         self.assertNotIn(KEY, run["out"])
+
+    def test_without_a_key_no_key_flag_is_passed(self):
+        for key in (None, ""):
+            with self.subTest(key=key):
+                run = _fresh(key=key)
+                self.assertEqual(run["rc"], 0, run["out"])
+                self.assertNotIn("--nvdApiKey", run["dc"])
+                self.assertIn("--nvdValidForHours", run["dc"])
 
     def test_every_update_disables_the_valid_for_hours_skip(self):
         # 10.0.3 skips an update, exit 0, when last.checked is under 4 h old.
@@ -484,6 +494,56 @@ class TestTheRebuildDayDoesNotCostAnUpdate(unittest.TestCase):
 
     def test_a_29_day_old_full_build(self):
         self._seeded(the_seed=seed(full_build=days_ago(29)), weekday=2)
+
+
+class TestTheWorkflowRunsTheScript(unittest.TestCase):
+    """#3417 wiring: nvd-cache.yml hands the script what it needs, in order,
+    behind the one decide gate."""
+
+    GATE = "steps.decide.outputs.sync == 'true'"
+
+    @classmethod
+    def setUpClass(cls):
+        import yaml
+        path = os.path.join(REPO_ROOT, ".github", "workflows", "nvd-cache.yml")
+        with open(path, encoding="utf-8") as fh:
+            doc = yaml.safe_load(fh)
+        cls.on = doc.get("on", doc.get(True))
+        cls.steps = doc["jobs"]["refresh"]["steps"]
+
+    def _index(self, predicate):
+        hits = [i for i, step in enumerate(self.steps) if predicate(step)]
+        self.assertEqual(len(hits), 1, hits)
+        return hits[0]
+
+    def test_the_sync_step_runs_the_script_with_its_env(self):
+        sync = self.steps[self._index(lambda s: s.get("run") == ".github/scripts/nvd-cache-sync.sh")]
+        env = sync.get("env") or {}
+        self.assertEqual(env.get("NVD_API_KEY"), "${{ secrets.NVD_API_KEY }}")
+        self.assertEqual(env.get("DC_VERSION"), "${{ steps.dc.outputs.version }}")
+        self.assertEqual(env.get("DC_SHA256"), "${{ steps.dc.outputs.sha256 }}")
+        self.assertEqual(env.get("NVD_FULL_REBUILD"), "${{ inputs.full_rebuild && '1' || '' }}")
+
+    def test_full_rebuild_is_a_dispatch_input_defaulting_off(self):
+        spec = self.on["workflow_dispatch"]["inputs"]["full_rebuild"]
+        self.assertEqual(spec.get("type"), "boolean")
+        self.assertIs(spec.get("default"), False)
+
+    def test_login_and_buildx_come_before_the_sync_and_build_after(self):
+        login = self._index(lambda s: str(s.get("uses", "")).startswith("docker/login-action@"))
+        buildx = self._index(lambda s: str(s.get("uses", "")).startswith("docker/setup-buildx-action@"))
+        sync = self._index(lambda s: s.get("run") == ".github/scripts/nvd-cache-sync.sh")
+        build = self._index(lambda s: "docker buildx build --push" in str(s.get("run", "")))
+        self.assertLess(login, sync)
+        self.assertLess(buildx, sync)
+        self.assertLess(sync, build)
+
+    def test_buildx_sync_and_build_share_the_decide_gate(self):
+        for name in ("Set up Docker Buildx", "Sync NVD database (keyed, seeded)",
+                     "Build and push the NVD data image (multi-arch, files only)"):
+            with self.subTest(step=name):
+                step = self.steps[self._index(lambda s, n=name: s.get("name") == n)]
+                self.assertEqual(step.get("if"), self.GATE)
 
 
 if __name__ == "__main__":

@@ -164,9 +164,17 @@ fi
 # that leaves yesterday's database looking fresh, so it fails too. On a full
 # download it is still let through to the checks below, which refuse it: over an
 # empty directory a failed update leaves nvd.api.last.modified unset.
+# The key is optional: without one, no --nvdApiKey argument at all. Two spelled-out
+# launches, not an unquoted ${VAR:+...} expansion or an array (bash 3.2's `set -u`
+# rejects an empty one).
 rc=0
-timeout 3000 ./dependency-check/bin/dependency-check.sh --updateonly --data odc-data \
-  --nvdValidForHours 0 ${NVD_API_KEY:+--nvdApiKey "$NVD_API_KEY"} || rc=$?
+if [ -n "${NVD_API_KEY:-}" ]; then
+  timeout 3000 ./dependency-check/bin/dependency-check.sh --updateonly --data odc-data \
+    --nvdValidForHours 0 --nvdApiKey "$NVD_API_KEY" || rc=$?
+else
+  timeout 3000 ./dependency-check/bin/dependency-check.sh --updateonly --data odc-data \
+    --nvdValidForHours 0 || rc=$?
+fi
 case "$rc" in
   0) ;;
   124|137) echo "::error::updateonly was killed by the 3000 s deadline (rc=$rc); not publishing a partial DB"; exit 1 ;;
