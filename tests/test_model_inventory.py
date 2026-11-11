@@ -115,10 +115,10 @@ def test_markers_attach_to_the_table_directly_below(tmp_path):
     assert tables["profiles:gemini"].line == 10
 
 
-def test_a_blank_line_ends_the_comment_block(tmp_path):
-    text = "# %s\n\nKNOWN_MODELS = frozenset({'gemini-a'})\n" % GOOD
-    tables = by_name(mi.inventory(tree(tmp_path, gemini_py=text), TODAY))
-    assert tables["allowlist:gemini"].marker is None
+def test_a_blank_line_ends_the_comment_block_and_strands_the_marker(tmp_path):
+    root = tree(tmp_path, gemini_py="# %s\n\nKNOWN_MODELS = frozenset({'gemini-a'})\n" % GOOD)
+    with pytest.raises(mi.MarkerError, match=r"above no table .*runners/gemini.py:1\b"):
+        mi.inventory(root, TODAY)
 
 
 def test_a_marker_on_the_next_table_does_not_leak_upward(tmp_path):
@@ -147,8 +147,66 @@ def test_a_marker_in_the_yaml_attaches_by_key_line_not_text(tmp_path):
                                  "    # %s\n    scout:\n      model: primary" % GOOD)
     with open(path, "w", encoding="utf-8") as fh:
         fh.write(text)
-    tables = by_name(mi.inventory(root, TODAY))
-    assert tables["profiles:kimi"].marker is None
+    # #3569: it is a stray, an error naming its line, never silently the host's.
+    with pytest.raises(mi.MarkerError, match=r"above no table .*model-profiles.yml:3\b"):
+        mi.inventory(root, TODAY)
+
+
+# --- #3569: presence, exemptions and strays ------------------------------------------------------
+def test_every_table_needs_a_marker_unless_exempt(tmp_path):
+    tables = mi.inventory(tree(tmp_path), TODAY)
+    assert mi.presence_problems(tables, {}) == [
+        "profiles:kimi has no models-verified marker",
+        "allowlist:agy has no models-verified marker",
+        "aliases:gemini has no models-verified marker"]
+    exempt = {"profiles:kimi": "#1", "allowlist:agy": "#2", "aliases:gemini": "#3"}
+    assert mi.presence_problems(tables, exempt) == []
+
+
+def test_a_stale_exemption_fails(tmp_path):
+    tables = mi.inventory(tree(tmp_path), TODAY)
+    assert mi.presence_problems(tables, {"profiles:gemini": "#9"} | {
+        "profiles:kimi": "#1", "allowlist:agy": "#2", "aliases:gemini": "#3"}) == [
+        "profiles:gemini is exempt (#9) but now has a marker; remove the exemption"]
+    assert mi.presence_problems(tables, {"profiles:gone": "#8", "profiles:kimi": "#1",
+                                         "allowlist:agy": "#2", "aliases:gemini": "#3"}) == [
+        "exemption for profiles:gone (#8) names no table; remove it"]
+
+
+def test_the_default_exemption_is_openrouter_pointing_at_its_issue():
+    assert mi.EXEMPT == {"profiles:openrouter": "#3568"}
+
+
+@pytest.mark.parametrize("text, line", [
+    ("KNOWN_MODELS = frozenset({'gemini-a'})\n# %s\n" % GOOD, 2),            # below, at the end
+    ("# %s\nOTHER = 1\nKNOWN_MODELS = frozenset({'gemini-a'})\n" % GOOD, 1),  # above the wrong name
+    ("def f():\n    # %s\n    pass\nKNOWN_MODELS = frozenset({'g'})\n" % GOOD, 2),
+])
+def test_a_marker_owned_by_no_table_is_a_stray(tmp_path, text, line):
+    with pytest.raises(mi.MarkerError, match=r"above no table .*runners/gemini.py:%d\b" % line):
+        mi.inventory(tree(tmp_path, gemini_py=text), TODAY)
+
+
+@pytest.mark.parametrize("stray", ["# models-verified: soon",
+                                   "# models-verified 2026-11-10 https://e.test/x",
+                                   "  #models-verified:2026-11-10"])
+def test_a_malformed_stray_is_still_a_stray_not_ignored(tmp_path, stray):
+    text = "KNOWN_MODELS = frozenset({'gemini-a'})\n%s\n" % stray
+    with pytest.raises(mi.MarkerError, match="above no table"):
+        mi.inventory(tree(tmp_path, gemini_py=text), TODAY)
+
+
+def test_owned_markers_record_their_line(tmp_path):
+    tables = by_name(mi.inventory(tree(tmp_path), TODAY))
+    assert tables["profiles:gemini"].marker.line == 9
+    assert tables["allowlist:gemini"].marker.line == 1
+    assert mi.stray_markers(str(tmp_path), list(tables.values())) == []
+
+
+def test_the_repo_has_a_marker_on_every_table_and_no_strays():
+    tables = mi.inventory()
+    assert mi.presence_problems(tables) == []
+    assert mi.stray_markers(mi.REPO, tables) == []
 
 
 # --- the sets, read by AST ----------------------------------------------------------------------

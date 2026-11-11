@@ -23,7 +23,13 @@ above a table (a blank line ends the block):
 In the YAML, the block above a `hosts.<name>:` key; in Python, the block above
 the assignment. A table with no marker is unverified and sorts first. A marker
 that is malformed, doubled, not a real date, dated in the future (beyond a day
-of timezone slack) or naming a non-https URL is an error, never ignored.
+of timezone slack) or naming a non-https URL is an error, never ignored. So is
+a stray (#3569): a `models-verified` line no table owns, such as one above a
+role key, one a blank line away from its table, or one below it.
+
+tests/test_model_inventory.py requires a marker on every table except those in
+EXEMPT, each of which names the issue deciding it; an exemption that no longer
+applies fails the test too, so it is removed when its issue resolves.
 
 The tables are read as data: the YAML with `yaml.safe_load` (key lines from
 `yaml.compose`), the Python sets with `ast.literal_eval`, so no runner module
@@ -71,6 +77,15 @@ class MarkerError(ValueError):
 class Marker:
     date: datetime.date
     urls: tuple[str, ...]
+    line: int = 0       # 1-based line of the marker in its file, once associated
+
+
+# #3569: tables allowed to carry no marker, each with the issue that decides its fate.
+# `presence_problems` fails once an exemption is stale (the table gained a marker or
+# is gone), so an entry here has to be removed when its issue resolves.
+EXEMPT = {
+    "profiles:openrouter": "#3568",     # openrouter's fate is open; no marker until it is decided
+}
 
 
 @dataclass
@@ -107,7 +122,7 @@ def marker_above(lines: list[str], line: int, where: str,
     while index >= 0 and lines[index].strip().startswith("#"):
         body = lines[index].strip()[1:].strip()
         if body.startswith(MARKER_KEY):
-            found.append(body)
+            found.append((index + 1, body))
         index -= 1
     if len(found) > 1:
         raise MarkerError("%s has %d %s markers; keep exactly one" % (where, len(found),
@@ -115,9 +130,42 @@ def marker_above(lines: list[str], line: int, where: str,
     if not found:
         return None
     try:
-        return parse_marker(found[0], today)
+        marker = parse_marker(found[0][1], today)
     except MarkerError as exc:
         raise MarkerError("%s: %s" % (where, exc)) from None
+    return Marker(marker.date, marker.urls, found[0][0])
+
+
+def marker_lines(text: str) -> list[int]:
+    """1-based lines of every `models-verified` comment in `text`, associated or not."""
+    return [number for number, raw in enumerate(text.splitlines(), 1)
+            if raw.strip().startswith("#")
+            and raw.strip()[1:].strip().startswith(MARKER_KEY)]
+
+
+def stray_markers(root: str, tables: list[Table]) -> list[str]:
+    """`file:line` of each marker no table owns: above a role key, a gap away, or orphaned."""
+    owned = {(t.path, t.marker.line) for t in tables if t.marker}
+    stray = []
+    for rel in sorted({t.path for t in tables}):
+        stray += ["%s:%d" % (rel, number) for number in marker_lines(_read(root, rel))
+                  if (rel, number) not in owned]
+    return stray
+
+
+def presence_problems(tables: list[Table], exempt: dict[str, str] | None = None) -> list[str]:
+    """Tables missing a marker, and exemptions that no longer apply (#3569)."""
+    exempt = EXEMPT if exempt is None else exempt
+    names = {t.name: t for t in tables}
+    problems = ["%s has no models-verified marker" % t.name for t in tables
+                if t.marker is None and t.name not in exempt]
+    for name, issue in sorted(exempt.items()):
+        if name not in names:
+            problems.append("exemption for %s (%s) names no table; remove it" % (name, issue))
+        elif names[name].marker is not None:
+            problems.append("%s is exempt (%s) but now has a marker; remove the exemption"
+                            % (name, issue))
+    return problems
 
 
 def _read(root: str, rel: str) -> str:
@@ -197,6 +245,11 @@ def inventory(root: str = REPO, today: datetime.date | None = None) -> list[Tabl
             members = allowed.get(row["host"])
             row["allowlisted"] = ("-" if members is None or row["model"] is None
                                   else "yes" if row["model"] in members else "NO")
+    stray = stray_markers(root, tables + sets)
+    if stray:
+        raise MarkerError("models-verified marker above no table (it belongs directly above a "
+                          "hosts.<name>: key or a KNOWN_MODELS / MODEL_ALIASES assignment, "
+                          "with no blank line): %s" % ", ".join(stray))
     return tables + sets
 
 

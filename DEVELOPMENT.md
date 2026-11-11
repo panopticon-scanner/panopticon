@@ -566,7 +566,10 @@ above the table (above a `hosts.<name>:` key in `skill/reference/model-profiles.
     # models-verified: 2026-11-10 https://ai.google.dev/gemini-api/docs/models https://...
 
 That is an ISO date and one or more `https://` URLs, nothing else on the line. A malformed or
-doubled marker fails the inventory and the job; a missing one lists the table as unverified. The
+doubled marker fails the inventory and the job, and so does a stray one that no table owns (above a
+role key, or a blank line away from its table). A test requires a marker on every table except
+the exemptions in `model_inventory.EXEMPT`, each naming the issue that decides it
+(`profiles:openrouter`, #3568); a stale exemption fails the same test (#3569). The
 `_*_FALLBACK` dicts in `model_resolver.py` carry no marker: they mirror the YAML under a parity
 pin. No age check fails a build. The job uses the runner image's system `python3` and its
 python3-yaml: if an image drops PyYAML, the job fails naming it.
