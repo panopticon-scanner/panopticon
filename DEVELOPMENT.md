@@ -599,12 +599,15 @@ commit.
 **Weekly strict security backstop.** `security.yml` also runs Mondays at 07:23 UTC
 and accepts manual dispatch on `main`. These events use the distinct check name
 `strict-full-tree`, even when a non-main dispatch skips; PR/push still uses `scan`
-and the existing delta comparison. The full-tree gate has no baseline: raw
-HIGH/CRITICAL findings and incomplete required scanner coverage fail regardless
-of GitHub dismissals or the historical comparison. Existing fixture/golden scope
-exclusions and the standard gate's suppression policy still apply.
+and the existing delta comparison. The full-tree verdict has no baseline: it
+counts raw HIGH/CRITICAL findings regardless of GitHub dismissals or the
+historical comparison, so accepted findings count too. That verdict is REPORTED,
+not gating (owner, 2026-11-10): findings give a warning and a summary line, and
+only a gate that could not evaluate the captures (incomplete required scanner
+coverage, exit 2) fails the run. Existing fixture/golden scope exclusions and the
+standard gate's suppression policy still apply.
 
-After a red gate, capture data with valid manifest and image provenance still
+Whatever the verdict, capture data with valid manifest and image provenance still
 produces the `strict-security-snapshot` artifact and a job summary. The versioned
 snapshot records the commit, actual local Docker image ID, coverage counts,
 severity counts, and SHA-256 hashes of the gate's normalized finding identities;

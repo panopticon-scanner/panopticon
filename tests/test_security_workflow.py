@@ -3,6 +3,8 @@ import contextlib
 import io
 import json
 import os
+import re
+import subprocess
 import tempfile
 import unittest
 
@@ -97,17 +99,33 @@ class TestSecurityGateExitStatus(unittest.TestCase):
     def test_the_strict_verdict_reports_and_fails_only_unevaluated(self):
         # Owner 2026-11-10: findings (exit 1) warn and write the summary; any
         # other non-zero (the gate could not evaluate) still fails the step.
+        # Runs the step's own body under GitHub's bash flags with `python`
+        # stubbed to each status, so it pins what the step DOES.
         job = _load(SECURITY)["jobs"]["scan"]
         step = _step(job, "Strict full-tree verdict (reported, not gating)")
         self.assertNotIn("continue-on-error", job)
         self.assertNotIn("continue-on-error", step)
-        body = step["run"]
-        self.assertIn("security_gate.py", body)
-        self.assertIn("|| rc=$?", body)
-        self.assertRegex(body, r"\n\s*1\) echo \"::warning ")
-        self.assertRegex(body, r"\*\) echo \"::error::[^\n]*; exit \"\$rc\"")
-        self.assertIn("GITHUB_STEP_SUMMARY", body)
-
+        self.assertIn("security_gate.py", step["run"])
+        body = re.sub(r"\$\{\{[^}]*\}\}", "x", step["run"])
+        cases = ((0, 0, "**pass**", None), (1, 0, "**fail** (reported, not gating)", "::warning "),
+                 (2, 2, None, "::error::"), (3, 3, None, "::error::"))
+        for gate_rc, step_rc, summary_text, annotation in cases:
+            with self.subTest(gate_rc=gate_rc), tempfile.TemporaryDirectory() as tmp:
+                summary = os.path.join(tmp, "summary.md")
+                open(summary, "w").close()
+                stub = "python() { return %d; }\n" % gate_rc
+                proc = subprocess.run(
+                    ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", stub + body],
+                    env={"PATH": os.environ.get("PATH", ""), "RUNNER_TEMP": tmp,
+                         "GITHUB_STEP_SUMMARY": summary},
+                    capture_output=True, text=True, timeout=30)
+                self.assertEqual(proc.returncode, step_rc, proc.stdout + proc.stderr)
+                with open(summary, encoding="utf-8") as fh:
+                    written = fh.read()
+                if summary_text:
+                    self.assertIn(summary_text, written)
+                if annotation:
+                    self.assertIn(annotation, proc.stdout)
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
