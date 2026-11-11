@@ -420,6 +420,17 @@ proximity (`--line-window`, default 5), and tool findings on their fingerprint. 
 docstring documents the key. It reports agreement, CRITICAL/HIGH consistency, score spread and
 lost cells, and sets no thresholds.
 
+### The Dockerfile PR build's disk
+`docker-build-pr.yml` builds the tools image with `load: true`, so at the import the runner holds the
+gha cache blobs, BuildKit's unpacked copy and the daemon's unpacked copy at once: about 15 GB for
+a ~2 GB compressed image, on a runner the docs give 14 GB of SSD. Its first step removes
+preinstalled toolchains the job never uses (Android SDK, .NET, GHC, the hosted tool cache),
+printing each one's size, and `df -h /` lines after each build show the margin (#3441). The job
+must not gain a `setup-*` toolchain action without revisiting that list:
+`tests/test_action_pins.py` refuses one, and pins the list. The step after the tools image prints
+its `.Id` and RootFS diff IDs, which is how a change to the job's runner setup is shown not to reach
+the image. The published image comes from `docker-publish.yml`, which pushes without loading.
+
 ### Test-only injection seams
 Two module attributes exist so the unit suite can refuse a real launch, and neither may ever be
 assigned outside `tests/`. `DEFAULT_RUNNER` (on each host-CLI launch seam —

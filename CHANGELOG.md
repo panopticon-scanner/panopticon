@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **More disk headroom for the Dockerfile PR build (#3441).** Its `load: true` import of
+  the tools image intermittently ran out of space. The job now removes preinstalled
+  toolchains it never uses before building, and logs the free disk and the image's layer IDs
+  after each build. The published image is built elsewhere and is unchanged.
+
 - **Compare repeat runs of one pinned repo (#3560).** `devtools/compare_runs.py` takes two or
   more full-review reports of one version and one commit. It reports which findings every run,
   most runs or only one run found, how consistently each CRITICAL/HIGH finding was caught and at
