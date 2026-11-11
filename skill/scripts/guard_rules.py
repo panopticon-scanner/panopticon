@@ -689,6 +689,67 @@ def record_denial(policy_path, payload, reason):
         pass
 
 
+# #3533 release N: two checks that only duplicate first contact's H1/H2 halt run log-only for one
+# release. What they WOULD have denied or dropped lands here, beside DENIALS_FILE, and the removal
+# PR cites zero lines across the redteam tags. Entry ids and short reasons only: never a path,
+# never file contents.
+SHADOW_FILE = "shadow-denials.jsonl"
+SHADOW_KINDS = ("read-stamp", "install-union", "carried-grant")
+
+
+def _append_shadow(path, line):
+    """True only when `line` was written: unlike `_append_denial`, a skip is a failure here."""
+    fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK, 0o600)
+    try:
+        info = os.fstat(fd)
+        if not (stat.S_ISREG(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o600
+                and info.st_size < DENIALS_CAP):
+            return False
+        return os.write(fd, line) == len(line)
+    finally:
+        os.close(fd)
+
+
+def record_shadow(run_dir, kind, entry_id, reason, tool_use_id=None):
+    """Record one shadow line in `run_dir`. Never raises, and waits at most `_DENIAL_WAIT_SECONDS`.
+
+    In the flat `.panopticon/` (a setup run, or a session-mode root) the line goes to stderr
+    only, as record_denial keeps out of it. Any write that does not land prints one stderr
+    line, so "no shadow lines" can never mean "the writer broke"."""
+    try:
+        import threading              # here: a run with nothing to shadow never pays for it
+        row = {"kind": str(kind)[:_DENIAL_ID_CAP], "entry_id": str(entry_id)[:_DENIAL_ID_CAP],
+               "reason": str(reason)[:DENIAL_REASON_CAP]}
+        if isinstance(tool_use_id, str):
+            row["tool_use_id"] = tool_use_id[:_DENIAL_ID_CAP]
+        text = json.dumps(row)
+        run_dir = os.path.abspath(run_dir)
+        if os.path.basename(run_dir) == ARTIFACT_DIR:
+            print("guard shadow: %s" % text, file=sys.stderr)
+            return
+        outcome = []
+
+        def write():
+            try:
+                outcome.append(_append_shadow(os.path.join(run_dir, SHADOW_FILE),
+                                              (text + "\n").encode()))
+            except OSError as exc:
+                outcome.append(exc)
+        writer = threading.Thread(target=write, daemon=True)
+        writer.start()
+        writer.join(_DENIAL_WAIT_SECONDS)
+        if outcome != [True]:
+            why = (type(outcome[0]).__name__ if outcome and outcome[0] is not False
+                   else "not written" if outcome else "timed out")
+            print("guard shadow: could not record a %s line in %s (%s)"
+                  % (row["kind"], SHADOW_FILE, why), file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 -- a shadow record never changes a decision
+        try:
+            print("guard shadow: could not record (%s)" % type(exc).__name__, file=sys.stderr)
+        except Exception:  # noqa: BLE001 -- stderr itself is gone; nothing left to tell
+            pass
+
+
 # --- THE LOADER --------------------------------------------------------------
 #
 # The loader stanza is the one piece that cannot live here, because it is what

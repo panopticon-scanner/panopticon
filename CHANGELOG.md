@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **Two guard checks that only duplicate first contact's halt run log-only for one release (#3533, shadow release N).**
+  First contact now also checks the session root (#3532), so a planted `read-scope.json` or
+  `write-allowlist.json` halts the run before any guard reads it. Owner rule: log first, remove
+  only if the shadow log stays clean across the redteam runs.
+  - Read guard: a scope row without this machine's stamp (#3436), or an unreadable stamp key, no
+    longer denies. The read is adjudicated against the row as written, and the failure is
+    recorded. `install()` keeps a row it used to drop for a bad stamp, and records it. A bound
+    entry with no row still denies; ours still wins on a shared id.
+  - Write guard: the carried-grant filter now enforces "under one of this run's folders" (an
+    absolute, normalised path only). The finer #1831 rule, the exact artifact the entry
+    declares, is recorded instead of dropped for a path inside the run folder.
+  - The records go to `shadow-denials.jsonl` in the run folder: kind (`read-stamp`,
+    `install-union`, `carried-grant`), entry id and a short reason, never a path. In the flat
+    `.panopticon/` (setup, session root) they go to stderr. A record that cannot be written
+    prints one stderr line, so an empty log can't hide a broken writer.
 - **Armor audit removes duplicate config normalization and measures installed guard hooks (#3531, #3534; #3173 clusters A/E).**
   `load_resolution` now keeps the fail-closed read and five outer-shape checks while trusting the
   driver-bounded artifact instead of maintaining a second field-by-field schema. Headless Claude
