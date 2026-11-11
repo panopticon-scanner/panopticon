@@ -503,6 +503,10 @@ class TestHealthScore(unittest.TestCase):
         self.assertEqual(grading_mod.nonblank_loc("/no/such/dir", [{"name": "g", "files": ["nope.py"]}]), 0)
 
 
+# #3554: a hang guard for the descriptor-limit child, not a speed budget.
+CHILD_HANG_TIMEOUT = 60
+
+
 class TestLocConfinement(unittest.TestCase):
     def test_outside_paths_and_lexical_aliases(self):
         with tempfile.TemporaryDirectory() as d:
@@ -589,10 +593,21 @@ class TestLocConfinement(unittest.TestCase):
                 "print(nonblank_loc(sys.argv[1], [{'files': [sys.argv[2]]}]))\n"
             )
             env = dict(os.environ, PYTHONPATH=str(Path(grading_mod.__file__).parents[2]))
-            result = subprocess.run([sys.executable, "-c", code, str(root), relative],
-                                    capture_output=True, text=True, timeout=2, env=env)
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.strip(), "1")
+            # #3554: the timeout only guards against a hang. It used to be 2s, which also timed
+            # a cold interpreter start plus the grading imports, and a loaded xdist box can eat
+            # that. The limit is lowered in a child, never in this worker, whose own sockets
+            # and pipes share it. Each failure says which kind it was.
+            try:
+                result = subprocess.run([sys.executable, "-c", code, str(root), relative],
+                                        capture_output=True, text=True,
+                                        timeout=CHILD_HANG_TIMEOUT, env=env)
+            except subprocess.TimeoutExpired as exc:
+                self.fail("child timed out after %ss (hang guard); stderr: %r"
+                          % (CHILD_HANG_TIMEOUT, exc.stderr))
+            self.assertEqual(result.returncode, 0,
+                             "child exited %d; stderr: %s" % (result.returncode, result.stderr))
+            self.assertEqual(result.stdout.strip(), "1",
+                             "child counted the wrong LoC; stderr: %s" % result.stderr)
 
     def test_oversize_and_binary_files_are_unmeasurable(self):
         with tempfile.TemporaryDirectory() as d:
