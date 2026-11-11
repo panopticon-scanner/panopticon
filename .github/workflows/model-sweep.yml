@@ -1,0 +1,36 @@
+name: model sweep
+
+# #3563: host model lists go stale as providers ship and retire models (on
+# 2026-11-10 `gemini-2.5-flash` silently ran 3.6-flash while model binding read
+# PROVEN). Once a month this keeps ONE issue, `model-list sweep due: YYYY-MM`,
+# listing each model table with its `models-verified` date, stalest first
+# (devtools/report_model_sweep.py, devtools/model_inventory.py). It calls no
+# provider API (there are no keys in CI) and edits nothing: a human or a seat
+# does the sweep and opens the PR. A month's issue a human closed stays closed.
+#
+# The inventory reads skill/reference/model-profiles.yml with PyYAML from the
+# runner image's system python3 (python3-yaml ships with the image). If an image
+# drops it, the job fails naming PyYAML: visible, monthly, cheap to fix.
+on:
+  schedule:
+    - cron: "17 6 1 * *"      # the 1st of each month, off the hour
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write            # one sweep issue a month; no push, no PR (#3563)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Open or update the model-list sweep issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 devtools/report_model_sweep.py
