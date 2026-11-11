@@ -100,6 +100,28 @@ def test_a_record_written_before_the_lever_fields_keeps_the_letter_and_measures_
         "exclude_paths": None}
 
 
+def test_a_run_mixing_old_and_new_records_reads_its_levers_as_unknown():
+    # A run resumed across the upgrade: one group's record predates the lever keys.
+    legacy = {"group": "lib", "floor": [], "excluded": ["COD"], "effective": []}
+    summary = _summary([_cov(deterministic=["COD"], scout=["OPS"], panels=["DAT"]), legacy])
+    assert summary["overall_grade"] and summary["provisional_grade"] is None
+    assert summary["coverage_note"] is None
+    assert summary["health"]["basis"]["profile"] == "default"
+    assert summary["health"]["basis"]["config_levers"] == {
+        "domain_exclude": None, "domain_exclude_scout": None, "panels_added": None,
+        "exclude_paths": None}
+
+
+def test_the_layout_fingerprint_does_not_see_the_levers():
+    plain = _report([{"group": "app", "floor": [], "excluded": [], "effective": ["COD"]}])
+    levered = _report([_cov(deterministic=["COD"], scout=["OPS"], panels=["DAT"])],
+                      exclude_paths={"globs": 2, "pruned": 5, "sec_carved": 1})
+    before, after = (r["summary"]["health"]["basis"] for r in (plain, levered))
+    assert after["config_levers"]["domain_exclude"] == ["app:COD"]      # the levers are there
+    assert after["layout_fingerprint"] == before["layout_fingerprint"]
+    assert levered["summary"]["provisional_grade"]                       # and they bit
+
+
 @pytest.mark.parametrize("review_type", ["changes", "files"])
 def test_delta_and_file_scoped_reviews_keep_their_letter_and_notes(review_type):
     summary = _summary([_cov(deterministic=["COD"], scout=["OPS"])], review_type=review_type,
@@ -202,9 +224,14 @@ def test_lever_lists_are_sorted_across_groups_and_capped_in_the_basis():
 
 def test_a_planted_non_string_domain_or_group_is_skipped():
     planted = [{"group": 7, "exclude_deterministic": ["COD"]},
-               {"group": "app", "exclude_deterministic": ["COD", 3, None]},
-               {"group": "lib", "exclude_deterministic": "COD"}]
+               {"group": "app", "exclude_deterministic": ["COD", 3, None]}]
     assert health_basis.lever_cells(planted, "exclude_deterministic") == ["app:COD"]
+
+
+def test_a_planted_non_list_lever_value_reads_as_unknown():
+    planted = [{"group": "app", "exclude_deterministic": ["COD"]},
+               {"group": "lib", "exclude_deterministic": "COD"}]
+    assert health_basis.lever_cells(planted, "exclude_deterministic") is None
 
 
 def test_a_report_with_levers_round_trips_the_schema():

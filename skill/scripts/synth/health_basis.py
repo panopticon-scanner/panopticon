@@ -140,8 +140,10 @@ def _count(value):
 
 
 def lever_cells(coverages, key):
-    """Sorted "group:DOMAIN" cells off the coverage records' `key` list, or None when no
-    record carries it (records written before #3548: unknown, not "none")."""
+    """Sorted "group:DOMAIN" cells off the coverage records' `key` list, or None when any
+    record lacks it. A record written before #3548 measured nothing, and a run resumed across
+    the upgrade mixes both kinds, so one such record makes the whole run unknown, not "none"
+    (#3553 review)."""
     cells: set[str] = set()
     seen = False
     for cov in coverages or ():
@@ -149,7 +151,7 @@ def lever_cells(coverages, key):
             continue
         domains = cov.get(key)
         if not isinstance(domains, list):
-            continue
+            return None
         seen = True
         cells.update("%s:%s" % (cov["group"], d) for d in domains if isinstance(d, str))
     return sorted(cells) if seen else None
