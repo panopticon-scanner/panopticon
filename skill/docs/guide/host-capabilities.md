@@ -33,7 +33,7 @@ that shadows those shells. `artifact_write_guard` — reviewer-controlled artifa
 impossible or confined to the declared `out_file`. A family can prove an absent reviewer-selectable
 write surface or a mediated self-write path; transport is a separate static registry fact. Current
 Claude/Kimi proof covers the write-tool surface. On a headless Claude run the proof includes one real
-`claude -p` canary launch (#3218/#3272, about $0.0005 on haiku): the runner's enforced argv, both
+`claude -p` canary launch (#3218/#3272, about $0.0005 on `claude-haiku-5-5`): the runner's enforced argv, both
 guards armed in a sandbox, one out-of-scope Read, a Write to its own `out_file` and one to a peer's.
 The same launch supplies independent verdicts. Write proves only when the own file was written and
 the peer's was not, so a CLI whose permission layer denies every granted Write cannot prove the

@@ -624,7 +624,7 @@ def probe_gemini_usage_envelope(host, settings_path=None, *, runner=None):
             or u_std.get("total_tokens") != 175):
         return (hosts.REFUTED, GEMINI_USAGE_ENVELOPE, "runners.gemini.Runner.parse_envelope failed standard usage self-test: %r" % (u_std,))
 
-    synthetic_cache = json.dumps({"session_id": "probe-sess-2", "response": "{\"ok\":true}", "stats": {"models": {"gemini-3.5-flash-lite": {
+    synthetic_cache = json.dumps({"session_id": "probe-sess-2", "response": "{\"ok\":true}", "stats": {"models": {"gemini-3.8-flash": {
         "api": {"totalRequests": 1, "totalErrors": 0, "totalLatencyMs": 110},
         "tokens": {"input": 0, "prompt": 80, "candidates": 0, "total": 80, "cached": 80, "thoughts": 0, "tool": 0}}}}})
     parsed_cache = r_inst.parse_envelope("probe-2", synthetic_cache, 0)

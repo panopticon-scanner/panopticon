@@ -812,6 +812,22 @@ class TestGeminiUsageEnvelopeProbe(unittest.TestCase):
             self.assertEqual(hosts.UNKNOWN, state, detail)
             self.assertIn("no dispatch-ledger.jsonl exists", detail)
 
+    def test_usage_self_tests_name_the_current_default_model(self):
+        seen = []
+        parse_envelope = gemini_runner.Runner.parse_envelope
+
+        def capture(runner, entry_id, stdout, returncode=0, stderr=None):
+            payload = json.loads(stdout)
+            seen.append(tuple(payload["stats"]["models"]))
+            return parse_envelope(runner, entry_id, stdout, returncode, stderr)
+
+        with mock.patch.object(gemini_runner.Runner, "parse_envelope",
+                               autospec=True, side_effect=capture):
+            state, _by, detail = gemini_probes.probe_gemini_usage_envelope(
+                "gemini", runner=self._help_runner())
+        self.assertEqual(hosts.UNKNOWN, state, detail)
+        self.assertEqual([("gemini-3.8-flash",), ("gemini-3.8-flash",)], seen)
+
     def test_empty_ledger_is_unknown(self):
         with tempfile.TemporaryDirectory() as d:
             settings = os.path.join(d, "host-settings.json")

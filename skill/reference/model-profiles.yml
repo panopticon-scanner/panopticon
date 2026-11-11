@@ -4,6 +4,7 @@ hosts:
     scout:
       model: primary
       alias: k3-256k
+      # The alias names its 256k ceiling; scout keeps a bounded 131072-token role budget.
       max_context_size: 131072
       max_output_size: 16384
     advisor:
