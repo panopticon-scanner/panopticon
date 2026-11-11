@@ -230,6 +230,7 @@ class TestClusterRecords(Workspace):
         self.assertEqual([2, 1], record["counts"])
         self.assertEqual([True, True], record["present"])
         self.assertEqual(1, doc["agreement"]["ambiguous"])
+        self.assertEqual({}, record["severity_split"])    # two HIGHs are not a split
 
     def test_one_finding_per_run_is_not_ambiguous(self):
         doc = self.compare(report([agent(40)]), report([agent(41)]))
@@ -293,6 +294,11 @@ class TestAgreementScoresCells(Workspace):
                                         agree["only_one"]))
         self.assertEqual({"all": 0.3333, "majority": 0.6667, "only_one": 0.3333},
                          agree["shares"])
+
+    def test_half_of_an_even_count_is_not_a_majority(self):
+        doc = self.compare(report([agent(10)]), report([agent(10)]), report([]), report([]))
+        self.assertEqual((0, 0, 0), tuple(doc["agreement"][k]
+                                          for k in ("all", "majority", "only_one")))
 
     def test_no_findings_has_no_shares(self):
         agree = self.compare(report(), report())["agreement"]
