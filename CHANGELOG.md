@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **A full review graded at a non-default group size reports its letter as provisional (#1495).**
+  The health index moves with scan effort: on one commit, ripgrep graded F at `--max-per-group 15`
+  and D at 48. The bands were kept (#3328) on runs at the default, so a letter is now certified only
+  there; one commit yields one certified letter. The formula, bands, weights and gate are unchanged.
+  - A full review whose effective `max_per_group` (after config clamps and flag precedence) is
+    not the default 48 carries its letter in `provisional_grade`. `coverage_note` says which size
+    was used and whether the run's flag or the target's `panopticon.yml` set it. An explicit 48 is
+    the default.
+  - `summary.health.basis.profile` is `default`, `custom` or `unknown` (no recorded cap, letter
+    left alone). Reports without it re-render with their stored letter.
+  - `max_groups` is not part of the profile: a review run never applies it (only setup does). It
+    stays in the basis as provenance.
+  - Out of scope: delta and file-scoped reviews keep their letter behaviour. Target-authored
+    layout levers (`panels:`, `exclude_paths`) are #3548.
+  - The HTML grade badge shows a provisional letter as "X (provisional)" instead of "-", as the
+    terminal does, and both outputs say why when coverage is certified but the letter is held.
 - **Armor audit removes duplicate config normalization and measures installed guard hooks (#3531, #3534; #3173 clusters A/E).**
   `load_resolution` now keeps the fail-closed read and five outer-shape checks while trusting the
   driver-bounded artifact instead of maintaining a second field-by-field schema. Headless Claude

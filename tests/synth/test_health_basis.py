@@ -9,12 +9,13 @@ import pytest
 import scripts.discovery as discovery
 import scripts.html_report as html_report
 import scripts.synth.findings as findings_mod
+import scripts.synth.health_basis as health_basis
 import scripts.synth.plan as plan_mod
 import scripts.synth.render as render_mod
 import scripts.synth.report as report_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.validate_schema as validate_schema_mod
-from tests.synth.helpers import DEFAULT_TIMESTAMP, _cli_args, _target_with_files
+from tests.synth.helpers import DEFAULT_TIMESTAMP, _agentic, _cli_args, _target_with_files
 
 
 NOTE_PREFIX = (
@@ -62,6 +63,7 @@ def test_basis_uses_the_layout_and_cell_counts_the_report_already_carries():
         "cells_answered": 3,
         "max_per_group": 8,
         "max_groups": 12,
+        "profile": "custom",
         "layout_fingerprint": basis["layout_fingerprint"],
         "version": report["meta"]["version"],
         "ocrdb_version": report["meta"]["ocrdb_version"],
@@ -213,3 +215,141 @@ def test_two_committed_legacy_report_fixtures_still_render_with_unknown_basis():
         report = render_mod._read_json_report(str(fixtures / name))
         assert report is not None
         assert LEGACY_NOTE in html_report.render(report)
+
+
+# --- #1495: a certified letter only at the default scan profile -----------------------------
+
+DEFAULT_CAP = discovery.DEFAULT_MAX_PER_GROUP
+GROUPS = [{"name": "app", "files": ["app.py", "lib.py"]}]
+
+
+def _graded(root, *, cap, max_groups=None, review_type="repo", findings=(), config=None):
+    return report_mod.build_report(report_mod.ReportInputs(
+        run=report_mod.RunConfig(
+            target=root, fail_on="high", timestamp=DEFAULT_TIMESTAMP, gate_unverified=True,
+            review_type=review_type, max_per_group=cap, max_groups=max_groups,
+            config=config or {}),
+        findings=findings_mod.FindingSet(findings=[dict(f) for f in findings]),
+        plan=plan_mod.PlanInputs(groups_meta=GROUPS),
+    ))["summary"]
+
+
+def test_the_default_profile_is_discoverys_default_cap():
+    assert health_basis.GRADED_MAX_PER_GROUP == discovery.DEFAULT_MAX_PER_GROUP
+
+
+def test_a_full_review_at_a_custom_cap_carries_its_letter_as_provisional():
+    with _target_with_files(GROUPS) as root:
+        default = _graded(root, cap=DEFAULT_CAP)
+        custom = _graded(root, cap=15)
+    assert default["overall_grade"] and default["provisional_grade"] is None
+    assert default["health"]["basis"]["profile"] == "default"
+    assert (custom["overall_grade"], custom["provisional_grade"]) == (
+        None, default["overall_grade"])
+    assert custom["health"]["basis"]["profile"] == "custom"
+    assert custom["health"]["score"] == default["health"]["score"]
+    note = custom["coverage_note"]
+    assert note.startswith("grade provisional: this scan used a non-default group size of 15 "
+                           "files (set by the run's --max-per-group flag; the default is %d)"
+                           % DEFAULT_CAP)
+    assert "non-default" not in (default["coverage_note"] or "")
+    assert render_mod._grade_text(custom) == "%s (provisional)" % default["overall_grade"]
+    assert html_report._grade_badge(custom) == "%s (provisional)" % default["overall_grade"]
+    assert html_report._grade_badge(default) == default["overall_grade"]
+
+
+def test_both_human_outputs_say_why_a_custom_profile_letter_is_provisional():
+    with _target_with_files(GROUPS) as root:
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target=root, fail_on="high", timestamp=DEFAULT_TIMESTAMP,
+                                     review_type="repo", max_per_group=15),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=GROUPS)))
+    note = report["summary"]["coverage_note"]
+    assert report["summary"]["coverage_certified"] is True
+    assert "**Grade provisional:** " + note in render_mod.render_summary(report)
+    header = html_report._render_header(report)
+    assert "<div class='provisional-grade'>" in header and "group size of 15 files" in header
+    assert "NOT CERTIFIED" not in header
+
+
+def test_the_gate_and_coverage_certification_do_not_see_the_profile():
+    findings = [_agentic(location={"file": "app.py", "line_start": 3})]
+    for case in ((), findings):
+        with _target_with_files(GROUPS) as root:
+            default = _graded(root, cap=DEFAULT_CAP, findings=case)
+            custom = _graded(root, cap=15, findings=case)
+        assert default["gate"] == custom["gate"]
+        assert default["coverage_certified"] == custom["coverage_certified"]
+    assert default["gate"] == "FAIL"
+
+
+def test_a_custom_cap_alone_with_max_groups_unset_goes_provisional():
+    with _target_with_files(GROUPS) as root:
+        summary = _graded(root, cap=20, max_groups=None)
+    assert summary["overall_grade"] is None and summary["provisional_grade"]
+
+
+def test_a_config_max_groups_below_the_formula_ceiling_still_certifies_at_the_default_cap():
+    # Ruling (A): a review run never applies a max_groups ceiling (only setup does), so it is
+    # provenance in the basis, not part of the profile. Re-adding it needs a ruling.
+    with _target_with_files(GROUPS) as root:
+        summary = _graded(root, cap=DEFAULT_CAP, max_groups=4,
+                          config={"effective": {"max_groups": 4}})
+    assert summary["overall_grade"] and summary["provisional_grade"] is None
+    assert summary["health"]["basis"]["max_groups"] == 4
+
+
+def test_a_clamped_config_value_equal_to_the_default_certifies():
+    clamped = {"requested": {"max_per_group": 500}, "effective": {"max_per_group": DEFAULT_CAP},
+               "clamped": [{"key": "max_per_group", "requested": 500, "effective": DEFAULT_CAP}]}
+    run = report_mod.RunConfig.from_args(
+        _cli_args(repo=True), {"mode": "repo", "max_per_group": DEFAULT_CAP},
+        DEFAULT_TIMESTAMP, config=clamped)
+    assert health_basis.profile(run) == "default"
+    assert health_basis.custom_profile_note(run) is None
+    explicit = report_mod.RunConfig.from_args(
+        _cli_args(repo=True), {"mode": "repo", "max_per_group": DEFAULT_CAP}, DEFAULT_TIMESTAMP)
+    assert health_basis.custom_profile_note(explicit) is None
+
+
+def test_the_note_names_where_a_custom_cap_came_from():
+    by_config = report_mod.RunConfig.from_args(
+        _cli_args(repo=True), {"mode": "repo", "max_per_group": 20}, DEFAULT_TIMESTAMP,
+        config={"effective": {"max_per_group": 20}})
+    by_flag = report_mod.RunConfig.from_args(
+        _cli_args(repo=True), {"mode": "repo", "max_per_group": 30}, DEFAULT_TIMESTAMP,
+        config={"effective": {"max_per_group": 20}})
+    assert "20 files (set by the target's panopticon.yml settings;" in (
+        health_basis.custom_profile_note(by_config))
+    assert "30 files (set by the run's --max-per-group flag;" in (
+        health_basis.custom_profile_note(by_flag))
+
+
+@pytest.mark.parametrize("review_type", ["changes", "pr", "file", "directory", "group"])
+def test_delta_and_file_scoped_reviews_keep_their_letter_at_a_custom_cap(review_type):
+    with _target_with_files(GROUPS) as root:
+        summary = _graded(root, cap=15, review_type=review_type)
+    assert summary["provisional_grade"] is None
+    assert "non-default" not in (summary["coverage_note"] or "")
+
+
+def test_an_unrecorded_cap_keeps_the_letter():
+    with _target_with_files(GROUPS) as root:
+        summary = _graded(root, cap=None)
+    assert summary["overall_grade"] and summary["provisional_grade"] is None
+    assert summary["health"]["basis"]["profile"] == "unknown"
+
+
+def test_a_stored_report_without_the_profile_stamp_keeps_its_stored_letter():
+    with _target_with_files(GROUPS) as root:
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target=root, fail_on="high", timestamp=DEFAULT_TIMESTAMP,
+                                     review_type="repo", max_per_group=15),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=GROUPS)))
+    report["summary"]["health"]["basis"].pop("profile")
+    report["summary"]["overall_grade"], report["summary"]["provisional_grade"] = "D", None
+    assert validate_schema_mod.schema_errors(report) == []
+    assert "**Grade:** D " in render_mod.render_summary(report)
+    assert "Grade: D<" in html_report._render_header(report)

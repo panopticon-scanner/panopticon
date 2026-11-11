@@ -72,8 +72,9 @@ it is safe to run on a finished review), `--epss` (enrich CVE citations), `--gat
 reviews queue EVERY finding incl. tool claims -- a 25-file PR queued 108 advisors -- so size N ~ 2x
 the changed-file count unless you want the full sweep), `--max-per-group N` (files per review chunk
 at run time, default 48; a positive integer, pinned in the run-manifest on the first run so a resume
-never repartitions cells that are already done — `driver setup` takes the same flag for the
-setup-time cap, see Driver setup), `--base <ref|sha>` (explicit delta base for
+never repartitions cells that are already done; a full review at any other value reports its
+letter as provisional, since the group size changes how much a scan finds (#1495) — `driver
+setup` takes the same flag for the setup-time cap, see Driver setup), `--base <ref|sha>` (explicit delta base for
 `-c`/`--pr`/`--files`), `--diff-context N` (default 5; on-diff tolerance in lines),
 `--gate-scope {on-diff,all}` (default `on-diff` for delta reviews; scopes the gate to on-diff ×
 gate-eligible findings), `--include-fixtures` (keep tool findings under test-fixture corpora;

@@ -1304,6 +1304,15 @@
                   "type": "string",
                   "pattern": "^sha256:[0-9a-f]{64}$"
                 },
+                "profile": {
+                  "type": "string",
+                  "enum": [
+                    "default",
+                    "custom",
+                    "unknown"
+                  ],
+                  "description": "#1495: whether this run used the default scan profile (max_per_group equal to the default). A full review at a custom profile carries its letter in provisional_grade. Absent in reports that predate #1495."
+                },
                 "version": {"type": "string"},
                 "ocrdb_version": {"type": ["string", "null"]}
               }
