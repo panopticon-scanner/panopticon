@@ -13,6 +13,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.integrity_messages as integrity_messages
 import scripts.ocrdb as ocrdb
+import scripts.synth.grading as grading
 import scripts.synth.health_basis as health_basis
 from scripts import build_disclosure, safe_write, tool_cleanup
 
@@ -563,7 +564,7 @@ def _render_header(report):
     parts.append("<div class='health-basis'>%s</div>" % _escape(
         health_basis.rendered_note(health)))
     if summary.get("coverage_certified") is False:
-        note = summary.get("coverage_note") or "gate-relevant coverage did not complete"
+        note = summary.get("coverage_note") or grading.GATE_GAP_NOTE
         details = "".join(
             "<div class='integrity-detail'>%s</div>" % _escape(sentence)
             for sentence in integrity_messages.sinking_sentences(meta.get("integrity")))

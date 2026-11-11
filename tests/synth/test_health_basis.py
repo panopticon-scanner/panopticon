@@ -307,10 +307,10 @@ def test_a_clamped_config_value_equal_to_the_default_certifies():
         _cli_args(repo=True), {"mode": "repo", "max_per_group": DEFAULT_CAP},
         DEFAULT_TIMESTAMP, config=clamped)
     assert health_basis.profile(run) == "default"
-    assert health_basis.custom_profile_note(run) is None
+    assert health_basis.custom_profile_reason(run) is None
     explicit = report_mod.RunConfig.from_args(
         _cli_args(repo=True), {"mode": "repo", "max_per_group": DEFAULT_CAP}, DEFAULT_TIMESTAMP)
-    assert health_basis.custom_profile_note(explicit) is None
+    assert health_basis.custom_profile_reason(explicit) is None
 
 
 def test_the_note_names_where_a_custom_cap_came_from():
@@ -320,10 +320,12 @@ def test_the_note_names_where_a_custom_cap_came_from():
     by_flag = report_mod.RunConfig.from_args(
         _cli_args(repo=True), {"mode": "repo", "max_per_group": 30}, DEFAULT_TIMESTAMP,
         config={"effective": {"max_per_group": 20}})
-    assert "20 files (set by the target's panopticon.yml settings;" in (
-        health_basis.custom_profile_note(by_config))
+    assert ("20 files (set by max_per_group in the target's panopticon.yml, or a "
+            "--max-per-group flag of the same value; the default is %d)" % DEFAULT_CAP) in (
+        health_basis.custom_profile_reason(by_config))
     assert "30 files (set by the run's --max-per-group flag;" in (
-        health_basis.custom_profile_note(by_flag))
+        health_basis.custom_profile_reason(by_flag))
+    assert health_basis.custom_profile_reason(by_flag).endswith("in the same code.")
 
 
 @pytest.mark.parametrize("review_type", ["changes", "pr", "file", "directory", "group"])
@@ -351,5 +353,51 @@ def test_a_stored_report_without_the_profile_stamp_keeps_its_stored_letter():
     report["summary"]["health"]["basis"].pop("profile")
     report["summary"]["overall_grade"], report["summary"]["provisional_grade"] = "D", None
     assert validate_schema_mod.schema_errors(report) == []
-    assert "**Grade:** D " in render_mod.render_summary(report)
+    assert "**Grade:** D  **Risk:**" in render_mod.render_summary(report)
     assert "Grade: D<" in html_report._render_header(report)
+
+
+def _certified(panels_incomplete, custom):
+    import scripts.synth.grading as grading
+    return grading.certify("B", [], "high", panels_incomplete, [],
+                           custom_profile=health_basis.custom_profile_reason(custom))
+
+
+def _custom_run(cap=15):
+    return report_mod.RunConfig(target="t", fail_on="high", timestamp=DEFAULT_TIMESTAMP,
+                                review_type="repo", max_per_group=cap)
+
+
+def test_a_custom_cap_beside_a_low_value_panel_gap_keeps_both_reasons_once():
+    cert = _certified({"docs"}, _custom_run())
+    assert (cert["overall_grade"], cert["provisional_grade"], cert["gate"]) == (None, "B", "PASS")
+    note = cert["coverage_note"]
+    assert note.startswith("gate certified; grade provisional \u2014 low-value panel(s) "
+                           "incomplete: docs; this scan used a non-default group size of 15")
+    assert note.count("grade provisional") == 1
+
+
+def test_a_custom_cap_beside_a_gate_relevant_gap_keeps_the_gate_reason_first():
+    import scripts.synth.grading as grading
+    cert = _certified({"security"}, _custom_run())
+    assert (cert["provisional_grade"], cert["gate"], cert["coverage_certified"]) == (
+        "B", "INCONCLUSIVE", False)
+    assert cert["coverage_note"].startswith(
+        grading.GATE_GAP_NOTE + "; grade provisional: this scan used a non-default group size")
+    plain = grading.certify("B", [], "high", {"security"}, [])
+    assert plain["coverage_note"] is None          # unchanged without a custom cap
+    # and both human outputs show the gate reason, not the group size alone
+    with _target_with_files(GROUPS) as root:
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target=root, fail_on="high", timestamp=DEFAULT_TIMESTAMP,
+                                     review_type="repo", max_per_group=15),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=GROUPS)))
+    for key in ("overall_grade", "provisional_grade", "gate", "coverage_certified",
+                "coverage_note"):
+        report["summary"][key] = cert[key]
+    header = html_report._render_header(report)
+    assert "NOT CERTIFIED &mdash; " + grading.GATE_GAP_NOTE + "; grade provisional: " in header
+    terminal = render_mod.render_summary(report)
+    assert "**Coverage:** NOT CERTIFIED" in terminal and grading.GATE_GAP_NOTE in terminal
+    assert "group size of 15 files" in terminal

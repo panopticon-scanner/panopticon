@@ -1311,7 +1311,7 @@
                     "custom",
                     "unknown"
                   ],
-                  "description": "#1495: whether this run used the default scan profile (max_per_group equal to the default). A full review at a custom profile carries its letter in provisional_grade. Absent in reports that predate #1495."
+                  "description": "#1495: whether this run used the default scan profile (max_per_group equal to the default). A full review at a custom profile carries its letter in provisional_grade. A delta or file-scoped review stamps its profile too but keeps its letter (out of scope for #1495). Absent in reports that predate #1495."
                 },
                 "version": {"type": "string"},
                 "ocrdb_version": {"type": ["string", "null"]}

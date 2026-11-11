@@ -93,6 +93,11 @@ _SUPPRESSED_DRIVER_EFFECT = ("paths under a suppressed driver compare as "
 NO_SCA_COVERAGE_NOTE = "no SCA tool produced output on an applicable tree"
 
 
+# What NOT CERTIFIED says when a gate-relevant gap names no reason of its own.
+GATE_GAP_NOTE = "gate-relevant coverage did not complete"
+PROVISIONAL_PREFIX = "grade provisional: "
+
+
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
             integrity_ok=True, verdicts_unloadable=0, verdicts_unanswered=0,
             missing_floor=0, tools_manifest_invalid=None, tools_network_excluded=None,
@@ -199,7 +204,13 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         note = ("gate certified; grade provisional — low-value panel(s) incomplete: %s"
                 % ", ".join(tail))
     if custom_profile:
-        note = "; ".join(filter(None, (note, custom_profile)))
+        # #1495 review: the profile reason sits BESIDE any coverage reason, never in its place.
+        # A gate-relevant gap with no named reason gets the generic one here, or the profile text
+        # would become the whole NOT CERTIFIED reason and blame the gate on the group size.
+        lead = note if note is not None or not gate_relevant_gap else GATE_GAP_NOTE
+        reason = (custom_profile if lead and PROVISIONAL_PREFIX.rstrip(": ") in lead
+                  else PROVISIONAL_PREFIX + custom_profile)
+        note = "; ".join(filter(None, (lead, reason)))
     if dependency_audit_gap:
         note = "; ".join(filter(None, (note, NO_SCA_COVERAGE_NOTE)))
     if delta_zero_hunks:
@@ -665,7 +676,7 @@ def grade_report(run, resolved, reconciled, delta=None):
                    tools_file_partial=reconciled.coverage.get("tools_file_partial"),
                    delta_zero_hunks=delta_zero_hunks,
                    dependency_audit_gap=getattr(reconciled, "dependency_audit_gap", False),
-                   custom_profile=health_basis.custom_profile_note(run))
+                   custom_profile=health_basis.custom_profile_reason(run))
     summary = {
         "overall_grade": cert["overall_grade"],
         "provisional_grade": cert["provisional_grade"],

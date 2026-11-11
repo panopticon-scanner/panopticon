@@ -72,10 +72,14 @@ def _cell_count(audit, key):
 # Compared on the EFFECTIVE value (discovery's stamp, after config clamps and flag precedence),
 # so an explicit `--max-per-group 48` or a config at 48 is the default profile.
 GRADED_MAX_PER_GROUP = discovery.DEFAULT_MAX_PER_GROUP
-PROFILE_NOTE = ("grade provisional: this scan used a non-default group size of %d files (%s; "
-                "the default is %d). A letter is certified only at the default scan settings, "
-                "because the group size changes how much a scan finds in the same code")
-_CAP_SOURCE = {"config": "set by the target's %s settings" % repo_config.CONFIG_NAMES[0],
+PROFILE_REASON = ("this scan used a non-default group size of %d files (%s; the default is %d). "
+                  "A letter is certified only at the default scan settings, because the group "
+                  "size changes how much a scan finds in the same code.")
+# The run manifest folds a flag and the config into one `max_per_group` (driver._flags), so when
+# the clamped config record holds the effective value, a flag of that same value can't be told
+# apart from it; the wording says so.
+_CAP_SOURCE = {"config": ("set by max_per_group in the target's %s, or a --max-per-group flag of "
+                          "the same value" % repo_config.CONFIG_NAMES[0]),
                "flag": "set by the run's --max-per-group flag"}
 
 
@@ -98,14 +102,15 @@ def profile(run):
     return "default" if cap == GRADED_MAX_PER_GROUP else "custom"
 
 
-def custom_profile_note(run):
-    """The provisional-grade reason for a full review at a non-default cap, else None.
+def custom_profile_reason(run):
+    """Why a full review at a non-default cap carries a provisional letter, else None.
+    `grading.certify` composes it with any coverage reason into `coverage_note`.
 
     Delta and file-scoped reviews keep their letter behaviour (#1495 ruling Q1), and an unknown
     cap is left alone: nothing measured says it differs."""
     if getattr(run, "review_type", None) != "repo" or profile(run) != "custom":
         return None
-    return PROFILE_NOTE % (run.max_per_group, _CAP_SOURCE[cap_source(run)], GRADED_MAX_PER_GROUP)
+    return PROFILE_REASON % (run.max_per_group, _CAP_SOURCE[cap_source(run)], GRADED_MAX_PER_GROUP)
 
 
 def build(run, reconciled, version, ocrdb_version):
