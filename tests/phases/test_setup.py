@@ -2013,7 +2013,7 @@ class TestSetupConvertsAStalledEngine(unittest.TestCase):
                 name="scan", kind="deterministic", done=lambda r, m: False,
                 execute=lambda r, m: engine.PhaseResult(kind="advanced"))
             args = mock.Mock(target=root, host="claude", reset=False,
-                             max_per_group=None, max_groups=None)
+                             max_per_group=None, max_groups=None, session_dir=root)
             status = setup.run_setup_flow(args, phases=(stuck,))
         self.assertEqual(status["status"], "error", status)
         self.assertIn("without satisfying its done() predicate",

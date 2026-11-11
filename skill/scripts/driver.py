@@ -513,7 +513,8 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     # an out-of-tree hard link all halt here, on every tree this run writes to.
     try:
         first = first_contact.assess(review_root, "run-manifest.json", reset=args.reset,
-                                     host=args.host, other_roots=(args.target,) if args.pr else ())
+                                     host=args.host, other_roots=(args.target,) if args.pr else (),
+                                     session_dir=first_contact.session_root(args))
     except first_contact.FirstContactHalt as exc:
         if worktree:
             diff_map.release_worktree(worktree, repo=args.target)

@@ -104,8 +104,7 @@ def resolve(args):
     # write-manifest, precisely so a resume that omits --session-dir legitimately falls back to
     # cwd). Re-deriving it from run_manifest.load_manifest(...) here would silently resolve the
     # OPERATOR's real session root in session mode.
-    session_root = (os.path.abspath(args.session_dir) if getattr(args, "session_dir", None)
-                    else os.getcwd())
+    session_root = first_contact.session_root(args)
     # The OUTGOING dispatch request, read BEFORE `_first_run` rewrites it (R-P6-6):
     # reading it afterwards would see the very request this same invocation just
     # produced and disarm nothing. Read in every mode -- it is one JSON load -- so that

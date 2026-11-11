@@ -284,6 +284,57 @@ def bind(review_root, manifest):
     return manifest
 
 
+def session_root(args):
+    """Where session-mode guards keep their state (#3532): `--session-dir`,
+    else cwd. `write_guard_hook.DEFAULT_ALLOWLIST_PATH` and
+    `read_guard_hook.DEFAULT_SCOPE_PATH` sit under it."""
+    given = getattr(args, "session_dir", None)
+    return os.path.abspath(given) if given else os.getcwd()
+
+
+def _assess_session_root(root, assessed, *, reset=False, runner=None):
+    """#3532: H1-H3 on the session root, unless its realpath is one of the
+    `assessed` roots (cwd == target is assessed once). Read-only: nothing is
+    written to an absent or empty `.panopticon/` there, because cwd is the
+    default and most runs never arm a guard in it. `mark_session_root` marks
+    it where the session guards are about to write. Kimi's and agy's hooks
+    read the scope file without its row stamp, so for those families this
+    halt is the only stop on a pre-planted one. `reset` moves an unverified
+    one aside, as it does for the review root."""
+    if root is None or _among(root, assessed):
+        return
+    if reset and not _nothing_to_trust(os.path.join(root, PANO)):
+        assess_artifacts(root, reset=True, runner=runner)
+        return
+    assess_artifacts(root, runner=runner, read_only=True)
+
+
+def _among(root, roots):
+    return any(os.path.realpath(root) == os.path.realpath(r) for r in roots)
+
+
+def contact_roots(args, review_root):
+    """The roots first contact checks before the session root: the operator's
+    checkout under --pr, then the review root. `driver loop` hands the same
+    tuple to its session guards, so the mark skips them as the contact does."""
+    return ((args.target,) if getattr(args, "pr", None) else ()) + (review_root,)
+
+
+def mark_session_root(root, assessed=(), runner=None):
+    """Mark the session root ours before the session guards first write their
+    state there (#3532), so the next invocation's read-only contact verifies
+    it rather than halting on our own allowlist. Skipped when its realpath is
+    one of the `assessed` roots: that root's own contact covers it, and its
+    owner.json names the root as the contact spelled it, not as --session-dir
+    does, so re-assessing it here would halt on our own run state."""
+    if _among(root, assessed):
+        return
+    if _nothing_to_trust(os.path.join(root, PANO)):
+        _mark_or_reassess(root, runner)
+    else:
+        assess_artifacts(root, runner=runner, read_only=True)
+
+
 def assess_loop(args, resolved):
     """`driver loop`'s first contact (#3271 B2), in `driver loop` and `driver
     loop --setup` alike: H1-H3 on the review root and, under --pr, on the
@@ -294,8 +345,10 @@ def assess_loop(args, resolved):
     review_root, worktree = resolved[0], resolved[1]
     reset = getattr(args, "reset", False)
     try:
-        for root in ((args.target,) if getattr(args, "pr", None) else ()) + (review_root,):
+        roots = contact_roots(args, review_root)
+        for root in roots:
             assess_artifacts(root, reset=reset)
+        _assess_session_root(session_root(args), roots, reset=reset)
     except FirstContactHalt:
         if worktree:
             import scripts.diff_map as diff_map
@@ -378,7 +431,7 @@ def assess_standalone(cwd, read_paths, write_paths=(), *, root_hints=(), runner=
 
 
 def assess(review_root, manifest_name, *, reset=False, host=None, other_roots=(), runner=None,
-           walk_every_time=False):
+           walk_every_time=False, session_dir=None):
     """The whole first contact for the run whose manifest is `manifest_name`:
     H1-H3 on `review_root` (and on each of `other_roots` -- the operator's own
     checkout under --pr, which the run copies its report into), then, unless
@@ -387,10 +440,16 @@ def assess(review_root, manifest_name, *, reset=False, host=None, other_roots=()
 
     `walk_every_time` (#3271 B1, ruling G-b) is `driver setup`'s: its scan
     holds the one directory grant over the whole tree, so the H4 walk runs on
-    every setup invocation, a resume included, not once per run."""
+    every setup invocation, a resume included, not once per run.
+
+    `session_dir` is the session root (`session_root(args)`, #3532), where
+    session-mode guards keep their state: H1-H3 read-only, after the other
+    roots, and skipped when it is one of them."""
     for root in other_roots:
         assess_artifacts(root, reset=reset, runner=runner)
     ours = assess_artifacts(review_root, reset=reset, runner=runner)
+    _assess_session_root(session_dir, tuple(other_roots) + (review_root,), reset=reset,
+                         runner=runner)
     prior = ours.get(manifest_name)
     resuming = isinstance(prior, dict) and isinstance(prior.get("first_contact"), dict) and not reset
     if resuming and not walk_every_time:
