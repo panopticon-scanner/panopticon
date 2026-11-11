@@ -94,6 +94,17 @@ _PEM_END = r"-----END[A-Z ]*PRIVATE KEY-----"
 _ANY_BEGIN = "-----BEGIN"
 _PEM_MARKER = "[REDACTED_PRIVATE_KEY]"
 
+
+def _mask_gemini_api_key(match: re.Match[str]) -> str:
+    prefix = match.group(1)
+    if match.group(2) is not None:
+        return f'{prefix}"[REDACTED_GOOGLE_KEY]"'
+    if match.group(3) is not None:
+        return f"{prefix}'[REDACTED_GOOGLE_KEY]'"
+    lead_quote = match.group(4) or ""
+    return f"{prefix}{lead_quote}[REDACTED_GOOGLE_KEY]"
+
+
 _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = [
     (re.compile(r"(?:ghp|gho|ghu|ghs|ghr|github_pat)_[A-Za-z0-9_]{16,}"),
      "[REDACTED_TOKEN]"),                                   # GitHub PAT / OAuth
@@ -106,7 +117,10 @@ _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = 
     (re.compile(r"AKIA[0-9A-Z]{16}"), "[REDACTED_AWS_KEY]"),   # AWS access-key id
     (re.compile(r"xox[baprs]-[A-Za-z0-9-]{10,}"), "[REDACTED_SLACK_TOKEN]"),
     (re.compile(r"AIza[0-9A-Za-z_-]{35}"), "[REDACTED_GOOGLE_KEY]"),  # Google API
-    (re.compile(r"(GEMINI_API_KEY=)[^\s\"',;)}\]]+"), r"\1[REDACTED_GOOGLE_KEY]"),
+    (re.compile(
+        r"(GEMINI_API_KEY[\"']?\s*[=:]\s*)"
+        r"(?:\"([^\r\n\",;)}\]]+)\"|'([^\r\n',;)}\]]+)'|([\"']?)([^\s\"',;)}\]]+))"
+    ), _mask_gemini_api_key),
     (re.compile(r"xapp-[0-9]-[A-Za-z0-9-]{10,}"), "[REDACTED_SLACK_TOKEN]"),
     (re.compile(r"https://hooks\.slack\.com/services/"
                 + r"[A-Za-z0-9]{8,}/[A-Za-z0-9]{8,}/[A-Za-z0-9]{20,}"),

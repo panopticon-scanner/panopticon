@@ -27,6 +27,11 @@ on:
   schedule:
     - cron: "0 4 * * *"      # 04:00 UTC — ahead of the 06:00 tools-image publish
   workflow_dispatch:
+    inputs:
+      full_rebuild:
+        description: "Ignore the seed and download the whole NVD feed (#3417)"
+        type: boolean
+        default: false
   push:
     branches: [main]
     paths:
@@ -86,78 +91,23 @@ jobs:
           tag="${REGISTRY}/${NVD_IMAGE}:dc-${DC_VERSION}"
           .github/scripts/nvd-cache-decision.sh "$EVENT_NAME" "$tag" >> "$GITHUB_OUTPUT"
 
-      - name: Sync NVD database (keyed)
+      # The seeded sync (#3417) reads the last published data image with
+      # `docker buildx imagetools`, so Buildx comes first.
+      - name: Set up Docker Buildx
+        if: steps.decide.outputs.sync == 'true'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # #3417: the sync, its seed choice and every publish check (#2508 deadline,
+      # #3224 digest-then-run, #3251 last.modified freshness) live in the script,
+      # which has its own tests. It leaves a verified ./odc-data or fails the step.
+      - name: Sync NVD database (keyed, seeded)
         if: steps.decide.outputs.sync == 'true'
         env:
           NVD_API_KEY: ${{ secrets.NVD_API_KEY }}
           DC_VERSION: ${{ steps.dc.outputs.version }}
           DC_SHA256: ${{ steps.dc.outputs.sha256 }}
-        run: |
-          # #3224: `-e` too. Without it a failed download or a digest mismatch
-          # did not stop the step, and the unverified zip ran with the API key
-          # in its environment. The sync's own status is still captured below:
-          # `|| rc=$?` is a list `-e` does not abort.
-          set -euo pipefail
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends default-jre-headless unzip
-          curl -sfL --connect-timeout 5 --max-time 180 \
-            "https://github.com/jeremylong/DependencyCheck/releases/download/v${DC_VERSION}/dependency-check-${DC_VERSION}-release.zip" \
-            -o dc.zip
-          echo "${DC_SHA256}  dc.zip" | sha256sum -c -
-          unzip -q dc.zip     # -> ./dependency-check/
-          mkdir -p odc-data
-          # #2508 (run-14 OPS-2602119269): two classes of non-zero status. A
-          # per-record error is tolerated and the DB is verified below; a sync
-          # KILLED by `timeout` (124, or 137 after SIGKILL) left the database
-          # mid-write, and a partial file can clear the size floor, so that
-          # status fails the step instead of publishing.
-          rc=0
-          timeout 3000 ./dependency-check/bin/dependency-check.sh --updateonly \
-            --data odc-data ${NVD_API_KEY:+--nvdApiKey "$NVD_API_KEY"} || rc=$?
-          case "$rc" in
-            0) ;;
-            124|137) echo "::error::updateonly was killed by the 3000 s deadline (rc=$rc); not publishing a partial DB"; exit 1 ;;
-            *) echo "::warning::updateonly returned non-zero (rc=$rc; per-record errors are tolerated; verifying the DB below)" ;;
-          esac
-          chmod -R a+rX odc-data
-          test -f odc-data/odc.mv.db || { echo "::error::NVD database (odc.mv.db) was not produced"; exit 1; }
-          size="$(stat -c%s odc-data/odc.mv.db)"
-          echo "odc.mv.db: $((size / 1024 / 1024)) MiB"
-          [ "$size" -gt 104857600 ] || { echo "::error::NVD DB only $((size / 1024 / 1024)) MiB — sync likely incomplete"; exit 1; }
-          # #3251: the size floor shows a database exists, not that this update finished.
-          # dependency-check saves nvd.api.last.modified only after a whole update is
-          # processed, so a failed sync over this empty directory leaves it unset, and an
-          # old value means the feed stopped moving. Either way, don't publish. The login
-          # is the tool's own public default, read from its jar.
-          login_error="::error::could not read the database login from dependency-check's jar"
-          props="$(unzip -p dependency-check/lib/dependency-check-core-*.jar dependencycheck.properties)" \
-            || { echo "$login_error"; exit 1; }
-          db_user="$(printf '%s\n' "$props" | grep '^data\.user=')" || { echo "$login_error"; exit 1; }
-          db_user="${db_user#data.user=}"
-          db_pass="$(printf '%s\n' "$props" | grep '^data\.password=')" || { echo "$login_error"; exit 1; }
-          db_pass="${db_pass#data.password=}"
-          row="$(java -cp "$(echo dependency-check/lib/h2-*.jar)" org.h2.tools.Shell \
-            -url "jdbc:h2:file:./odc-data/odc;ACCESS_MODE_DATA=r" -user "$db_user" -password "$db_pass" \
-            -sql "SELECT * FROM properties WHERE id='nvd.api.last.modified'")" \
-            || { echo "::error::could not read nvd.api.last.modified from the NVD database"; exit 1; }
-          case "$row" in
-            *"nvd.api.last.modified | "*) ;;
-            *) echo "::error::NVD DB has no nvd.api.last.modified — the update did not finish; not publishing"; exit 1 ;;
-          esac
-          modified="${row##*nvd.api.last.modified | }"
-          modified="${modified%%[[:space:]]*}"
-          [ -n "$modified" ] || { echo "::error::NVD DB has an empty nvd.api.last.modified — not publishing"; exit 1; }
-          modified_at="$(date -u -d "$modified" +%s)" \
-            || { echo "::error::nvd.api.last.modified is not a timestamp: $modified"; exit 1; }
-          age_seconds="$(( $(date -u +%s) - modified_at ))"
-          echo "nvd.api.last.modified: $modified ($(( age_seconds / 3600 )) h old)"
-          # An hour of clock skew is allowed; further ahead than that, the value can't be right.
-          [ "$age_seconds" -ge -3600 ] || { echo "::error::nvd.api.last.modified is in the future: $modified"; exit 1; }
-          [ "$age_seconds" -le 259200 ] || { echo "::error::NVD DB is over 72 h old — not publishing stale data"; exit 1; }
-
-      - name: Set up Docker Buildx
-        if: steps.decide.outputs.sync == 'true'
-        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+          NVD_FULL_REBUILD: ${{ inputs.full_rebuild && '1' || '' }}
+        run: .github/scripts/nvd-cache-sync.sh
 
       - name: Build and push the NVD data image (multi-arch, files only)
         if: steps.decide.outputs.sync == 'true'

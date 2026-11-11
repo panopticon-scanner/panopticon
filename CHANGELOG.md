@@ -3,6 +3,19 @@
 ## Unreleased
 
 - **Google Gemini CLI (`gemini`, `@google/gemini-cli`) is restored as a 5/5 first-class host (#3494, restoring the row #1621 had retired).** `HOSTS["gemini"]` is driver-selectable with `self_write_delivery = True` and `self_write_requires_tool_policy = True`, backed by `skill/scripts/runners/gemini.py`, `skill/scripts/runners/gemini_home.py`, `skill/scripts/gemini_guard_hook.py` and five capability probes in `skill/scripts/probes/gemini.py` (`gemini-shell-surface`, `gemini-read-guard-armed`, `gemini-write-guard-armed`, `gemini-model-bound`, `gemini-usage-envelope`). Each headless run refuses at launch time if the system config dir contains `system-defaults.json`, `settings.json`, or `policies/` (`gemini-shell-surface` and `Runner.command()`), scrubs inherited `GEMINI_*`/`GEMINI_CLI_*` env vars (preserving only `ALLOWED_GEMINI_ENV_KEYS`), escapes `@` tokens in `-p` as `\@` so `handleAtCommand` cannot invoke `ReadManyFilesTool`, and builds an isolated per-run home (`GEMINI_CLI_HOME`) outside `review_root` and outside `.panopticon` that copies only `oauth_creds.json` and `google_accounts.json` (`0600`, `O_NOFOLLOW | O_NONBLOCK`, `S_ISREG`), writes `<run_home>/.gemini/settings.json` locking user-level MCP (`mcpServers = {}`, `mcp.allowed = []`), skills (`skills.enabled = false`), subagents (`experimental.enableAgents = false`), plan mode (`general.plan.enabled = false`), folder trust (`security.folderTrust.enabled = false`) and startup include-dir memory (`context.loadMemoryFromIncludeDirectories = false`, omitting `context.fileName` because `setGeminiMdFilename` is additive), seeds a minimal Git ceiling at `<run_home>/workspace/.git` (`cwd` on every launch), emits TOML Tier 5 `--admin-policy` role shells to `~/.gemini/cli-agents` (allow `priority = 900`, explicit deny `priority = 950`, catch-all `toolName = "*"` deny `priority = 100`, and MCP wildcard deny `priority = 950`, coexisting with `agy`, dropping `write_file` to read-only `unenforced.toml` whenever `tool_policy_enforced` is not `proven`), and arms a single wildcard `BeforeTool` hook (`"matcher": "*"`) enforcing a strict tool-name and per-tool `TOOL_INPUT_KEYS` parameter allowlist, `PANOPTICON_ENTRY_ID` binding, authoritative `argv` policy paths, explicit absolute paths, `include_pattern` / git-pathspec-magic refusal, per-entry read scope and v2 write allowlist grants.
+- **The NVD cache workflow runs the seeded sync script; the weekly full-tree scan reports instead of failing (#3417 wiring half, owner 2026-11-10).**
+  - `nvd-cache.yml` calls `.github/scripts/nvd-cache-sync.sh` (merged in #3523) instead of its inline sync,
+    sets up Buildx before it (the seed is read with `docker buildx imagetools`), and gains a
+    `full_rebuild` dispatch input for a forced full download.
+  - The weekly `strict-full-tree` route counts accepted findings too, so it was red every week. Its gate
+    step now reports: findings give a warning and a summary line, and only a gate that could not
+    evaluate the captures (exit 2) fails the run. The nightly `main-audit` and the PR gate are unchanged.
+  - The three code-scanning alerts #3523 brought in are fixed in the code: the optional
+    `--nvdApiKey` argument is spelled out in two launches instead of an unquoted `${VAR:+...}`, and
+    `devtools/nvd_cache_compare.py`'s fixed `java` call carries a `# nosec` with its reason.
+  - Four workflow comments still named `tests/test_workflow_pins.py`, retired in #3527. They now name
+    `tests/test_action_pins.py`, or say that the runtime `id -u` check is the whole proof of the
+    container user, since no file test pins the `--user` flag any more.
 - **The replay tests no longer leak `sys.path`; pytest drops `skill/scripts` (#3522, part of #1516).**
   `devtools/replay_report.replay()` installs a checkout's `skill/` on `sys.path` in the calling
   process, and `tests/test_replay_report.py` called it in-process with nothing to put the list back,
@@ -10,6 +23,14 @@
   bare import stayed green on main until #3521. An autouse fixture now hands each test there a copy
   of `sys.path`. Pytest's `pythonpath` drops `skill/scripts`: since #3505 nothing imports a skill
   module by its bare name, and the entry only let a new bare import pass in some test orders.
+- **Dependabot's five tools-closure bumps and the gate's pip bump, re-resolved (supersedes #3524,
+  #3525).**
+  - anyio 4.15.1 -> 4.16.0; filelock 4.2.4 -> 4.2.7; pip 26.2.2 -> 26.3 (in both
+    `requirements-tools.txt` and `.github/requirements-gate.txt`); platformdirs 4.14.0 -> 4.14.3;
+    python-multipart 0.0.32 -> 0.0.33.
+  - The closure was re-resolved with uv for Python 3.12 on both linux targets, and nothing else
+    moved. The digests were written by `bump_pins.py`, wheels only: Dependabot had written sdist
+    hashes, which failed `bump_pins.py requirements --check` in lint.
 - **The NVD cache sync seeds from yesterday's database (#3417, script half).** The keyed sync
   moves into `.github/scripts/nvd-cache-sync.sh` and starts from the last published
   `panopticon-tools-nvd` image, pulled by digest from our own registry, so a normal day downloads

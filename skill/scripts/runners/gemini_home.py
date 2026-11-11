@@ -331,19 +331,30 @@ def ledger_model_reroute(ledger_path, bound_by_role=None):
     `MODEL_ALIASES` and is NOT AMONG the envelope's `stats.models` keys
     (`rec['models']` keys, falling back to `rec['model']`). Old ledger rows
     with no `requested_model` are skipped so a profile or `--model` change
-    never produces a false `REFUTED`. Returns `(False, detail)` on a concrete
-    reroute, `(None, detail)` when only alias bindings were recorded, or
-    `(True, 'ok')`."""
+    never produces a false `REFUTED`. Malformed JSON lines and `ok` rows with
+    `requested_model` but no reported model do not hide subsequent reroutes
+    and return `(None, detail)` (`UNKNOWN`) if no concrete reroute is found.
+    Returns `(False, detail)` on a concrete reroute, `(None, detail)` when
+    only alias/unreported/malformed rows were recorded, or `(True, 'ok')`."""
     if not ledger_path or not os.path.isfile(ledger_path):
         return True, "no ledger"
     saw_alias = False
+    unknown_reason = None
     try:
         with open(ledger_path, encoding="utf-8") as fh:
             for idx, raw in enumerate(fh, 1):
                 line = raw.strip()
                 if not line:
                     continue
-                rec = json.loads(line)
+                try:
+                    rec = json.loads(line)
+                except ValueError:
+                    if unknown_reason is None:
+                        unknown_reason = (
+                            "dispatch-ledger.jsonl contains malformed JSON at line %d"
+                            % idx
+                        )
+                    continue
                 if not isinstance(rec, dict) or rec.get("host") != "gemini":
                     continue
                 requested = rec.get("requested_model")
@@ -358,10 +369,17 @@ def ledger_model_reroute(ledger_path, bound_by_role=None):
                     reported = {rec["model"].strip()}
                 else:
                     reported = set()
-                if not reported:
-                    continue
                 if requested in MODEL_ALIASES:
                     saw_alias = True
+                    continue
+                if not reported:
+                    if rec.get("ok") is not False and unknown_reason is None:
+                        entry_id = rec.get("entry_id") or rec.get("id") or ("line-%d" % idx)
+                        unknown_reason = (
+                            "dispatch-ledger.jsonl entry %r (line %d) bound model %r, "
+                            "but the envelope reported no model"
+                            % (entry_id, idx, requested)
+                        )
                     continue
                 if requested not in reported:
                     entry_id = rec.get("entry_id") or rec.get("id") or ("line-%d" % idx)
@@ -371,8 +389,10 @@ def ledger_model_reroute(ledger_path, bound_by_role=None):
                         "but the envelope reported %r (silent model reroute)"
                         % (entry_id, idx, requested, actual_display)
                     )
-    except (OSError, ValueError):
-        pass
+    except OSError as exc:
+        return None, "cannot read ledger %s: %s" % (ledger_path, exc)
+    if unknown_reason is not None:
+        return None, unknown_reason
     if saw_alias:
         return None, (
             "dispatch-ledger.jsonl entry bound a gemini model alias (%s), "

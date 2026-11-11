@@ -612,6 +612,81 @@ class TestGeminiModelBoundProbe(unittest.TestCase):
         self.assertEqual(hosts.PROVEN, state, detail)
         self.assertEqual(gemini_probes.GEMINI_MODEL_BOUND, by)
 
+    def test_carbon_reroute_and_malformed_ledger_line_do_not_fail_open(self):
+        with tempfile.TemporaryDirectory() as d:
+            _emit_gemini_shells(d)
+            settings = os.path.join(d, "host-settings.json")
+            ledger_path = os.path.join(d, runners_base.LEDGER_FILE)
+            # 1. Carbon binding where envelope reports a different model -> REFUTED.
+            with open(ledger_path, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "entry_id": "review-Core-SEC",
+                    "host": "gemini",
+                    "checkpoint": "review",
+                    "requested_model": "gemini-4-carbon",
+                    "model": "gemini-3.6-flash",
+                    "models": {"gemini-3.6-flash": {"tokens": {"total": 50}}},
+                    "ok": True,
+                }) + "\n")
+            state, by, detail = gemini_probes.probe_gemini_model_bound(
+                "gemini", registration_dir=d, settings_path=settings,
+                runner=self._help_runner())
+            self.assertEqual(hosts.REFUTED, state, detail)
+            self.assertEqual(gemini_probes.GEMINI_MODEL_BOUND, by)
+            self.assertIn("gemini-4-carbon", detail)
+            self.assertIn("gemini-3.6-flash", detail)
+
+            # 2. Malformed first line followed by a real carbon->other reroute -> REFUTED.
+            with open(ledger_path, "w", encoding="utf-8") as fh:
+                fh.write("{malformed-json-line\n")
+                fh.write(json.dumps({
+                    "entry_id": "review-Core-COD",
+                    "host": "gemini",
+                    "checkpoint": "review",
+                    "requested_model": "gemini-4-carbon",
+                    "model": "gemini-3.5-flash-lite",
+                    "ok": True,
+                }) + "\n")
+            state_mal_reroute, _by, detail_mal_reroute = gemini_probes.probe_gemini_model_bound(
+                "gemini", registration_dir=d, settings_path=settings,
+                runner=self._help_runner())
+            self.assertEqual(hosts.REFUTED, state_mal_reroute, detail_mal_reroute)
+            self.assertIn("gemini-4-carbon", detail_mal_reroute)
+            self.assertIn("gemini-3.5-flash-lite", detail_mal_reroute)
+
+            # 3. Malformed line with no subsequent reroute -> UNKNOWN (not PROVEN).
+            with open(ledger_path, "w", encoding="utf-8") as fh:
+                fh.write("{malformed-json-line\n")
+                fh.write(json.dumps({
+                    "entry_id": "review-Core-COD",
+                    "host": "gemini",
+                    "checkpoint": "review",
+                    "requested_model": "gemini-4-carbon",
+                    "model": "gemini-4-carbon",
+                    "ok": True,
+                }) + "\n")
+            state_mal_only, _by, detail_mal_only = gemini_probes.probe_gemini_model_bound(
+                "gemini", registration_dir=d, settings_path=settings,
+                runner=self._help_runner())
+            self.assertEqual(hosts.UNKNOWN, state_mal_only, detail_mal_only)
+            self.assertIn("malformed JSON at line 1", detail_mal_only)
+
+            # 4. Row with requested_model and ok=True but no reported model -> UNKNOWN.
+            with open(ledger_path, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "entry_id": "review-Core-COD",
+                    "host": "gemini",
+                    "checkpoint": "review",
+                    "requested_model": "gemini-4-carbon",
+                    "model": None,
+                    "ok": True,
+                }) + "\n")
+            state_unrep, _by, detail_unrep = gemini_probes.probe_gemini_model_bound(
+                "gemini", registration_dir=d, settings_path=settings,
+                runner=self._help_runner())
+            self.assertEqual(hosts.UNKNOWN, state_unrep, detail_unrep)
+            self.assertIn("reported no model", detail_unrep)
+
     def test_alias_bindings_are_not_checkable_and_return_unknown_not_refuted(self):
         for alias in ("auto", "pro", "flash", "flash-lite", "auto-gemini-3"):
             with self.subTest(alias=alias), tempfile.TemporaryDirectory() as d:
