@@ -457,10 +457,10 @@ def probe_gemini_write_guard(host, *, matcher=gemini_home.HOOK_MATCHER):
             return hook_err
 
         bound_env = {"PANOPTICON_ENTRY_ID": "writer-1", gemini_guard_hook.ENV_DENIAL_LOG: denial_log}
-        secret_content = "SUPER_SECRET_FINDINGS_BODY_DO_NOT_LOG"
+        canary_body = "CANARY_FINDINGS_BODY_DO_NOT_LOG"
 
         def _wcall(path, name="write_file", extra=None):
-            args = {"file_path": path} if name != "write_file" else {"file_path": path, "content": secret_content}
+            args = {"file_path": path} if name != "write_file" else {"file_path": path, "content": canary_body}
             if extra:
                 args.update(extra)
             return {"tool_name": name, "tool_input": args}
@@ -490,7 +490,7 @@ def probe_gemini_write_guard(host, *, matcher=gemini_home.HOOK_MATCHER):
 
         if os.path.isfile(denial_log):
             with open(denial_log, encoding="utf-8") as fh:
-                if secret_content in fh.read():
+                if canary_body in fh.read():
                     return (hosts.REFUTED, GEMINI_WRITE_GUARD_ARMED, "write guard leaked write_file `content` into denial log")
 
         total = 1 + len(deny_cases)

@@ -119,7 +119,7 @@ _PATTERNS: list[tuple[re.Pattern[str], str | Callable[[re.Match[str]], str]]] = 
     (re.compile(r"AIza[0-9A-Za-z_-]{35}"), "[REDACTED_GOOGLE_KEY]"),  # Google API
     (re.compile(
         r"(GEMINI_API_KEY[\"']?\s*[=:]\s*)"
-        r"(?:\"([^\r\n\",;)}\]]+)\"|'([^\r\n',;)}\]]+)'|([\"']?)([^\s\"',;)}\]]+))"
+        + r"(?:\"([^\r\n\",;)}\]]+)\"|'([^\r\n',;)}\]]+)'|([\"']?)([^\s\"',;)}\]]+))"
     ), _mask_gemini_env),
     (re.compile(r"xapp-[0-9]-[A-Za-z0-9-]{10,}"), "[REDACTED_SLACK_TOKEN]"),
     (re.compile(r"https://hooks\.slack\.com/services/"
