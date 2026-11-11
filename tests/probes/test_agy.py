@@ -494,6 +494,7 @@ class TestAgyModelBoundProbe(unittest.TestCase):
         self.assertEqual(hosts.PROVEN, state, detail)
         self.assertIn("gemini-4-carbon", detail)
         self.assertIn("gemini-3.8-flash-medium", detail)
+        self.assertIn(agy_runner.NO_ANSWERING_MODEL, detail)        # #3550
         self.assertFalse(any(c[-1] == "/effort" or "--effort" in c for c in seen))
 
     def test_a_failed_effort_readback_refutes(self):
@@ -633,6 +634,7 @@ class TestAgyUsageEnvelopeProbe(unittest.TestCase):
                 "agy", settings_path=settings, runner=self._help_runner())
             self.assertEqual(hosts.PROVEN, state, detail)
             self.assertIn("1 agy entries carry usage", detail)
+            self.assertIn(agy_runner.NO_ANSWERING_MODEL, detail)    # #3550
 
             with open(ledger, "w", encoding="utf-8") as fh:
                 fh.write(json.dumps({

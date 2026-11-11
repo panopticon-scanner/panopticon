@@ -184,7 +184,15 @@ with an effort, such as the domain roles' `gemini-4-carbon` + `high`, also runs 
 `-p "/effort"`, and stays UNKNOWN until the owner's capture defines which field carries the
 effective level, #3564), and `agy-usage-envelope`
 (`agy --help` advertises `-p` and `--output-format`, `parse_envelope` maps token usage, and any
-existing `dispatch-ledger.jsonl` carries token counts on every `ok` row).
+existing `dispatch-ledger.jsonl` carries token counts on every `ok` row). agy's
+`--output-format json` envelope reports no answering model: its documented fields are
+`conversation_id`, `status`, `response`, `error`, `duration_seconds`, `num_turns`,
+`structured_output`, `json_schema` and `usage` (https://antigravity.google/docs/cli/headless/).
+So an agy ledger row records the bound `requested_model` (and `requested_effort` when set) with
+`model` null, `usage.json`'s `by_model` has no agy split, and both probe details say so. What
+holds per launch is that headless agy exits non-zero instead of falling back from `--model`. If
+a future envelope reports a model that differs from the bound one, the driver says so on stderr
+(#3550).
 
 Gemini claims all five (#3494, restoring the row #1621 had retired), measured under an isolated
 per-run home (`runners/gemini_home.py`, copying only `oauth_creds.json` and `google_accounts.json`)

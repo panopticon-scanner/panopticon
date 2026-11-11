@@ -30,10 +30,14 @@ _SAFE_TOKEN_RE = re.compile(r"\A[A-Za-z0-9._:-]+\Z")
 _NESTED_MARKERS = ("ANTIGRAVITY_CLI", "ANTIGRAVITY_CLI_ALIAS")
 
 # The 4.6 and GPT-OSS rows retire on 2026-11-18; keep them until that date so
-# currently supported Free/Plus runs do not fail closed a week early.
-# models-verified: 2026-11-11 https://antigravity.google/docs/models https://antigravity.google/docs/enterprise
+# currently supported Free/Plus runs do not fail closed a week early. The Carbon
+# effort slugs are listed by `agy models` on the Headless page (#3550); never a default.
+# models-verified: 2026-11-11 https://antigravity.google/docs/models https://antigravity.google/docs/enterprise https://antigravity.google/docs/cli/headless/
 KNOWN_MODELS = frozenset({
     "gemini-4-carbon",
+    "gemini-4-carbon-low",
+    "gemini-4-carbon-medium",
+    "gemini-4-carbon-high",
     "gemini-4-argon",
     "gemini-3.8-flash",
     "gemini-3.7-flash",
@@ -65,6 +69,17 @@ KNOWN_MODELS = frozenset({
 # #3564: the documented `agy --effort` levels, owned by the resolver beside its tables.
 AGY_EFFORTS = model_resolver.AGY_EFFORTS
 _combined_slug = model_resolver.names_effort
+
+
+# #3550: why an agy ledger row's `model` is null. The `--output-format json` envelope's
+# documented fields are conversation_id, status, response, error, duration_seconds,
+# num_turns, structured_output, json_schema and usage -- no model
+# (https://antigravity.google/docs/cli/headless/, read 2026-11-11).
+NO_ANSWERING_MODEL = (
+    "agy's JSON envelope reports no answering model, so each ledger row records the bound "
+    "`requested_model` (and `requested_effort`) with `model` null, and usage has no per-model "
+    "split; headless agy exits non-zero rather than fall back from --model "
+    "(https://antigravity.google/docs/cli/headless/)")
 
 
 def _validate_flag_value(value, label):
