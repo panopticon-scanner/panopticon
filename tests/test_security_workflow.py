@@ -81,9 +81,10 @@ class TestSecurityGateExitStatus(unittest.TestCase):
                 self.assertIn(message, output)
 
     def test_workflows_do_not_soften_gate_failures(self):
+        # The weekly strict verdict is reported, not gating (owner 2026-11-10),
+        # so it is not here: see test_the_strict_verdict_reports_and_fails_only_unevaluated.
         routes = (
             (SECURITY, "scan", GATE),
-            (SECURITY, "scan", "Strict full-tree gate"),
             (FORK, "fork-scan", GATE),
         )
         for path, job_name, step_name in routes:
@@ -92,6 +93,20 @@ class TestSecurityGateExitStatus(unittest.TestCase):
                 step = _step(job, step_name)
                 self.assertNotIn("continue-on-error", job)
                 self.assertNotIn("continue-on-error", step)
+
+    def test_the_strict_verdict_reports_and_fails_only_unevaluated(self):
+        # Owner 2026-11-10: findings (exit 1) warn and write the summary; any
+        # other non-zero (the gate could not evaluate) still fails the step.
+        job = _load(SECURITY)["jobs"]["scan"]
+        step = _step(job, "Strict full-tree verdict (reported, not gating)")
+        self.assertNotIn("continue-on-error", job)
+        self.assertNotIn("continue-on-error", step)
+        body = step["run"]
+        self.assertIn("security_gate.py", body)
+        self.assertIn("|| rc=$?", body)
+        self.assertRegex(body, r"\n\s*1\) echo \"::warning ")
+        self.assertRegex(body, r"\*\) echo \"::error::[^\n]*; exit \"\$rc\"")
+        self.assertIn("GITHUB_STEP_SUMMARY", body)
 
 
 if __name__ == "__main__":  # pragma: no cover

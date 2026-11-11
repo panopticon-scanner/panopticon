@@ -75,7 +75,7 @@ def _write(path, text):
 
 def _run(curl_rc=0, sha_rc=0, sync_rc=0, db=False, modified=None, checked=None,
          java_rc=0, the_seed=None, weekday=3, event="schedule", full_rebuild=False,
-         props="data.user=dc-user\\ndata.password=a=b\\n", link_after=False):
+         props="data.user=dc-user\\ndata.password=a=b\\n", link_after=False, key=KEY):
     """Run the script with stubbed tools; return a dict describing the run.
 
     `the_seed` is None for "no seed image" (the digest lookup fails), else a
@@ -162,7 +162,9 @@ timeout() {
         env = {"PATH": os.environ.get("PATH", ""), "HOME": tmp,
                "DC_VERSION": "10.0.3", "DC_SHA256": "0" * 64,
                "REGISTRY": "ghcr.io", "NVD_IMAGE": "owner/repo-tools-nvd",
-               "NVD_API_KEY": KEY, "GITHUB_EVENT_NAME": event}
+               "GITHUB_EVENT_NAME": event}
+        if key is not None:
+            env["NVD_API_KEY"] = key
         if full_rebuild:
             env["NVD_FULL_REBUILD"] = "1"
         with open(SCRIPT, encoding="utf-8") as fh:
@@ -227,6 +229,14 @@ class TestTheKeyedSyncVerifiesFailClosed(unittest.TestCase):
         self.assertEqual(run["rc"], 0, run["out"])
         self.assertEqual(run["dc"][run["dc"].index("--nvdApiKey") + 1], KEY)
         self.assertNotIn(KEY, run["out"])
+
+    def test_without_a_key_no_key_flag_is_passed(self):
+        for key in (None, ""):
+            with self.subTest(key=key):
+                run = _fresh(key=key)
+                self.assertEqual(run["rc"], 0, run["out"])
+                self.assertNotIn("--nvdApiKey", run["dc"])
+                self.assertIn("--nvdValidForHours", run["dc"])
 
     def test_every_update_disables_the_valid_for_hours_skip(self):
         # 10.0.3 skips an update, exit 0, when last.checked is under 4 h old.

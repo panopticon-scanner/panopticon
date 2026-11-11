@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **The NVD cache workflow runs the seeded sync script; the weekly full-tree scan reports instead of failing (#3417 wiring half, owner 2026-11-10).**
+  - `nvd-cache.yml` calls `.github/scripts/nvd-cache-sync.sh` (merged in #3523) instead of its inline sync,
+    sets up Buildx before it (the seed is read with `docker buildx imagetools`), and gains a
+    `full_rebuild` dispatch input for a forced full download.
+  - The weekly `strict-full-tree` route counts accepted findings too, so it was red every week. Its gate
+    step now reports: findings give a warning and a summary line, and only a gate that could not
+    evaluate the captures (exit 2) fails the run. The nightly `main-audit` and the PR gate are unchanged.
+  - The three code-scanning alerts #3523 brought in are fixed in the code: the optional
+    `--nvdApiKey` argument is spelled out in two launches instead of an unquoted `${VAR:+...}`, and
+    `devtools/nvd_cache_compare.py`'s fixed `java` call carries a `# nosec` with its reason.
+  - Four workflow comments still named `tests/test_workflow_pins.py`, retired in #3527. They now name
+    `tests/test_action_pins.py`, or say that the runtime `id -u` check is the whole proof of the
+    container user, since no file test pins the `--user` flag any more.
 - **The replay tests no longer leak `sys.path`; pytest drops `skill/scripts` (#3522, part of #1516).**
   `devtools/replay_report.replay()` installs a checkout's `skill/` on `sys.path` in the calling
   process, and `tests/test_replay_report.py` called it in-process with nothing to put the list back,
