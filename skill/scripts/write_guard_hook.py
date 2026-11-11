@@ -59,7 +59,7 @@ _GUARD_RULES_USED = (
     "SYMLINKED_COMPONENT", "UNMEASURABLE_COMPONENT", "ESCAPED_ARTIFACT_TREE", "PARENT_COMPONENT",
     "_escaped_component", "bind", "_load_allowlist", "hook_command", "_trusted_hook_argv",
     "_is_our_entry", "_load", "atomic_write_json", "_write_hook_entry", "_remove_hook_entry",
-    "_armed", "resolve_policy_path", "record_denial")
+    "_armed", "resolve_policy_path", "record_denial", "record_shadow")
 
 # --- GUARD RULES LOADER (#3273 cut 11) ---
 # Byte-identical in the three guard hooks (tests/test_guard_rules.py). Run as a
@@ -604,9 +604,11 @@ def _run_folders(added):
 # one. `_parse_allowlist` checks only that an id is a str: no grammar, no length.
 _ANNOUNCE_TEXT_CAP = 64
 _ANNOUNCE_IDS_MAX = 10
-_DROP_NOT_THIS_RUN = ("not this run's folder, or not the artifact that entry "
-                      "itself declares")
+_DROP_NOT_THIS_RUN = "not under one of this run's folders"
 _DROP_NO_ANCHOR = "no run folder among the added out_files"
+_DROP_GUARD_STATE = "the guards' own state in the run folder is never writable"
+_SHADOW_NOT_DECLARED = ("would have dropped: under this run's folder but not the artifact that "
+                        "entry itself declares (#3533 shadow)")
 
 
 def _bounded(text):
@@ -642,50 +644,73 @@ def _announce_dropped_grants(dropped, why):
           file=sys.stderr)
 
 
+def _under_run_folder(path, roots):
+    """The root in `roots` that `path` sits strictly under, or None. Only an absolute,
+    already-normalised path counts: `<run>/../../x` names no run folder."""
+    p = str(path)
+    if not os.path.isabs(p) or os.path.normpath(p) != p:
+        return None
+    return next((r for r in sorted(roots) if p.startswith(r + os.sep)), None)
+
+
+def _guard_state_names():
+    """`runners.base.GUARD_STATE`, casefolded, read only by install(), which runs in the driver:
+    the hook process never reaches this, so it never imports a driver package. Casefolded on every
+    OS: a case-insensitive file system (macOS by default) opens `WRITE-ALLOWLIST.json` as the real
+    allowlist, and over-dropping a differently cased name costs nothing."""
+    import scripts.runners.base as runners_base
+    return frozenset(name.casefold() for name in runners_base.GUARD_STATE)
+
+
 def _carried_paths_this_run_owns(existing, added):
-    """The `existing` mapping's grants that are a real in-flight grant from a
-    concurrent fan-out, still keyed by the entry that holds them.
+    """The `existing` mapping's grants that may stay, still keyed by the entry that holds them.
 
-    One condition, applied per (entry id, path) pair: the path must be EXACTLY the
-    artifact that entry declares (`_claimed_relpath`), in one of the run folders
-    `added` writes into (`_run_folders`). So an entry keyed with a REAL reviewer id
-    may carry only that reviewer's own out_file and never a peer's, a previous
-    round's tag is not in flight, and the run's own integrity artifacts
-    (`out-file-hashes.json`, `dispatch-plan-driver.json`) are no entry's grant at
-    all. A concurrent fan-out's grant IS its own declared artifact in this run's
-    folder, whichever family it belongs to, so the #11 property survives.
+    #3533 release N. Enforced: a carried path must sit under one of the run folders `added`
+    writes into (`_run_folders`, `_under_run_folder`). So a previous round's tag, the
+    `.panopticon`-wide tree, a source file, and anything when nothing anchors are dropped and
+    announced, and a concurrent fan-out's grant in this run's folder survives (the #11 property).
 
-    With no anchor -- a plan whose out_files establish no run folder -- nothing is
-    carried forward: fail closed rather than trust an unanchored file. Every drop
-    is announced, including that one. Two ways to reach it, both narrower than the
-    `.panopticon`-wide anchor this replaced and neither silent:
+    Shadowed for one release: the precise rule of #1831 (run10 SEC-C1D) also dropped a path in
+    this run's folder that is not EXACTLY the artifact its entry declares (`_run_folder_of`): a
+    peer cell's findings file under a real reviewer's id, the run's integrity artifacts, an id
+    no dispatch family grants. That only duplicates first contact's halt on a planted
+    allowlist, so such a path is carried and recorded (`guard_rules.record_shadow`), not
+    dropped. The removal PR deletes the precise rule only if the shadow log stays clean.
 
-      * NO USABLE MANIFEST. `runio._pano` falls back to the flat
-        `.panopticon/<name>` whenever `run_manifest.load_manifest` returns nothing
-        -- absent, unparseable, or TORN mid-run -- so a run in that state anchors
-        nothing and every carried grant is dropped. A re-arm re-adds whatever is
-        still pending, and the announcement names the run folder as the thing that
-        was missing.
-      * A `setup-scan` ARM. Setup writes `.panopticon/setup-proposal.json`, a
-        top-level artifact, so it establishes no run folder -- and the allowlist
-        is top-level too (`runio._TOP_LEVEL`), shared with every review run on the
-        tree rather than separated by setup's own namespace. So a setup arm drops
-        a concurrent review fan-out's grants. Same direction as the rule itself,
-        still narrower than carrying everything under `.panopticon`."""
+    With no anchor -- no usable manifest (`runio._pano` falls back to the flat `.panopticon/`),
+    or a `setup-scan` arm, whose top-level artifact establishes no run folder -- nothing is
+    carried forward: fail closed rather than trust an unanchored file. Every drop is announced."""
     roots = _run_folders(added)
     if not roots:
         _announce_dropped_grants(_dropped_counts(existing), _DROP_NO_ANCHOR)
         return {}
     out = {}
     dropped: dict[str, int] = {}
+    guard_state: dict[str, int] = {}
+    shadowed: dict[tuple[str, str], int] = {}
+    state_names = _guard_state_names()
     for eid, paths in existing.items():
-        kept = [str(p) for p in paths if _run_folder_of(eid, str(p)) in roots]
-        lost = len(paths) - len(kept)
+        kept = []
+        for p in map(str, paths):
+            root = _under_run_folder(p, roots)
+            if root is None:
+                continue
+            if p[len(root) + 1:].split(os.sep, 1)[0].casefold() in state_names:
+                guard_state[eid] = guard_state.get(eid, 0) + 1    # #3545: enforced, always
+                continue
+            kept.append(p)
+            if _run_folder_of(eid, p) != root:
+                shadowed[(root, eid)] = shadowed.get((root, eid), 0) + 1
+        lost = len(paths) - len(kept) - guard_state.get(eid, 0)
         if lost:
             dropped[eid] = lost
         if kept:
             out[eid] = kept
     _announce_dropped_grants(dropped, _DROP_NOT_THIS_RUN)
+    _announce_dropped_grants(guard_state, _DROP_GUARD_STATE)
+    for (root, eid), n in sorted(shadowed.items()):
+        guard_rules.record_shadow(root, "carried-grant", eid,
+                                  "%s: %d path(s)" % (_SHADOW_NOT_DECLARED, n))
     return out
 
 
@@ -776,12 +801,11 @@ def install(plan, settings_path=None, allowlist_path=None, *, session_root=None)
     # target repo can ship its own `.panopticon/write-allowlist.json` (the path is
     # inside the scanned tree), so a planted entry -- `~/.ssh/authorized_keys`, a
     # source file -- was unioned in and became a WRITABLE target for every agent
-    # in the fan-out. Keep the #11 in-flight property, but only for entries that
-    # could plausibly be a real in-flight grant: its OWN cell's findings file, in
-    # one of the RUN FOLDERS this install writes into. Anything else -- another
-    # run's folder, the run's integrity artifacts, a peer cell's findings file
-    # under a real reviewer's id (#1831 SEC-611772336) -- was not written by a
-    # trusted install and is dropped, with a count on stderr.
+    # in the fan-out. Keep the #11 in-flight property, but only for paths under
+    # one of the RUN FOLDERS this install writes into; anything else is dropped,
+    # with a count on stderr. Inside the run folder, a path that is not its
+    # entry's own artifact (#1831 SEC-611772336) is carried and shadow-logged for
+    # one release (#3533): first contact halts on a planted allowlist.
     carried = _carried_paths_this_run_owns(_read_allowlist(allowlist_path), added)
     # #1571: the union is merged PER ENTRY ID, so a concurrent fan-out's grant
     # survives (the #11 property) without becoming writable by this batch's

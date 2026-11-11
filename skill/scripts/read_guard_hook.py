@@ -61,7 +61,7 @@ _GUARD_RULES_USED = (
     "_glob_refusal", "grant_escapes", "ESCAPES_KEY",
     "_load_scope", "bind", "hook_command", "_trusted_hook_argv", "_is_our_entry", "_load",
     "atomic_write_json", "_write_hook_entry", "_remove_hook_entry", "_armed",
-    "resolve_policy_path", "record_denial")
+    "resolve_policy_path", "record_denial", "record_shadow", "scope_paths_ok")
 
 # --- GUARD RULES LOADER (#3273 cut 11) ---
 # Byte-identical in the three guard hooks (tests/test_guard_rules.py). Run as a
@@ -254,21 +254,29 @@ def adjudicate(payload, scope_path, env=None):
     if entry_id is None:
         return decide(tool_name, tool_input, None)
     scope = scopes.get(entry_id)
-    key = _stamp_key() if scope is not None else None
-    if scope is not None and key is None:
-        return False, ("%s is denied: the run-stamp key that vouches for entry %r's read scope "
-                       "cannot be read here (is PANOPTICON_STATE_DIR the driver's?)"
-                       % (tool_name, entry_id))
-    if scope is None or not _row_verifies(key, entry_id, scope):
-        # #3436: an unstamped or mis-stamped row is no row: install() never wrote it.
+    if scope is None:
         return False, ("%s is denied: this agent is bound to entry %r, which the "
-                       "armed read scope does not name with a driver stamp" % (tool_name, entry_id))
+                       "armed read scope does not name" % (tool_name, entry_id))
+    # #3533 release N: the row stamp (#3436) only duplicates first contact's halt on a planted
+    # scope file, so a failure is recorded, not denied, for one release.
+    key = _stamp_key()
+    if key is None or not _row_verifies(key, entry_id, scope):
+        _shadow_stamp(scope_path, entry_id, scope, key, payload)
     allow, reason = decide(tool_name, tool_input, scope)
     if not allow and reason:
         # decide() is entry-agnostic (plan 5, unchanged); name the bound
         # entry here so a denial is actionable without re-deriving the bind.
         reason = "%s (bound to entry %r)" % (reason, entry_id)
     return allow, reason
+
+
+def _shadow_stamp(scope_path, entry_id, row, key, payload):
+    """What the #3436 stamp check would have denied, for the #3533 shadow log."""
+    why = ("run-stamp key unreadable" if key is None
+           else "unstamped row" if not isinstance(row.get(STAMP_KEY), str) else "mis-stamped row")
+    guard_rules.record_shadow(os.path.dirname(os.path.abspath(scope_path)), "read-stamp",
+                              entry_id, "would have denied: %s" % why,
+                              tool_use_id=payload.get("tool_use_id"))
 
 
 def _deny_response(reason):
@@ -465,10 +473,23 @@ def install(plan, settings_path=None, scope_path=None, *, session_root=None):
     _trusted_hook_argv()  # refuse before writing either private artifact
     key = _stamp_key(create=True)
     added = stamp_rows(added, key)              # #3436: no key raises here, before any write
-    # #3436 (R-P5-5): a row survives the union only with a valid stamp -- a concurrent fan-out's
-    # does, a planted id's never does.
-    merged = {eid: row for eid, row in _read_scope_file(scope_path).items()
-              if _row_verifies(key, eid, row)}
+    # #3533 release N: the union used to drop a row without a valid stamp (#3436 R-P5-5). Every
+    # row now survives it, and one we would have dropped is recorded. R-P5-4 is unchanged: ours
+    # still wins on a shared id, below.
+    run_dir = os.path.dirname(os.path.abspath(scope_path))
+    merged = {}
+    for eid, row in sorted(_read_scope_file(scope_path).items()):
+        if eid in added:
+            continue
+        if not all(guard_rules.scope_paths_ok(row.get(k)) for k in guard_rules.SCOPE_KEYS):
+            # M1 stays enforcing (#3533 ruling Q2): kept, this row would void the whole scope
+            # at load and deny every bound read of the run.
+            guard_rules.record_shadow(run_dir, "install-union", eid,
+                                      "dropped row: a path is not absolute and normalised")
+            continue
+        if not _row_verifies(key, eid, row):
+            guard_rules.record_shadow(run_dir, "install-union", eid, "would have dropped row")
+        merged[eid] = row
     merged.update(added)
     guard_rules.atomic_write_json(scope_path, merged)
     guard_rules._write_hook_entry(settings_path, __file__, _hook_entry(scope_path))

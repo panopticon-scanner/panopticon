@@ -16,6 +16,26 @@
   `run_tools` no longer re-exports the split modules' constants or ledgers, and the obsolete move
   goldens/AST meta-tests are gone. The self-scan issue filer keeps its exclusive ledger lock and
   atomic replacement while using ordinary trusted-repository lock and staging files.
+- **Two guard checks that only duplicate first contact's halt run log-only for one release (#3533, shadow release N).**
+  First contact now also checks the session root (#3532), so a planted `read-scope.json` or
+  `write-allowlist.json` halts the run before any guard reads it. Owner rule: log first, remove
+  only if the shadow log stays clean across the redteam runs.
+  - Read guard: a scope row without this machine's stamp (#3436), or an unreadable stamp key, no
+    longer denies. The read is adjudicated against the row as written, and the failure is
+    recorded. `install()` keeps a row it used to drop for a bad stamp, and records it. A bound
+    entry with no row still denies; ours still wins on a shared id.
+  - Write guard: the carried-grant filter now enforces "under one of this run's folders" (an
+    absolute, normalised path only). The finer #1831 rule, the exact artifact the entry
+    declares, is recorded instead of dropped for a path inside the run folder: for this release
+    such a carried peer path is writable for the run. A grant on the guards' own state in the run
+    folder (host settings, both policy files, the per-entry scope directory, the hook records) is
+    always dropped and announced.
+  - The records go to `shadow-denials.jsonl` in the run folder: kind (`read-stamp`,
+    `install-union`, `carried-grant`), entry id and a short reason, never a path. In the flat
+    `.panopticon/` (setup, session root) they go to stderr. A record that cannot be written
+    prints one stderr line, so an empty log can't hide a broken writer. An id outside the entry-id
+    grammar is recorded as `<invalid id>`. A row whose paths fail the M1 shape check is still
+    dropped at install (and recorded).
 - **A full review graded at a non-default group size reports its letter as provisional (#1495).**
   The health index moves with scan effort: on one commit, ripgrep graded F at `--max-per-group 15`
   and D at 48. The bands were kept (#3328) on runs at the default, so a letter is now certified only
