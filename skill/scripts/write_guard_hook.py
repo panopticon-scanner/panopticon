@@ -606,6 +606,7 @@ _ANNOUNCE_TEXT_CAP = 64
 _ANNOUNCE_IDS_MAX = 10
 _DROP_NOT_THIS_RUN = "not under one of this run's folders"
 _DROP_NO_ANCHOR = "no run folder among the added out_files"
+_DROP_GUARD_STATE = "the guards' own state in the run folder is never writable"
 _SHADOW_NOT_DECLARED = ("would have dropped: under this run's folder but not the artifact that "
                         "entry itself declares (#3533 shadow)")
 
@@ -652,6 +653,13 @@ def _under_run_folder(path, roots):
     return next((r for r in sorted(roots) if p.startswith(r + os.sep)), None)
 
 
+def _guard_state_names():
+    """`runners.base.GUARD_STATE`, read only by install(), which runs in the driver: the hook
+    process never reaches this, so it never imports a driver package."""
+    import scripts.runners.base as runners_base
+    return frozenset(runners_base.GUARD_STATE)
+
+
 def _carried_paths_this_run_owns(existing, added):
     """The `existing` mapping's grants that may stay, still keyed by the entry that holds them.
 
@@ -676,21 +684,28 @@ def _carried_paths_this_run_owns(existing, added):
         return {}
     out = {}
     dropped: dict[str, int] = {}
+    guard_state: dict[str, int] = {}
     shadowed: dict[tuple[str, str], int] = {}
+    state_names = _guard_state_names()
     for eid, paths in existing.items():
         kept = []
         for p in map(str, paths):
             root = _under_run_folder(p, roots)
             if root is None:
                 continue
+            if p[len(root) + 1:].split(os.sep, 1)[0] in state_names:
+                guard_state[eid] = guard_state.get(eid, 0) + 1    # #3545: enforced, always
+                continue
             kept.append(p)
             if _run_folder_of(eid, p) != root:
                 shadowed[(root, eid)] = shadowed.get((root, eid), 0) + 1
-        if len(paths) - len(kept):
-            dropped[eid] = len(paths) - len(kept)
+        lost = len(paths) - len(kept) - guard_state.get(eid, 0)
+        if lost:
+            dropped[eid] = lost
         if kept:
             out[eid] = kept
     _announce_dropped_grants(dropped, _DROP_NOT_THIS_RUN)
+    _announce_dropped_grants(guard_state, _DROP_GUARD_STATE)
     for (root, eid), n in sorted(shadowed.items()):
         guard_rules.record_shadow(root, "carried-grant", eid,
                                   "%s: %d path(s)" % (_SHADOW_NOT_DECLARED, n))

@@ -293,6 +293,18 @@ class TheShadowLogTest(unittest.TestCase):
                 mock.patch.object(guard_rules, "_DENIAL_WAIT_SECONDS", 0.01):
             self._assert_one_failure_line(self._record(), "timed out")
 
+    def test_an_id_outside_the_entry_id_grammar_is_never_recorded(self):
+        # #3545 round 1: a planted id may be a path; Q3 says a record never carries one.
+        import scripts.phases.requests as requests
+        self.assertEqual(requests._SAFE_ENTRY_ID.pattern, guard_rules._SHADOW_ID_RE.pattern)
+        for planted in ("/etc/passwd", "a/b", "x" * 161, "", "caf\u00e9", None, 7):
+            self.assertEqual("", self._record(entry_id=planted))
+        self.assertEqual("", self._record(entry_id="review-Core-SEC_1.v2"))
+        ids = [r["entry_id"] for r in self._rows()]
+        self.assertEqual([guard_rules.INVALID_ID] * 7 + ["review-Core-SEC_1.v2"], ids)
+        with open(self.file, encoding="utf-8") as fh:
+            self.assertNotIn("passwd", fh.read())
+
     def test_nothing_raises_out_of_it(self):
         with mock.patch.object(guard_rules.json, "dumps", side_effect=RuntimeError("boom")):
             printed = self._record()

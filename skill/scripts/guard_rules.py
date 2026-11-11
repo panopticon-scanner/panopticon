@@ -29,6 +29,7 @@ a second failure path in its protocol.
 import glob
 import json
 import os
+import re
 import shlex
 import stat
 import sys
@@ -203,6 +204,14 @@ def _glob_refusal(target, pattern, scope):
     return None
 
 
+def scope_paths_ok(val):
+    """M1 (#3411): install() writes only absolute, normalised paths; any other was planted.
+    `val` is one row's list for one SCOPE_KEYS key (None reads as empty)."""
+    val = [] if val is None else val
+    return isinstance(val, list) and not any(
+        isinstance(p, str) and not (os.path.isabs(p) and os.path.normpath(p) == p) for p in val)
+
+
 def _load_scope(scope_path):
     """(scopes, error): the armed {entry id: scope} map, or (None, why)."""
     try:
@@ -218,12 +227,10 @@ def _load_scope(scope_path):
             return None, "read guard scope is malformed"
         entry: dict[str, object] = {}
         for k in SCOPE_KEYS:
-            val = [] if scope.get(k) is None else scope.get(k)
-            # M1 (#3411): install() writes only absolute, normalised paths; any other was planted.
-            if not isinstance(val, list) or any(isinstance(p, str) and not (
-                    os.path.isabs(p) and os.path.normpath(p) == p) for p in val):
+            val = scope.get(k)
+            if not scope_paths_ok(val):
                 return None, "read guard scope is malformed"
-            entry[k] = [p for p in val if isinstance(p, str)]
+            entry[k] = [p for p in (val or []) if isinstance(p, str)]
         # #2063: {grant: [link, ...] | None}; anything else reads as no walk (wildcards denied).
         raw = scope.get(ESCAPES_KEY)
         entry[ESCAPES_KEY] = ({g: ([p for p in v if isinstance(p, str)] if isinstance(v, list)
@@ -695,6 +702,10 @@ def record_denial(policy_path, payload, reason):
 # never file contents.
 SHADOW_FILE = "shadow-denials.jsonl"
 SHADOW_KINDS = ("read-stamp", "install-union", "carried-grant")
+# `phases.requests._SAFE_ENTRY_ID`, which the hook process may not import (a test pins the two
+# equal). An id outside it is target-authored text that may be a path, so it is never recorded.
+_SHADOW_ID_RE = re.compile(r"[A-Za-z0-9._-]{1,160}\Z")
+INVALID_ID = "<invalid id>"
 
 
 def _append_shadow(path, line):
@@ -718,7 +729,8 @@ def record_shadow(run_dir, kind, entry_id, reason, tool_use_id=None):
     line, so "no shadow lines" can never mean "the writer broke"."""
     try:
         import threading              # here: a run with nothing to shadow never pays for it
-        row = {"kind": str(kind)[:_DENIAL_ID_CAP], "entry_id": str(entry_id)[:_DENIAL_ID_CAP],
+        shown = entry_id if isinstance(entry_id, str) and _SHADOW_ID_RE.match(entry_id) else INVALID_ID
+        row = {"kind": str(kind)[:_DENIAL_ID_CAP], "entry_id": shown,
                "reason": str(reason)[:DENIAL_REASON_CAP]}
         if isinstance(tool_use_id, str):
             row["tool_use_id"] = tool_use_id[:_DENIAL_ID_CAP]

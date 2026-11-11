@@ -61,7 +61,7 @@ _GUARD_RULES_USED = (
     "_glob_refusal", "grant_escapes", "ESCAPES_KEY",
     "_load_scope", "bind", "hook_command", "_trusted_hook_argv", "_is_our_entry", "_load",
     "atomic_write_json", "_write_hook_entry", "_remove_hook_entry", "_armed",
-    "resolve_policy_path", "record_denial", "record_shadow")
+    "resolve_policy_path", "record_denial", "record_shadow", "scope_paths_ok")
 
 # --- GUARD RULES LOADER (#3273 cut 11) ---
 # Byte-identical in the three guard hooks (tests/test_guard_rules.py). Run as a
@@ -476,11 +476,20 @@ def install(plan, settings_path=None, scope_path=None, *, session_root=None):
     # #3533 release N: the union used to drop a row without a valid stamp (#3436 R-P5-5). Every
     # row now survives it, and one we would have dropped is recorded. R-P5-4 is unchanged: ours
     # still wins on a shared id, below.
-    merged = _read_scope_file(scope_path)
-    for eid in sorted(merged):
-        if eid not in added and not _row_verifies(key, eid, merged[eid]):
-            guard_rules.record_shadow(os.path.dirname(os.path.abspath(scope_path)),
-                                      "install-union", eid, "would have dropped row")
+    run_dir = os.path.dirname(os.path.abspath(scope_path))
+    merged = {}
+    for eid, row in sorted(_read_scope_file(scope_path).items()):
+        if eid in added:
+            continue
+        if not all(guard_rules.scope_paths_ok(row.get(k)) for k in guard_rules.SCOPE_KEYS):
+            # M1 stays enforcing (#3533 ruling Q2): kept, this row would void the whole scope
+            # at load and deny every bound read of the run.
+            guard_rules.record_shadow(run_dir, "install-union", eid,
+                                      "dropped row: a path is not absolute and normalised")
+            continue
+        if not _row_verifies(key, eid, row):
+            guard_rules.record_shadow(run_dir, "install-union", eid, "would have dropped row")
+        merged[eid] = row
     merged.update(added)
     guard_rules.atomic_write_json(scope_path, merged)
     guard_rules._write_hook_entry(settings_path, __file__, _hook_entry(scope_path))

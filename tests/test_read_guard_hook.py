@@ -837,6 +837,29 @@ class TestStampedRows(unittest.TestCase):
                                                  if r["kind"] == "install-union"))
         self._assert_no_path_in_shadows()
 
+    def test_install_still_drops_a_row_whose_paths_fail_m1_and_the_scope_keeps_loading(self):
+        # #3545 round 1: M1 stays enforcing (#3533 ruling Q2). Kept, a relative or unnormalised
+        # path voids the whole scope at load and denies every bound read of the run.
+        rg.install([_entry("e1", files=[self.a])], settings_path=self.settings,
+                   scope_path=self.scope_path)
+        b = os.path.realpath(self.b)
+        self._plant({"relative": {"files": ["b.py"], "dirs": [], "reads": []},
+                     "climbs": {"files": [], "dirs": [os.path.dirname(b) + "/x/.."], "reads": []},
+                     "/etc/passwd": _scope(files=[self.b])})
+        rg.install([_entry("e2", files=[self.b])], settings_path=self.settings,
+                   scope_path=self.scope_path)
+        self.assertEqual({"e1", "e2", "/etc/passwd"}, set(rg._read_scope_file(self.scope_path)))
+        self.assertTrue(self._read("e1", self.a)[0])
+        self.assertTrue(self._read("e2", self.b)[0])
+        rows = [r for r in self._shadows() if r["kind"] == "install-union"]
+        self.assertIn({"kind": "install-union", "entry_id": "relative",
+                       "reason": "dropped row: a path is not absolute and normalised"}, rows)
+        self.assertIn({"kind": "install-union", "entry_id": "climbs",
+                       "reason": "dropped row: a path is not absolute and normalised"}, rows)
+        self.assertIn({"kind": "install-union", "entry_id": rg.guard_rules.INVALID_ID,
+                       "reason": "would have dropped row"}, rows)
+        self.assertNotIn("passwd", json.dumps(self._shadows()))
+
     def test_a_stamp_still_binds_its_entry_id_and_every_grant(self):
         rows = rg.stamp_rows({"e1": _scope(files=[self.a])})
         key = rg._stamp_key()

@@ -577,6 +577,44 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
                          final["entries"])
         self.assertEqual([], self._shadows(run))
 
+    def test_a_carried_grant_on_the_guards_own_state_is_dropped_and_never_writable(self):
+        # #3545 round 1: in a headless run the allowlist, the read scope, the settings file and the
+        # hook records live in the run folder. Carried, a grant on the allowlist is a self-grant the
+        # hook re-reads on every call, so it is dropped in the shadow window too, and announced.
+        import scripts.runners.base as runners_base
+        _root, run, allow, settings = self._target()
+        planted = sorted({os.path.join(run, name) for name in runners_base.GUARD_STATE}
+                         | {os.path.join(run, os.path.splitext(runners_base.SCOPE_FILE)[0],
+                                         "review-Core-SEC.json")})
+        self._plant(allow, {"review-Core-SEC": planted})
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            wg.install([{"id": "review-Core-SEC",
+                         "out_file": os.path.join(run, "findings-Core-SEC.json")}],
+                       settings_path=settings, allowlist_path=allow)
+        with open(allow, encoding="utf-8") as fh:
+            self.assertEqual({"review-Core-SEC": [os.path.join(run, "findings-Core-SEC.json")]},
+                             json.load(fh)["entries"])
+        self.assertIn(wg._DROP_GUARD_STATE, err.getvalue())
+        self.assertIn("%d carried allowlist path(s)" % len(planted), err.getvalue())
+        self.assertEqual([], self._shadows(run))
+        allowed, _reason = wg.adjudicate(
+            {"tool_name": "Write", "agent_type": "panopticon-domain-panel",
+             "tool_input": {"file_path": os.path.join(run, runners_base.ALLOWLIST_FILE)}},
+            allow, env={wg.ENV_ENTRY_ID: "review-Core-SEC"})
+        self.assertFalse(allowed)
+
+    def test_the_guard_state_list_covers_every_name_the_guards_write_into_a_run_folder(self):
+        import scripts.guard_rules as guard_rules
+        import scripts.runners.base as runners_base
+        import scripts.scope_bindings as scope_bindings
+        run = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, run, ignore_errors=True)
+        entry_dir = scope_bindings.EntryScopes(os.path.join(run, runners_base.SCOPE_FILE)).directory
+        self.assertLessEqual(
+            {runners_base.SETTINGS_FILE, runners_base.ALLOWLIST_FILE, runners_base.SCOPE_FILE,
+             os.path.basename(entry_dir), guard_rules.DENIALS_FILE, guard_rules.SHADOW_FILE},
+            set(runners_base.GUARD_STATE))
+
     def test_an_entrys_own_in_run_artifact_is_carried_without_a_shadow_line(self):
         _root, run, allow, settings = self._target()
         self._plant(allow, self._every_family(run))
