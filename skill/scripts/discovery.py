@@ -771,6 +771,10 @@ def build_result(repo, mode, target, facet, impl, tests,
         "mode": mode,
         "target": target,
         "facet": facet,
+        # #3528: the cap that actually cut this inventory. Unlike the target's
+        # requested config value, this already includes config clamps and CLI
+        # precedence because it is the argument used by chunk_files above.
+        "max_per_group": max_per_group,
         "groups": groups,
         "tests": tests,
         "counts": {
