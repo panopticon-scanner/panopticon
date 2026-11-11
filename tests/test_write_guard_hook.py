@@ -583,9 +583,12 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
         # hook re-reads on every call, so it is dropped in the shadow window too, and announced.
         import scripts.runners.base as runners_base
         _root, run, allow, settings = self._target()
+        stem = os.path.splitext(runners_base.SCOPE_FILE)[0]
         planted = sorted({os.path.join(run, name) for name in runners_base.GUARD_STATE}
-                         | {os.path.join(run, os.path.splitext(runners_base.SCOPE_FILE)[0],
-                                         "review-Core-SEC.json")})
+                         | {os.path.join(run, stem, "review-Core-SEC.json"),
+                            # a case-insensitive file system opens these as the real ones
+                            os.path.join(run, runners_base.ALLOWLIST_FILE.upper()),
+                            os.path.join(run, stem.title(), "review-Core-SEC.json")})
         self._plant(allow, {"review-Core-SEC": planted})
         with contextlib.redirect_stderr(io.StringIO()) as err:
             wg.install([{"id": "review-Core-SEC",

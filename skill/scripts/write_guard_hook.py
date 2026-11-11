@@ -654,10 +654,12 @@ def _under_run_folder(path, roots):
 
 
 def _guard_state_names():
-    """`runners.base.GUARD_STATE`, read only by install(), which runs in the driver: the hook
-    process never reaches this, so it never imports a driver package."""
+    """`runners.base.GUARD_STATE`, casefolded, read only by install(), which runs in the driver:
+    the hook process never reaches this, so it never imports a driver package. Casefolded on every
+    OS: a case-insensitive file system (macOS by default) opens `WRITE-ALLOWLIST.json` as the real
+    allowlist, and over-dropping a differently cased name costs nothing."""
     import scripts.runners.base as runners_base
-    return frozenset(runners_base.GUARD_STATE)
+    return frozenset(name.casefold() for name in runners_base.GUARD_STATE)
 
 
 def _carried_paths_this_run_owns(existing, added):
@@ -693,7 +695,7 @@ def _carried_paths_this_run_owns(existing, added):
             root = _under_run_folder(p, roots)
             if root is None:
                 continue
-            if p[len(root) + 1:].split(os.sep, 1)[0] in state_names:
+            if p[len(root) + 1:].split(os.sep, 1)[0].casefold() in state_names:
                 guard_state[eid] = guard_state.get(eid, 0) + 1    # #3545: enforced, always
                 continue
             kept.append(p)
