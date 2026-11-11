@@ -465,8 +465,8 @@ class TestAgyModelBoundProbe(unittest.TestCase):
             data = {"id": slug + ("-" + level if level else ""), "is_default": False}
             if level:
                 data["effort"] = level
-            if model_data is not None:
-                data = model_data
+            if model_data is not None and level:
+                data = model_data           # only the effort roles, so flash stays bound
             payload = {"response": "%s\t%s" % (data.get("id"), data.get("id"))}
             if structured:
                 payload["command"] = {"name": "model", "data": data}
