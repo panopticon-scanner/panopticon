@@ -189,3 +189,13 @@ means "nothing in this run's scope" rather than "nothing in the repository".
 To drop a path from SEC too, the exclusion has to stop being yours to make: remove the files from
 the repository, or run with `--security standard`, which prunes a recognised
 deliberately-vulnerable fixture corpus at discovery — before `exclude_paths` is consulted at all.
+
+**What these settings do to the letter (#3548).** On a full review, a per-group `exclude:` that
+removes a domain the run would otherwise have used makes the letter provisional, the same way a
+non-default `--max-per-group` does (#1495). Here "would otherwise have used" means the committed
+`panels:`, the universal floor as gated by the group's files, or the SEC floor. An `exclude:` that
+removes nothing leaves the letter certified. So does one that removes only a domain the scout asked
+for, because the scout's choice can change from run to run; it is named in `coverage_note` instead.
+`panels:` only adds review, and `exclude_paths:` is how vendored or generated code is left out, so
+neither moves the letter: `exclude_paths:` is named in `coverage_note` with its file counts. Each
+setting is recorded under `summary.health.basis.config_levers`.

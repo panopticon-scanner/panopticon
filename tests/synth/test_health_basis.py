@@ -64,6 +64,9 @@ def test_basis_uses_the_layout_and_cell_counts_the_report_already_carries():
         "max_per_group": 8,
         "max_groups": 12,
         "profile": "custom",
+        # #3548: these records predate the lever fields, so nothing is measured.
+        "config_levers": {"domain_exclude": None, "domain_exclude_scout": None,
+                          "panels_added": None, "exclude_paths": None},
         "layout_fingerprint": basis["layout_fingerprint"],
         "version": report["meta"]["version"],
         "ocrdb_version": report["meta"]["ocrdb_version"],

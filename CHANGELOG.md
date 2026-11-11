@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **A target's own `exclude:` can no longer improve its certified letter (#3548).** On a full
+  review, a per-group `exclude:` that removes a domain the run would otherwise have used makes
+  the letter provisional, like a non-default group size (#1495). A domain only the scout asked
+  for is named in `coverage_note` and leaves the letter alone, so the same pinned repo and
+  config always get the same outcome. `exclude_paths:` is named with its file counts, and
+  `panels:` (which only adds review) is recorded. All of them are in
+  `summary.health.basis.config_levers`.
+
 ## 5.3.0 — Red-team hardening and the armor audit
 
 Cut after the 5.2 red-team triage and the #3173 armor audit. 191 pull requests, 119 issues.

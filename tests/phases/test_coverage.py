@@ -830,6 +830,62 @@ class TestCoverageBridge(unittest.TestCase):
         cov = runio._load_json(runio._pano(self.root, "coverage-Auth.json"))
         self.assertNotIn("DAT", cov["effective"])              # exclude wins
 
+    def test_lever_lists_split_a_fixed_floor_exclude_from_a_scout_only_one(self):
+        # #3548: 'a.py' is code, so COD (gated global floor) and SEC (signal floor) are
+        # fixed; OPS is the committed panel. The exclude bites COD deterministically, DAT
+        # only because the scout asked, and SEC never (NON_EXCLUDABLE).
+        self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [OPS]\n"
+                    "    exclude: [COD, DAT, SEC]\n", ["DAT", "OPS"])
+        coverage.coverage_execute(self.root, self.manifest)
+        cov = runio._load_json(runio._pano(self.root, "coverage-Auth.json"))
+        self.assertEqual(cov["exclude_deterministic"], ["COD"])
+        self.assertEqual(cov["exclude_scout"], ["DAT"])
+        self.assertEqual(cov["panels_added"], ["OPS"])
+        self.assertEqual(cov["effective"], ["OPS", "SEC"])
+
+    def test_panels_added_names_only_what_the_fixed_floors_would_not_run(self):
+        # COD is already the gated global floor for code, so committing it adds nothing.
+        self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [COD, OPS]\n", [])
+        coverage.coverage_execute(self.root, self.manifest)
+        cov = runio._load_json(runio._pano(self.root, "coverage-Auth.json"))
+        self.assertEqual(cov["panels_added"], ["OPS"])
+
+    def test_the_deterministic_lever_list_does_not_read_the_scout(self):
+        for scout in ([], ["DAT", "OPS", "COD"]):
+            with self.subTest(scout=scout):
+                self._setup("groups:\n  Auth:\n    match: ['a.py']\n"
+                            "    exclude: [COD, DAT]\n", scout)
+                path = runio._pano(self.root, "coverage-Auth.json")
+                if os.path.exists(path):
+                    os.unlink(path)
+                coverage.coverage_execute(self.root, self.manifest)
+                cov = runio._load_json(path)
+                self.assertEqual(cov["exclude_deterministic"], ["COD"])
+                self.assertEqual(cov["exclude_scout"], ["DAT"] if scout else [])
+
+    def test_an_exclude_of_sec_alone_never_bites(self):
+        self._setup("groups:\n  Auth:\n    match: ['a.py']\n    exclude: [SEC]\n", ["SEC"])
+        with contextlib.redirect_stderr(io.StringIO()):
+            coverage.coverage_execute(self.root, self.manifest)
+        cov = runio._load_json(runio._pano(self.root, "coverage-Auth.json"))
+        self.assertEqual((cov["exclude_deterministic"], cov["exclude_scout"]), ([], []))
+
+    def test_a_chunk_inherits_its_units_committed_exclude_in_the_lever_lists(self):
+        runio._write_json(runio._pano(self.root, "groups.json"), {"groups": [
+            {"name": "Auth_1", "files": ["a.py"], "chunk_of": "Auth"},
+            {"name": "Auth_2", "files": ["b.py"], "chunk_of": "Auth"}]})
+        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
+            fh.write("version: 1\ngroups:\n  Auth:\n    match: ['*.py']\n"
+                     "    exclude: [COD]\n")
+        for name in ("Auth_1", "Auth_2"):
+            runio._write_json(runio._pano(self.root, "scout-%s.json" % name),
+                               {"group": name, "domains": []})
+        coverage.coverage_execute(self.root, self.manifest)
+        coverage.coverage_execute(self.root, self.manifest)
+        for name in ("Auth_1", "Auth_2"):
+            cov = runio._load_json(runio._pano(self.root, "coverage-%s.json" % name))
+            self.assertEqual(cov["exclude_deterministic"], ["COD"], name)
+
     def test_non_dict_scout_rediscpatched_then_fails_loud(self):
         # #5.0-12 + #3: a scout returning a JSON ARRAY (not an object) must never
         # crash `.get` with an uncaught AttributeError. It is now rejected at the
