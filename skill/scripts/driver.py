@@ -478,7 +478,7 @@ def _complete_message(result, review_root, manifest):
 
 def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     try:
-        model_resolver.validate_env_overrides()
+        model_resolver.validate_env_overrides(getattr(args, "host", None))
     except ValueError as exc:
         return runio._error_status(str(exc))
     # `resolved` is `runio.resolve_review_root`'s own (review_root, worktree,
@@ -660,7 +660,7 @@ def main(argv=None):
     if args.verb in ("loop", "persist"):
         if args.verb == "loop":
             try:
-                model_resolver.validate_env_overrides()
+                model_resolver.validate_env_overrides(getattr(args, "host", None))
             except ValueError as exc:
                 return engine.emit_status(runio._error_status(str(exc)))
         import scripts.orchestrate as orchestrate   # R-P6-2: lazy, no cycle

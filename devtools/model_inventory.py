@@ -66,7 +66,7 @@ _MARKER = re.compile(r"models-verified: ([0-9]{4}-[0-9]{2}-[0-9]{2})((?: https:/
 # A marker written late in the day ahead of UTC is not "in the future".
 FUTURE_SLACK = datetime.timedelta(days=1)
 # Role fields shown beside the model, in this order.
-DETAIL_KEYS = ("tier", "model_reasoning_effort", "alias")
+DETAIL_KEYS = ("tier", "model_reasoning_effort", "effort", "alias")
 
 
 class MarkerError(ValueError):

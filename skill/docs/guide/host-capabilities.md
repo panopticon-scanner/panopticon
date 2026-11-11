@@ -179,7 +179,10 @@ cleanly via `agy agents` with no `[project]` shadow), `agy-read-guard-armed` and
 `PreToolUse` hook invoking `skill/scripts/agy_guard_hook.py`, plus 0-quota hook subprocess
 round-trips and a live `agy` unknown-tool + out-of-scope read canary), `agy-model-bound` (every
 role's shell frontmatter tier matches its profile and `agy --agent <shell> --model <slug>
---output-format json -p "/model"` reports the resolved runtime model), and `agy-usage-envelope`
+[--effort <level>] --output-format json -p "/model"` reports the resolved runtime model; a role
+with an effort, such as the domain roles' `gemini-4-carbon` + `high`, also runs the read-only
+`-p "/effort"`, and stays UNKNOWN until the owner's capture defines which field carries the
+effective level, #3564), and `agy-usage-envelope`
 (`agy --help` advertises `-p` and `--output-format`, `parse_envelope` maps token usage, and any
 existing `dispatch-ledger.jsonl` carries token counts on every `ok` row).
 

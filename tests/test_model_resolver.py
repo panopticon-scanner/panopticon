@@ -65,7 +65,7 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(mr._hardcoded_fallback("codex", "banana"),
                          {"model": "gpt-6.1-sol", "model_reasoning_effort": "medium"})
         self.assertEqual(mr._hardcoded_fallback("agy", "banana"),
-                         {"model": "gemini-4-argon-high", "tier": "pro"})
+                         {"model": "gemini-4-carbon", "effort": "high", "tier": "pro"})
         self.assertEqual(mr._hardcoded_fallback("gemini", "banana"),
                          {"model": "gemini-3.8-flash"})
         # an unknown HOST still resolves to None (inherit session), never kimi
@@ -87,9 +87,92 @@ class TestModelResolver(unittest.TestCase):
             self.assertEqual(cfg["tier"], "flash")
         for role in ("domain_panel", "domain_advisor"):
             cfg = mr.resolve_model("agy", role)
-            self.assertEqual(cfg["model"], "gemini-4-argon-high")
+            self.assertEqual(cfg["model"], "gemini-4-carbon")       # #3564: base ID + effort
+            self.assertEqual(cfg["effort"], "high")
             self.assertEqual(cfg["tier"], "pro")
         self.assertIsNone(mr.resolve_model("agy", "setup_scan")["model"])
+
+    def test_agy_entry_policy_carries_effort_only_where_set(self):
+        # #3564: the entry gets `effort` beside `model` on agy, as codex gets its effort.
+        for role in ("domain_panel", "domain_advisor"):
+            self.assertEqual({"model": "gemini-4-carbon", "effort": "high"},
+                             mr.entry_policy("agy", role))
+        for role in ("scout", "advisor"):
+            self.assertEqual({"model": "gemini-3.8-flash-medium"}, mr.entry_policy("agy", role))
+        self.assertNotIn("effort", mr.entry_policy("gemini", "domain_panel"))
+        self.assertNotIn("effort", mr.entry_policy("codex", "domain_panel"))
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_DOMAIN_PANEL": "gemini-4-argon"}):
+            self.assertEqual({"model": "gemini-4-argon"}, mr.entry_policy("agy", "domain_panel"))
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_DOMAIN_PANEL":
+                                          '{"model": "gemini-4-carbon", "effort": "medium"}'}):
+            self.assertEqual({"model": "gemini-4-carbon", "effort": "medium"},
+                             mr.entry_policy("agy", "domain_panel"))
+            # Only agy's runner takes `effort`: on any other host it never reaches the entry,
+            # and codex, which has its own effort key, refuses it rather than drop it.
+            for host in ("gemini", "claude", "kimi"):
+                self.assertNotIn("effort", mr.entry_policy(host, "domain_panel"), host)
+            with self.assertRaisesRegex(ValueError, "carries effort, which only agy reads"):
+                mr.entry_policy("codex", "domain_panel")
+
+    # --- #3571 review: an effort the host would drop or refuse is refused up front ---------------
+    def _refused(self, value, host, why):
+        key = "PANOPTICON_MODEL_DOMAIN_PANEL"
+        with mock.patch.dict(os.environ, {key: value}):
+            with self.assertRaises(ValueError) as caught:
+                mr.validate_env_overrides(host)
+        self.assertIn(key, str(caught.exception))
+        self.assertIn(why, str(caught.exception))
+        self.assertNotIn("secret-sentinel", str(caught.exception))
+
+    def test_a_codex_effort_key_on_agy_is_refused_at_start_and_at_use(self):
+        value = '{"model": "gemini-4-carbon", "model_reasoning_effort": "high"}'
+        self._refused(value, "agy", "carries model_reasoning_effort, which only codex reads")
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_DOMAIN_PANEL": value}):
+            with self.assertRaisesRegex(ValueError, "agy domain_panel carries "
+                                        "model_reasoning_effort"):
+                mr.entry_policy("agy", "domain_panel")
+            mr.validate_env_overrides("codex")          # codex's own key stays valid
+
+    def test_an_agy_effort_key_on_another_host_is_refused(self):
+        value = '{"model": "gpt-6-sol", "effort": "high"}'
+        for host in ("codex", "gemini", "claude"):
+            with self.subTest(host=host):
+                self._refused(value, host, "carries effort, which only agy reads")
+
+    def test_an_agy_effort_out_of_shape_is_refused_whatever_the_host(self):
+        for value, why in (
+                ('{"model": "gemini-4-carbon", "effort": "turbo"}', "effort must be one of"),
+                ('{"model": "gemini-4-carbon", "effort": "secret-sentinel"}',
+                 "effort must be one of"),
+                ('{"model": "gemini-4-carbon", "effort": "High"}', "effort must be one of"),
+                ('{"model": "gemini-4-carbon", "effort": null}', "effort must be one of"),
+                ('{"effort": "high"}', "with no model"),
+                ('{"model": null, "effort": "high"}', "with no model"),
+                ('{"model": "gemini-4-argon-high", "effort": "high"}', "already names one")):
+            for host in ("agy", None):
+                with self.subTest(value=value, host=host):
+                    self._refused(value, host, why)
+
+    def test_valid_effort_overrides_pass(self):
+        key = "PANOPTICON_MODEL_DOMAIN_PANEL"
+        for host, value in (("agy", '{"model": "gemini-4-carbon", "effort": "medium"}'),
+                            (None, '{"model": "gemini-4-carbon", "effort": "xhigh"}'),
+                            ("agy", "gemini-4-argon-high"),
+                            ("codex", '{"model": "gpt-6-sol", "model_reasoning_effort": "low"}')):
+            with self.subTest(host=host, value=value), mock.patch.dict(os.environ, {key: value}):
+                mr.validate_env_overrides(host)
+
+    def test_the_driver_passes_its_host_to_the_check(self):
+        import scripts.driver as driver
+        seen = []
+
+        def stop(host=None):
+            seen.append(host)
+            raise ValueError("stop")
+        with mock.patch.object(driver.model_resolver, "validate_env_overrides", stop):
+            status = driver.run(mock.Mock(host="agy", verb="run"))
+        self.assertEqual(["agy"], seen)
+        self.assertIn("stop", json.dumps(status))
 
     def test_kimi_defaults(self):
         cfg = mr.resolve_model("kimi", "scout")

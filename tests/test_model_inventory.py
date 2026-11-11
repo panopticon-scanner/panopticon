@@ -203,6 +203,13 @@ def test_owned_markers_record_their_line(tmp_path):
     assert mi.stray_markers(str(tmp_path), list(tables.values())) == []
 
 
+def test_the_agy_domain_rows_show_their_effort():
+    # #3571 review: agy's `effort` is shown like codex's `model_reasoning_effort`.
+    rows = {r["role"]: r for r in by_name(mi.inventory())["profiles:agy"].rows}
+    assert rows["domain_panel"]["detail"] == "tier=pro, effort=high"
+    assert rows["scout"]["detail"] == "tier=flash"
+
+
 def test_the_repo_has_a_marker_on_every_table_and_no_strays():
     tables = mi.inventory()
     assert mi.presence_problems(tables) == []

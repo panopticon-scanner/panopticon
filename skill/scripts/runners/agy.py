@@ -6,6 +6,7 @@ Launches each review entry in a dedicated `agy -p` subprocess with:
 - `--disable-slash-commands` to stop `/skill` and slash-command expansion of the `-p` prompt
 - `--agent <shell>` for enforced entries
 - `--model <slug>` for role-resolved model binding
+- `--effort <level>` when the role carries an effort (#3564)
 - `--json-schema <inline_json>` for structured JSON output when advertised
 """
 import json
@@ -16,6 +17,7 @@ import tempfile
 
 import scripts.agy_guard_hook as agy_guard_hook
 import scripts.hosts as hosts
+import scripts.model_resolver as model_resolver
 import scripts.redact as redact
 import scripts.runners.agy_home as agy_home
 import scripts.runners.base as base
@@ -60,11 +62,34 @@ KNOWN_MODELS = frozenset({
 })
 
 
+# #3564: the documented `agy --effort` levels, owned by the resolver beside its tables.
+AGY_EFFORTS = model_resolver.AGY_EFFORTS
+_combined_slug = model_resolver.names_effort
+
+
 def _validate_flag_value(value, label):
     if not isinstance(value, str) or not value or value.startswith("-") \
             or not _SAFE_TOKEN_RE.match(value):
         raise ValueError("invalid agy %s value: %r" % (label, value))
     return value
+
+
+def effort_argv(effort, model):
+    """`["--effort", <level>]` for an entry's effort, `[]` for none (#3564).
+
+    Refused: a level `agy --effort` does not document, an effort with no model
+    to apply it to, and an effort beside a model that already names one
+    (`gemini-4-argon-high`), so a combined slug is never sent with the flag."""
+    if effort is None:
+        return []
+    if effort not in AGY_EFFORTS:
+        raise ValueError("agy effort %r is not one of %s" % (effort, ", ".join(AGY_EFFORTS)))
+    if model is None:
+        raise ValueError("agy effort %r has no model to apply to" % effort)
+    if _combined_slug(model):
+        raise ValueError("agy model %r already names an effort; refusing --effort %s beside it"
+                         % (model, effort))
+    return ["--effort", _validate_flag_value(effort, "--effort")]
 
 
 def _sanitize_gemini_schema(obj):
@@ -303,6 +328,7 @@ class Runner(base.HostRunner):
         eff_model = model if model is not None else entry.get("model")
         if eff_model is not None:
             cmd.extend(["--model", _validate_flag_value(eff_model, "--model")])
+        cmd.extend(effort_argv(entry.get("effort"), eff_model))
         cmd.extend(self._schema_argv(entry))
         cmd.extend(["-p", prompt])
         return cmd
@@ -348,6 +374,10 @@ class Runner(base.HostRunner):
             return base.RunResult.failed(
                 entry_id, "entry model %r is not in agy's known model catalogue"
                 % eff_model)
+        try:
+            effort_argv(entry.get("effort"), eff_model)
+        except ValueError as exc:
+            return base.RunResult.failed(entry_id, redact.redact(str(exc)))
         launcher = (DEFAULT_RUNNER
                     if (self.runner == self.launch and DEFAULT_RUNNER is not None)
                     else self.launcher(self.runner, DEFAULT_RUNNER))
