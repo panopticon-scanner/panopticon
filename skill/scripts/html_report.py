@@ -13,6 +13,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.integrity_messages as integrity_messages
 import scripts.ocrdb as ocrdb
+import scripts.synth.health_basis as health_basis
 from scripts import build_disclosure, safe_write, tool_cleanup
 
 _CSS = """
@@ -64,6 +65,7 @@ h2 { font-size: 18px; font-weight: 600; }
 .sev-info { background: #4e6375; color: #faf8f2; }
 .badge.grade { background: transparent; color: var(--accent); border: 1px solid var(--accent-border); }
 .badge.health { background: transparent; color: var(--muted); border: 1px solid var(--border2); }
+.health-basis { margin-top: .45rem; color: var(--muted); font-size: .78rem; }
 /* Health explainer. CSS-only, and keyed on :focus-within as well as :hover so it
    is reachable by keyboard -- the badge is the one header field whose meaning is
    not self-evident (a bare ratio, and the good direction is not obvious). */
@@ -546,6 +548,10 @@ def _render_header(report):
                 _escape(str(health["score"])),                      # popover
                 _escape(" (at most %s)" % cap if isinstance(cap := health.get("span_cap"), int) else "")))
     parts.append("</div>")
+    # #3528: this stays in the header, beside every displayed letter/score.
+    # Older report envelopes remain renderable and say why no basis exists.
+    parts.append("<div class='health-basis'>%s</div>" % _escape(
+        health_basis.rendered_note(health)))
     if summary.get("coverage_certified") is False:
         note = summary.get("coverage_note") or "gate-relevant coverage did not complete"
         details = "".join(
@@ -959,6 +965,7 @@ def _render_compare_summary(label, report):
 <span class="badge {_severity_class(summary.get('risk_level', 'INFO') or 'unknown')}">Risk: {_escape(summary.get('risk_level', '-') or 'unknown')}</span>
 <span class="badge {_gate_class(summary.get('gate', 'OFF'))}">Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>
 </div>
+<div class="health-basis">{_escape(health_basis.rendered_note(summary.get('health')))}</div>
 <div class="stat-minis">{stat_cards}</div>
 {host_caps}
 {carve_out}

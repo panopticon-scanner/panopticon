@@ -15,6 +15,7 @@ import scripts.tools.base as tool_base
 from . import coverage_io as coverage_io
 from . import findings as findings_mod
 from . import grading as grading_mod
+from . import health_basis as health_basis_mod
 from . import integrity as integrity_mod
 
 
@@ -298,6 +299,7 @@ def render_summary(report):
     s = report["summary"]
     gate_mode = report["meta"].get("gate_security_mode")
     health_line = _render_health(s.get("health"))
+    basis_note = health_basis_mod.rendered_note(s.get("health"))
     unscored = report["meta"].get("cvss_unscored") or []      # #3162
     capped = report["meta"].get("severity_capped") or {}      # #3231
     lines = [
@@ -313,6 +315,8 @@ def render_summary(report):
             s["risk_level"] or "unknown", s["gate"],
             " (%s)" % gate_mode if gate_mode else "",
             ("  " + _health_headline(s.get("health"))) if _health_headline(s.get("health")) else ""),
+        "",
+        "**Grade basis:** %s" % tool_base.inert_text(basis_note),
         "",
     ] + _render_severity_block(s.get("stats") or {}, s.get("gate_severities")) + [
         "",

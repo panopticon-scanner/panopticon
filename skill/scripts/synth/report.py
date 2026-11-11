@@ -19,6 +19,7 @@ import scripts.redact as redact
 from . import findings as findings_mod
 from . import delta as delta_mod
 from . import grading as grading_mod
+from . import health_basis as health_basis_mod
 from . import plan as plan_mod
 from . import severity_cap as severity_cap_mod
 from . import tool_axis as tool_axis_mod
@@ -37,7 +38,7 @@ from . import validate_schema as validate_schema_mod
 # as version 0. #run7 DAT-F2A: gives the cross-run readers (reconcile.load_report,
 # the html compare view, per-run-folder A/B) a discriminator before per-run
 # folders make cross-version report reads routine.
-REPORT_SCHEMA_VERSION = 1
+REPORT_SCHEMA_VERSION = 2
 
 def _unplaceable_by_tool(findings):
     """Counts of active tool findings whose source file could not be placed."""
@@ -95,6 +96,11 @@ class RunConfig:
     # #3163: the driver supplies the reviewed tree separately from its display
     # name. Standalone callers may still use target as the path when omitted.
     root: str | None = None
+    # #3528: effective size policy, never the requested values. Discovery's
+    # inventory owns max_per_group; the clamped config record owns max_groups.
+    # None is honest for a hand-built/legacy run that recorded neither.
+    max_per_group: int | None = None
+    max_groups: int | None = None
 
     @classmethod
     def from_args(cls, args, groups_json, timestamp, host_capabilities=None,
@@ -136,6 +142,7 @@ class RunConfig:
             security_mode = groups_json.get("security_mode", "standard")
         if security_mode is None:
             security_mode = "standard"
+        config = config or {}
         return cls(target=args.target, root=args.root,
                    fail_on=args.fail_on, timestamp=timestamp,
                    review_type=review_type, security_mode=security_mode,
@@ -145,7 +152,11 @@ class RunConfig:
                    panel_tools_context=panel_tools_context or {},
                    tools_disabled_mid_run=bool(tools_disabled_mid_run),
                    prior_run=prior_run if isinstance(prior_run, str) else None,
-                   config=config or {},
+                   config=config,
+                   max_per_group=health_basis_mod.effective_size(
+                       groups_json, config, "max_per_group"),
+                   max_groups=health_basis_mod.effective_size(
+                       groups_json, config, "max_groups"),
                    gate_security_mode=plan_mod.gate_security_mode(args))
 
 
@@ -301,6 +312,14 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=()):
         app_trace.repair(_host_capabilities_field(run.host_capabilities, "apps"))
         + reconciled.tools_apps)                  # #3271 S2: never the operator's home
     prior = _prior_run(run.prior_run)
+    ocrdb_version = (ocrdb.BUNDLE_VERSION
+                     if resolved.ocrdb_bundle is not None else None)
+    # #3528: decorate the already-computed health block after grading. The
+    # score, letter, weights, bands and gate have all been decided above; this
+    # copy adds provenance and cannot feed any of those paths back into grading.
+    summary = dict(graded.summary)
+    summary["health"] = health_basis_mod.attach(
+        graded.summary.get("health"), run, reconciled, __version__, ocrdb_version)
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "meta": {
@@ -308,8 +327,7 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=()):
             "review_type": run.review_type,
             "timestamp": run.timestamp,
             "version": __version__,
-            "ocrdb_version": (ocrdb.BUNDLE_VERSION
-                              if resolved.ocrdb_bundle is not None else None),
+            "ocrdb_version": ocrdb_version,
             "security_mode": run.security_mode,
             "gate_security_mode": run.gate_security_mode,
             "models_used": list(models_used),
@@ -385,7 +403,7 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=()):
             **({"cvss_unscored": unscored} if unscored else {}),      # #3162
             **({"severity_capped": capped} if capped else {}),        # #3231
         },
-        "summary": graded.summary,
+        "summary": summary,
         "groups": graded.groups,
         "findings": resolved.active,
         "discarded_claims": resolved.rejected,
