@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **Compare repeat runs of one pinned repo (#3560).** `devtools/compare_runs.py` takes two or
+  more full-review reports of one version and one commit. It reports which findings every run,
+  most runs or only one run found, how consistently each CRITICAL/HIGH finding was caught and at
+  what severity, the health score spread, and planned vs answered cells. Mixed inputs are refused.
+  To make that check possible, the report now records the scanned tree's `meta.target_commit` and
+  `meta.target_dirty`, copied from the run manifest. Both are absent when nothing recorded them,
+  and an absent `target_dirty` means unknown, not clean.
+
+- **Pin freshness reports through issues, not PRs (#3420).** The weekly check failed every run
+  since 2026-10-05, because opening a PR needs the repository setting that also lets workflows
+  approve PRs, and that stays off. `devtools/report_pin_bump.py` now verifies each family
+  (tinyproxy, rustup, Trivy, Rust toolchain) with `bump_pins`' own checks and keeps one open
+  issue per family: it is edited when upstream moves again and closed once the pin catches up.
+  Nothing is pushed, so the orphan-branch failure is gone with `open_pin_pr.py`.
+
+- **A target's own `exclude:` can no longer improve its certified letter (#3548).** On a full
+  review, a per-group `exclude:` that removes a domain the run would otherwise have used makes
+  the letter provisional, like a non-default group size (#1495). A domain only the scout asked
+  for is named in `coverage_note` and leaves the letter alone, so the same pinned repo and
+  config always get the same outcome. `exclude_paths:` is named with its file counts, and
+  `panels:` (which only adds review) is recorded. All of them are in
+  `summary.health.basis.config_levers`.
+
 - **Setup readiness consumes the invocation's measured host envelope (#3535).** The live-probe
   fallback is gone, and both the readiness helper and its production caller require the envelope.
 - **Eight single-artifact writers share one atomic write primitive (#3535).** It confines the final
@@ -10,8 +33,8 @@
 - **PR config sync always rewrites the operator config (#3535).** It no longer re-reads both files
   to prove byte equality; each sync publishes the selected config and emits one direct sync note.
 - **The written artifact is the report schema authority (#3535).** The hydrated report and X0X
-  siblings are validated once after publication, and that pass alone supplies
-  `meta.schema_errors`; in-memory semantic policy remains advisory and separately labelled.
+  siblings are schema-validated once after publication; `meta.schema_errors` records those errors
+  together with advisory in-memory semantic-policy errors, which remain separately labelled.
 - **Tool receipts, not a directory-wide file cap, select ingestion inputs (#3535).** Unrecorded
   files cannot consume selected capacity, while their disclosed names retain a named bound well
   above the supported adapter set; direct ingestion without a receipt stays compatible.

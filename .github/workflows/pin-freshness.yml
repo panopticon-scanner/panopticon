@@ -12,6 +12,12 @@ name: pin freshness
 # break is a pin nobody remembers to bump.
 #
 # Hence a schedule, not a gate. Nothing here is urgent; the job is visibility.
+#
+# #3420: each job verifies its family with bump_pins' own checks and keeps one
+# open issue (`pin-freshness: <family> <pinned> -> <latest>`) via
+# devtools/report_pin_bump.py. It opens no PR and pushes no branch: letting
+# Actions create PRs would also let workflows approve them, so that repository
+# setting stays off. A bump is applied by hand, through review.
 on:
   schedule:
     - cron: "15 7 * * 1"      # Mondays, after the nightly image work settles
@@ -20,7 +26,7 @@ on:
 permissions:
   contents: read
 
-# One job per pin family (`bump_pins.py <family>`). The requirements family
+# One job per pin family (`report_pin_bump.py <family>`). The requirements family
 # (#1641) is deliberately NOT on this schedule: its VERSIONS are Dependabot's to
 # bump, and its digests only move when a version does, so a weekly rewrite would
 # be a no-op PR every Monday. The operator refreshes it beside the version bump
@@ -28,108 +34,60 @@ permissions:
 jobs:
   tinyproxy:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
-    # Inherits contents:read. A changed digest is a warning for manual review.
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write            # one issue per family; no push, no PR (#3420)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Check the egress sidecar digest
-        run: python3 devtools/bump_pins.py tinyproxy
+      - name: Verify and report the egress sidecar digest
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 devtools/report_pin_bump.py tinyproxy
 
   rustup:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write          # scoped to this job: it commits a branch
-      pull-requests: write     # ...and opens the PR
+      contents: read
+      issues: write            # one issue per family; no push, no PR (#3420)
     steps:
-      # Pinned to the same SHA every sibling workflow uses (ARC-F2A,
-      # #1517): this job holds contents:write + pull-requests:write and
-      # pushes branches, so a moved upstream tag would run here with the
-      # widest token in the fleet. Dependabot bumps the pin.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # open_pin_pr.py pushes the pin branch with these stored credentials.
-          persist-credentials: true  # zizmor: ignore[artipacked]
-
-      - name: Check the pin
-        id: check
-        run: |
-          set -euo pipefail
-          python3 devtools/bump_pins.py rustup | tee /tmp/pins.txt
-          if grep -q "available (re-run with --write)" /tmp/pins.txt; then
-            echo "stale=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      # bump_pins refuses to write a checksum it has not verified against the
-      # downloaded artifact, so a failure here means "do not pin", not "retry".
-      - name: Apply the bump
-        if: steps.check.outputs.stale == 'true'
-        run: python3 devtools/bump_pins.py rustup --write
-
-      - name: Open or recover the pin PR
-        if: steps.check.outputs.stale == 'true'
+          persist-credentials: false
+      - name: Verify and report the rustup pin
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 devtools/open_pin_pr.py rustup
+        run: python3 devtools/report_pin_bump.py rustup
 
   trivy:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+      issues: write            # one issue per family; no push, no PR (#3420)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # open_pin_pr.py pushes the pin branch with these stored credentials.
-          persist-credentials: true  # zizmor: ignore[artipacked]
-      - name: Check the Trivy pin
-        id: check
-        run: |
-          set -euo pipefail
-          python3 devtools/bump_pins.py trivy | tee /tmp/trivy-pins.txt
-          if grep -q "available (re-run with --write)" /tmp/trivy-pins.txt; then
-            echo "stale=true" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Apply the verified Trivy bump
-        if: steps.check.outputs.stale == 'true'
-        run: |
-          set -euo pipefail
-          python3 devtools/bump_pins.py trivy --write
-      - name: Open or recover the pin PR
-        if: steps.check.outputs.stale == 'true'
+          persist-credentials: false
+      - name: Verify and report the Trivy pin
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 devtools/open_pin_pr.py trivy
+        run: python3 devtools/report_pin_bump.py trivy
 
   rust-toolchain:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
-      contents: write
-      pull-requests: write
+      contents: read
+      issues: write            # one issue per family; no push, no PR (#3420)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # open_pin_pr.py pushes the pin branch with these stored credentials.
-          persist-credentials: true  # zizmor: ignore[artipacked]
-      - name: Check the Rust toolchain pin
-        id: check
-        run: |
-          set -euo pipefail
-          python3 devtools/bump_pins.py rust-toolchain | tee /tmp/rust-toolchain-pins.txt
-          if grep -q "available (re-run with --write)" /tmp/rust-toolchain-pins.txt; then
-            echo "stale=true" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Apply the verified Rust toolchain bump
-        if: steps.check.outputs.stale == 'true'
-        run: |
-          set -euo pipefail
-          python3 devtools/bump_pins.py rust-toolchain --write
-      - name: Open or recover the pin PR
-        if: steps.check.outputs.stale == 'true'
+          persist-credentials: false
+      - name: Verify and report the Rust toolchain pin
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python3 devtools/open_pin_pr.py rust-toolchain
+        run: python3 devtools/report_pin_bump.py rust-toolchain

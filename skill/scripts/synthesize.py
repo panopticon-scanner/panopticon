@@ -94,6 +94,12 @@ def build_parser():
     ap.add_argument("--prior-run", default=None, metavar="HOST:RUN_ID",
                     help="this run started over an earlier run of another host "
                          "in %s/ (#3271); disclosed as meta.prior_run" % plan_contract.ARTIFACT_DIR)
+    ap.add_argument("--target-commit", default=None, metavar="SHA",
+                    help="the scanned tree's HEAD off the driver's run manifest (#3560); "
+                         "copied to meta.target_commit, absent when not given")
+    ap.add_argument("--target-dirty", default=None, choices=("true", "false"),
+                    help="whether the scanned tree had uncommitted changes, off the run "
+                         "manifest (#3560); copied to meta.target_dirty, absent when not given")
     ap.add_argument("--tools-skipped", action="store_true",
                     help="no scanner ran this run (--no-tools), so no output in "
                          "--tools-dir is bound to it: none is ingested, every one "

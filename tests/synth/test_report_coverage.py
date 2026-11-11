@@ -827,6 +827,58 @@ class TestAPriorRunOfAnotherHostIsDisclosed(unittest.TestCase):
                 self.assertNotIn("prior_run", self._report(value)["meta"])
 
 
+class TestTheScannedCommitIsRecorded(unittest.TestCase):
+    """#3560: the run manifest's `target_commit` / `target_dirty` reach meta, so
+    devtools/compare_runs.py can refuse runs of different trees. A report written
+    without them leaves both keys absent: unknown, never clean."""
+
+    SHA = "0123456789abcdef0123456789abcdef01234567"
+
+    def _report(self, **flags):
+        import argparse
+        args = argparse.Namespace(changes=False, repo=True, target="t", root=None,
+                                  fail_on=None, security=None, gate_unverified=False,
+                                  max_verify=None, gate_scope="on-diff", **flags)
+        run = report_mod.RunConfig.from_args(args, {}, DEFAULT_TIMESTAMP)
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=run, findings=findings_mod.FindingSet(findings=[])))
+
+    def test_a_recorded_commit_and_clean_tree_are_copied(self):
+        for dirty, expected in (("false", False), ("true", True)):
+            with self.subTest(dirty=dirty):
+                meta = self._report(target_commit=self.SHA, target_dirty=dirty)["meta"]
+                self.assertEqual(self.SHA, meta["target_commit"])
+                self.assertIs(expected, meta["target_dirty"])
+                self.assertEqual([], validate_schema_mod.schema_errors(
+                    self._report(target_commit=self.SHA, target_dirty=dirty)))
+
+    def test_a_sha256_object_name_is_a_commit(self):
+        sha = "ab" * 32
+        self.assertEqual(sha, self._report(target_commit=sha)["meta"]["target_commit"])
+
+    def test_nothing_recorded_leaves_both_absent_not_null(self):
+        for flags in ({}, {"target_commit": None, "target_dirty": None},
+                      {"target_dirty": "maybe"}, {"target_dirty": True}):
+            with self.subTest(flags=flags):
+                meta = self._report(**flags)["meta"]
+                self.assertNotIn("target_commit", meta)
+                self.assertNotIn("target_dirty", meta)
+
+    def test_a_commit_out_of_shape_publishes_nothing(self):
+        for value in ("", "HEAD", self.SHA[:12], self.SHA.upper(), self.SHA + "0", 7):
+            with self.subTest(value=value):
+                self.assertNotIn("target_commit", self._report(target_commit=value)["meta"])
+
+    def test_the_schema_refuses_null_and_short_commits(self):
+        r = self._report(target_commit=self.SHA, target_dirty="false")
+        for key, value in (("target_commit", None), ("target_commit", self.SHA[:12]),
+                           ("target_dirty", None)):
+            with self.subTest(key=key, value=value):
+                bad = json.loads(json.dumps(r))
+                bad["meta"][key] = value
+                self.assertNotEqual([], validate_schema_mod.schema_errors(bad))
+
+
 class TestRenderSummaryResume(unittest.TestCase):
     G = [{"name": "g1", "files": ["a.py"]}]
     TS = "2026-01-01T00:00:00Z"

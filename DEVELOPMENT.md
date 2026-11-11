@@ -410,6 +410,16 @@ gates CI (keys off `summary.gate` in the JSON). Tool layer: build the image once
 normal runs require Docker and the tools image at readiness, or `--no-tools` to
 skip the layer explicitly. `driver readiness` prints a read-only preflight.
 
+### Comparing repeat runs
+`python3 devtools/compare_runs.py A-report.json B-report.json [...] [--out cmp.json]` measures
+reproducibility across repeat full reviews of one pinned commit (#3560). It refuses runs whose
+version, OCRDb version, review type, layout fingerprint, profile or `meta.target_commit` differ,
+and refuses any dirty run. A report with no recorded commit needs `--allow-unknown-commit`, and the
+summary then opens with `COMMIT UNVERIFIED`. Agent findings match on file and category plus line
+proximity (`--line-window`, default 5), and tool findings on their fingerprint. The module
+docstring documents the key. It reports agreement, CRITICAL/HIGH consistency, score spread and
+lost cells, and sets no thresholds.
+
 ### Test-only injection seams
 Two module attributes exist so the unit suite can refuse a real launch, and neither may ever be
 assigned outside `tests/`. `DEFAULT_RUNNER` (on each host-CLI launch seam —
@@ -508,11 +518,22 @@ verify the publisher's HTTPS checksum against the downloaded artifact before edi
 
 | Family | What it pins | Who bumps it |
 |---|---|---|
-| `rustup` | `Dockerfile`'s `ARG RUSTUP_VERSION` + its two init SHA256s | `pin-freshness.yml`, Mondays, opens a PR |
-| `trivy` | `Dockerfile`'s Trivy version + AMD64 and ARM64 archive SHA256s | `pin-freshness.yml`, Mondays, opens a PR |
-| `rust-toolchain` | `Dockerfile`'s `ARG RUST_TOOLCHAIN_VERSION` | `pin-freshness.yml`, Mondays, opens a PR |
+| `rustup` | `Dockerfile`'s `ARG RUSTUP_VERSION` + its two init SHA256s | you, after `pin-freshness.yml` reports it (Mondays) |
+| `trivy` | `Dockerfile`'s Trivy version + AMD64 and ARM64 archive SHA256s | you, after `pin-freshness.yml` reports it (Mondays) |
+| `rust-toolchain` | `Dockerfile`'s `ARG RUST_TOOLCHAIN_VERSION` | you, after `pin-freshness.yml` reports it (Mondays) |
 | `requirements` | the `--hash=sha256:` lines in `.github/requirements-gate.txt`, `requirements-fixtures.txt` and `requirements-tools.txt` | you, beside the version bump |
 | `gems` | `Dockerfile`'s `ARG <GEM>_VERSION` + `ARG <GEM>_GEM_SHA256` pairs | you; nothing schedules it yet |
+
+`pin-freshness.yml` also checks the egress sidecar's tinyproxy digest (`bump_pins.py tinyproxy`,
+read-only). For each of its four families it runs `devtools/report_pin_bump.py <family>`, which
+verifies the update with `bump_pins`' own checks and then keeps one open issue titled
+`pin-freshness: <family> <pinned> -> <latest>` (#3420). The issue is edited when upstream moves
+again, and closed once the pin catches up. The workflow opens no PR and pushes no branch: letting
+Actions create PRs would also let workflows approve them, so that repository setting stays off.
+Apply a reported bump by hand with `bump_pins.py <family> --write`, through the usual review.
+Two reports are warnings rather than bumps: new checksums for the same version (a re-released
+archive; verify it before applying), and a pin newer than upstream's latest (check whether the
+release was yanked; `--write` would downgrade it).
 
 The `rustup` family pins only the bootstrap installer. The `rust-toolchain` family reads Rust's
 stable channel manifest after checking its companion `.sha256` and requires both image Linux GNU
