@@ -13,6 +13,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.integrity_messages as integrity_messages
 import scripts.ocrdb as ocrdb
+import scripts.synth.grading as grading
 import scripts.synth.health_basis as health_basis
 from scripts import build_disclosure, safe_write, tool_cleanup
 
@@ -279,6 +280,16 @@ _JS = """(function () {
 _JS_SHA256 = base64.b64encode(hashlib.sha256(_JS.encode("utf-8")).digest()).decode("ascii")
 
 
+def _grade_badge(summary):
+    """The grade badge text. #490: never the literal "None", and an uncertified grade says
+    PROVISIONAL. #1495: a letter held back as `provisional_grade` (an incomplete panel, a
+    non-default scan profile) is shown with that label, as the terminal summary shows it."""
+    certified, provisional = summary.get("overall_grade"), summary.get("provisional_grade")
+    letter = certified or provisional or "-"
+    held = (not certified and bool(provisional)) or summary.get("coverage_certified") is False
+    return letter + (" (provisional)" if held else "")
+
+
 def _escape(value):
     """Escape a string for safe insertion into HTML."""
     return html.escape(str(value))
@@ -510,7 +521,7 @@ def _render_header(report):
         "<div class='badges'>",
         # #490: a report with no grade must not render the literal "None",
         # and an uncertified grade is PROVISIONAL, not settled.
-        f"<span class='badge grade'>Grade: {_escape(summary.get('overall_grade') or '-')}{' (provisional)' if summary.get('coverage_certified') is False else ''}</span>",
+        f"<span class='badge grade'>Grade: {_escape(_grade_badge(summary))}</span>",
         f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO') or 'unknown')}'>Risk: {_escape(summary.get('risk_level', '-') or 'unknown')}</span>",
         f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>",
     ]
@@ -553,12 +564,17 @@ def _render_header(report):
     parts.append("<div class='health-basis'>%s</div>" % _escape(
         health_basis.rendered_note(health)))
     if summary.get("coverage_certified") is False:
-        note = summary.get("coverage_note") or "gate-relevant coverage did not complete"
+        note = summary.get("coverage_note") or grading.GATE_GAP_NOTE
         details = "".join(
             "<div class='integrity-detail'>%s</div>" % _escape(sentence)
             for sentence in integrity_messages.sinking_sentences(meta.get("integrity")))
         parts.append("<div class='not-certified'>NOT CERTIFIED &mdash; %s%s</div>"
                      % (_escape(note), details))
+    elif (summary.get("provisional_grade") and not summary.get("overall_grade")
+          and summary.get("coverage_note")):
+        # #1495: certified coverage, letter held back (a non-default scan profile).
+        parts.append("<div class='provisional-grade'>%s</div>"
+                     % _escape(summary["coverage_note"]))
     # #2990 / #3245: a CRITICAL nobody wrote, and a code group no SEC cell read, are explained; neither sinks.
     for key in ("unknown_severity_findings", "sec_less_groups"):
         sentence = integrity_messages.note_sentence(meta.get("integrity"), key)
@@ -961,7 +977,7 @@ def _render_compare_summary(label, report):
 <div class="compare-panel">
 <h3>{_escape(label)}</h3>
 <div class="badges">
-<span class="badge grade">{_escape(summary.get('overall_grade') or '-')}</span>
+<span class="badge grade">{_escape(_grade_badge(summary))}</span>
 <span class="badge {_severity_class(summary.get('risk_level', 'INFO') or 'unknown')}">Risk: {_escape(summary.get('risk_level', '-') or 'unknown')}</span>
 <span class="badge {_gate_class(summary.get('gate', 'OFF'))}">Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>
 </div>

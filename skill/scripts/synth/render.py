@@ -348,6 +348,10 @@ def render_summary(report):
             parts.append(s["coverage_note"])
         lines.insert(3, "**Coverage:** NOT CERTIFIED — %s"
                      % ("; ".join(parts) or "incomplete"))
+    elif s.get("provisional_grade") and not s.get("overall_grade") and s.get("coverage_note"):
+        # #1495: coverage is certified but the letter is held back (a non-default scan profile),
+        # so the reason is not in a NOT CERTIFIED line; say it beside the grade.
+        lines.insert(3, "**Grade provisional:** %s" % s["coverage_note"])
     _cov = report["meta"].get("coverage") or {}
     excluded = _excluded_tools_line(_cov.get("tools_excluded"))
     if excluded:

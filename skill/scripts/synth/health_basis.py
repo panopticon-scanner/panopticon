@@ -2,6 +2,9 @@
 import hashlib
 import json
 
+import scripts.discovery as discovery
+import scripts.repo_config as repo_config
+
 
 LEGACY_NOTE = "basis unknown (report predates #3528)"
 _NOTE = ("policy score pending calibration; comparable only with runs of the "
@@ -63,6 +66,53 @@ def _cell_count(audit, key):
     return len(rows) if isinstance(rows, list) else None
 
 
+# #1495: the bands were kept (#3328) on runs at the default scan settings, and the group size
+# decides how many review cells look at the same code, so how much a run finds. A full review
+# gets a certified letter only at the default size; any other moves it to provisional_grade.
+# Compared on the EFFECTIVE value (discovery's stamp, after config clamps and flag precedence),
+# so an explicit `--max-per-group 48` or a config at 48 is the default profile.
+GRADED_MAX_PER_GROUP = discovery.DEFAULT_MAX_PER_GROUP
+PROFILE_REASON = ("this scan used a non-default group size of %d files (%s; the default is %d). "
+                  "A letter is certified only at the default scan settings, because the group "
+                  "size changes how much a scan finds in the same code.")
+# The run manifest folds a flag and the config into one `max_per_group` (driver._flags), so when
+# the clamped config record holds the effective value, a flag of that same value can't be told
+# apart from it; the wording says so.
+_CAP_SOURCE = {"config": ("set by max_per_group in the target's %s, or a --max-per-group flag of "
+                          "the same value" % repo_config.CONFIG_NAMES[0]),
+               "flag": "set by the run's --max-per-group flag"}
+
+
+def cap_source(run):
+    """Where a run's effective cap came from, for the note only: the target's config when the
+    clamped config record holds that value, else the run's own flag."""
+    config = run.config if isinstance(getattr(run, "config", None), dict) else {}
+    effective = config.get("effective")
+    if isinstance(effective, dict) and positive_int(effective.get("max_per_group")) == \
+            run.max_per_group:
+        return "config"
+    return "flag"
+
+
+def profile(run):
+    """'default', 'custom', or 'unknown' when the run recorded no effective cap."""
+    cap = positive_int(getattr(run, "max_per_group", None))
+    if cap is None:
+        return "unknown"
+    return "default" if cap == GRADED_MAX_PER_GROUP else "custom"
+
+
+def custom_profile_reason(run):
+    """Why a full review at a non-default cap carries a provisional letter, else None.
+    `grading.certify` composes it with any coverage reason into `coverage_note`.
+
+    Delta and file-scoped reviews keep their letter behaviour (#1495 ruling Q1), and an unknown
+    cap is left alone: nothing measured says it differs."""
+    if getattr(run, "review_type", None) != "repo" or profile(run) != "custom":
+        return None
+    return PROFILE_REASON % (run.max_per_group, _CAP_SOURCE[cap_source(run)], GRADED_MAX_PER_GROUP)
+
+
 def build(run, reconciled, version, ocrdb_version):
     """Build ``summary.health.basis`` only from effective run records."""
     groups = reconciled.groups_meta
@@ -73,6 +123,7 @@ def build(run, reconciled, version, ocrdb_version):
         "cells_answered": _cell_count(reconciled.cell_audit, "reviewed"),
         "max_per_group": positive_int(run.max_per_group),
         "max_groups": positive_int(run.max_groups),
+        "profile": profile(run),
         "layout_fingerprint": layout_fingerprint(groups),
         "version": version,
         "ocrdb_version": ocrdb_version,
