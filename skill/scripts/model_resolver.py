@@ -101,8 +101,9 @@ _CODEX_FALLBACK = {
 _AGY_FALLBACK: dict[str, dict[str, Any]] = {
     "scout": {"model": "gemini-3.8-flash-medium", "tier": "flash"},
     "advisor": {"model": "gemini-3.8-flash-medium", "tier": "flash"},
-    "domain_panel": {"model": "gemini-4-argon-high", "tier": "pro"},
-    "domain_advisor": {"model": "gemini-4-argon-high", "tier": "pro"},
+    # #3564: Carbon takes its effort as `--effort`, never as a `-high` slug.
+    "domain_panel": {"model": "gemini-4-carbon", "effort": "high", "tier": "pro"},
+    "domain_advisor": {"model": "gemini-4-carbon", "effort": "high", "tier": "pro"},
     "setup_scan": {"model": None},
 }
 # Google Gemini lineup: `gemini-4-carbon` is the flagship reasoning model and
@@ -138,7 +139,7 @@ def _hardcoded_fallback(host, role):
         return _CODEX_FALLBACK.get(role, {"model": "gpt-6.1-sol",
                                           "model_reasoning_effort": "medium"})
     if host == "agy":
-        return _AGY_FALLBACK.get(role, {"model": "gemini-4-argon-high",
+        return _AGY_FALLBACK.get(role, {"model": "gemini-4-carbon", "effort": "high",
                                          "tier": "pro"})
     if host == "gemini":
         return _GEMINI_FALLBACK.get(role, {"model": "gemini-3.8-flash"})
@@ -278,10 +279,11 @@ def entry_policy(host, role):
     """#2879: the resolved fields a dispatch entry carries (phases/requests.bound_policy).
 
     The model on every host; on Codex the reasoning effort beside it, which
-    codex_host binds at launch (M-7). The host name is decided here, in the
+    codex_host binds at launch (M-7), and on agy its `effort`, which the runner
+    passes as `--effort` (#3564). The host name is decided here, in the
     resolver that owns the per-host tables, never in a phase."""
     cfg = resolve_model(host, role)
-    extra = ("model_reasoning_effort",) if host == "codex" else ()
+    extra = {"codex": ("model_reasoning_effort",), "agy": ("effort",)}.get(host, ())
     return {"model": cfg.get("model"), **{key: cfg[key] for key in extra if cfg.get(key)}}
 
 

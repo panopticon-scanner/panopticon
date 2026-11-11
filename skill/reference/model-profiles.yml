@@ -56,7 +56,7 @@ hosts:
       model: null
   # Carbon is available in Antigravity, but this runner carries only a model
   # field and cannot bind Antigravity's separate effort input.
-  # models-verified: 2026-11-11 https://antigravity.google/docs/models https://antigravity.google/docs/enterprise
+  # models-verified: 2026-11-11 https://antigravity.google/docs/models https://antigravity.google/docs/enterprise https://antigravity.google/docs/cli/commands/effort/ https://antigravity.google/docs/cli/reference/
   agy:
     scout:
       model: gemini-3.8-flash-medium
@@ -64,11 +64,14 @@ hosts:
     advisor:
       model: gemini-3.8-flash-medium
       tier: flash
+    # #3564: Carbon is a base ID with its effort passed as `--effort`, never a `-high` slug.
     domain_panel:
-      model: gemini-4-argon-high
+      model: gemini-4-carbon
+      effort: high
       tier: pro
     domain_advisor:
-      model: gemini-4-argon-high
+      model: gemini-4-carbon
+      effort: high
       tier: pro
     setup_scan:
       model: null

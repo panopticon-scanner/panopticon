@@ -437,8 +437,14 @@ class TestAgyReadAndWriteGuardProbes(unittest.TestCase):
 
 
 class TestAgyModelBoundProbe(unittest.TestCase):
-    def _model_runner(self, override_slug=None, structured=True):
+    def _model_runner(self, override_slug=None, structured=True, effort_rc=0,
+                      effort_stdout="{}", seen=None):
         def fake(cmd, **kw):
+            if seen is not None:
+                seen.append(list(cmd))
+            if cmd[-1] == "/effort":
+                return subprocess.CompletedProcess(cmd, effort_rc, stdout=effort_stdout,
+                                                   stderr="")
             idx = cmd.index("--model")
             slug = override_slug or cmd[idx + 1]
             payload = {"response": "Current model: %s (tier: pro)" % slug}
@@ -447,15 +453,76 @@ class TestAgyModelBoundProbe(unittest.TestCase):
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
         return fake
 
-    def test_emitted_tiers_and_runtime_model_prove_binding(self):
+    def test_carbon_at_high_is_unknown_until_the_effort_capture_lands(self):
+        # #3564 ruling 3(a): the model binds and `/effort` runs, but its field is not known.
+        seen = []
         with tempfile.TemporaryDirectory() as d:
             _emit_agy_shells(d)
             state, by, detail = agy_probes.probe_agy_model_bound(
-                "agy", registration_dir=d, runner=self._model_runner())
-        self.assertEqual(hosts.PROVEN, state, detail)
+                "agy", registration_dir=d, runner=self._model_runner(seen=seen))
+        self.assertEqual(hosts.UNKNOWN, state, detail)
         self.assertEqual(agy_probes.AGY_MODEL_BOUND, by)
-        self.assertIn("gemini-4-argon-high", detail)
+        self.assertIn("domain_panel (gemini-4-carbon high)", detail)
+        self.assertIn("awaits the owner's capture of `agy --model gemini-4-carbon --effort "
+                      "high --output-format json -p /effort`", detail)
+        self.assertNotIn("proven", detail.replace("not proven", ""))
+        model_calls = [c for c in seen if c[-1] == "/model"]
+        effort_calls = [c for c in seen if c[-1] == "/effort"]
+        carbon = [c for c in model_calls if "gemini-4-carbon" in c]
+        flash = [c for c in model_calls if "gemini-3.8-flash-medium" in c]
+        self.assertTrue(carbon and flash)
+        for call in carbon + effort_calls:
+            self.assertEqual(["--model", "gemini-4-carbon", "--effort", "high"],
+                             call[call.index("--model"):call.index("--model") + 4])
+        for call in flash:
+            self.assertNotIn("--effort", call)
+        self.assertEqual(len(carbon), len(effort_calls))
+
+    def test_roles_with_no_effort_prove_binding(self):
+        real = model_resolver.entry_policy
+
+        def no_effort(host, role):
+            policy = real(host, role)
+            policy.pop("effort", None)
+            return policy
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(model_resolver, "entry_policy", no_effort):
+            _emit_agy_shells(d)
+            seen = []
+            state, by, detail = agy_probes.probe_agy_model_bound(
+                "agy", registration_dir=d, runner=self._model_runner(seen=seen))
+        self.assertEqual(hosts.PROVEN, state, detail)
+        self.assertIn("gemini-4-carbon", detail)
         self.assertIn("gemini-3.8-flash-medium", detail)
+        self.assertFalse(any(c[-1] == "/effort" or "--effort" in c for c in seen))
+
+    def test_a_failed_effort_readback_refutes(self):
+        for kwargs, expected in (({"effort_rc": 3}, "`agy -p /effort` exited 3"),
+                                 ({"effort_stdout": "high"}, "returned non-JSON stdout")):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as d:
+                _emit_agy_shells(d)
+                state, _by, detail = agy_probes.probe_agy_model_bound(
+                    "agy", registration_dir=d, runner=self._model_runner(**kwargs))
+                self.assertEqual(hosts.REFUTED, state)
+                self.assertIn(expected, detail)
+
+    def test_an_effort_beside_a_combined_slug_refutes_before_any_launch(self):
+        real = model_resolver.entry_policy
+
+        def combined(host, role):
+            policy = real(host, role)
+            if policy.get("effort"):
+                policy["model"] = "gemini-4-argon-high"
+            return policy
+        seen = []
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(model_resolver, "entry_policy", combined):
+            _emit_agy_shells(d)
+            state, _by, detail = agy_probes.probe_agy_model_bound(
+                "agy", registration_dir=d, runner=self._model_runner(seen=seen))
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("already names an effort", detail)
+        self.assertEqual([], seen)
 
     def test_frontmatter_tier_drift_refutes(self):
         with tempfile.TemporaryDirectory() as d:

@@ -484,9 +484,20 @@ def probe_agy_write_guard(host, *, runner=None, hooks_runner=None,
         shutil.rmtree(sandbox, ignore_errors=True)
 
 
+# #3564: the effort leg's verdict until the owner's capture of
+# `agy --model gemini-4-carbon --effort high --output-format json -p /effort` defines
+# which JSON field carries the effective level. The key is never guessed.
+EFFORT_READBACK_PENDING = (
+    "`agy -p /effort` ran for %s, but which JSON field carries the effective effort is "
+    "not yet known: it awaits the owner's capture of `agy --model gemini-4-carbon --effort "
+    "high --output-format json -p /effort` (#3564), so the effort is not proven")
+
+
 def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
     """Prove `model_binding` for `agy` by checking both emitted shell frontmatter
-    tiers and `agy --agent <shell> --model <slug> -p /model` runtime resolution."""
+    tiers and `agy --agent <shell> --model <slug> [--effort <level>] -p /model`
+    runtime resolution. A role with an effort also runs `-p /effort`; until its
+    output shape is captured that leg is UNKNOWN, never PROVEN (#3564)."""
     if host != "agy":
         return (hosts.UNKNOWN, None,
                 "probe %s applies only to host 'agy'" % AGY_MODEL_BOUND)
@@ -498,6 +509,7 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
 
     faults = []
     runtime_checks = []
+    pending: list[str] = []
     for role in common.DRIVER_ROLES:
         role_file = dispatch.ROLE_FILES[role]
         agent_name = dispatch.registered_agent_name(role_file)
@@ -512,12 +524,18 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
             faults.append("%s: shell declares tier %r != expected %r"
                           % (role, actual_tier, expected_tier))
             continue
-        resolved_model = model_resolver.resolve_model("agy", role).get("model")
+        policy = model_resolver.entry_policy("agy", role)
+        resolved_model = policy.get("model")
         if expected_tier is not None and not resolved_model:
             faults.append("%s: resolve_model returned no model" % role)
             continue
         if resolved_model:
-            runtime_checks.append((role, agent_name, resolved_model))
+            try:
+                effort = agy_runner.effort_argv(policy.get("effort"), resolved_model)
+            except ValueError as exc:
+                faults.append("%s: %s" % (role, exc))
+                continue
+            runtime_checks.append((role, agent_name, resolved_model, effort))
     if faults:
         return (hosts.REFUTED, AGY_MODEL_BOUND, "; ".join(faults))
     if not runtime_checks:
@@ -530,9 +548,9 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
             "/nonexistent/read-scope.json",
             "/nonexistent/write-allowlist.json",
             registration_dir=reg_dir)
-        for role, agent_name, resolved_model in runtime_checks:
+        for role, agent_name, resolved_model, effort in runtime_checks:
             proc = _run_agy(
-                ["--agent", agent_name, "--model", resolved_model,
+                ["--agent", agent_name, "--model", resolved_model, *effort,
                  "--output-format", "json", "-p", "/model"],
                 home, runner=runner)
             if getattr(proc, "returncode", 1) != 0:
@@ -550,6 +568,13 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
             if not isinstance(actual_slug, str) or actual_slug != resolved_model:
                 faults.append("%s: `agy -p /model` did not report effective model %r "
                               "in command.data.id (got %r)" % (role, resolved_model, actual_slug))
+                continue
+            if effort:
+                fault = _effort_readback(role, agent_name, resolved_model, effort, home, runner)
+                if fault:
+                    faults.append(fault)
+                else:
+                    pending.append("%s (%s %s)" % (role, resolved_model, effort[1]))
     except runners_base.LaunchRefused:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -561,10 +586,30 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
 
     if faults:
         return (hosts.REFUTED, AGY_MODEL_BOUND, "; ".join(faults))
-    verified = sorted({slug for _, _, slug in runtime_checks})
+    if pending:
+        return (hosts.UNKNOWN, AGY_MODEL_BOUND, EFFORT_READBACK_PENDING % ", ".join(pending))
+    verified = sorted({check[2] for check in runtime_checks})
     return (hosts.PROVEN, AGY_MODEL_BOUND,
             "all %d driver roles match frontmatter tiers and runtime `/model` "
             "resolution (%s)" % (len(common.DRIVER_ROLES), ", ".join(verified)))
+
+
+def _effort_readback(role, agent_name, model, effort, home, runner):
+    """Run the documented read-only `-p /effort` for a role with an effort (#3564).
+
+    A failed or non-JSON read-back is a fault. A JSON one is not yet proof: its
+    field is unknown until the owner's capture, so the caller records the role
+    as pending and the probe stays UNKNOWN."""
+    proc = _run_agy(
+        ["--agent", agent_name, "--model", model, *effort,
+         "--output-format", "json", "-p", "/effort"], home, runner=runner)
+    if getattr(proc, "returncode", 1) != 0:
+        return "%s: `agy -p /effort` exited %s" % (role, getattr(proc, "returncode", 1))
+    try:
+        json.loads(getattr(proc, "stdout", "") or "")
+    except ValueError:
+        return "%s: `agy -p /effort` returned non-JSON stdout" % role
+    return None
 
 
 def _ledger_carries_usage(ledger_path):

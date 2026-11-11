@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **agy's domain roles move to `gemini-4-carbon` at high effort (#3564).** `domain_panel` and
+  `domain_advisor` on agy were `gemini-4-argon-high`; they are now the base model
+  `gemini-4-carbon` with `effort: high`, which the runner passes as its own `--effort high`
+  argument, as Google's Antigravity CLI documents. A model change can move findings. An unknown
+  effort, or an effort beside a model that already names one, fails the entry before launch.
+  The `agy-model-bound` probe passes `--effort` on its `/model` check and reads back
+  `/effort`; it reports UNKNOWN until the owner's capture shows which field carries the level.
+
 - **Every model table must carry a `models-verified` marker (#3569).** A test requires one on
   each table except `profiles:openrouter`, which is exempt until #3568 decides its fate, and the
   exemption fails once it no longer applies. A marker that belongs to no table (above a role

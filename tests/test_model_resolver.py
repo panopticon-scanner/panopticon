@@ -65,7 +65,7 @@ class TestModelResolver(unittest.TestCase):
         self.assertEqual(mr._hardcoded_fallback("codex", "banana"),
                          {"model": "gpt-6.1-sol", "model_reasoning_effort": "medium"})
         self.assertEqual(mr._hardcoded_fallback("agy", "banana"),
-                         {"model": "gemini-4-argon-high", "tier": "pro"})
+                         {"model": "gemini-4-carbon", "effort": "high", "tier": "pro"})
         self.assertEqual(mr._hardcoded_fallback("gemini", "banana"),
                          {"model": "gemini-3.8-flash"})
         # an unknown HOST still resolves to None (inherit session), never kimi
@@ -87,9 +87,26 @@ class TestModelResolver(unittest.TestCase):
             self.assertEqual(cfg["tier"], "flash")
         for role in ("domain_panel", "domain_advisor"):
             cfg = mr.resolve_model("agy", role)
-            self.assertEqual(cfg["model"], "gemini-4-argon-high")
+            self.assertEqual(cfg["model"], "gemini-4-carbon")       # #3564: base ID + effort
+            self.assertEqual(cfg["effort"], "high")
             self.assertEqual(cfg["tier"], "pro")
         self.assertIsNone(mr.resolve_model("agy", "setup_scan")["model"])
+
+    def test_agy_entry_policy_carries_effort_only_where_set(self):
+        # #3564: the entry gets `effort` beside `model` on agy, as codex gets its effort.
+        for role in ("domain_panel", "domain_advisor"):
+            self.assertEqual({"model": "gemini-4-carbon", "effort": "high"},
+                             mr.entry_policy("agy", role))
+        for role in ("scout", "advisor"):
+            self.assertEqual({"model": "gemini-3.8-flash-medium"}, mr.entry_policy("agy", role))
+        self.assertNotIn("effort", mr.entry_policy("gemini", "domain_panel"))
+        self.assertNotIn("effort", mr.entry_policy("codex", "domain_panel"))
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_DOMAIN_PANEL": "gemini-4-argon"}):
+            self.assertEqual({"model": "gemini-4-argon"}, mr.entry_policy("agy", "domain_panel"))
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_DOMAIN_PANEL":
+                                          '{"model": "gemini-4-carbon", "effort": "medium"}'}):
+            self.assertEqual({"model": "gemini-4-carbon", "effort": "medium"},
+                             mr.entry_policy("agy", "domain_panel"))
 
     def test_kimi_defaults(self):
         cfg = mr.resolve_model("kimi", "scout")

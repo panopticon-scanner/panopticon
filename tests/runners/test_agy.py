@@ -158,6 +158,46 @@ class TestCommand(unittest.TestCase):
         self.assertNotIn("--agent", cmd)
         self.assertIn("gemini-4-argon-high", cmd)
 
+    def test_carbon_at_high_passes_effort_as_its_own_argument(self):
+        # #3564: the exact argv, `--effort` right after `--model`, never a `-high` slug.
+        entry = _entry(True, model="gemini-4-carbon", effort="high")
+        self.assertEqual(self.r.command(entry, "gemini-4-carbon"), [
+            "agy", "--output-format", "json", "--disable-slash-commands",
+            "--agent", "panopticon-domain-panel", "--model", "gemini-4-carbon",
+            "--effort", "high", "-p", entry["prompt"]])
+
+    def test_every_documented_level_is_passed(self):
+        for level in agy_runner.AGY_EFFORTS:
+            with self.subTest(level=level):
+                cmd = self.r.command(_entry(True, model="gemini-4-carbon", effort=level),
+                                     "gemini-4-carbon")
+                self.assertEqual(["--effort", level],
+                                 cmd[cmd.index("--effort"):cmd.index("--effort") + 2])
+
+    def test_no_effort_means_no_flag_even_on_an_effort_named_slug(self):
+        # The scout/advisor default ends in `-medium`; with no effort it still passes.
+        for model in ("gemini-3.8-flash-medium", "gemini-4-carbon", "gemini-4-argon-high"):
+            with self.subTest(model=model):
+                self.assertNotIn("--effort", self.r.command(_entry(True, model=model), model))
+
+    def test_a_bad_effort_is_refused(self):
+        for model, effort, why in (
+                ("gemini-4-carbon", "turbo", "is not one of"),
+                ("gemini-4-carbon", "High", "is not one of"),
+                ("gemini-4-carbon", "", "is not one of"),
+                ("gemini-4-carbon", "--help", "is not one of"),
+                ("gemini-4-carbon", 3, "is not one of"),
+                ("gemini-4-argon-high", "high", "already names an effort"),
+                ("gemini-3.8-flash-medium", "low", "already names an effort"),
+                ("gemini-4-carbon-xhigh", "high", "already names an effort")):
+            with self.subTest(model=model, effort=effort):
+                with self.assertRaisesRegex(ValueError, why):
+                    self.r.command(_entry(True, model=model, effort=effort), model)
+
+    def test_an_effort_with_no_model_is_refused(self):
+        with self.assertRaisesRegex(ValueError, "has no model to apply to"):
+            self.r.command(_entry(True, model=None, effort="high"), None)
+
     def test_output_schema_flag_passed_when_present(self):
         schema_path = os.path.abspath(os.path.join(
             os.path.dirname(agy_runner.__file__),
@@ -257,6 +297,36 @@ class TestRunEntry(unittest.TestCase):
                 res = r.run_entry(_entry(False, model="bogus-model"), self._env())
         self.assertFalse(res.ok)
         self.assertIn("not in agy's known model catalogue", res.error)
+
+    def test_a_bad_effort_fails_the_entry_before_any_launch(self):
+        # #3564: refused by name in run_entry, not as a "launch raised" crash.
+        for model, effort, why in (("gemini-4-carbon", "turbo", "is not one of"),
+                                   ("gemini-4-argon-high", "high", "already names an effort")):
+            with self.subTest(effort=effort), tempfile.TemporaryDirectory() as d:
+                user_home, agents_dir = _fixture_user_home(d)
+                seen = {}
+                with mock.patch.dict(os.environ, {"HOME": user_home}):
+                    r = agy_runner.Runner("agy", runner=self._fake_run(seen))
+                    r.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
+                    self.addCleanup(r.teardown, "complete")
+                    res = r.run_entry(_entry(False, model=model, effort=effort), self._env())
+                self.assertFalse(res.ok)
+                self.assertIn(why, res.error)
+                self.assertNotIn("launch raised", res.error)
+                self.assertEqual({}, seen)
+
+    def test_run_entry_launches_carbon_with_its_effort(self):
+        seen = {}
+        with tempfile.TemporaryDirectory() as d:
+            user_home, agents_dir = _fixture_user_home(d)
+            with mock.patch.dict(os.environ, {"HOME": user_home}):
+                r = agy_runner.Runner("agy", runner=self._fake_run(seen))
+                r.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
+                self.addCleanup(r.teardown, "complete")
+                r.run_entry(_entry(False, model="gemini-4-carbon", effort="high"), self._env())
+        cmd = seen["cmd"]
+        self.assertEqual(["--model", "gemini-4-carbon", "--effort", "high"],
+                         cmd[cmd.index("--model"):cmd.index("--model") + 4])
 
     def test_timeout_returns_failed_result_with_partial_output(self):
         def slow(cmd, **kw):
