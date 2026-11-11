@@ -11,6 +11,11 @@
   reason inline; `security-fork.yml`'s `pull_request_target` is ignored inline as the #1900 design;
   two intentional word splits carry scoped shellcheck disables. Both tools are pinned in the `dev`
   extra and group, where Dependabot updates them.
+- **Armor audit retires #1762 split-parity scaffolding and devtools-only lock hardening (#3536; #3173).**
+  Scanner config, tool capture, manifest and virtualenv tests now read their owning modules directly;
+  `run_tools` no longer re-exports the split modules' constants or ledgers, and the obsolete move
+  goldens/AST meta-tests are gone. The self-scan issue filer keeps its exclusive ledger lock and
+  atomic replacement while using ordinary trusted-repository lock and staging files.
 - **A full review graded at a non-default group size reports its letter as provisional (#1495).**
   The health index moves with scan effort: on one commit, ripgrep graded F at `--max-per-group 15`
   and D at 48. The bands were kept (#3328) on runs at the default, so a letter is now certified only

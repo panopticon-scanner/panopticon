@@ -5,11 +5,11 @@ Three claims in three shapes. The configuration files this runner STAGES for a
 scanner instead of letting the reviewed repository choose them (bandit's
 `--ini`, trivy's `--ignorefile`); the ignore FILE it overlays out of the way
 (gitleaks' `.gitleaksignore`); and the inline suppression COMMENT knobs it
-passes under `--security redteam`. With them travel two of the four ledgers
+passes under `--security redteam`. With them travel two posture ledgers
 `tools_manifest.write_manifest` reads back, so `tools-manifest.json` reports what
-the runner OBSERVED itself doing rather than restating an intention (the other
-two, the network posture and the gitleaks ignore-file posture, live beside that
-writer; `run_tools` binds all four back and is where each is filled).
+the runner OBSERVED itself doing rather than restating an intention. The other
+posture ledgers live beside that writer; `run_tools` clears and fills each
+through its owning module.
 
 Beside them sits the container LAUNCH policy those same containers share:
 the leaf-owned `TARGET_MOUNT`, re-exported here, and since #2150 (ARC-A3A),
@@ -19,13 +19,9 @@ drop and MAY NOT reach `run_tools`, which imports `tools/egress.py` itself. The
 fixture runner imports both owners on one argv: `run_tools.resource_limit_flags()`
 for the ceilings, this file for the drop.
 
-Separate from `run_tools` because it is a POLICY surface, and it grew like one:
-#1762 (ARC-2609514778) found `run_tools.py` at 2215 lines, outside this repo's
-own 700-line ratchet, having absorbed the whole post-run scanner-policy series
-because nothing pushed back on it. This is part 1 of 4 of that split, and it
-moved the block whole -- no string, flag, path, message or exception changed, and
-`tests/test_scanner_config.py` pins the docker argv of every staged tool against
-a golden captured before the move.
+Separate from `run_tools` because it is a POLICY surface; #1762
+(ARC-2609514778) split it out when that dispatcher exceeded this repo's own
+700-line ratchet.
 
 The arrow points ONE way: nothing here imports `run_tools`, which imports this.
 That is why the two bandit exclude tuples live here (`BANDIT_INI_TEXT` is built

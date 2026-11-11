@@ -790,7 +790,7 @@ def _config_mounts(cmd):
     sees a directory of ours at all.
     """
     return [a for a in cmd if a.endswith(":ro")
-            and a.split(":")[1].startswith(rt.SCANNER_CONFIG_MOUNT + "/")]
+            and a.split(":")[1].startswith(sc.SCANNER_CONFIG_MOUNT + "/")]
 
 
 class TestTheIgnoreFileIsScannerOwned(unittest.TestCase):
@@ -846,15 +846,15 @@ class TestTheIgnoreFileIsScannerOwned(unittest.TestCase):
                 argv = seen["argv"]
                 # ATTACHED, like the `--skip-dirs=`/`--exclude=` values beside
                 # it on the same argv (review Q4).
-                attached = "--ignorefile=%s/%s" % (rt.SCANNER_CONFIG_MOUNT,
-                                                  rt.TRIVY_IGNOREFILE_NAME)
+                attached = "--ignorefile=%s/%s" % (sc.SCANNER_CONFIG_MOUNT,
+                                                  sc.TRIVY_IGNOREFILE_NAME)
                 self.assertEqual(argv.count(attached), 1)
                 self.assertNotIn("--ignorefile", argv)  # never the split form
                 # The target's own file is never named on the argv, and the
                 # one that IS named carries none of its entries.
                 self.assertNotIn("/src/.trivyignore", argv)
-                staged = seen["staged"][rt.TRIVY_IGNOREFILE_NAME]
-                self.assertEqual(staged, rt.TRIVY_IGNOREFILE_TEXT)
+                staged = seen["staged"][sc.TRIVY_IGNOREFILE_NAME]
+                self.assertEqual(staged, sc.TRIVY_IGNOREFILE_TEXT)
                 self.assertNotIn("CVE-2024-0001", staged)
 
     def test_the_scan_target_stays_the_last_argv_token(self):
@@ -868,13 +868,13 @@ class TestTheIgnoreFileIsScannerOwned(unittest.TestCase):
         # on our own scanner. A file mount needs no directory permission at
         # all -- the container reads the bind TARGET, so the 0700 scratch its
         # parent keeps is irrelevant to it.
-        for tool, name in (("trivy", rt.TRIVY_IGNOREFILE_NAME),
-                           ("bandit", rt.BANDIT_INI_NAME)):
+        for tool, name in (("trivy", sc.TRIVY_IGNOREFILE_NAME),
+                           ("bandit", sc.BANDIT_INI_NAME)):
             with self.subTest(tool=tool):
                 seen = self._dispatch(tool)
                 host = seen["specs"][0].split(":")[0]
                 self.assertEqual(
-                    ["%s:%s/%s:ro" % (host, rt.SCANNER_CONFIG_MOUNT, name)],
+                    ["%s:%s/%s:ro" % (host, sc.SCANNER_CONFIG_MOUNT, name)],
                     seen["specs"])
                 self.assertEqual(os.path.basename(host), name)
                 self.assertEqual((0o700, 0o644), seen["modes"][name])
@@ -883,9 +883,9 @@ class TestTheIgnoreFileIsScannerOwned(unittest.TestCase):
         # One mount per launch, holding exactly what that tool is pinned to:
         # the config directory is not a shared bundle every scanner can read.
         self.assertEqual(sorted(self._dispatch("trivy")["staged"]),
-                         [rt.TRIVY_IGNOREFILE_NAME])
+                         [sc.TRIVY_IGNOREFILE_NAME])
         self.assertEqual(sorted(self._dispatch("bandit")["staged"]),
-                         [rt.BANDIT_INI_NAME])
+                         [sc.BANDIT_INI_NAME])
         self.assertEqual(self._dispatch("semgrep")["staged"], {})
 
 
@@ -937,12 +937,12 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
                     fh.write(self.HOSTILE_INI)
             if plant_venv:
                 os.makedirs(os.path.join(d, ".venv", "bin"))
-                for rel in (rt.VENV_MARKER, os.path.join("bin", "python")):
+                for rel in (vs.VENV_MARKER, os.path.join("bin", "python")):
                     with open(os.path.join(d, ".venv", rel), "w") as fh:
                         fh.write("")
             written = rt.run_tools(
                 d, ["bandit"], os.path.join(d, "out"), runner=runner,
-                venv_dirs=[{"path": ".venv", "reason": rt.VENV_MARKER}],
+                venv_dirs=[{"path": ".venv", "reason": vs.VENV_MARKER}],
                 **kwargs)
             seen["manifest"] = tm.write_manifest(
                 os.path.join(d, "m.json"), ["bandit"], written)
@@ -958,7 +958,7 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
         self.assertNotIn("/src/.bandit", argv)
         self.assertIn("--ini", argv)
         self.assertEqual(argv[argv.index("--ini") + 1],
-                         "%s/%s" % (rt.SCANNER_CONFIG_MOUNT, rt.BANDIT_INI_NAME))
+                         "%s/%s" % (sc.SCANNER_CONFIG_MOUNT, sc.BANDIT_INI_NAME))
         self.assertIsNotNone(seen["mount"], argv)
         self.assertEqual(seen["manifest"]["scanner_config"]["bandit"],
                          "scanner-owned")
@@ -1005,7 +1005,7 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
         self.assertIsNone(seen["mount"], argv)      # nothing staged
         self.assertIsNone(seen["ini"])
         self.assertEqual(seen["manifest"]["scanner_config"]["bandit"],
-                         rt.CONFIG_TARGET_BANDIT)
+                         sc.CONFIG_TARGET_BANDIT)
         self.assertNotIn("--ignore-nosec", argv)
 
     def test_the_default_mode_pins_the_targets_ini_too(self):
@@ -1020,7 +1020,7 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
                               security_mode="standard")
         argv = seen["argv"]
         self.assertEqual(argv[argv.index("--ini") + 1],
-                         "%s/%s" % (rt.SCANNER_CONFIG_MOUNT, rt.BANDIT_INI_NAME))
+                         "%s/%s" % (sc.SCANNER_CONFIG_MOUNT, sc.BANDIT_INI_NAME))
         self.assertIn("[bandit]", seen["ini"])
         self.assertEqual(seen["manifest"]["scanner_config"]["bandit"],
                          "scanner-owned")
@@ -1038,8 +1038,8 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
         self.assertEqual(0o700, seen["dir_mode"])
         self.assertEqual(0o644, seen["file_mode"])
         host, inside, mode = seen["mount"].split(":")
-        self.assertTrue(host.endswith(os.sep + rt.BANDIT_INI_NAME), seen["mount"])
-        self.assertEqual("%s/%s" % (rt.SCANNER_CONFIG_MOUNT, rt.BANDIT_INI_NAME),
+        self.assertTrue(host.endswith(os.sep + sc.BANDIT_INI_NAME), seen["mount"])
+        self.assertEqual("%s/%s" % (sc.SCANNER_CONFIG_MOUNT, sc.BANDIT_INI_NAME),
                          inside)
         self.assertEqual("ro", mode)
 
@@ -1065,9 +1065,9 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
     def test_the_generated_ini_keeps_the_exclusions_the_scan_relies_on(self):
         seen = self._dispatch(security_mode="redteam")
         entries = self._ini_excludes(seen["ini"])
-        for default in rt.BANDIT_DEFAULT_EXCLUDES:      # never WIDEN the scan
+        for default in sc.BANDIT_DEFAULT_EXCLUDES:      # never WIDEN the scan
             self.assertIn(default, entries)
-        for owned in rt.BANDIT_SCANNER_EXCLUDES:        # nested checkouts (#run7)
+        for owned in sc.BANDIT_SCANNER_EXCLUDES:        # nested checkouts (#run7)
             self.assertIn(owned, entries)
         self.assertNotIn("src", entries)                # the target's choice: no
         # Round 1 C1: this run's virtualenvs are NOT in the ini -- nothing
@@ -1087,18 +1087,18 @@ class TestBanditConfigIsScannerOwned(unittest.TestCase):
                                security_mode="redteam")["ini"]
         hostile = self._dispatch(security_mode="redteam")["ini"]
         self.assertEqual(plain, hostile)
-        self.assertEqual(plain, rt.BANDIT_INI_TEXT)
+        self.assertEqual(plain, sc.BANDIT_INI_TEXT)
         self.assertEqual(len([ln for ln in plain.splitlines() if "=" in ln]), 1)
 
     def test_the_argv_value_extends_the_ini_and_never_contradicts_it(self):
         # bandit PREFERS the CLI `--exclude` over the ini's, so the CLI value
         # must carry everything the ini carries -- plus this run's virtualenvs,
         # which the ini deliberately does not name (round 1 C1).
-        venvs = [{"path": ".venv", "reason": rt.VENV_MARKER}]
+        venvs = [{"path": ".venv", "reason": vs.VENV_MARKER}]
         cmd = vs._with_venv_excludes("bandit", list(rt.TOOL_CMD["bandit"]), venvs)
         argv_value = [a for a in cmd
                       if a.startswith("--exclude=")][0][len("--exclude="):]
-        ini_value = self._ini_excludes(rt.BANDIT_INI_TEXT)
+        ini_value = self._ini_excludes(sc.BANDIT_INI_TEXT)
         for entry in ini_value:
             self.assertIn(entry, argv_value.split(","))
         self.assertIn("/src/.venv", argv_value.split(","))

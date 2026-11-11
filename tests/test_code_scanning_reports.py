@@ -889,8 +889,8 @@ def test_no_note_is_written_without_globs(tmp_path):
 def test_the_scan_root_mount_is_the_one_run_tools_uses():
     # The prefix stripped before matching is the container path run_tools
     # mounts the target at; a drift here would silently match nothing.
-    import scripts.run_tools as rt
-    assert reports.SCAN_ROOT_MOUNT == rt.TARGET_MOUNT
+    import scripts.scanner_config as sc
+    assert reports.SCAN_ROOT_MOUNT == sc.TARGET_MOUNT
 
 
 SCAN_STAMPS = {
