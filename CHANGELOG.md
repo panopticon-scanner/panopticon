@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Compare repeat runs of one pinned repo (#3560).** `devtools/compare_runs.py` takes two or
+  more full-review reports of one version and one commit. It reports which findings every run,
+  most runs or only one run found, how consistently each CRITICAL/HIGH finding was caught and at
+  what severity, the health score spread, and planned vs answered cells. Mixed inputs are refused.
+  To make that check possible, the report now records the scanned tree's `meta.target_commit` and
+  `meta.target_dirty`, copied from the run manifest. Both are absent when nothing recorded them,
+  and an absent `target_dirty` means unknown, not clean.
+
 - **Pin freshness reports through issues, not PRs (#3420).** The weekly check failed every run
   since 2026-10-05, because opening a PR needs the repository setting that also lets workflows
   approve PRs, and that stays off. `devtools/report_pin_bump.py` now verifies each family
