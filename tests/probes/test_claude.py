@@ -363,6 +363,24 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
             self.assertEqual("write-guard-armed", by)
             self.assertIn(session_root, detail)   # #1493: name the resolved path
 
+    def test_installed_write_subprocess_refutations(self):
+        """#3534 mutants: outside-allow and failed-start both refute."""
+        allowed = subprocess.CompletedProcess([], 0, "", "")
+        cases = {
+            "outside write allowed": [allowed, allowed],
+            "installed command cannot start": OSError("cannot exec installed hook"),
+        }
+        for label, outcomes in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as session_root:
+                self._session_root(session_root)
+                with mock.patch.object(claude_probes.children.ChildProcesses, "launch",
+                                       side_effect=outcomes):
+                    state, by, detail = claude_probes.probe_write_guard_armed(
+                        "claude", session_root=session_root)
+            self.assertEqual((hosts.REFUTED, claude_probes.WRITE_GUARD_ARMED),
+                             (state, by))
+            self.assertIn("subprocess", detail)
+
     def test_it_does_not_require_the_guard_to_be_armed_right_now(self):
         # THE regression this probe exists to avoid. A prototype that gated on
         # live arming returned REFUTED on a correctly configured machine,
@@ -401,50 +419,6 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
                 os.chmod(claude_dir, 0o700)      # restore so cleanup succeeds
             self.assertEqual(hosts.REFUTED, state)
             self.assertIn(claude_dir, detail)
-
-    def test_the_round_trip_proves_the_per_entry_binding(self):
-        # #1571: the sandbox round-trip used to ask one question -- is a path
-        # in the flat allowlist -- which is the very question that let one
-        # reviewer write a sibling's findings file. It now drives the bound
-        # rows too, and requires the armed file to be version 2.
-        ok, detail = claude_probes._round_trip_denies_an_outside_write()
-        self.assertTrue(ok, detail)
-        self.assertIn("version-%d" % write_guard_hook.ALLOWLIST_VERSION, detail)
-
-    def test_a_guard_that_allows_a_peer_write_is_refuted(self):
-        with tempfile.TemporaryDirectory() as session_root:
-            self._session_root(session_root)
-            with mock.patch.object(write_guard_hook, "adjudicate",
-                                   return_value=(True, "")):
-                state, _by, detail = claude_probes.probe_write_guard_armed(
-                    "claude", session_root=session_root)
-        self.assertEqual(hosts.REFUTED, state)
-        self.assertIn("PEER", detail)
-
-    def test_an_allowlist_that_is_not_v2_is_refuted(self):
-        # The probe READS the file install() wrote: a writer that regressed to
-        # a flat list refutes here rather than quietly proving a guard that can
-        # no longer tell two reviewers apart.
-        def v1(allowlist):
-            return sorted(write_guard_hook.union_paths(allowlist))
-        with mock.patch.object(write_guard_hook, "allowlist_document", v1):
-            ok, detail = claude_probes._round_trip_denies_an_outside_write()
-        self.assertFalse(ok)
-        self.assertIn("version", detail)
-
-    def test_a_guard_that_honours_a_stale_v1_file_is_refuted(self):
-        real = write_guard_hook.adjudicate
-
-        def lax(payload, allowlist_path, env=None):
-            with open(allowlist_path, encoding="utf-8") as fh:
-                if isinstance(json.load(fh), list):   # a v1 file, read anyway
-                    return True, ""
-            return real(payload, allowlist_path, env=env)
-
-        with mock.patch.object(write_guard_hook, "adjudicate", lax):
-            ok, detail = claude_probes._round_trip_denies_an_outside_write()
-        self.assertFalse(ok)
-        self.assertIn("version-1", detail)
 
     def test_a_host_that_claims_no_write_guard_is_unknown(self):
         # generic claims no write guard (#3494 gave gemini its own probe,
@@ -567,6 +541,30 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
                 fh.write("{}")
             state2, _by, _d = claude_probes.probe_write_guard_armed("claude", settings_path=path)
             self.assertEqual(state1, state2)
+
+    def test_headless_uses_the_real_cli_canary_without_the_session_round_trip(self):
+        """#3531: headless has the stronger end-to-end proof already."""
+        canary = ("proven", "real CLI denied the peer write")
+        with tempfile.TemporaryDirectory() as run_dir, \
+                mock.patch.object(claude_probes, "_round_trip_denies_an_outside_write",
+                                  return_value=(False, "legacy in-process failure")) as legacy:
+            state, by, detail = claude_probes.probe_write_guard_armed(
+                "claude", settings_path=os.path.join(run_dir, "host-settings.json"),
+                canary=lambda: canary)
+        legacy.assert_not_called()
+        self.assertEqual((hosts.PROVEN, claude_probes.WRITE_GUARD_ARMED),
+                         (state, by))
+        self.assertIn("real CLI", detail)
+
+    def test_headless_write_canary_refutation_is_authoritative(self):
+        canary = ("refuted", "the real CLI allowed the outside write")
+        with tempfile.TemporaryDirectory() as run_dir:
+            state, by, detail = claude_probes.probe_write_guard_armed(
+                "claude", settings_path=os.path.join(run_dir, "host-settings.json"),
+                canary=lambda: canary)
+        self.assertEqual((hosts.REFUTED, claude_probes.WRITE_GUARD_ARMED),
+                         (state, by))
+        self.assertIn("outside write", detail)
 
     def test_an_unwritable_headless_directory_refutes(self):
         # try/finally rather than addCleanup, matching this class's own
@@ -1097,9 +1095,7 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             self.assertEqual(hosts.PROVEN, state)
             self.assertEqual("read-guard-armed", by)
             self.assertIn(session_root, detail)
-            # #1917 added the seventeenth row (a clean subdirectory of a grant
-            # that recorded a link elsewhere) beside the planted-link check.
-            self.assertIn("20 rows", detail)
+            self.assertIn("subprocess allow/deny ok", detail)
 
     def test_it_does_not_require_the_guard_to_be_armed_right_now(self):
         from scripts import read_guard_hook
@@ -1139,28 +1135,6 @@ class TestReadGuardArmedProbe(unittest.TestCase):
                 self.assertEqual(hosts.UNKNOWN, state)
                 self.assertIsNone(by)
 
-    def test_each_round_trip_row_can_refute(self):
-        # Spec 5: a probe that cannot fail is the defect this epic exists to
-        # prevent. Break the guard three ways; each must REFUTE and name a row.
-        # #3273 cut 11: `bind` is guard_rules' now, and the hook calls it there. Each
-        # patch must be REACHED as well as refuted -- a patch on a name the hook no
-        # longer calls would refute for some other reason and pass vacuously.
-        from scripts import guard_rules, read_guard_hook
-        with tempfile.TemporaryDirectory() as session_root:
-            self._session_root(session_root)
-            cases = {
-                "decide allows everything": mock.patch.object(read_guard_hook, "decide", return_value=(True, "")),
-                "decide denies everything": mock.patch.object(read_guard_hook, "decide", return_value=(False, "x")),
-                "bind never binds": mock.patch.object(guard_rules, "bind", return_value=None),
-            }
-            for name, patch in cases.items():
-                with self.subTest(case=name), patch as fake:
-                    state, by, detail = claude_probes.probe_read_guard_armed("claude", session_root=session_root)
-                    self.assertTrue(fake.called, "%s: the patched function was never called" % name)
-                    self.assertEqual(hosts.REFUTED, state)
-                    self.assertEqual("read-guard-armed", by)
-                    self.assertIn("the guard", detail)
-
     def test_the_probe_leaves_the_sessions_settings_untouched(self):
         with tempfile.TemporaryDirectory() as session_root:
             self._session_root(session_root)
@@ -1178,21 +1152,6 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             row = art["capabilities"][hosts.READ_SCOPE_CONFINED]
             self.assertEqual(hosts.PROVEN, row["state"])
             self.assertEqual("read-guard-armed", row["by"])
-
-    def test_the_round_trip_proves_the_env_binding(self):
-        # Spec 5.3 / 7.5: the probe drives an env-bound payload (allowed inside,
-        # denied outside) and an agent_type-only payload (denied). Pinned by
-        # mutating adjudicate to ignore `env` and watching the verdict flip.
-        from scripts import read_guard_hook
-        ok, detail = claude_probes._round_trip_confines_reads()
-        self.assertTrue(ok, detail)
-        real = read_guard_hook.adjudicate
-        def ignores_env(payload, scope_path, env=None):
-            return real(payload, scope_path, env={})
-        with mock.patch.object(read_guard_hook, "adjudicate", ignores_env):
-            ok, detail = claude_probes._round_trip_confines_reads()
-        self.assertFalse(ok)
-        self.assertIn("env", detail)
 
     def test_subprocess_ignores_hostile_path_and_pythonpath(self):
         # The driver's installed command must work with no Python on PATH;
@@ -1236,22 +1195,6 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             ok, detail = claude_probes._round_trip_confines_reads()
         self.assertFalse(ok, detail)
         self.assertIn("plus the probe's scope file", detail)
-
-    def test_the_round_trip_refuses_a_glob_of_a_granted_file(self):
-        # T4 (#3411): a Glob whose `path` is a file lists nothing, granted or not.
-        from scripts import read_guard_hook
-        real = read_guard_hook.decide
-
-        def globs_files(tool_name, tool_input, scope):
-            if (tool_name == "Glob" and scope and isinstance(tool_input, dict)
-                    and os.path.isfile(str(tool_input.get("path")))):
-                return True, ""
-            return real(tool_name, tool_input, scope)
-
-        with mock.patch.object(read_guard_hook, "decide", globs_files):
-            ok, detail = claude_probes._round_trip_confines_reads()
-        self.assertFalse(ok)
-        self.assertIn("Glob of", detail)
 
     def test_private_launch_boundary_rejects_untrusted_operands_before_launch(self):
         from scripts.probes import claude_read_guard
@@ -1310,13 +1253,16 @@ class TestReadGuardArmedProbe(unittest.TestCase):
         self.assertIn("differs", detail)
 
     def test_subprocess_failures_cannot_prove_read_confinement(self):
+        """#3534 mutants include failed start and an outside Read allowed."""
         from scripts.probes import claude_read_guard
         def result(output, rc=0):
             return subprocess.CompletedProcess([], rc, output, "")
         cases = {
+            "cannot start": OSError("cannot exec installed read hook"),
             "timeout": subprocess.TimeoutExpired(["trusted"], 5),
             "exit failure": result("", 7),
             "unexpected allow output": result("garbage"),
+            "outside read allowed": [result(""), result("")],
             "malformed denial": [result(""), result("garbage")],
             "wrong denial": [result(""), result(json.dumps({"hookSpecificOutput": {
                 "hookEventName": "PreToolUse", "permissionDecision": "allow",
@@ -1330,33 +1276,6 @@ class TestReadGuardArmedProbe(unittest.TestCase):
                 ok, detail = claude_probes._round_trip_confines_reads()
             self.assertFalse(ok, detail)
             self.assertIn("subprocess", detail)
-
-    def test_the_round_trip_proves_the_workflow_transcript_layout(self):
-        # Claude family PR: the shipped session-mode dispatch workflow
-        # (skill/workflows/dispatch.js) runs every entry as a WORKFLOW
-        # subagent, whose transcript lands under
-        # `<stem>/subagents/workflows/<run>/agent-<id>.jsonl` rather than in
-        # the Agent-tool layout beside it. The round trip binds one fake
-        # subagent through that layout; a guard that only knew the direct
-        # layout leaves it unbound (every read denied) and the probe refutes,
-        # naming the row.
-        from scripts import guard_rules
-        ok, detail = claude_probes._round_trip_confines_reads()
-        self.assertTrue(ok, detail)
-        real = guard_rules.subagent_transcript
-        refused = []                    # #3273 cut 11: the positive control
-
-        def direct_layout_only(transcript_path, agent_id):
-            found = real(transcript_path, agent_id)
-            if found and (os.sep + "workflows" + os.sep) in found:
-                refused.append(found)
-                return None
-            return found
-        with mock.patch.object(guard_rules, "subagent_transcript", direct_layout_only):
-            ok, detail = claude_probes._round_trip_confines_reads()
-        self.assertTrue(refused, "the patched layout lookup never saw the workflow transcript")
-        self.assertFalse(ok)
-        self.assertIn("workflow", detail)
 
     def test_an_explicit_settings_path_is_the_subject_and_need_not_exist_yet(self):
         # Spec 5.4 / R-P6-5: in headless mode the runner CREATES the settings
@@ -1372,6 +1291,31 @@ class TestReadGuardArmedProbe(unittest.TestCase):
                 fh.write("{}")
             state2, _by, _d = claude_probes.probe_read_guard_armed("claude", settings_path=path)
             self.assertEqual(state1, state2)
+
+    def test_headless_uses_the_real_cli_canary_without_the_session_round_trip(self):
+        """#3531: the read half shares the same stronger headless canary."""
+        canary = ("proven", "real CLI denied the out-of-scope Read")
+        with tempfile.TemporaryDirectory() as run_dir, \
+                mock.patch.object(claude_probes, "_read_round_trip",
+                                  return_value=(hosts.REFUTED,
+                                                "legacy in-process failure")) as legacy:
+            state, by, detail = claude_probes.probe_read_guard_armed(
+                "claude", settings_path=os.path.join(run_dir, "host-settings.json"),
+                canary=lambda: canary)
+        legacy.assert_not_called()
+        self.assertEqual((hosts.PROVEN, claude_probes.READ_GUARD_ARMED),
+                         (state, by))
+        self.assertIn("real CLI", detail)
+
+    def test_headless_read_canary_refutation_is_authoritative(self):
+        canary = ("refuted", "the real CLI exposed the outside sentinel")
+        with tempfile.TemporaryDirectory() as run_dir:
+            state, by, detail = claude_probes.probe_read_guard_armed(
+                "claude", settings_path=os.path.join(run_dir, "host-settings.json"),
+                canary=lambda: canary)
+        self.assertEqual((hosts.REFUTED, claude_probes.READ_GUARD_ARMED),
+                         (state, by))
+        self.assertIn("outside sentinel", detail)
 
     def test_an_unwritable_headless_directory_refutes(self):
         # try/finally, not addCleanup -- see the write-probe mirror above.

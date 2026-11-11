@@ -851,7 +851,7 @@ class TestTargetConfigLine(unittest.TestCase):
     def test_a_long_key_is_bounded_the_same_way_the_value_is(self):
         # Final review M7: the line bounded the target-authored VALUE at 80
         # characters and interpolated the target-authored KEY raw -- bounded
-        # only by `load_resolution`'s own 300, on a line a human reads.
+        # only by the writer boundary, on a line a human reads.
         long_key = "k" * 300
         text = render_mod.render_summary(self._report({
             "requested": {}, "effective": {},

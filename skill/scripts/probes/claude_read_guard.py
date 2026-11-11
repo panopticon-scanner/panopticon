@@ -1,5 +1,4 @@
-"""Private Claude read-guard round-trip fixtures and launch measurement."""
-from typing import Any
+"""Private Claude read-guard installation and launch measurement."""
 import json
 import os
 import shlex
@@ -32,26 +31,19 @@ def _fake_subagent(parent_transcript, agent_id, entry_id, layout="direct"):
 
 
 def _round_trip_confines_reads():
-    """Arm the read guard in a throwaway sandbox, bind four fake subagents
-    through fake transcripts, and drive the payloads of design spec 5 -- with
-    the two of #3271 G-a, a directory grant that never covers its own `.git`
-    store -- plus four env-binding payloads of spec 5.3 (plan 6), through
-    adjudicate(), then launch the installed hook for allow and deny payloads.
-    Never touches the session's real settings, scope file or transcripts.
+    """Install the read hook in a sandbox and execute its trusted command.
 
-    Returns (ok, detail). A hard link out of the reviewed tree is a
-    first-contact halt (H4, #3271), not a hook rule, so there is nothing to
-    plant here."""
+    Hook unit tests own the rule and binding matrices. The probe owns the one
+    machine-dependent fact they cannot: whether the installed command starts
+    under this interpreter and allows/denies through the subprocess boundary.
+    """
     try:
         with tempfile.TemporaryDirectory(prefix="panopticon-read ' ; $() ") as sandbox:
             settings = os.path.join(sandbox, "settings.json")
             scope_file = os.path.join(sandbox, "read-scope.json")
             inside = os.path.join(sandbox, "cell", "a.py")
             outside = os.path.join(sandbox, "elsewhere", "b.py")
-            root = os.path.join(sandbox, "root")
-            git_object = os.path.join(root, ".git", "objects", "ab", "cdef")
-            workflow = os.path.join(root, ".github", "workflows", "ci.yml")
-            for p in (inside, outside, os.path.join(root, "c.py"), git_object, workflow):
+            for p in (inside, outside):
                 os.makedirs(os.path.dirname(p), exist_ok=True)
                 with open(p, "w", encoding="utf-8") as fh:
                     fh.write("")
@@ -59,82 +51,12 @@ def _round_trip_confines_reads():
             with open(parent, "w", encoding="utf-8") as fh:
                 fh.write("")
             _fake_subagent(parent, "agent-x", "probe-cell")
-            _fake_subagent(parent, "agent-z", "probe-scan")
-            _fake_subagent(parent, "agent-w", "probe-cell", layout="workflow")
             read_guard_hook.install(
-                [{"id": "probe-cell", "scope": {"files": [inside], "dirs": [], "reads": []}},
-                 {"id": "probe-scan", "scope": {"files": [], "dirs": [root], "reads": []}}],
+                [{"id": "probe-cell",
+                  "scope": {"files": [inside], "dirs": [], "reads": []}}],
                 settings_path=settings, scope_path=scope_file)
             if not read_guard_hook.guard_state(settings_path=settings, scope_path=scope_file)["armed"]:
                 return False, "install() did not register the PreToolUse hook"
-
-            def adjudicated(tool, agent, **tool_input):
-                payload = {"tool_name": tool, "tool_input": tool_input,
-                           "transcript_path": parent, "cwd": sandbox}
-                if agent:
-                    payload["agent_id"] = agent
-                # A stray PANOPTICON_ENTRY_ID in the operator's shell must
-                # never change this probe's verdict -- env is explicit here.
-                return read_guard_hook.adjudicate(payload, scope_file, env={})
-
-            def call(tool, agent, **tool_input):
-                return adjudicated(tool, agent, **tool_input)[0]
-
-            cell_dir = os.path.dirname(inside)
-            rows = (
-                ("bound Read inside scope", call("Read", "agent-x", file_path=inside), True),
-                ("bound Read outside scope", call("Read", "agent-x", file_path=outside), False),
-                ("bound Grep of an in-scope file", call("Grep", "agent-x", pattern="x", path=inside), True),
-                ("bound Grep over a directory", call("Grep", "agent-x", pattern="x", path=cell_dir), False),
-                ("bound Glob", call("Glob", "agent-x", pattern="*.py", path=cell_dir), False),
-                # T4 (#3411): a Glob whose `path` is a granted FILE is still no listing.
-                ("bound Glob of an in-scope file", call("Glob", "agent-x", pattern="*", path=inside), False),
-                ("directory-scoped Glob of a file inside its dir",
-                 call("Glob", "agent-z", pattern="*", path=os.path.join(root, "c.py")), False),
-                ("unbound subagent Read", call("Read", "agent-y", file_path=inside), False),
-                ("orchestrator Read outside any scope", call("Read", None, file_path=outside), True),
-                ("directory-scoped Grep inside its dir", call("Grep", "agent-z", pattern="x", path=root), True),
-                ("directory-scoped Glob inside its dir", call("Glob", "agent-z", pattern="*.py", path=root), True),
-                ("directory-scoped Read outside its dir", call("Read", "agent-z", file_path=outside), False),
-                # The Workflow-tool transcript layout (Claude family PR): the
-                # shipped dispatch workflow binds every entry through it.
-                ("workflow-layout Read inside scope", call("Read", "agent-w", file_path=inside), True),
-                ("workflow-layout Read outside scope", call("Read", "agent-w", file_path=outside), False),
-                # #3271 G-a: what first contact does not count, no grant reads
-                # -- the grant's own `.git` store is out, `.github/` is not.
-                ("directory-scoped Read under its dir's .git store",
-                 call("Read", "agent-z", file_path=git_object), False),
-                ("directory-scoped Read under its dir's .github",
-                 call("Read", "agent-z", file_path=workflow), True),
-            )
-            for name, got, want in rows:
-                if got != want:
-                    return False, "the guard %s: %s" % ("ALLOWED" if got else "DENIED", name)
-
-            # Spec 5.3 (plan 6): the env binding the headless runner relies on.
-            env_rows: tuple[tuple[str, dict[str, Any], dict[str, str], bool], ...] = (
-                ("env-bound read inside its entry",
-                 {"tool_name": "Read", "tool_input": {"file_path": inside}},
-                 {read_guard_hook.ENV_ENTRY_ID: "probe-cell"}, True),
-                ("env-bound read outside its entry",
-                 {"tool_name": "Read", "tool_input": {"file_path": outside}},
-                 {read_guard_hook.ENV_ENTRY_ID: "probe-cell"}, False),
-                ("agent_type with no binding",
-                 {"tool_name": "Read", "tool_input": {"file_path": inside},
-                  "agent_type": "panopticon-scout"}, {}, False),
-                # The real headless payload shape: agent_type AND the env id
-                # both present. The env binding governs either way (#1344
-                # plan 6 review finding 1).
-                ("env-bound read inside its entry despite agent_type",
-                 {"tool_name": "Read", "tool_input": {"file_path": inside},
-                  "agent_type": "panopticon-domain-panel"},
-                 {read_guard_hook.ENV_ENTRY_ID: "probe-cell"}, True),
-            )
-            for name, env_payload, env, want in env_rows:
-                got = read_guard_hook.adjudicate(env_payload, scope_file, env=env)[0]
-                if got != want:
-                    return False, "env binding: the guard %s: %s" % (
-                        "ALLOWED" if got else "DENIED", name)
             ok, detail = _measure_installed_hook(settings, scope_file, parent,
                                                  inside, outside, sandbox)
             if not ok:
@@ -143,8 +65,7 @@ def _round_trip_confines_reads():
     except (OSError, RuntimeError, ValueError, TypeError) as exc:
         return False, common.failure_detail(
             exc, "the read-guard sandbox round-trip could not run")
-    return True, ("arm/bind/deny round-trip ok (%d rows); subprocess allow/deny ok"
-                  % (len(rows) + len(env_rows)))
+    return True, detail
 
 
 class _ReadHookProcess(children.ChildProcesses):

@@ -261,9 +261,8 @@ def _config_line(config):
     that asked for nothing odd says nothing here, so the line's presence
     always means a target tried to move its own review's settings.
     """
-    # The KEY is target-authored too (fix round 2, M7): `load_resolution`
-    # bounds it at 300, which is four times what this human-facing line gives
-    # a value, so it goes through the same slice.
+    # The KEY is target-authored too (fix round 2, M7), so this human-facing
+    # renderer gives it the same inert, bounded treatment as the value.
     src = config if isinstance(config, dict) else {}
     parts = ["`%s: %s` refused" % (_cfg_value(r.get("key")), _cfg_value(r.get("value")))
              for r in (src.get("refused") or []) if isinstance(r, dict)]
@@ -282,9 +281,9 @@ _CFG_VALUE_MAX = 80
 
 def _cfg_value(value):
     """The summary-line rendering of one config value. Belt-and-braces bound
-    (#1681 Plan 2 fix round 1): `config_schema.load_resolution` already
-    bounds every value it reads off the run artifact, but this line is
-    human-facing, so a huge number or string never gets to widen it either."""
+    (#1681 Plan 2 fix round 1): the driver already bounds every value before
+    writing the resolution artifact, but this human-facing line owns its own
+    tighter cap and inert-text boundary too."""
     if isinstance(value, bool):
         return "true" if value else "false"
     if value is None:
