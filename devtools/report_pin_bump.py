@@ -136,11 +136,12 @@ class Bump:
     @property
     def body(self) -> str:
         if self.kind == "ahead":
-            lines = ["The pin-freshness workflow found the `%s` pin newer than upstream's latest "
-                     "release." % self.family, "", "- pinned: `%s`" % self.pinned,
+            lines = [("The pin-freshness workflow found the `%s` pin newer than upstream's "
+                      + "latest release.") % self.family,
+                     "", "- pinned: `%s`" % self.pinned,
                      "- upstream latest: `%s`" % self.latest, "",
-                     "Check whether `%s` was yanked upstream. Do not run `bump_pins.py %s "
-                     "--write`: it would downgrade the pin." % (self.pinned, self.family)]
+                     ("Check whether `%s` was yanked upstream. Do not run `bump_pins.py %s "
+                      + "--write`: it would downgrade the pin.") % (self.pinned, self.family)]
         else:
             if self.kind == "checksums":
                 lead = ("The pin-freshness workflow found changed checksums for the same `%s` "
@@ -153,8 +154,8 @@ class Bump:
             lines += ["- %s SHA256: `%s`" % (arch, sha)
                       for arch, sha in sorted(self.values.items())]
             lines += ["", REVIEW[self.family]]
-        lines += ["", "This issue is kept current by the workflow: it is edited when upstream "
-                  "moves again and closed once the pin catches up."]
+        lines += ["", ("This issue is kept current by the workflow: it is edited when upstream "
+                       + "moves again and closed once the pin catches up.")]
         return "\n".join(lines)
 
 
@@ -293,8 +294,9 @@ def bot_issues(repo: str, family: str, cwd: Path, runner) -> list[dict]:
     is checked again here, so a look-alike issue opened by anyone else never
     counts: it can neither silence a report nor be edited or closed by it.
     """
-    raw = _checked(["gh", "api", "repos/%s/issues?state=open&creator=github-actions%%5Bbot%%5D"
-                    "&per_page=%d" % (repo, PAGE)], cwd, runner)
+    lookup = ("repos/%s/issues?state=open&creator=github-actions%%5Bbot%%5D&per_page=%d"
+              % (repo, PAGE))
+    raw = _checked(["gh", "api", lookup], cwd, runner)
     try:
         entries = json.loads(raw)
     except ValueError:
