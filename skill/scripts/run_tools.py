@@ -27,98 +27,6 @@ from scripts import venv_scope
 from scripts.progress import NullProgress, make_progress
 from scripts.tools.legacy_sarif import (
     LEGACY_SARIF_TOOLS, SEMGREP_SCANNER_SCOPE_ARGS, TOOL_CMD, with_semgrep_excludes)
-
-# #1762 (ARC-2609514778) part 1 of 4: the scanner-owned configuration block moved
-# to `scanner_config` whole. These names stay bound HERE because something still
-# reads them through `run_tools.<name>`: the two exclude tuples are read by
-# `tests/test_run_tools_core.py`, `tests/test_run_tools_dispatch.py` and
-# `tests/test_venv_scope.py` (part 4 took their one reader here,
-# `_bandit_exclude_value`); `_working_dir_flags` and the dispatch loop spell
-# `TARGET_MOUNT` (`tests/test_code_scanning_reports.py` pins it against the
-# report side); two of the five ledgers the manifest reads back move with the
-# block and are cleared by `run_tools()`; and the staged-config constants are
-# read by `tests/test_run_tools_core.py` and `tests/test_run_tools_dispatch.py`.
-# A ledger is the SAME dict object either way, so `.clear()`/`.pop()` here and
-# `[tool] = ...` there address one ledger.
-#
-# CONSTANTS ONLY, and every one a READ binding. `mock.patch` of a name that moved
-# must target `scanner_config`, where the moved code looks it up -- patching a
-# binding here reaches nothing, whether or not the name appears below. So no moved
-# FUNCTION is bound here: every call `run_tools` still makes is spelled
-# `scanner_config.<name>`, and the moved functions it no longer calls at all are
-# not re-bound either. The `tool_capture`, `tools_manifest` and `venv_scope`
-# blocks below obey the same rule.
-# `tests/test_scanner_config.py::TestThePatchRuleIsOneRule` enforces both halves
-# from all four modules' own ASTs, and holds the same list each block binds.
-#
-# `noqa: F401` marks the ones only a TEST reads through this module: ruff cannot
-# see a use from here, and an `__all__` would silence it by also narrowing a
-# star-import nothing asks for.
-from scripts.scanner_config import (
-    BANDIT_DEFAULT_EXCLUDES,      # noqa: F401
-    BANDIT_SCANNER_EXCLUDES,      # noqa: F401
-    BANDIT_INI_NAME,              # noqa: F401
-    BANDIT_INI_TEXT,              # noqa: F401
-    CONFIG_TARGET_BANDIT,         # noqa: F401
-    SCANNER_CONFIG_MOUNT,         # noqa: F401
-    SCANNER_OWNED_CONFIG,         # noqa: F401
-    TRIVY_IGNOREFILE_NAME,        # noqa: F401
-    TRIVY_IGNOREFILE_TEXT,        # noqa: F401
-    TARGET_MOUNT,                 # `_working_dir_flags` and the two `-v` specs
-    _SCANNER_CONFIG_POSTURE,      # two of the manifest's five ledgers, both
-    _SUPPRESSION_POSTURE,         # cleared by `run_tools()`; only this one popped
-)
-
-# #1762 (ARC-2609514778, ARC-3243338950) part 2 of 4: the capture path -- one container run
-# supervised, bounded, classified, redacted and written -- moved to `tool_capture` whole. Three
-# names stay bound HERE, all three READ bindings under the same patch rule as the block above:
-# `run_tools()` multiplies `TOOL_TIMEOUT` into the egress session's ceiling and
-# `tests/test_run_tools_containment.py` reads it through this module; `ingest_tools` imports
-# `MAX_TOOL_OUTPUT_BYTES` from here as the shared cap and `tests/test_run_tools_core.py` and
-# `tests/test_run_tools_languages.py` read it through this module (part 3 took its one reader here,
-# the manifest's eslint capture read, with the writer); and `_REDACTED_CAPTURES` is the ledger
-# `run_tools()` clears and the dispatch loop discards a withdrawn capture from -- the SAME set
-# object either way, so `.clear()` here and `.add()` there address one ledger. `_capture_run` is the
-# one moved FUNCTION this module still calls, and it is called `tool_capture._capture_run(...)`.
-from scripts.tool_capture import (
-    MAX_TOOL_OUTPUT_BYTES,        # noqa: F401
-    TOOL_TIMEOUT,
-    _REDACTED_CAPTURES,
-)
-
-# #1762 (ARC-2609514778) part 3 of 4: the tools manifest -- `tools-manifest.json`'s
-# schema, its `excluded_dirs` row builder and the two posture ledgers whose only
-# reader is the writer -- moved to `tools_manifest` whole. Three names stay bound
-# HERE, all three READ bindings under the same patch rule as the blocks above:
-# `VENV_MAX_DEPTH` is read through this module by `tests/test_run_tools_core.py`
-# and `tests/test_tools_manifest.py`; both posture maps are cleared by
-# `run_tools()` and filled by the dispatch loop where the argv is built -- the
-# SAME dict object either way.
-from scripts.tools_manifest import (
-    VENV_MAX_DEPTH,               # noqa: F401
-    _IGNORE_FILE_POSTURE,
-    _NETWORK_POSTURE,
-)
-
-# #1762 (ARC-2609514778) part 4 of 4: the virtualenv scope -- finding the virtualenvs under the
-# target, deciding which of them a scanner's exclusion knob may be handed, and rendering that onto
-# each tool's argv -- moved to `venv_scope` whole, with the manifest rows it produces still
-# published by `tools_manifest.write_manifest`. ONE name stays bound HERE, a READ binding under the
-# same patch rule as the blocks above: `VENV_MARKER` is read through this module by
-# `tests/test_run_tools_core.py` and `tests/test_run_tools_dispatch.py`, which plant the marker the
-# walk keys on (`ingest_tools` imports it, and `has_venv_shape`, from `venv_scope` directly -- one
-# predicate and one token for the scan side and the ingest side). The three moved FUNCTIONS this
-# module still calls are spelled `venv_scope.<name>`: `find_virtualenvs` and `partition_venv_dirs`
-# in `run_tools()`'s own default and in `main`, and `_with_venv_excludes` in the dispatch loop.
-#
-# `REDTEAM`/`SECURITY_MODES` did NOT move: the mode vocabulary is
-# `scripts.tools.base`'s, this module's pair is the local mirror its argparse
-# `choices` reads (and `venv_scope` imports `REDTEAM` from `tools.base`, as
-# `scanner_config` does).
-from scripts.venv_scope import (
-    VENV_MARKER,                  # noqa: F401
-)
-
 # JS/TS SAST runs via the eslint-security ADAPTER (bundled flat config);
 # the legacy bare-eslint tool can never run on arbitrary targets (eslint >=9
 # requires a project eslint.config.js) and was retired from language selection
@@ -360,7 +268,7 @@ def _working_dir_flags(tool):
     the two in DISPATCH_KEEPS_TARGET_CWD, for which the cwd is a scan input
     (see above)."""
     inside = tool in DISPATCH_KEEPS_TARGET_CWD
-    return ["-w", TARGET_MOUNT if inside else ADAPTER_EMPTY_CWD]
+    return ["-w", scanner_config.TARGET_MOUNT if inside else ADAPTER_EMPTY_CWD]
 
 
 def _popen_runner(cmd, stdout=None, stderr=None, timeout=None, env=None):
@@ -435,7 +343,7 @@ def run_tools(target, tools, out_dir, image=tools_image.LOCAL_NAME,
     runner = runner or _popen_runner   # #run7 COD-A2A: stream by default, don't buffer-then-drop
     # Reset both ledgers so this scan never inherits a previous run's capture
     # sanitization or container-cleanup disclosure (#1639 P11 F5).
-    _REDACTED_CAPTURES.clear()
+    tool_capture._REDACTED_CAPTURES.clear()
     tool_capture._CONTAINER_CLEANUP_FAILURES.clear()
     # #1839 (review round 1 I2): the default PARTITIONS. The raw
     # `find_virtualenvs` list still holds the rows nothing may be told to skip
@@ -470,13 +378,13 @@ def run_tools(target, tools, out_dir, image=tools_image.LOCAL_NAME,
     # construction as `tool_capture._REDACTED_CAPTURES` -- cleared here, filled
     # where the argv is built, read back by `write_manifest`. A claim written
     # from intent would survive the flags going away; this one does not.
-    _NETWORK_POSTURE.clear()
-    _SUPPRESSION_POSTURE.clear()   # #1839: this run's, never the last one's
-    _SCANNER_CONFIG_POSTURE.clear()
-    _IGNORE_FILE_POSTURE.clear()
+    tools_manifest._NETWORK_POSTURE.clear()
+    scanner_config._SUPPRESSION_POSTURE.clear()   # #1839: this run's, never the last one's
+    scanner_config._SCANNER_CONFIG_POSTURE.clear()
+    tools_manifest._IGNORE_FILE_POSTURE.clear()
     tools_manifest._SCANNER_SCOPE_POSTURE.clear()
     with egress.session(docker_bin, tools, docker_runner, run_id=run_id,
-                        max_seconds=TOOL_TIMEOUT * total
+                        max_seconds=tool_capture.TOOL_TIMEOUT * total
                         + egress.SIDECAR_SLACK) as online_egress:
         written = _run_selected(target, tools, out_dir, image, docker_runner,
                                 progress, total, venv_dirs, docker_context,
@@ -503,7 +411,7 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
         # `excluded_scope` entry carrying the reason -- so the gap is
         # certified against, exactly like an absent scanner.
         if online_egress.refuses(tool):
-            _NETWORK_POSTURE[tool] = egress.UNAVAILABLE
+            tools_manifest._NETWORK_POSTURE[tool] = egress.UNAVAILABLE
             progress.note("[%d/%d] %s skipped: online egress unavailable"
                           % (index, total, tool))
             continue
@@ -536,9 +444,10 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                           + _working_dir_flags(tool)
                           + config_mount
                           + ["--network", "none",
-                             "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
+                             "-v", "%s:%s:ro" % (
+                                 os.path.abspath(target), scanner_config.TARGET_MOUNT),
                              image] + cmd)
-                _NETWORK_POSTURE[tool] = egress.NO_NETWORK
+                tools_manifest._NETWORK_POSTURE[tool] = egress.NO_NETWORK
                 scanner_config._record_suppression_posture(
                     tool, scanner_config._suppression_flag_on(tool, cmd),
                     security_mode)
@@ -560,10 +469,10 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                       + scanner_config.privilege_drop_flags())
             if online_egress.serves(tool):
                 docker.extend(online_egress.flags_for(tool))
-                _NETWORK_POSTURE[tool] = online_egress.posture_for(tool)
+                tools_manifest._NETWORK_POSTURE[tool] = online_egress.posture_for(tool)
             else:
                 docker.extend(["--network", "none"])
-                _NETWORK_POSTURE[tool] = egress.NO_NETWORK
+                tools_manifest._NETWORK_POSTURE[tool] = egress.NO_NETWORK
             docker.extend(_working_dir_flags(tool))
             # Mount the checkout's adapter code over the image's baked-in copy
             # so local adapter fixes take effect without an image rebuild
@@ -574,12 +483,13 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                     tool, target, security_mode) as (
                     ignore_mount, ignore_posture, ignore_identity):
                 if ignore_mount is None:
-                    _NETWORK_POSTURE.pop(tool, None)
+                    tools_manifest._NETWORK_POSTURE.pop(tool, None)
                     progress.note("[%d/%d] %s skipped: ignore-file "
                                   "mount unavailable" % (index, total, tool))
                     continue
                 docker.extend([
-                    "-v", "%s:%s:ro" % (os.path.abspath(target), TARGET_MOUNT),
+                    "-v", "%s:%s:ro" % (
+                        os.path.abspath(target), scanner_config.TARGET_MOUNT),
                     "-v", "%s:/opt/panopticon/scripts:ro" % scripts_dir])
                 docker.extend(ignore_mount)
                 docker.extend([image, "python3", "/opt/panopticon/scripts/_run_adapter.py",
@@ -611,9 +521,9 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                             if done:
                                 os.unlink(done)
                                 done = None
-                            _REDACTED_CAPTURES.discard(tool)
-                            _NETWORK_POSTURE.pop(tool, None)
-                            _SUPPRESSION_POSTURE.pop(tool, None)
+                            tool_capture._REDACTED_CAPTURES.discard(tool)
+                            tools_manifest._NETWORK_POSTURE.pop(tool, None)
+                            scanner_config._SUPPRESSION_POSTURE.pop(tool, None)
                             progress.note("[%d/%d] %s skipped: ignore-file "
                                           "mountpoint changed during capture"
                                           % (index, total, tool))
@@ -624,7 +534,7 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                     mounted = (ignore_mount and len(ignore_mount) == 2
                                and ignore_mount[0] == "-v"
                                and ignore_mount[1] in docker)
-                    _IGNORE_FILE_POSTURE[tool] = (
+                    tools_manifest._IGNORE_FILE_POSTURE[tool] = (
                         "neutralised" if ignore_posture == "neutralised" and mounted
                         else "honoured" if ignore_posture == "neutralised"
                         else ignore_posture)

@@ -32,7 +32,7 @@ from scripts.tools.sarif_utils import (
     _rules_index,
     sarif_to_findings,
 )
-from scripts.run_tools import MAX_TOOL_OUTPUT_BYTES   # #run7 OPS-D1A: shared cap
+from scripts.tool_capture import MAX_TOOL_OUTPUT_BYTES   # #run7 OPS-D1A: shared cap
 # #1762 part 4: the virtualenv block left `run_tools` for `venv_scope`, so the
 # marker token and the shape predicate come from their owner -- ONE definition of
 # each, which is #1839's whole point (the scan side and this side must not drift).

@@ -7,6 +7,7 @@ import unittest
 from unittest import mock
 
 import scripts.run_tools as rt
+import scripts.tool_capture as tc
 import scripts.tools_manifest as tm
 import scripts.tools.egress as rt_egress
 
@@ -198,7 +199,7 @@ class TestOnlineEgress(unittest.TestCase):
              "--memory", "256m", "--memory-swap", "256m",
              "--cpus", "1", "--pids-limit", "64",
              "-v", mounts[0], "-v", mounts[1], rt_egress.PROXY_IMAGE,
-             "timeout", str(rt.TOOL_TIMEOUT + rt_egress.SIDECAR_SLACK),
+             "timeout", str(tc.TOOL_TIMEOUT + rt_egress.SIDECAR_SLACK),
              "/usr/bin/tinyproxy", "-d", "-c", "/etc/tinyproxy/tinyproxy.conf"],
             [docker, "network", "connect", "--ip", "172.28.0.2", network, proxy],
             [docker, "inspect", "--format", "{{.State.Running}}", proxy],
@@ -316,7 +317,7 @@ class TestOnlineEgress(unittest.TestCase):
                         if _DockerStub.verb(c) == "run -d"][0]
                 self.assertEqual(
                     argv[argv.index("timeout") + 1],
-                    str(rt.TOOL_TIMEOUT * len(tools) + rt_egress.SIDECAR_SLACK))
+                    str(tc.TOOL_TIMEOUT * len(tools) + rt_egress.SIDECAR_SLACK))
 
 
 class TestManifestNetworkPosture(unittest.TestCase):
@@ -366,7 +367,7 @@ class TestManifestNetworkPosture(unittest.TestCase):
         # construction as `redacted`: the docker-absent path writes a manifest
         # without ever running the loop, and it must claim nothing rather than
         # assert a posture nobody established.
-        rt._NETWORK_POSTURE.clear()
+        tm._NETWORK_POSTURE.clear()
         with tempfile.TemporaryDirectory() as d:
             payload = tm.write_manifest(os.path.join(d, "m.json"),
                                         ["semgrep"], [])

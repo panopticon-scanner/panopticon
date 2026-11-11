@@ -18,22 +18,16 @@ id file its own argv named -- so splitting supervision from the kill path would
 separate the two halves of one contract and leave a `--rm` container running on
 every timeout.
 
-Separate from `run_tools` because that module was 2215 lines, outside this
-repo's own 700-line ratchet, and absorbing every new scanner policy because
-nothing pushed back (#1762, ARC-2609514778). This is part 2 of 4 of that split
-and it moved the block whole: no string, flag, path, byte, message or exception
-changed, and `tests/test_tool_capture.py` compares the bytes this module
-writes, the rows the entry point returns and the lines it prints against a
-golden captured before the move.
+Separate from `run_tools` since #1762 (ARC-2609514778), when that dispatcher
+exceeded this repo's own 700-line ratchet.
 
 The arrow points ONE way: nothing here imports `run_tools`, which imports this.
 That is why the two ceilings live here -- `TOOL_TIMEOUT` is the watchdog's
 default and `MAX_TOOL_OUTPUT_BYTES` the spool's cap, both read on this side of
 the seam -- while the docker argv, the runner seam and the dispatch loop that
 calls `_capture_run` stayed behind (the manifest writer, which reads the cap and
-the redaction ledger back, is `tools_manifest`, part 3 of the same split).
-`run_tools` binds both ceilings and the redaction ledger back for its own reads
-and its importers'. Stdlib-only.
+the redaction ledger back, is `tools_manifest`). `run_tools` reads both ceilings
+and the redaction ledger through this module. Stdlib-only.
 """
 import json
 import os

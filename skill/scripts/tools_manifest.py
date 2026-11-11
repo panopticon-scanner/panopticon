@@ -22,20 +22,13 @@ one's file.
 Three of the five posture ledgers live here, beside their only reader: network
 (#1645), the gitleaks ignore file and Semgrep's scanner-scope policy. The other
 two -- inline suppression and scanner config -- belong to
-`scanner_config`, which stages the files they are about. `run_tools` binds all
-five back and is where each is cleared at the top of a scan and filled where the
-argv is built; a ledger is the SAME dict object either way, so one name is one
-ledger. The operational cleanup-failure ledger lives in `tool_capture`, where
-the failure happens; this writer reads it after `run_tools` clears it per run.
+`scanner_config`, which stages the files they are about. `run_tools` clears and
+fills every ledger through its owning module. The operational cleanup-failure
+ledger lives in `tool_capture`, where the failure happens; this writer reads it
+after `run_tools` clears it per run.
 
-Separate from `run_tools` because that module was 2215 lines, outside this
-repo's own 700-line ratchet, and absorbing every new scanner policy because
-nothing pushed back (#1762, ARC-2609514778). This is part 3 of 4 of that split
-and it moved the block whole: no key, value, order, byte or message changed, and
-`tests/test_tools_manifest.py` compares the exact BYTES of seven manifests --
-both security modes, `run_id` set and unset, the eslint coverage read, an
-adapter refused its egress and the docker-absent shape -- against a golden
-captured before the move.
+Separate from `run_tools` since #1762 (ARC-2609514778), when that dispatcher
+exceeded this repo's own 700-line ratchet.
 
 The arrow points ONE way: nothing here imports `run_tools`, which imports this.
 That is why `VENV_MAX_DEPTH` lives here while the walk that reads it back
@@ -66,9 +59,8 @@ from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS
 # this module and never the reverse, and `write_manifest`'s `depth_bound` default
 # is bound at `def` time, so the bound cannot be read back across the seam.
 # `venv_scope.find_virtualenvs` -- the walk that is actually bounded by it, and
-# its other reader -- imports it from here; `run_tools` binds it back for the
-# tests that read it there. Venvs live near the root, and that walk is paid on
-# every scan.
+# its other reader -- imports it from here. Venvs live near the root, and that
+# walk is paid on every scan.
 VENV_MAX_DEPTH = 3
 LANGUAGE_DETECTION_SKIPS_MAX = language_detection.SKIPS_MAX
 

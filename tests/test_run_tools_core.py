@@ -102,7 +102,7 @@ class TestRunTools(unittest.TestCase):
             raise sp.TimeoutExpired(cmd, kw.get('timeout') or 0)
         with tempfile.TemporaryDirectory() as d:
             paths = rt.run_tools(d, ["semgrep"], os.path.join(d, "out"), runner=runner)
-            self.assertEqual(seen['timeout'], rt.TOOL_TIMEOUT)  # exact timeout, not just non-None
+            self.assertEqual(seen['timeout'], tc.TOOL_TIMEOUT)  # exact timeout, not just non-None
             self.assertEqual(paths, [])                         # timed-out tool skipped, no raise
 
     def test_run_tools_skips_tool_on_unexpected_returncode(self):
@@ -351,7 +351,7 @@ class TestRunTools(unittest.TestCase):
         # the same split the gate uses: under redteam bandit honours no
         # target-authored config, under `standard` an operator's own `.bandit`
         # is theirs to keep. A target with none gets ours either way.
-        owned = "%s/%s" % (rt.SCANNER_CONFIG_MOUNT, rt.BANDIT_INI_NAME)
+        owned = "%s/%s" % (sc.SCANNER_CONFIG_MOUNT, sc.BANDIT_INI_NAME)
         for mode in rt.SECURITY_MODES:
             for plant in (True, False):
                 expected = ("/src/.bandit" if plant and mode != "redteam"
@@ -384,7 +384,7 @@ class TestRunTools(unittest.TestCase):
                             calls[0])
                     else:
                         # Nothing of ours is staged, so there is no mount.
-                        self.assertNotIn("%s:ro" % rt.SCANNER_CONFIG_MOUNT,
+                        self.assertNotIn("%s:ro" % sc.SCANNER_CONFIG_MOUNT,
                                          " ".join(calls[0]))
 
     def test_run_tools_continues_after_one_tool_fails(self):
@@ -397,7 +397,7 @@ class TestRunTools(unittest.TestCase):
 
     def test_run_tools_truncates_oversized_output_with_marker(self):
         """#1111: oversized stdout must truncate, not OOM-buffer or silently skip."""
-        huge = b"x" * (rt.MAX_TOOL_OUTPUT_BYTES + 100000)
+        huge = b"x" * (tc.MAX_TOOL_OUTPUT_BYTES + 100000)
 
         class _FakeStream:
             def __init__(self, data):
@@ -538,8 +538,8 @@ class TestVirtualenvExclusion(unittest.TestCase):
             expected = {
                 "semgrep": list(rt.TOOL_CMD["semgrep"]),
                 "bandit": (list(rt.TOOL_CMD["bandit"][:1])
-                           + ["--ini", "%s/%s" % (rt.SCANNER_CONFIG_MOUNT,
-                                                  rt.BANDIT_INI_NAME)]
+                           + ["--ini", "%s/%s" % (sc.SCANNER_CONFIG_MOUNT,
+                                                  sc.BANDIT_INI_NAME)]
                            + list(rt.TOOL_CMD["bandit"][1:at])
                            + ["--exclude=%s" % vs._bandit_exclude_value([])]
                            + list(rt.TOOL_CMD["bandit"][at:]))}
@@ -563,7 +563,7 @@ class TestVirtualenvExclusion(unittest.TestCase):
             self.assertEqual(len(flag), 1, calls[0])
             entries = flag[0][len("--exclude="):].split(",")
             self.assertIn("/src/env", entries)          # container-side path
-            for default in rt.BANDIT_DEFAULT_EXCLUDES:  # never WIDEN the scan
+            for default in sc.BANDIT_DEFAULT_EXCLUDES:  # never WIDEN the scan
                 self.assertIn(default, entries)
 
     def test_bandit_cli_exclude_is_composed_of_scanner_owned_entries(self):
@@ -586,7 +586,7 @@ class TestVirtualenvExclusion(unittest.TestCase):
             rt.run_tools(d, ["bandit"], os.path.join(d, "out"), runner=runner)
             flag = [a for a in calls[0] if a.startswith("--exclude=")]
             entries = flag[0][len("--exclude="):].split(",")
-            for entry in rt.BANDIT_SCANNER_EXCLUDES + (".git", "/src/.venv"):
+            for entry in sc.BANDIT_SCANNER_EXCLUDES + (".git", "/src/.venv"):
                 self.assertIn(entry, entries)
             self.assertNotIn("/tests", entries)     # the target's choice: no
             self.assertIn("--ini", calls[0])        # the ini pin is still there
@@ -666,7 +666,7 @@ class TestVirtualenvExclusion(unittest.TestCase):
             self.assertEqual(written["excluded_dirs"],
                              [{"path": ".venv", "reason": "pyvenv.cfg",
                                "skipped": True}])
-            self.assertEqual(written["depth_bound"], rt.VENV_MAX_DEPTH)
+            self.assertEqual(written["depth_bound"], tm.VENV_MAX_DEPTH)
 
     # #1740 (ARC-F2A): the scan side of "no drop on a directory NAME alone".
     # `find_virtualenvs` flags `venv`/`.venv` by name with no `pyvenv.cfg`
@@ -705,7 +705,7 @@ class TestVirtualenvExclusion(unittest.TestCase):
                    if a.startswith("--exclude=")][0][len("--exclude="):].split(",")
         self.assertNotIn("/src/.venv", entries)
         self.assertNotIn("/src/venv", entries)
-        for owned in rt.BANDIT_SCANNER_EXCLUDES:
+        for owned in sc.BANDIT_SCANNER_EXCLUDES:
             self.assertIn(owned, entries)
 
     def test_a_redteam_direct_caller_gets_no_venv_skip_by_default(self):
@@ -849,7 +849,7 @@ class TestATargetFileCannotNarrowTheScan(unittest.TestCase):
             fh.write("import os\n")
         for rel in ("src", "*"):
             os.makedirs(os.path.join(root, rel), exist_ok=True)
-            with open(os.path.join(root, rel, rt.VENV_MARKER), "w") as fh:
+            with open(os.path.join(root, rel, vs.VENV_MARKER), "w") as fh:
                 fh.write("home = /usr\n")
         os.makedirs(os.path.join(root, "*", "bin"))
         with open(os.path.join(root, "*", "bin", "python"), "w") as fh:
@@ -858,7 +858,7 @@ class TestATargetFileCannotNarrowTheScan(unittest.TestCase):
     def test_the_manifest_carries_the_note_for_a_directory_it_scanned(self):
         with tempfile.TemporaryDirectory() as d:
             _skip, rows = vs.partition_venv_dirs(
-                [{"path": "*", "reason": rt.VENV_MARKER}], "standard")
+                [{"path": "*", "reason": vs.VENV_MARKER}], "standard")
             payload = tm.write_manifest(os.path.join(d, "m.json"), ["semgrep"],
                                         [], excluded_dirs=rows)
         row = payload["excluded_dirs"][0]
@@ -912,7 +912,7 @@ class TestNoTargetTextReachesAScannerConfig(unittest.TestCase):
     def _shaped_venv(self, root, name):
         """A directory the SHAPE test accepts, under a hostile name."""
         os.makedirs(os.path.join(root, name, "bin"), exist_ok=True)
-        for rel in (rt.VENV_MARKER, os.path.join("bin", "python")):
+        for rel in (vs.VENV_MARKER, os.path.join("bin", "python")):
             with open(os.path.join(root, name, rel), "w") as fh:
                 fh.write("")
 
@@ -920,13 +920,13 @@ class TestNoTargetTextReachesAScannerConfig(unittest.TestCase):
         # The ini's ONLY job is to pre-empt bandit's `.bandit` discovery walk
         # (#run7). Nothing in it comes from the target, so nothing in the tree
         # can change a byte of it.
-        baseline = rt.BANDIT_INI_TEXT
+        baseline = sc.BANDIT_INI_TEXT
         for name in self.HOSTILE:
             with self.subTest(name=name), tempfile.TemporaryDirectory() as d:
                 self._shaped_venv(d, name)
                 skip, _rows = vs.partition_venv_dirs(vs.find_virtualenvs(d),
                                                      "standard")
-                self.assertEqual(rt.BANDIT_INI_TEXT, baseline)
+                self.assertEqual(sc.BANDIT_INI_TEXT, baseline)
                 # ...and the CLI value is the scanner-owned baseline exactly:
                 # nothing hostile was added, so nothing can split it either.
                 cmd = vs._with_venv_excludes("bandit",
@@ -946,7 +946,7 @@ class TestNoTargetTextReachesAScannerConfig(unittest.TestCase):
             return fake
         with tempfile.TemporaryDirectory() as d:
             os.makedirs(os.path.join(d, "src"))
-            for rel in ("app.py", rt.VENV_MARKER):
+            for rel in ("app.py", vs.VENV_MARKER):
                 with open(os.path.join(d, "src", rel), "w") as fh:
                     fh.write("")
             rt.run_tools(d, ["semgrep", "trivy", "bandit"],
@@ -964,7 +964,7 @@ class TestNoTargetTextReachesAScannerConfig(unittest.TestCase):
         # tool lands in `missing`, which is the fail-closed direction.
         # #1839: trivy is staged the same way now, so it fails closed the same
         # way (the ignore list being the scanner's is not optional).
-        for staged in sorted(rt.SCANNER_OWNED_CONFIG):
+        for staged in sorted(sc.SCANNER_OWNED_CONFIG):
             calls = []
             fake = _FakeResult(returncode=0, stdout=b'{"runs":[]}', stderr=b'')
 
