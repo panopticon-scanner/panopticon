@@ -10,7 +10,8 @@ similar results, and CRITICAL/HIGH findings are caught consistently.
 The runs must share `meta.version`, `meta.ocrdb_version` and the health
 basis's `review_type`, `layout_fingerprint` and `profile`, and be full reviews.
 A delta comparison would also need the base and head anchors to match, and v1
-does not do that. The scanned commit (`meta.target_commit`) must be recorded
+does not do that. The scanned commit (`meta.target_commit`, a full SHA-1 or
+SHA-256 object name; any other shape reads as unrecorded) must be recorded
 and equal on every run, and no run may be dirty (`meta.target_dirty`; absent
 means unknown, never clean). `--allow-unknown-commit` accepts runs that
 recorded neither fact, and the summary's first line then says the commit is
@@ -34,7 +35,8 @@ MATCH KEY. What makes two findings from different runs the same finding:
   one. The commit is pinned, so code does not move between runs, and W only
   absorbs citation jitter. A finding naming a file but no line clusters with
   the other lineless ones in its bucket. A finding with no location is
-  bucketed on its category alone.
+  bucketed on its category alone. Paths compare exactly as written, apart from
+  a leading `./` (`evidence.norm_path`, the #2988 policy).
 - Panel and OCRDb code are not in the key, because two runs can file one issue
   under different panels or with and without a code. Both are listed per
   cluster.
@@ -45,11 +47,17 @@ MATCH KEY. What makes two findings from different runs the same finding:
 Severity per run is the highest severity that run gave inside the cluster.
 A run whose own findings in one cluster disagree on severity is listed.
 
+The output does not depend on input order. A cluster's representative title,
+file and line come from its most severe member, then by file, line and title,
+so reordering the findings inside a run changes nothing, and reordering the
+runs only permutes the per-run lists.
+
 No pass/fail thresholds: those come after real repeat runs.
 """
 import argparse
 import json
 import os
+import re
 import sys
 if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
     import runpy
@@ -72,6 +80,8 @@ IDENTITY = (
     ("profile", lambda r: _basis(r).get("profile")),
 )
 TITLE_LIMIT = 100
+# The schema's `meta.target_commit` pattern (#3560).
+COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
 
 class Refused(Exception):
@@ -94,9 +104,37 @@ def _basis(report):
     return _dict(_dict(_summary(report).get("health")).get("basis"))
 
 
+def _shape_error(path):
+    """Why the file at `path` cannot be merged, or None. Checked before the shared
+    reader, which assumes these shapes."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            raw = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return "cannot read it (%s)" % exc
+    if not isinstance(raw, dict):
+        return "its top level is not an object"
+    meta = raw.get("meta", {})
+    if not isinstance(meta, dict):
+        return "its meta is not an object"
+    parts = meta.get("parts", [])
+    if not isinstance(parts, list) or not all(isinstance(p, str) for p in parts):
+        return "its meta.parts is not a list of file names"
+    disc = meta.get("discarded_claims_file")
+    if disc is not None and not isinstance(disc, str):
+        return "its meta.discarded_claims_file is not a file name"
+    return None
+
+
 def load(path):
     """The report at `path` with its continuation parts merged; refuse an unreadable one."""
-    report = render._read_json_report(path)
+    problem = _shape_error(path)
+    if problem:
+        raise Refused("report %s is malformed: %s" % (path, problem))
+    try:
+        report = render._read_json_report(path)
+    except (AttributeError, TypeError) as exc:     # a part or sibling that is not an object
+        raise Refused("report %s has a malformed continuation file (%s)" % (path, exc))
     if not isinstance(report, dict):
         raise Refused("cannot read report %s" % path)
     if not isinstance(report.get("findings"), list):
@@ -119,6 +157,9 @@ def check_inputs(reports, allow_unknown_commit=False):
     shared = {}
     for label, read in IDENTITY:
         values = [read(r) for r in reports]
+        if any(v is None for v in values):
+            raise Refused("%s is not recorded on every run: %s" % (label, ", ".join(
+                "run%d=%r" % (i + 1, v) for i, v in enumerate(values))))
         if len(set(map(json.dumps, values))) != 1:
             raise Refused(_mixed(label, values))
         shared[label] = values[0]
@@ -126,7 +167,7 @@ def check_inputs(reports, allow_unknown_commit=False):
         raise Refused("only full reviews can be compared; these are %r reviews (a delta "
                       "comparison also needs matching base and head anchors)"
                       % shared["review_type"])
-    commits = [_meta(r).get("target_commit") for r in reports]
+    commits = [_commit(_meta(r).get("target_commit")) for r in reports]
     dirty = [_meta(r).get("target_dirty") for r in reports]
     if any(d is True for d in dirty):
         raise Refused("a dirty tree was scanned: " + ", ".join(
@@ -142,6 +183,11 @@ def check_inputs(reports, allow_unknown_commit=False):
     shared["target_commit"] = known[0] if known else None
     shared["commit_verified"] = verified
     return shared
+
+
+def _commit(value):
+    """`value` when it has the schema's commit shape, else None (unrecorded)."""
+    return value if isinstance(value, str) and COMMIT.fullmatch(value) else None
 
 
 def _span(finding):
@@ -212,9 +258,18 @@ def _top(severities):
     return max(known, key=RANK.__getitem__) if known else None
 
 
+def _representative_order(finding, span):
+    """A total order over findings that ignores where they sat in the input."""
+    severity = _severity(finding)
+    return (-RANK[severity] if severity else 1,
+            evidence.norm_path(evidence.location_of(finding).get("file")),
+            span is None, span or (0, 0), str(finding.get("title") or ""),
+            json.dumps(finding, sort_keys=True, default=str))
+
+
 def describe(number, key, members, n_runs):
     """One cluster's record: where it is, who found it and at what severity."""
-    first = min(members, key=lambda m: m[0])[1]
+    first = min(members, key=lambda m: _representative_order(m[1], m[2]))[1]
     loc = evidence.location_of(first)
     spans = [m[2] for m in members if m[2] is not None]
     counts = [0] * n_runs

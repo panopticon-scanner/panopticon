@@ -146,6 +146,29 @@ class TestRefusals(Workspace):
         doc = self.compare(report(), report())
         self.assertTrue(cr.summary_lines(doc)[0].startswith("compare_runs: 2 runs"))
 
+    def test_a_commit_out_of_shape_reads_as_unknown(self):
+        for value in (5, ["x"], "", SHA.upper(), SHA[:12], {"a": 1}):
+            with self.subTest(value=value):
+                other = report(meta={"target_commit": value})
+                self.assertIn("--allow-unknown-commit", self.refused(report(), other))
+                doc = self.compare(report(), other, allow_unknown_commit=True)
+                self.assertFalse(doc["identity"]["commit_verified"])
+                self.assertEqual(SHA, doc["identity"]["target_commit"])
+
+    def test_a_dirty_flag_that_is_not_a_boolean_reads_as_unknown(self):
+        other = report(meta={"target_dirty": "false"})
+        self.assertIn("--allow-unknown-commit", self.refused(report(), other))
+
+    def test_an_unrecorded_identity_is_refused_even_when_shared(self):
+        for label, over in (("version", {"meta": {"version": None}}),
+                            ("ocrdb_version", {"meta": {"ocrdb_version": DROP}}),
+                            ("layout_fingerprint", {"layout_fingerprint": None}),
+                            ("profile", {"profile": None})):
+            with self.subTest(label=label):
+                message = self.refused(report(**over), report(**over))
+                self.assertIn("%s is not recorded on every run" % label, message)
+                self.assertIn("not recorded", self.refused(report(), report(**over)))
+
     def test_a_negative_window_is_refused(self):
         self.assertIn("--line-window", self.refused(report(), report(), window=-1))
 
@@ -165,6 +188,36 @@ class TestRefusals(Workspace):
         self.write("split-report_part1.json", {"findings": [agent(90, title="y")]})
         doc = cr.compare([path, other])
         self.assertEqual(2, doc["agreement"]["all"])
+
+
+class TestMalformedInput(Workspace):
+    def refused_main(self, *files):
+        err = io.StringIO()
+        with redirect_stderr(err), redirect_stdout(io.StringIO()):
+            code = cr.main(list(files))
+        self.assertEqual(cr.REFUSED, code)
+        return err.getvalue()
+
+    def test_each_bad_shape_exits_2_naming_the_file(self):
+        ok = self.write("ok-report.json", report())
+        bad_part = report(meta={"parts": ["bp-report_part1.json"]})
+        self.write("bp-report_part1.json", ["not", "an", "object"])
+        cases = {"list-report.json": ([report()], "top level is not an object"),
+                 "meta-report.json": (dict(report(), meta="m"), "meta is not an object"),
+                 "parts-report.json": (report(meta={"parts": "p_part1.json"}),
+                                       "meta.parts is not a list of file names"),
+                 "partnames-report.json": (report(meta={"parts": [3]}),
+                                           "meta.parts is not a list of file names"),
+                 "disc-report.json": (report(meta={"discarded_claims_file": 7}),
+                                      "discarded_claims_file is not a file name"),
+                 "bp-report.json": (bad_part, "malformed continuation file")}
+        for name, (doc, why) in cases.items():
+            with self.subTest(name=name):
+                path = self.write(name, doc)
+                message = self.refused_main(path, ok)
+                self.assertIn(name, message)
+                self.assertIn(why, message)
+                self.assertNotIn("Traceback", message)
 
 
 class TestMatchKey(Workspace):
@@ -217,6 +270,9 @@ class TestMatchKey(Workspace):
         self.assertEqual([[(2, None)], [(2, None)], [(0, None), (1, None)], [(0, 40)]],
                          got)
 
+    def test_a_span_at_the_top_of_a_file_never_joins_a_lineless_finding(self):
+        self.assertEqual(2, len(self.clusters([agent(1, 5)], [agent(None)])))
+
     def test_a_backwards_span_reads_as_its_start(self):
         self.assertEqual((40, 40), cr._span(agent(40, 30)))
         self.assertIsNone(cr._span(agent(True)))
@@ -246,11 +302,46 @@ class TestClusterRecords(Workspace):
         self.assertIn("severity split within a run: run1 HIGH/LOW",
                       "\n".join(cr.summary_lines(doc)))
 
-    def test_the_representative_comes_from_the_earliest_run(self):
-        doc = self.compare(report([]), report([agent(40, title="second")]),
-                           report([agent(41, title="third")]))
-        self.assertEqual("second", doc["clusters"][0]["title"])
+    def test_the_representative_is_the_most_severe_then_the_first_line(self):
+        doc = self.compare(report([]), report([agent(41, title="alpha")]),
+                           report([agent(40, title="zeta")]))
+        self.assertEqual("zeta", doc["clusters"][0]["title"])
         self.assertEqual([40, 41], doc["clusters"][0]["lines"])
+        doc = self.compare(report([agent(40, title="low", severity="LOW")]),
+                           report([agent(43, title="critical", severity="CRITICAL")]))
+        self.assertEqual("critical", doc["clusters"][0]["title"])
+
+
+class TestOrderIndependence(Workspace):
+    RUNS = (
+        [agent(40, title="a"), agent(43, title="b", severity="CRITICAL"), tool(10),
+         agent(None, title="whole file"), agent(file=None, title="repo wide")],
+        [agent(44, title="c", severity="MEDIUM"), tool(300), agent(200, title="far"),
+         agent(None, title="whole file again", severity="LOW")],
+        [agent(48, title="d"), tool(10, rule="B105"), agent(file=None, title="repo")],
+    )
+
+    def doc(self, runs):
+        return cr.compare([self.write("run%d-report.json" % i, report(list(f)))
+                           for i, f in enumerate(runs)])
+
+    def test_reordering_findings_inside_runs_gives_byte_identical_json(self):
+        forward = json.dumps(self.doc(self.RUNS), sort_keys=True)
+        backward = json.dumps(self.doc([list(reversed(f)) for f in self.RUNS]), sort_keys=True)
+        self.assertEqual(forward, backward)
+
+    def test_reordering_runs_only_permutes_the_per_run_lists(self):
+        order = (2, 0, 1)
+        forward = self.doc(self.RUNS)
+        moved = self.doc([list(reversed(self.RUNS[i])) for i in order])
+        per_run = ("present", "counts", "severity")
+        for a, b in zip(forward["clusters"], moved["clusters"]):
+            for key in per_run:
+                b[key] = [b[key][order.index(i)] for i in range(len(order))]
+            b["severity_split"] = {"run%d" % (order[int(k[3:]) - 1] + 1): v
+                                   for k, v in b["severity_split"].items()}
+        self.assertEqual(forward["clusters"], moved["clusters"])
+        self.assertEqual(forward["agreement"], moved["agreement"])
 
 
 class TestCriticalHigh(Workspace):
