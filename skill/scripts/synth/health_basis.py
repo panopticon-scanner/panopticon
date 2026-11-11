@@ -3,6 +3,7 @@ import hashlib
 import json
 
 import scripts.discovery as discovery
+import scripts.repo_config as repo_config
 
 
 LEGACY_NOTE = "basis unknown (report predates #3528)"
@@ -74,7 +75,7 @@ GRADED_MAX_PER_GROUP = discovery.DEFAULT_MAX_PER_GROUP
 PROFILE_NOTE = ("grade provisional: this scan used a non-default group size of %d files (%s; "
                 "the default is %d). A letter is certified only at the default scan settings, "
                 "because the group size changes how much a scan finds in the same code")
-_CAP_SOURCE = {"config": "set by the target's panopticon.yml settings",
+_CAP_SOURCE = {"config": "set by the target's %s settings" % repo_config.CONFIG_NAMES[0],
                "flag": "set by the run's --max-per-group flag"}
 
 
