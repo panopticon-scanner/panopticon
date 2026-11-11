@@ -431,8 +431,9 @@ preinstalled toolchains the job never uses, printing each one's size (on the #35
 after each build show what is left: 91 GB on that run, against 65 GB without the step (#3441). The job
 must not gain an action, a `setup-*` toolchain installer above all, without revisiting that list:
 `tests/test_action_pins.py` pins the job's exact action set and the list. The step after the tools image prints
-its `.Id` and RootFS diff IDs, which is how a change to the job's runner setup is shown not to reach
-the image. The published image comes from `docker-publish.yml`, which pushes without loading.
+its `.Id` and RootFS diff IDs. Layers 26-37 rebuild on every run, so a change to the job's runner
+setup is shown not to reach the image when its layers differ from the base only where a re-run of
+the base differs from itself. The published image comes from `docker-publish.yml`, which pushes without loading.
 
 ### Test-only injection seams
 Two module attributes exist so the unit suite can refuse a real launch, and neither may ever be
