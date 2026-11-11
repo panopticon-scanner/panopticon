@@ -32,6 +32,8 @@ jobs:
     # Inherits contents:read. A changed digest is a warning for manual review.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Check the egress sidecar digest
         run: python3 devtools/bump_pins.py tinyproxy
 
@@ -47,6 +49,9 @@ jobs:
       # pushes branches, so a moved upstream tag would run here with the
       # widest token in the fleet. Dependabot bumps the pin.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # open_pin_pr.py pushes the pin branch with these stored credentials.
+          persist-credentials: true  # zizmor: ignore[artipacked]
 
       - name: Check the pin
         id: check
@@ -77,6 +82,9 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # open_pin_pr.py pushes the pin branch with these stored credentials.
+          persist-credentials: true  # zizmor: ignore[artipacked]
       - name: Check the Trivy pin
         id: check
         run: |
@@ -104,6 +112,9 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # open_pin_pr.py pushes the pin branch with these stored credentials.
+          persist-credentials: true  # zizmor: ignore[artipacked]
       - name: Check the Rust toolchain pin
         id: check
         run: |

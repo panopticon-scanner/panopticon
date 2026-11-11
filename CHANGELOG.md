@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **actionlint and zizmor gate the workflows in the required `lint` job (#3264, audit I4).**
+  They replace the removed workflow `run:` guard (#3513) beside the structural rules in
+  `tests/test_workflow_allowlist.py`. actionlint checks syntax and expressions and runs the runner's
+  shellcheck over every `run:` block; zizmor (`--offline`, failing on medium or higher) audits the
+  security shape. Fixes for its findings: every checkout that pushes nothing sets
+  `persist-credentials: false` (16 sites); the three pin-PR jobs keep their credentials, with the
+  reason inline; `security-fork.yml`'s `pull_request_target` is ignored inline as the #1900 design;
+  two intentional word splits carry scoped shellcheck disables. Both tools are pinned in the `dev`
+  extra and group, where Dependabot updates them.
 - **Armor audit removes duplicate config normalization and measures installed guard hooks (#3531, #3534; #3173 clusters A/E).**
   `load_resolution` now keeps the fail-closed read and five outer-shape checks while trusting the
   driver-bounded artifact instead of maintaining a second field-by-field schema. Headless Claude
