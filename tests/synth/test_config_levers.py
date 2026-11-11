@@ -112,6 +112,13 @@ def test_a_run_mixing_old_and_new_records_reads_its_levers_as_unknown():
         "exclude_paths": None}
 
 
+@pytest.mark.parametrize("coverages", [None, []])
+def test_a_run_with_no_coverage_records_measured_no_levers(coverages):
+    # e.g. a hand-run synthesize.py with no driver-written coverage files
+    levers = _summary(coverages)["health"]["basis"]["config_levers"]
+    assert levers["domain_exclude"] is None and levers["panels_added"] is None
+
+
 def test_the_layout_fingerprint_does_not_see_the_levers():
     plain = _report([{"group": "app", "floor": [], "excluded": [], "effective": ["COD"]}])
     levered = _report([_cov(deterministic=["COD"], scout=["OPS"], panels=["DAT"])],
