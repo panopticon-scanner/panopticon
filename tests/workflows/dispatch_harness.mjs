@@ -96,7 +96,7 @@ async function parallel(thunks) {
 // `log()` lines are the script's operator-facing output, so they are RECORDED
 // rather than dropped -- nothing could observe them before, and #2379 is about
 // what they print. `calls` stays the agent-call record `{prompt, opts}` the
-// pins in tests/test_workflow_dispatch_script.py read (the `opts.label` in it
+// pins in tests/test_dispatch_workflow_script.py read (the `opts.label` in it
 // is asserted on, never keyed on).
 const phase = () => {}
 const logs = []

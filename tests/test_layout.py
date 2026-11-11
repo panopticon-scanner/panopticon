@@ -299,7 +299,7 @@ class OneScriptsNamespaceTest(unittest.TestCase):
 
     def test_no_repo_root_scripts_directory(self):
         self.assertFalse(os.path.exists(os.path.join(REPO_ROOT, "scripts")))
-        self.assertTrue(os.path.isfile(os.path.join(REPO_ROOT, "devtools", "workflow_guard.py")))
+        self.assertTrue(os.path.isfile(os.path.join(REPO_ROOT, "devtools", "gh_transport.py")))
 
     def test_pyproject_paths_name_devtools_not_a_root_scripts(self):
         import tomllib

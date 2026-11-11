@@ -17,6 +17,14 @@
   bare import stayed green on main until #3521. An autouse fixture now hands each test there a copy
   of `sys.path`. Pytest's `pythonpath` drops `skill/scripts`: since #3505 nothing imports a skill
   module by its bare name, and the entry only let a new bare import pass in some test orders.
+- **Dependabot's five tools-closure bumps and the gate's pip bump, re-resolved (supersedes #3524,
+  #3525).**
+  - anyio 4.15.1 -> 4.16.0; filelock 4.2.4 -> 4.2.7; pip 26.2.2 -> 26.3 (in both
+    `requirements-tools.txt` and `.github/requirements-gate.txt`); platformdirs 4.14.0 -> 4.14.3;
+    python-multipart 0.0.32 -> 0.0.33.
+  - The closure was re-resolved with uv for Python 3.12 on both linux targets, and nothing else
+    moved. The digests were written by `bump_pins.py`, wheels only: Dependabot had written sdist
+    hashes, which failed `bump_pins.py requirements --check` in lint.
 - **The NVD cache sync seeds from yesterday's database (#3417, script half).** The keyed sync
   moves into `.github/scripts/nvd-cache-sync.sh` and starts from the last published
   `panopticon-tools-nvd` image, pulled by digest from our own registry, so a normal day downloads
@@ -65,6 +73,15 @@
   `--security redteam` on every CI scanner and gate, and the runtime
   strict-integration flag. Broad workflow prose/shape readers and mutation tests
   of those readers are removed.
+- **Workflow `run:` guard and shell reader retired (#3513, part of #3264).**
+  The 49 `devtools/{workflow,shell}_*.py` modules (18,922 lines) and 49 reader-test
+  modules (44,186 lines) are gone. Two product Workflow-template tests that the
+  old filename glob over-matched are retained under accurate names. Non-shell
+  import-closure, gate-package, containment-lane, scanner-UID, and pin-PR contracts
+  move to `tests/test_action_pins.py`. A structural YAML allowlist now requires
+  immutable action pins with version comments, effective permissions, and confines
+  `pull_request_target` to `security-fork.yml`. The retained Dockerfile checksum/OSV
+  and JSON scaling checks no longer import the deleted readers.
 - **The `agy` guard's argv policy paths are authoritative (#3511).**
   `PANOPTICON_READ_SCOPE` and `PANOPTICON_WRITE_ALLOWLIST` can no longer replace the
   read scope or write allowlist named in the hook command, and an invocation without

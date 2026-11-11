@@ -204,6 +204,9 @@
 #     `WorkflowForms`: the command-shape and failure-gating modules descended
 #     from `workflow_forms.py`, with their focused tests. Measured with
 #     discovery's assignment: `WorkflowForms` 16, `WorkflowGuard` 25.
+#   - 2026-11-10 (#3513): retire the shell/workflow readers and their tests.
+#     Their five CI leaves disappear; `Workflows` keeps `.github/**`, the shard
+#     tooling and the small structural workflow allowlist.
 #
 # Fixtures: deliberately-vulnerable hostile test corpora. Redteam mode keeps
 # fixtures in review scope by design (discovery.py include_fixtures=redteam),
@@ -535,8 +538,8 @@ groups:
       - tests/test_hook_command_quoting.py
       - tests/test_generic_retirement_bar.py
       - tests/test_family_guardrails_doc.py
-      - tests/test_workflow_dispatch_script.py
-      - tests/test_workflow_docs.py
+      - tests/test_dispatch_workflow_script.py
+      - tests/test_skill_workflow_docs.py
       - tests/workflows/dispatch_harness.mjs
       panels:
       - ARC
@@ -747,134 +750,6 @@ groups:
       - tests/test_code_scanning_reports.py
       - tests/test_code_scanning_audit.py
   CI:
-    Shell:
-      # #2521: keep the parser, lexer and their focused tests in one review.
-      match:
-      - devtools/shell_reader.py
-      - devtools/shell_split.py
-      - devtools/shell_command.py
-      - devtools/shell_folds.py
-      - devtools/shell_defaults.py
-      - devtools/shell_tokens.py
-      - devtools/shell_lex.py
-      - devtools/shell_quote.py
-      - devtools/shell_patterns.py
-      - devtools/shell_text.py
-      - devtools/shell_heredoc.py
-      - devtools/shell_wrappers.py
-      tests:
-      - tests/test_shell_reader.py
-      - tests/test_workflow_a_descriptors_path.py
-      - tests/test_shell_split.py
-      - tests/test_shell_command.py
-      - tests/test_shell_defaults.py
-      - tests/test_shell_reader_conditionals.py
-      - tests/test_shell_wrappers.py
-      - tests/test_workflow_guard_lexer_heredocs.py
-      - tests/test_workflow_behind_a_wrapper.py
-      - tests/test_workflow_words_that_are_nothing.py
-      panels:
-      - SEC
-    WorkflowGuard:
-      # #2586: keep the guard's proof layers and focused tests in one review.
-      match:
-      - devtools/workflow_guard.py
-      - devtools/workflow_defect.py
-      - devtools/workflow_checks.py
-      - devtools/workflow_failure_contexts.py
-      - devtools/workflow_printers.py
-      - devtools/workflow_printer_writes.py
-      - devtools/workflow_groups.py
-      - devtools/workflow_stdin.py
-      - devtools/workflow_uses.py
-      - devtools/workflow_use_words.py
-      - devtools/workflow_use_scopes.py
-      - devtools/workflow_subset.py
-      - devtools/workflow_values.py
-      - devtools/workflow_value_expansion.py
-      - devtools/workflow_called.py
-      - devtools/workflow_called_fetches.py
-      - devtools/workflow_written.py
-      - devtools/workflow_annotate.py
-      tests:
-      - tests/test_workflow_guard.py
-      - tests/test_workflow_defect.py
-      - tests/test_workflow_called.py
-      - tests/test_workflow_printers.py
-      - tests/test_workflow_printed_lines.py
-      - tests/test_workflow_printer_writes.py
-      - tests/test_workflow_values.py
-      - tests/test_workflow_value_expansion.py
-      - tests/test_workflow_annotate.py
-      - tests/test_workflow_reason_markers.py
-      - tests/test_workflow_subset.py
-      panels:
-      - SEC
-    WorkflowForms:
-      # #2433: keep command shapes and their failure-gating proof together.
-      match:
-      - devtools/workflow_forms.py
-      - devtools/workflow_carried.py
-      - devtools/workflow_gating.py
-      - devtools/workflow_step_credit.py
-      - devtools/workflow_function_calls.py
-      - devtools/workflow_function_index.py
-      - devtools/workflow_posture.py
-      - devtools/workflow_status.py
-      - devtools/workflow_operands.py
-      tests:
-      - tests/test_workflow_branch_option_state.py
-      - tests/test_workflow_function_gate_calls.py
-      - tests/test_workflow_function_cost.py
-      - tests/test_workflow_guard_reader_forms.py
-      - tests/test_workflow_forms_regressions.py
-      - tests/test_workflow_step_credit.py
-      - tests/test_workflow_default_command_word.py
-      - tests/test_workflow_word_before_a_builtin.py
-      - tests/test_workflow_alternate_in_front.py
-      - tests/test_workflow_second_whole_word.py
-      - tests/test_workflow_called_bodies.py
-      - tests/test_workflow_function_headers.py
-      - tests/test_workflow_written_files.py
-      - tests/test_workflow_descriptor_heredocs.py
-      - tests/test_workflow_locale_strings.py
-      - tests/test_workflow_positional_handoff.py
-      - tests/test_workflow_in_front_of_a_command.py
-      - tests/test_workflow_prefix_assignment.py
-      panels:
-      - SEC
-    WorkflowFetch:
-      # #2829: bounded named fetches and destination-less network producers.
-      match:
-      - devtools/workflow_fetch.py
-      - devtools/workflow_compound_outputs.py
-      - devtools/workflow_fetch_adapters.py
-      - devtools/workflow_network.py
-      tests:
-      - tests/test_workflow_fetch_adapters.py
-      - tests/test_workflow_network_producers.py
-      panels:
-      - SEC
-    WorkflowPrograms:
-      # #3020: what a shell is handed as its program -- the programs lane's
-      # readers and their focused tests, split out of `WorkflowGuard` at its fence.
-      match:
-      - devtools/workflow_file_readers.py
-      - devtools/workflow_programs.py
-      - devtools/workflow_program_strings.py
-      - devtools/workflow_options.py
-      - devtools/workflow_option_slots.py
-      - devtools/workflow_option_words.py
-      tests:
-      - tests/test_workflow_file_reader_handoffs.py
-      - tests/test_workflow_options.py
-      - tests/test_workflow_option_slots.py
-      - tests/test_workflow_program_strings.py
-      - tests/test_workflow_plus_cluster.py
-      - tests/test_workflow_option_words.py
-      - tests/test_workflow_option_expansions.py
-      panels:
-      - SEC
     Workflows:
       # #2521: `.github/**` stays with the tests that read those workflows.
       # #2933: and with the shard bookkeeping ci.yml runs.
@@ -893,7 +768,8 @@ groups:
       - tests/test_nvd_cache_decision.py
       - tests/test_nvd_cache_sync_step.py
       - tests/test_nvd_cache_compare.py
-      - tests/test_workflow_pins.py
+      - tests/test_action_pins.py
+      - tests/test_workflow_allowlist.py
       - tests/test_pyproject.py
       - tests/test_pyproject_metadata.py
       panels:

@@ -57,7 +57,7 @@ class DispatchScriptTestCase(unittest.TestCase):
         `scenario` run against `script` (default: the real dispatch.js).
         `logs` is every `log()` line the script printed, in order."""
         proc = subprocess.run(
-            [self.node, HARNESS, script or DISPATCH_JS],
+            ["node", HARNESS, script or DISPATCH_JS],
             input=json.dumps(scenario), capture_output=True, text=True,
             timeout=30)
         self.assertEqual(
