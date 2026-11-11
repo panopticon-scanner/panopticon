@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **actionlint and zizmor gate the workflows in the required `lint` job (#3264, audit I4).**
+  They replace the removed workflow `run:` guard (#3513) beside the structural rules in
+  `tests/test_workflow_allowlist.py`. actionlint checks syntax and expressions and runs the runner's
+  shellcheck over every `run:` block; zizmor (`--offline`, failing on medium or higher) audits the
+  security shape. Fixes for its findings: every checkout that pushes nothing sets
+  `persist-credentials: false` (16 sites); the three pin-PR jobs keep their credentials, with the
+  reason inline; `security-fork.yml`'s `pull_request_target` is ignored inline as the #1900 design;
+  two intentional word splits carry scoped shellcheck disables. Both tools are pinned in the `dev`
+  extra and group, where Dependabot updates them.
 - **Two guard checks that only duplicate first contact's halt run log-only for one release (#3533, shadow release N).**
   First contact now also checks the session root (#3532), so a planted `read-scope.json` or
   `write-allowlist.json` halts the run before any guard reads it. Owner rule: log first, remove
@@ -12,11 +21,16 @@
     entry with no row still denies; ours still wins on a shared id.
   - Write guard: the carried-grant filter now enforces "under one of this run's folders" (an
     absolute, normalised path only). The finer #1831 rule, the exact artifact the entry
-    declares, is recorded instead of dropped for a path inside the run folder.
+    declares, is recorded instead of dropped for a path inside the run folder: for this release
+    such a carried peer path is writable for the run. A grant on the guards' own state in the run
+    folder (host settings, both policy files, the per-entry scope directory, the hook records) is
+    always dropped and announced.
   - The records go to `shadow-denials.jsonl` in the run folder: kind (`read-stamp`,
     `install-union`, `carried-grant`), entry id and a short reason, never a path. In the flat
     `.panopticon/` (setup, session root) they go to stderr. A record that cannot be written
-    prints one stderr line, so an empty log can't hide a broken writer.
+    prints one stderr line, so an empty log can't hide a broken writer. An id outside the entry-id
+    grammar is recorded as `<invalid id>`. A row whose paths fail the M1 shape check is still
+    dropped at install (and recorded).
 - **Armor audit removes duplicate config normalization and measures installed guard hooks (#3531, #3534; #3173 clusters A/E).**
   `load_resolution` now keeps the fail-closed read and five outer-shape checks while trusting the
   driver-bounded artifact instead of maintaining a second field-by-field schema. Headless Claude
