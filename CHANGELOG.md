@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **actionlint and zizmor gate the workflows in the required `lint` job (#3264, audit I4).**
+  They replace the removed workflow `run:` guard (#3513) beside the structural rules in
+  `tests/test_workflow_allowlist.py`. actionlint checks syntax and expressions and runs the runner's
+  shellcheck over every `run:` block; zizmor (`--offline`, failing on medium or higher) audits the
+  security shape. Fixes for its findings: every checkout that pushes nothing sets
+  `persist-credentials: false` (16 sites); the three pin-PR jobs keep their credentials, with the
+  reason inline; `security-fork.yml`'s `pull_request_target` is ignored inline as the #1900 design;
+  two intentional word splits carry scoped shellcheck disables. Both tools are pinned in the `dev`
+  extra and group, where Dependabot updates them.
 - **A full review graded at a non-default group size reports its letter as provisional (#1495).**
   The health index moves with scan effort: on one commit, ripgrep graded F at `--max-per-group 15`
   and D at 48. The bands were kept (#3328) on runs at the default, so a letter is now certified only

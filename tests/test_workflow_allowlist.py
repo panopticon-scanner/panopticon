@@ -138,5 +138,25 @@ class TestWorkflowAllowlist(unittest.TestCase):
         self.assertEqual([], _defects("security-fork.yml", document))
 
 
+class TestWorkflowLintersRunInTheRequiredLint(unittest.TestCase):
+    """#3264: actionlint and zizmor are steps of ci.yml's `lint` job, which is a
+    required check, and their versions are pinned where Dependabot sees them."""
+
+    def _lint_runs(self):
+        document = yaml.safe_load(Path(WORKFLOWS, "ci.yml").read_text(encoding="utf-8"))
+        return [step.get("run", "").strip() for step in document["jobs"]["lint"]["steps"]]
+
+    def test_actionlint_runs_over_every_workflow(self):
+        self.assertIn("actionlint", self._lint_runs())
+
+    def test_zizmor_audits_the_workflows_and_fails_on_medium(self):
+        self.assertIn("zizmor --offline --min-severity medium .github/workflows/", self._lint_runs())
+
+    def test_both_tools_are_pinned_in_the_dev_extra_and_group(self):
+        text = Path(REPO_ROOT, "pyproject.toml").read_text(encoding="utf-8")
+        for pin in ('"actionlint-py==', '"zizmor=='):
+            self.assertEqual(2, text.count(pin), pin)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
