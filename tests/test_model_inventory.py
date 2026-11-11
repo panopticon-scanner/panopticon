@@ -173,8 +173,8 @@ def test_a_stale_exemption_fails(tmp_path):
         "exemption for profiles:gone (#8) names no table; remove it"]
 
 
-def test_the_default_exemption_is_openrouter_pointing_at_its_issue():
-    assert mi.EXEMPT == {"profiles:openrouter": "#3568"}
+def test_the_default_exemption_set_is_empty_after_openrouter_is_decided():
+    assert mi.EXEMPT == {}
 
 
 @pytest.mark.parametrize("text, line", [
@@ -320,7 +320,8 @@ def test_every_registered_table_is_found_in_the_repo_and_markers_parse():
     for name in ("profiles:claude", "profiles:codex", "profiles:gemini", "profiles:agy",
                  "profiles:kimi", "allowlist:gemini", "allowlist:agy", "aliases:gemini"):
         assert name in tables
+    assert "profiles:openrouter" not in tables
     assert tables["allowlist:gemini"].members and tables["aliases:gemini"].members
     for table in tables.values():
-        if table.name.startswith("profiles:") and table.name != "profiles:openrouter":
+        if table.name.startswith("profiles:"):
             assert any(row["model"] for row in table.rows), table.name

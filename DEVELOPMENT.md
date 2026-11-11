@@ -567,12 +567,12 @@ above the table (above a `hosts.<name>:` key in `skill/reference/model-profiles.
 
 That is an ISO date and one or more `https://` URLs, nothing else on the line. A malformed or
 doubled marker fails the inventory and the job, and so does a stray one that no table owns (above a
-role key, or a blank line away from its table). A test requires a marker on every table except
-the exemptions in `model_inventory.EXEMPT`, each naming the issue that decides it
-(`profiles:openrouter`, #3568); a stale exemption fails the same test (#3569). The
-`_*_FALLBACK` dicts in `model_resolver.py` carry no marker: they mirror the YAML under a parity
-pin. No age check fails a build. The job uses the runner image's system `python3` and its
-python3-yaml: if an image drops PyYAML, the job fails naming it.
+role key, or a blank line away from its table). A test requires a marker on every table. Temporary
+exceptions live in `model_inventory.EXEMPT`, each naming the issue that decides it; a stale
+exemption fails the same test (#3569). The set is currently empty after #3568 removed the
+unregistered OpenRouter profile. The `_*_FALLBACK` dicts in `model_resolver.py` carry no marker:
+they mirror the YAML under a parity pin. No age check fails a build. The job uses the runner
+image's system `python3` and its python3-yaml: if an image drops PyYAML, the job fails naming it.
 
 The gh plumbing both report scripts share (trusted gh, token-only environment, inert errors,
 creator-filtered lookup that refuses a full page) is `devtools/issue_bot.py`. Each script keeps

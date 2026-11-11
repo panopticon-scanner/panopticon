@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Model resolution now refuses unregistered hosts (#3568).** Registration,
+  ordinary resolution, hardcoded fallback, and the standalone CLI all consult
+  the host registry before accepting overrides or profile data. The registered
+  `generic` host still inherits the session model; the unregistered OpenRouter
+  profile and its temporary inventory exemption are gone.
+
 - **The agy effort is proven, not pending (#3564).** The owner's captures settled both open
   questions. With `--effort high`, `agy -p /model` reports `gemini-4-carbon-high` and
   `effort: "high"` in `command.data`. The `agy-model-bound` probe now accepts that id only when
@@ -29,9 +35,9 @@
   start instead of silently running at the model's default effort.
 
 - **Every model table must carry a `models-verified` marker (#3569).** A test requires one on
-  each table except `profiles:openrouter`, which is exempt until #3568 decides its fate, and the
-  exemption fails once it no longer applies. A marker that belongs to no table (above a role
-  key, or a blank line away) now fails the inventory and the monthly sweep instead of being
+  each table. The exemption mechanism remains available for a table whose fate has an open issue,
+  and an exemption fails once it no longer applies. A marker that belongs to no table (above a
+  role key, or a blank line away) now fails the inventory and the monthly sweep instead of being
   ignored. Marker age is still not checked in CI.
 
 - **A monthly model-list sweep issue (#3563, part 2).** On the 1st of each month a workflow

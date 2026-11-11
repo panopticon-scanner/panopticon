@@ -3,6 +3,8 @@ import contextlib
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -68,8 +70,8 @@ class TestModelResolver(unittest.TestCase):
                          {"model": "gemini-4-carbon", "effort": "high", "tier": "pro"})
         self.assertEqual(mr._hardcoded_fallback("gemini", "banana"),
                          {"model": "gemini-3.8-flash"})
-        # an unknown HOST still resolves to None (inherit session), never kimi
-        self.assertIsNone(mr._hardcoded_fallback("bogus", "banana")["model"])
+        # The registered generic host still inherits the session model, never kimi.
+        self.assertIsNone(mr._hardcoded_fallback("generic", "banana")["model"])
 
     def test_gemini_defaults(self):
         for role in ("scout", "advisor"):
@@ -273,9 +275,8 @@ class TestModelResolver(unittest.TestCase):
         }
         self.assertTrue(gemini_home.MODEL_ALIASES.isdisjoint(defaults))
 
-    def test_unknown_host_falls_back(self):
+    def test_registered_generic_host_inherits_the_session_model(self):
         self.assertIsNone(mr.resolve_model("generic", "domain_panel")["model"])
-        self.assertIsNone(mr.resolve_model("someday-host", "scout")["model"])
 
     # Override precedence is host-agnostic, but only Kimi constrains the
     # resulting value (primary|secondary), so these exercise it on claude,
@@ -409,13 +410,57 @@ class TestModelResolver(unittest.TestCase):
                              "claude-opus-5-5")
 
 
-class TestUnknownHostsStayUnknown(unittest.TestCase):
-    """#1344 F2: the resolver's 'never silently assume kimi' rule now has one
-    definition of 'unknown host' rather than an implicit else-branch."""
+class TestUnknownHostsAreRefused(unittest.TestCase):
+    """#3568: only registered hosts may enter the resolver."""
 
-    def test_a_host_the_registry_does_not_know_resolves_to_no_model(self):
-        self.assertEqual({"model": None},
-                         mr._hardcoded_fallback("no-such-host", "scout"))
+    ERROR = ("unknown host 'openrouter' "
+             "(known: agy|claude|codex|gemini|generic|kimi)")
+
+    def assert_unknown(self, call):
+        with self.assertRaises(ValueError) as caught:
+            call()
+        self.assertEqual(str(caught.exception), self.ERROR)
+
+    def test_registration_entry_points_refuse_an_unregistered_host(self):
+        self.assert_unknown(lambda: mr.registration_config("openrouter", "scout"))
+        self.assert_unknown(lambda: mr.registration_model("openrouter", "scout"))
+        self.assertEqual(mr.registration_config("generic", "scout"), {"model": None})
+        self.assertIsNone(mr.registration_model("generic", "scout"))
+
+    def test_resolution_refuses_before_cli_and_environment_overrides(self):
+        for resolver in (mr.resolve_model, mr._resolve_raw):
+            with self.subTest(entry=resolver.__name__, override="cli"):
+                self.assert_unknown(
+                    lambda resolver=resolver: resolver(
+                        "openrouter", "scout", {"scout": "override-model"}))
+            with self.subTest(entry=resolver.__name__, override="environment"), \
+                    patch.dict(os.environ,
+                               {"PANOPTICON_MODEL_SCOUT": "override-model"}):
+                self.assert_unknown(
+                    lambda resolver=resolver: resolver("openrouter", "scout"))
+        self.assertEqual(mr.resolve_model("generic", "scout"), {"model": None})
+        self.assertEqual(mr._resolve_raw("generic", "scout"), {"model": None})
+
+    def test_hardcoded_fallback_refuses_an_unregistered_host(self):
+        self.assert_unknown(lambda: mr._hardcoded_fallback("openrouter", "scout"))
+        self.assertEqual(mr._hardcoded_fallback("generic", "scout"), {"model": None})
+
+    def test_run_by_path_cli_refuses_an_unregistered_host_without_a_traceback(self):
+        env = dict(os.environ)
+        env.pop("PANOPTICON_MODEL_SCOUT", None)
+        refused = subprocess.run(
+            [sys.executable, mr.__file__, "openrouter", "scout"],
+            capture_output=True, text=True, env=env, check=False)
+        self.assertEqual(refused.returncode, 2)
+        self.assertEqual(refused.stdout, "")
+        self.assertEqual(refused.stderr, "model_resolver: %s\n" % self.ERROR)
+
+        allowed = subprocess.run(
+            [sys.executable, mr.__file__, "generic", "scout"],
+            capture_output=True, text=True, env=env, check=False)
+        self.assertEqual(allowed.returncode, 0)
+        self.assertEqual(allowed.stdout, "{'model': None}\n")
+        self.assertEqual(allowed.stderr, "")
 
     def test_a_known_host_with_no_fallback_table_also_resolves_to_no_model(self):
         # generic is in the registry and has no table (#3494 gave gemini its

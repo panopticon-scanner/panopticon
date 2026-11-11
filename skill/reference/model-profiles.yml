@@ -90,22 +90,3 @@ hosts:
       model: gemini-4-carbon
     setup_scan:
       model: null
-  openrouter:
-    scout:
-      model: openai/gpt-4o-mini
-      max_context_size: 128000
-      max_output_size: 4096
-    advisor:
-      model: anthropic/claude-opus
-      max_context_size: 200000
-      max_output_size: 16384
-    domain_panel:
-      model: anthropic/claude-sonnet
-      max_context_size: 200000
-      max_output_size: 8192
-    domain_advisor:
-      model: anthropic/claude-opus
-      max_context_size: 200000
-      max_output_size: 16384
-    setup_scan:
-      model: null

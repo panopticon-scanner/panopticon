@@ -118,16 +118,23 @@ _GEMINI_FALLBACK: dict[str, dict[str, Any]] = {
 }
 
 
+def _require_registered_host(host):
+    """Return only hosts in the authoritative registry; name every valid one."""
+    if hosts.spec(host) is None:
+        raise ValueError("unknown host %r (known: %s)"
+                         % (host, "|".join(hosts.known_hosts())))
+    return host
+
+
 def _hardcoded_fallback(host, role):
     """Last-resort role->model mapping when profiles are unavailable.
 
-    A host the registry does not know, or a known host with no table of its
-    own, resolves to model=None -- "inherit the session's model". Never
-    silently assume another host's tiers (#1344: the registry is now the one
-    definition of which hosts exist).
+    A known host with no table of its own resolves to model=None -- "inherit
+    the session's model". An unregistered host is refused. Never silently
+    assume another host's tiers (#1344: the registry is now the one definition
+    of which hosts exist; #3568: resolver ingress enforces that definition).
     """
-    if hosts.spec(host) is None:
-        return {"model": None}
+    _require_registered_host(host)
     if host == "kimi":
         return _KIMI_FALLBACK.get(role, {"model": "primary",
                                          "alias": "k3-256k",
@@ -255,6 +262,7 @@ def registration_config(host, role):
     Emission is deterministic policy — an ambient override must shape a single
     run's dispatch plan, never a file left on disk for every future run.
     """
+    _require_registered_host(host)
     profiles = _profiles()
     cfg = ((profiles.get("hosts") or {}).get(host) or {}).get(role)
     if not isinstance(cfg, dict):
@@ -343,6 +351,7 @@ def _as_model_dict(v):
 
 def _resolve_raw(host, role, cli_overrides=None):
     """resolve_model's precedence chain, before host-specific normalization."""
+    _require_registered_host(host)
     if cli_overrides and role in cli_overrides:
         return _as_model_dict(cli_overrides[role])
 
@@ -358,7 +367,22 @@ def _resolve_raw(host, role, cli_overrides=None):
     return _hardcoded_fallback(host, role)
 
 
+def main(argv=None):
+    """Print one resolution, or refuse bad input without a traceback."""
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] in ("-h", "--help"):
+        print("usage: model_resolver.py [host] [role]")
+        return 0
+    host = argv[0] if argv else "kimi"
+    role = argv[1] if len(argv) > 1 else "domain_panel"
+    try:
+        cfg = resolve_model(host, role)
+    except ValueError as exc:
+        print("model_resolver: %s" % exc, file=sys.stderr)
+        return 2
+    print(cfg)
+    return 0
+
+
 if __name__ == "__main__":
-    host = sys.argv[1] if len(sys.argv) > 1 else "kimi"
-    role = sys.argv[2] if len(sys.argv) > 2 else "domain_panel"
-    print(resolve_model(host, role))
+    raise SystemExit(main())
