@@ -176,17 +176,23 @@ def is_effort_word(value):
     return isinstance(value, str) and re.fullmatch(r"[a-z]{1,32}", value) is not None
 
 
-# #3564: the levels `agy --effort` accepts (https://antigravity.google/docs/cli/commands/effort/,
-# read 2026-11-11). `xhigh` and `max` exist only on models that publish them; the CLI
-# rejects a level the model lacks by name, so this is the documented superset.
-AGY_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+# #3564: the levels agy offers -- the owner's `-p /effort` capture lists `available`
+# ["low", "medium", "high"] for gemini-4-carbon (2026-11-11), matching the Headless page and
+# the KNOWN_MODELS Carbon slugs. A level returns here only when a capture lists it.
+AGY_EFFORTS = ("low", "medium", "high")
 # Each host's effort key; the other host's key would be silently dropped (#3571 review).
 _EFFORT_KEYS = {"codex": "model_reasoning_effort", "agy": "effort"}
 
 
+# Any effort a model ID may end in. Wider than AGY_EFFORTS on purpose: a `-xhigh` or `-max`
+# slug still names an effort, so an `effort` beside it is refused, not doubled.
+_EFFORT_SUFFIXES = AGY_EFFORTS + ("xhigh", "max")
+
+
 def names_effort(model):
     """Whether an agy model ID already names an effort (`gemini-4-argon-high`)."""
-    return isinstance(model, str) and any(model.endswith("-" + level) for level in AGY_EFFORTS)
+    return isinstance(model, str) and any(model.endswith("-" + level)
+                                          for level in _EFFORT_SUFFIXES)
 
 
 def effort_key_problem(host, cfg):

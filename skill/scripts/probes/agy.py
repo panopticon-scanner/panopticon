@@ -484,20 +484,23 @@ def probe_agy_write_guard(host, *, runner=None, hooks_runner=None,
         shutil.rmtree(sandbox, ignore_errors=True)
 
 
-# #3564: the effort leg's verdict until the owner's capture of
-# `agy --model gemini-4-carbon --effort high --output-format json -p /effort` defines
-# which JSON field carries the effective level. The key is never guessed.
-EFFORT_READBACK_PENDING = (
-    "`agy -p /effort` ran for %s, but which JSON field carries the effective effort is "
-    "not yet known: it awaits the owner's capture of `agy --model gemini-4-carbon --effort "
-    "high --output-format json -p /effort` (#3564), so the effort is not proven")
+def _model_id_matches(data, model, effort):
+    """Whether `/model`'s `command.data` names the bound model (#3564 owner capture).
+
+    With an effort set, agy reports `<model>-<effort>` (`gemini-4-carbon-high`) and the
+    level in `data.effort`; both must agree. Without one, the id is the model itself."""
+    actual = data.get("id") if isinstance(data, dict) else None
+    if not isinstance(actual, str):
+        return False
+    if actual == model:
+        return True
+    return bool(effort) and actual == model + "-" + effort and data.get("effort") == effort
 
 
 def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
     """Prove `model_binding` for `agy` by checking both emitted shell frontmatter
     tiers and `agy --agent <shell> --model <slug> [--effort <level>] -p /model`
-    runtime resolution. A role with an effort also runs `-p /effort`; until its
-    output shape is captured that leg is UNKNOWN, never PROVEN (#3564)."""
+    runtime resolution. A role with an effort also reads back `-p /effort` (#3564)."""
     if host != "agy":
         return (hosts.UNKNOWN, None,
                 "probe %s applies only to host 'agy'" % AGY_MODEL_BOUND)
@@ -509,7 +512,6 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
 
     faults = []
     runtime_checks = []
-    pending: list[str] = []
     for role in common.DRIVER_ROLES:
         role_file = dispatch.ROLE_FILES[role]
         agent_name = dispatch.registered_agent_name(role_file)
@@ -562,19 +564,19 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
             except ValueError:
                 faults.append("%s: `agy -p /model` returned non-JSON stdout" % role)
                 continue
-            cmd_block = doc.get("command") if isinstance(doc, dict) else None
-            data_block = cmd_block.get("data") if isinstance(cmd_block, dict) else None
-            actual_slug = data_block.get("id") if isinstance(data_block, dict) else None
-            if not isinstance(actual_slug, str) or actual_slug != resolved_model:
-                faults.append("%s: `agy -p /model` did not report effective model %r "
-                              "in command.data.id (got %r)" % (role, resolved_model, actual_slug))
+            data_block = _command_data(doc)
+            level = effort[1] if effort else None
+            if not _model_id_matches(data_block, resolved_model, level):
+                actual_slug = data_block.get("id") if isinstance(data_block, dict) else None
+                faults.append("%s: `agy -p /model` did not report effective model %r%s "
+                              "in command.data (got id %r)"
+                              % (role, resolved_model, " at effort %r" % level if level else "",
+                                 actual_slug))
                 continue
             if effort:
                 fault = _effort_readback(role, agent_name, resolved_model, effort, home, runner)
                 if fault:
                     faults.append(fault)
-                else:
-                    pending.append("%s (%s %s)" % (role, resolved_model, effort[1]))
     except runners_base.LaunchRefused:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -586,31 +588,45 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
 
     if faults:
         return (hosts.REFUTED, AGY_MODEL_BOUND, "; ".join(faults))
-    if pending:
-        return (hosts.UNKNOWN, AGY_MODEL_BOUND, "%s; %s" % (
-            EFFORT_READBACK_PENDING % ", ".join(pending), agy_runner.NO_ANSWERING_MODEL))
-    verified = sorted({check[2] for check in runtime_checks})
+    verified = sorted({check[2] + (" " + check[3][1] if check[3] else "")
+                       for check in runtime_checks})
     return (hosts.PROVEN, AGY_MODEL_BOUND,
             "all %d driver roles match frontmatter tiers and runtime `/model` "
             "resolution (%s); %s" % (len(common.DRIVER_ROLES), ", ".join(verified),
                                      agy_runner.NO_ANSWERING_MODEL))
 
 
-def _effort_readback(role, agent_name, model, effort, home, runner):
-    """Run the documented read-only `-p /effort` for a role with an effort (#3564).
+def _command_data(doc):
+    """`command.data` of a print-mode slash-command payload, or None."""
+    cmd_block = doc.get("command") if isinstance(doc, dict) else None
+    return cmd_block.get("data") if isinstance(cmd_block, dict) else None
 
-    A failed or non-JSON read-back is a fault. A JSON one is not yet proof: its
-    field is unknown until the owner's capture, so the caller records the role
-    as pending and the probe stays UNKNOWN."""
+
+def _effort_readback(role, agent_name, model, effort, home, runner):
+    """Read back the documented read-only `-p /effort` for a role with an effort (#3564).
+
+    The owner's capture shape is `command.data` = {adjustable, current, available}. The
+    level holds when `current` is the requested one and `available` lists it; a model
+    whose effort is not adjustable cannot honor `--effort` at all. Returns a fault or None."""
     proc = _run_agy(
         ["--agent", agent_name, "--model", model, *effort,
          "--output-format", "json", "-p", "/effort"], home, runner=runner)
     if getattr(proc, "returncode", 1) != 0:
         return "%s: `agy -p /effort` exited %s" % (role, getattr(proc, "returncode", 1))
     try:
-        json.loads(getattr(proc, "stdout", "") or "")
+        doc = json.loads(getattr(proc, "stdout", "") or "")
     except ValueError:
         return "%s: `agy -p /effort` returned non-JSON stdout" % role
+    data = _command_data(doc)
+    level = effort[1]
+    if not isinstance(data, dict):
+        return "%s: `agy -p /effort` carried no command.data" % role
+    if data.get("adjustable") is not True:
+        return "%s: `agy -p /effort` reports %s's effort is not adjustable" % (role, model)
+    available = data.get("available")
+    if data.get("current") != level or not isinstance(available, list) or level not in available:
+        return ("%s: `agy -p /effort` did not report effort %r as current and available "
+                "(current %r, available %r)" % (role, level, data.get("current"), available))
     return None
 
 

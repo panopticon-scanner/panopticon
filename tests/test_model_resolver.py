@@ -145,6 +145,10 @@ class TestModelResolver(unittest.TestCase):
                 ('{"model": "gemini-4-carbon", "effort": "secret-sentinel"}',
                  "effort must be one of"),
                 ('{"model": "gemini-4-carbon", "effort": "High"}', "effort must be one of"),
+                # #3564 capture: agy lists only low, medium and high.
+                ('{"model": "gemini-4-carbon", "effort": "xhigh"}', "effort must be one of"),
+                ('{"model": "gemini-4-carbon", "effort": "max"}', "effort must be one of"),
+                ('{"model": "gemini-4-carbon-max", "effort": "high"}', "already names one"),
                 ('{"model": "gemini-4-carbon", "effort": null}', "effort must be one of"),
                 ('{"effort": "high"}', "with no model"),
                 ('{"model": null, "effort": "high"}', "with no model"),
@@ -156,7 +160,7 @@ class TestModelResolver(unittest.TestCase):
     def test_valid_effort_overrides_pass(self):
         key = "PANOPTICON_MODEL_DOMAIN_PANEL"
         for host, value in (("agy", '{"model": "gemini-4-carbon", "effort": "medium"}'),
-                            (None, '{"model": "gemini-4-carbon", "effort": "xhigh"}'),
+                            (None, '{"model": "gemini-4-carbon", "effort": "low"}'),
                             ("agy", "gemini-4-argon-high"),
                             ("codex", '{"model": "gpt-6-sol", "model_reasoning_effort": "low"}')):
             with self.subTest(host=host, value=value), mock.patch.dict(os.environ, {key: value}):

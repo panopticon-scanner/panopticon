@@ -174,6 +174,9 @@ class TestCommand(unittest.TestCase):
             "--agent", "panopticon-domain-panel", "--model", "gemini-4-carbon",
             "--effort", "high", "-p", entry["prompt"]])
 
+    def test_the_levels_are_the_captured_set(self):
+        self.assertEqual(("low", "medium", "high"), agy_runner.AGY_EFFORTS)
+
     def test_every_documented_level_is_passed(self):
         for level in agy_runner.AGY_EFFORTS:
             with self.subTest(level=level):
@@ -194,6 +197,8 @@ class TestCommand(unittest.TestCase):
                 ("gemini-4-carbon", "High", "is not one of"),
                 ("gemini-4-carbon", "", "is not one of"),
                 ("gemini-4-carbon", "--help", "is not one of"),
+                ("gemini-4-carbon", "xhigh", "is not one of"),
+                ("gemini-4-carbon", "max", "is not one of"),
                 ("gemini-4-carbon", 3, "is not one of"),
                 ("gemini-4-argon-high", "high", "already names an effort"),
                 ("gemini-3.8-flash-medium", "low", "already names an effort"),

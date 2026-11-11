@@ -437,35 +437,52 @@ class TestAgyReadAndWriteGuardProbes(unittest.TestCase):
 
 
 class TestAgyModelBoundProbe(unittest.TestCase):
+    # #3564: the owner's captures (2026-11-11) of `agy --model gemini-4-carbon --effort high
+    # --output-format json`, trimmed, field shapes exact.
+    CAPTURED_MODEL = {"command": {"name": "model", "data": {
+        "id": "gemini-4-carbon-high", "label": "Gemini 4 Carbon (High)", "effort": "high",
+        "is_default": False}}, "response": "gemini-4-carbon-high\tGemini 4 Carbon (High)"}
+    CAPTURED_EFFORT = {"command": {"name": "effort", "data": {
+        "adjustable": True, "current": "high", "available": ["low", "medium", "high"]}}}
+
     def _model_runner(self, override_slug=None, structured=True, effort_rc=0,
-                      effort_stdout="{}", seen=None):
+                      effort_data=None, effort_stdout=None, model_data=None, seen=None):
+        """A fake agy answering as the captures do: `/model` names `<model>-<effort>`
+        with `data.effort` when an effort is passed, and `/effort` reports it current."""
         def fake(cmd, **kw):
             if seen is not None:
                 seen.append(list(cmd))
+            level = cmd[cmd.index("--effort") + 1] if "--effort" in cmd else None
             if cmd[-1] == "/effort":
-                return subprocess.CompletedProcess(cmd, effort_rc, stdout=effort_stdout,
-                                                   stderr="")
-            idx = cmd.index("--model")
-            slug = override_slug or cmd[idx + 1]
-            payload = {"response": "Current model: %s (tier: pro)" % slug}
+                if effort_stdout is not None:
+                    out = effort_stdout
+                else:
+                    data = (effort_data if effort_data is not None else
+                            dict(self.CAPTURED_EFFORT["command"]["data"], current=level))
+                    out = json.dumps({"command": {"name": "effort", "data": data}})
+                return subprocess.CompletedProcess(cmd, effort_rc, stdout=out, stderr="")
+            slug = override_slug or cmd[cmd.index("--model") + 1]
+            data = {"id": slug + ("-" + level if level else ""), "is_default": False}
+            if level:
+                data["effort"] = level
+            if model_data is not None:
+                data = model_data
+            payload = {"response": "%s\t%s" % (data.get("id"), data.get("id"))}
             if structured:
-                payload["command"] = {"name": "model", "data": {"id": slug}}
+                payload["command"] = {"name": "model", "data": data}
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(payload), stderr="")
         return fake
 
-    def test_carbon_at_high_is_unknown_until_the_effort_capture_lands(self):
-        # #3564 ruling 3(a): the model binds and `/effort` runs, but its field is not known.
+    def test_carbon_at_high_is_proven_on_the_captured_shapes(self):
         seen = []
         with tempfile.TemporaryDirectory() as d:
             _emit_agy_shells(d)
             state, by, detail = agy_probes.probe_agy_model_bound(
                 "agy", registration_dir=d, runner=self._model_runner(seen=seen))
-        self.assertEqual(hosts.UNKNOWN, state, detail)
+        self.assertEqual(hosts.PROVEN, state, detail)
         self.assertEqual(agy_probes.AGY_MODEL_BOUND, by)
-        self.assertIn("domain_panel (gemini-4-carbon high)", detail)
-        self.assertIn("awaits the owner's capture of `agy --model gemini-4-carbon --effort "
-                      "high --output-format json -p /effort`", detail)
-        self.assertNotIn("proven", detail.replace("not proven", ""))
+        self.assertIn("gemini-4-carbon high", detail)
+        self.assertIn("gemini-3.8-flash-medium", detail)
         model_calls = [c for c in seen if c[-1] == "/model"]
         effort_calls = [c for c in seen if c[-1] == "/effort"]
         carbon = [c for c in model_calls if "gemini-4-carbon" in c]
@@ -477,6 +494,76 @@ class TestAgyModelBoundProbe(unittest.TestCase):
         for call in flash:
             self.assertNotIn("--effort", call)
         self.assertEqual(len(carbon), len(effort_calls))
+
+    def test_the_captured_payloads_verbatim_prove_the_carbon_roles(self):
+        def fake(cmd, **kw):
+            if "--effort" not in cmd:
+                slug = cmd[cmd.index("--model") + 1]
+                out = {"command": {"name": "model", "data": {"id": slug}}}
+            else:
+                out = self.CAPTURED_EFFORT if cmd[-1] == "/effort" else self.CAPTURED_MODEL
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(out), stderr="")
+        with tempfile.TemporaryDirectory() as d:
+            _emit_agy_shells(d)
+            state, _by, detail = agy_probes.probe_agy_model_bound(
+                "agy", registration_dir=d, runner=fake)
+        self.assertEqual(hosts.PROVEN, state, detail)
+
+    def test_the_model_leg_refutes_what_the_capture_rules_out(self):
+        for name, data in (
+                ("bare id with effort mismatch",
+                 {"id": "gemini-4-carbon-high", "effort": "low"}),
+                ("combined id with no effort field", {"id": "gemini-4-carbon-high"}),
+                ("other level's slug", {"id": "gemini-4-carbon-medium", "effort": "medium"}),
+                ("other model", {"id": "gemini-4-argon-high", "effort": "high"}),
+                ("id not a string", {"id": None, "effort": "high"})):
+            with self.subTest(name), tempfile.TemporaryDirectory() as d:
+                _emit_agy_shells(d)
+                state, _by, detail = agy_probes.probe_agy_model_bound(
+                    "agy", registration_dir=d, runner=self._model_runner(model_data=data))
+                self.assertEqual(hosts.REFUTED, state, detail)
+                self.assertIn("did not report effective model", detail)
+
+    def test_the_bare_model_id_still_matches_with_an_effort(self):
+        def bare(cmd, **kw):
+            if cmd[-1] == "/effort":
+                return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(
+                    self.CAPTURED_EFFORT), stderr="")
+            slug = cmd[cmd.index("--model") + 1]
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(
+                {"command": {"name": "model", "data": {"id": slug}}}), stderr="")
+        with tempfile.TemporaryDirectory() as d:
+            _emit_agy_shells(d)
+            state, _by, detail = agy_probes.probe_agy_model_bound(
+                "agy", registration_dir=d, runner=bare)
+        self.assertEqual(hosts.PROVEN, state, detail)
+
+    def test_the_effort_leg_refutes_what_the_capture_rules_out(self):
+        base = self.CAPTURED_EFFORT["command"]["data"]
+        for name, data, why in (
+                ("not adjustable", dict(base, adjustable=False), "is not adjustable"),
+                ("adjustable missing", {"current": "high", "available": ["high"]},
+                 "is not adjustable"),
+                ("other level current", dict(base, current="medium"),
+                 "did not report effort 'high' as current and available"),
+                ("level not available", dict(base, available=["low", "medium"]),
+                 "did not report effort 'high' as current and available"),
+                ("available not a list", dict(base, available="low,medium,high"),
+                 "did not report effort 'high' as current and available")):
+            with self.subTest(name), tempfile.TemporaryDirectory() as d:
+                _emit_agy_shells(d)
+                state, _by, detail = agy_probes.probe_agy_model_bound(
+                    "agy", registration_dir=d, runner=self._model_runner(effort_data=data))
+                self.assertEqual(hosts.REFUTED, state, detail)
+                self.assertIn(why, detail)
+
+    def test_an_effort_payload_without_command_data_refutes(self):
+        with tempfile.TemporaryDirectory() as d:
+            _emit_agy_shells(d)
+            state, _by, detail = agy_probes.probe_agy_model_bound(
+                "agy", registration_dir=d, runner=self._model_runner(effort_stdout="{}"))
+        self.assertEqual(hosts.REFUTED, state, detail)
+        self.assertIn("carried no command.data", detail)
 
     def test_roles_with_no_effort_prove_binding(self):
         real = model_resolver.entry_policy
@@ -554,7 +641,7 @@ class TestAgyModelBoundProbe(unittest.TestCase):
                 "agy", registration_dir=d,
                 runner=self._model_runner(structured=False))
         self.assertEqual(hosts.REFUTED, state)
-        self.assertIn("in command.data.id", detail)
+        self.assertIn("in command.data", detail)
 
     def test_all_roles_unbound_returns_unknown(self):
         with tempfile.TemporaryDirectory() as d:
