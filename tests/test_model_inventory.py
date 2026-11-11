@@ -187,8 +187,11 @@ def test_a_marker_owned_by_no_table_is_a_stray(tmp_path, text, line):
         mi.inventory(tree(tmp_path, gemini_py=text), TODAY)
 
 
-def test_a_malformed_stray_is_still_a_stray_not_ignored(tmp_path):
-    text = "KNOWN_MODELS = frozenset({'gemini-a'})\n# models-verified: soon\n"
+@pytest.mark.parametrize("stray", ["# models-verified: soon",
+                                   "# models-verified 2026-11-10 https://e.test/x",
+                                   "  #models-verified:2026-11-10"])
+def test_a_malformed_stray_is_still_a_stray_not_ignored(tmp_path, stray):
+    text = "KNOWN_MODELS = frozenset({'gemini-a'})\n%s\n" % stray
     with pytest.raises(mi.MarkerError, match="above no table"):
         mi.inventory(tree(tmp_path, gemini_py=text), TODAY)
 
