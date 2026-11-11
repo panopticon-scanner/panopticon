@@ -519,6 +519,9 @@ class TestThePrBuildFreesDiskAndReportsHeadroom(unittest.TestCase):
     FOR_LOOP = re.compile(r"^\s*for dir in (?P<dirs>[^;]+); do$", re.MULTILINE)
     # The one setup-* action this job may use: it installs Buildx, not a toolchain.
     SETUP_ALLOWED = ("docker/setup-buildx-action",)
+    # #3562 review: the job's whole action set, so an added action (a disk-freeing one
+    # included) fails the pin and makes its author revisit the free step.
+    ACTIONS = ("actions/checkout", "docker/setup-buildx-action", "docker/build-push-action")
 
     @staticmethod
     def _index(steps, predicate):
@@ -558,10 +561,12 @@ class TestThePrBuildFreesDiskAndReportsHeadroom(unittest.TestCase):
             defects.append("free step removes something else")
         if body.count("df -h /") != 2:
             defects.append("free step headroom")
-        for step in steps:
-            name = uses(step).split("@", 1)[0]
+        names = [uses(step).split("@", 1)[0] for step in steps if "uses" in step]
+        for name in names:
             if "/setup-" in name and name not in cls.SETUP_ALLOWED:
                 defects.append("toolchain installer: " + name)
+        if sorted(names) != sorted(cls.ACTIONS):
+            defects.append("action set")
         after_build = [st for st in steps[(build or 0) + 1:(fixtures or len(steps))]
                        if "df -h /" in run(st)]
         if not after_build or ("docker image inspect panopticon-tools:latest" not in
@@ -618,6 +623,17 @@ class TestThePrBuildFreesDiskAndReportsHeadroom(unittest.TestCase):
              "toolchain installer: actions/setup-go"),
             (lambda job: job["steps"].insert(1, {"uses": "astral-sh/setup-uv@" + "0" * 40}),
              "toolchain installer: astral-sh/setup-uv"),
+            (lambda job: job["steps"].insert(1, {"name": "Free disk",
+                                                 "uses": "jlumbroso/free-disk-space@" + "0" * 40}),
+             "action set"),
+            (lambda job: job["steps"].insert(1, {"uses": "actions/cache@" + "0" * 40}),
+             "action set"),
+            (lambda job: job["steps"].append(dict(next(
+                st for st in job["steps"] if "uses" in st and "build-push" in st["uses"]))),
+             "action set"),
+            (lambda job: job["steps"].remove(next(
+                st for st in job["steps"] if "uses" in st and "build-push" in st["uses"])),
+             "action set"),
             (drop("Report disk headroom after the tools image"),
              "headroom and layers after the tools image"),
             (lambda job: step(job, "Report disk headroom after the tools image").update(

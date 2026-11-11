@@ -422,12 +422,15 @@ lost cells, and sets no thresholds.
 
 ### The Dockerfile PR build's disk
 `docker-build-pr.yml` builds the tools image with `load: true`, so at the import the runner holds the
-gha cache blobs, BuildKit's unpacked copy and the daemon's unpacked copy at once: about 15 GB for
-a ~2 GB compressed image, on a runner the docs give 14 GB of SSD. Its first step removes
-preinstalled toolchains the job never uses (Android SDK, .NET, GHC, the hosted tool cache),
-printing each one's size, and `df -h /` lines after each build show the margin (#3441). The job
-must not gain a `setup-*` toolchain action without revisiting that list:
-`tests/test_action_pins.py` refuses one, and pins the list. The step after the tools image prints
+gha cache blobs, BuildKit's unpacked copy and the daemon's unpacked copy at once. Measured on the
+#3562 runs, the two builds use about 19 GB. The current runner has a 145 GB root with about 88 GB
+free, so the 2026-11-03/04 `no space left on device` failures most likely came from an older or
+smaller runner image. The job's first step is insurance plus a visible margin: it removes
+preinstalled toolchains the job never uses, printing each one's size (on the #3562 run: Android SDK
+12 GB, .NET 5.8 GB, `.ghcup` 3.7 GB, hosted tool cache 5.3 GB, about 27 GB in all). `df -h /` lines
+after each build show what is left: 91 GB on that run, against 65 GB without the step (#3441). The job
+must not gain an action, a `setup-*` toolchain installer above all, without revisiting that list:
+`tests/test_action_pins.py` pins the job's exact action set and the list. The step after the tools image prints
 its `.Id` and RootFS diff IDs, which is how a change to the job's runner setup is shown not to reach
 the image. The published image comes from `docker-publish.yml`, which pushes without loading.
 
