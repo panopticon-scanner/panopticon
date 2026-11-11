@@ -60,6 +60,21 @@ class ReviewScopeError(ValueError):
     """Neither the operator nor the inventory names this review's scope."""
 
 
+# #3560: a full SHA-1 or SHA-256 object name, the only shapes `git rev-parse HEAD` prints.
+_COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
+_TARGET_DIRTY = {"true": True, "false": False}
+
+
+def _target_commit(value):
+    """`value` when it is a full object name, else None (unrecorded, so absent)."""
+    return value if isinstance(value, str) and _COMMIT.fullmatch(value) else None
+
+
+def _target_dirty(value):
+    """True or False for the spelled flag, else None (unrecorded, so absent)."""
+    return _TARGET_DIRTY.get(value) if isinstance(value, str) else None
+
+
 @dataclass(frozen=True)
 class RunConfig:
     """What the operator asked for (WS-0 S2): the target, the gate policy and
@@ -104,6 +119,10 @@ class RunConfig:
     # #3548: what the target's committed `exclude_paths:` removed, off discovery's own
     # record. None when the run committed none (or predates the record).
     exclude_paths: dict | None = None
+    # #3560: the scanned tree's HEAD and dirtiness, off the driver's run manifest. None when no
+    # manifest recorded them (a direct invocation): absent from the report, never clean.
+    target_commit: str | None = None
+    target_dirty: bool | None = None
 
     @classmethod
     def from_args(cls, args, groups_json, timestamp, host_capabilities=None,
@@ -161,6 +180,8 @@ class RunConfig:
                    max_groups=health_basis_mod.effective_size(
                        groups_json, config, "max_groups"),
                    exclude_paths=health_basis_mod.exclude_paths_record(groups_json),
+                   target_commit=_target_commit(getattr(args, "target_commit", None)),
+                   target_dirty=_target_dirty(getattr(args, "target_dirty", None)),
                    gate_security_mode=plan_mod.gate_security_mode(args))
 
 
@@ -333,6 +354,10 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=()):
             "timestamp": run.timestamp,
             "version": __version__,
             "ocrdb_version": ocrdb_version,
+            # #3560: present only when the driver's manifest recorded them, so a missing
+            # `target_dirty` reads as unknown, never clean.
+            **({"target_commit": run.target_commit} if run.target_commit else {}),
+            **({"target_dirty": run.target_dirty} if run.target_dirty is not None else {}),
             "security_mode": run.security_mode,
             "gate_security_mode": run.gate_security_mode,
             "models_used": list(models_used),

@@ -365,6 +365,12 @@ def synthesize_execute(review_root, manifest):
     prior = (manifest.get("first_contact") or {}).get("prior_run")
     if isinstance(prior, dict):
         cmd += ["--prior-run", "%s:%s" % (prior.get("host"), prior.get("run_id"))]
+    # #3560: the scanned tree's provenance (#1492), threaded for the same reason, so a
+    # cross-run comparison can check it off the report. Each is passed only when recorded.
+    if isinstance(manifest.get("target_commit"), str):
+        cmd += ["--target-commit", manifest["target_commit"]]
+    if isinstance(manifest.get("target_dirty"), bool):
+        cmd += ["--target-dirty", "true" if manifest["target_dirty"] else "false"]
     # SEC-377944137 (#1832): threaded rather than re-read by the child for the
     # reason above, and for one more -- `synth/` must not import
     # `scripts.run_manifest`, so the stamp's two facts cross the seam, not the

@@ -1040,6 +1040,31 @@ class TestAMidRunToolsDowngradeReachesSynthesize(unittest.TestCase):
         self.assertNotIn("--prior-run", self._cmd({"run_id": "R", "security_mode": "standard",
                                                    "flags": {}, "first_contact": {"files": 3}}))
 
+    def test_the_scanned_commit_reaches_the_report(self):
+        # #3560: the manifest's provenance (#1492) rides the same argv route and parses back.
+        import scripts.synthesize as synthesize_cli
+        sha = "0123456789abcdef0123456789abcdef01234567"
+        for dirty, spelled in ((False, "false"), (True, "true")):
+            with self.subTest(dirty=dirty):
+                cmd = self._cmd({"run_id": "R", "security_mode": "standard", "flags": {},
+                                 "target_commit": sha, "target_dirty": dirty})
+                self.assertEqual(sha, cmd[cmd.index("--target-commit") + 1])
+                self.assertEqual(spelled, cmd[cmd.index("--target-dirty") + 1])
+                parsed = synthesize_cli.build_parser().parse_args(cmd[2:])
+                self.assertEqual((sha, spelled), (parsed.target_commit, parsed.target_dirty))
+
+    def test_an_unrecorded_commit_or_dirtiness_passes_nothing(self):
+        # Not a Git checkout, or a refused status probe: null in the manifest, so the
+        # report leaves the key absent rather than reading unknown as clean.
+        cmd = self._cmd({"run_id": "R", "security_mode": "standard", "flags": {},
+                         "target_commit": None, "target_dirty": None})
+        self.assertNotIn("--target-commit", cmd)
+        self.assertNotIn("--target-dirty", cmd)
+        cmd = self._cmd({"run_id": "R", "security_mode": "standard", "flags": {},
+                         "target_commit": "0" * 40, "target_dirty": "no"})
+        self.assertIn("--target-commit", cmd)
+        self.assertNotIn("--target-dirty", cmd)
+
 
 class TestTheMidRunFlagParitiesWithSynthesizesParser(unittest.TestCase):
     """The driver-side pin above proves the flag is EMITTED; nothing proved

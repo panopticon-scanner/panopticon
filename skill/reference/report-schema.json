@@ -89,6 +89,15 @@
         "ocrdb_version": {
           "type": ["string", "null"]
         },
+        "target_commit": {
+          "type": "string",
+          "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
+          "description": "#3560: the scanned tree's HEAD, copied at synthesis from the driver's run-manifest.json (`target_commit`, #1492). Absent when no manifest recorded one (a direct synthesize.py run, or a target that is not a Git checkout), never null. devtools/compare_runs.py refuses to compare runs whose commits differ."
+        },
+        "target_dirty": {
+          "type": "boolean",
+          "description": "#3560: whether the scanned tree had uncommitted changes, copied at synthesis from the run manifest. Absent means UNKNOWN, never clean: no manifest recorded it, or the status probe was refused. On a target with a suppressed Git driver (meta.coverage.git_drivers_suppressed) `true` is an upper bound."
+        },
         "security_mode": {
           "type": "string",
           "enum": [

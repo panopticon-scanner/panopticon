@@ -410,6 +410,16 @@ gates CI (keys off `summary.gate` in the JSON). Tool layer: build the image once
 normal runs require Docker and the tools image at readiness, or `--no-tools` to
 skip the layer explicitly. `driver readiness` prints a read-only preflight.
 
+### Comparing repeat runs
+`python3 devtools/compare_runs.py A-report.json B-report.json [...] [--out cmp.json]` measures
+reproducibility across repeat full reviews of one pinned commit (#3560). It refuses runs whose
+version, OCRDb version, review type, layout fingerprint, profile or `meta.target_commit` differ,
+and refuses any dirty run. A report with no recorded commit needs `--allow-unknown-commit`, and the
+summary then opens with `COMMIT UNVERIFIED`. Agent findings match on file and category plus line
+proximity (`--line-window`, default 5), and tool findings on their fingerprint. The module
+docstring documents the key. It reports agreement, CRITICAL/HIGH consistency, score spread and
+lost cells, and sets no thresholds.
+
 ### Test-only injection seams
 Two module attributes exist so the unit suite can refuse a real launch, and neither may ever be
 assigned outside `tests/`. `DEFAULT_RUNNER` (on each host-CLI launch seam —
