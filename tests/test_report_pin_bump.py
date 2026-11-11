@@ -113,6 +113,8 @@ def test_up_to_date_with_no_issue_touches_nothing():
     {"number": 2, "title": "pin-freshness: trivy 1.0.0 -> 9.9.9", "body": "",
      "user": {"login": "github-actions[bot]", "type": "User"}},
     {"number": 2, "title": "pin-freshness: trivy 1.0.0 -> 9.9.9", "body": "",
+     "user": {"login": "dependabot[bot]", "type": "Bot"}},
+    {"number": 2, "title": "pin-freshness: trivy 1.0.0 -> 9.9.9", "body": "",
      "user": {"login": "github-actions[bot]", "type": "Bot"}, "pull_request": {}},
     {"number": True, "title": "pin-freshness: trivy 1.0.0 -> 9.9.9", "body": "",
      "user": {"login": "github-actions[bot]", "type": "Bot"}},
