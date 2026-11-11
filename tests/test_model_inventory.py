@@ -30,6 +30,8 @@ hosts:
       model: gemini-a
     domain_panel:
       model: gemini-retired
+    setup_scan:
+      model: null
 """
 
 GEMINI = """\
@@ -180,6 +182,7 @@ def test_rows_carry_allowlist_membership(tmp_path):
     gemini = {r["role"]: r for r in tables["profiles:gemini"].rows}
     assert gemini["scout"]["allowlisted"] == "yes"
     assert gemini["domain_panel"]["allowlisted"] == "NO"
+    assert gemini["setup_scan"]["allowlisted"] == "-"     # inherit is not a model to allow
     kimi = {r["role"]: r for r in tables["profiles:kimi"].rows}
     assert kimi["scout"] == {"host": "kimi", "role": "scout", "model": "primary",
                              "detail": "alias=kimi-for-coding", "allowlisted": "-"}
