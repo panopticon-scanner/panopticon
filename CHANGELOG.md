@@ -21,6 +21,14 @@
   `summary.health.basis`. JSON, terminal and HTML output warn that the policy score is pending
   calibration and comparable only across matching bases; older reports still render and explicitly
   say their basis predates #3528. The score, bands, weights and gate are unchanged.
+- **A code change no longer rebuilds most of the tools image (#2106, option A).**
+  - `COPY skill/scripts` and its `ENV PYTHONPATH` move from the middle of the Dockerfile to just
+    above the smoke test. Every layer below a COPY is rebuilt when the copied files change, so
+    a docstring-only merge used to publish 21 of 38 layers, about 1.7 GiB per architecture.
+  - The NVD database is copied with `--chown=scanner:scanner`, after the user is created. The
+    `chown -R /opt/odc-data` it replaces stored the whole database a second time, about
+    120 MiB per pull. Scanner still owns the database, which H2 needs (#451).
+  - `tests/test_dockerfile.py::TestLayerOrder` pins both orders.
 - **The replay tests no longer leak `sys.path`; pytest drops `skill/scripts` (#3522, part of #1516).**
   `devtools/replay_report.replay()` installs a checkout's `skill/` on `sys.path` in the calling
   process, and `tests/test_replay_report.py` called it in-process with nothing to put the list back,

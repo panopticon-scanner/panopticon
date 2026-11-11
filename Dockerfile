@@ -267,11 +267,6 @@ issues = len(d.get('Issues') or []); \
 sys.exit(0) if files > 0 and issues > 0 else sys.exit('gosec read %d files / %d issues -- expected >0 of each; the Go toolchain is missing or unusable' % (files, issues))" \
     && rm -rf /tmp/gosec-verify /tmp/gosec-verify.json /tmp/gosec-verify.log
 
-# Copy panopticon adapter dispatcher into the image so Docker-based runs can
-# invoke Phase 1 adapters without relying on the target repo providing it.
-COPY skill/scripts /opt/panopticon/scripts
-ENV PYTHONPATH=/opt/panopticon
-
 # OpenJDK (needed by SpotBugs and dependency-check); apt packages unpinned, see the base apt note above.
 # hadolint ignore=DL3008
 RUN apt-get update && apt-get install -y --no-install-recommends default-jdk unzip build-essential \
@@ -489,34 +484,42 @@ RUN set -euo pipefail \
     && rm -rf /tmp/osv-warm /tmp/osv-warm.log \
     && chmod -R a+rX /opt/osv-db
 
-# dependency-check NVD database: copied from the pinned cache stage (NVD_DATA_REF,
-# top of file) — no NVD API call, no secret, no per-build sync. The later
-# `chown -R scanner:scanner /opt/odc-data` gives dependency-check the read-write
-# access it needs on odc.mv.db.
-COPY --from=nvd-data /opt/odc-data /opt/odc-data
-
 RUN useradd -m -u 1000 scanner \
     && chown scanner:scanner /home/scanner \
     && mkdir -p /home/scanner/.cargo \
     && chown scanner:scanner /home/scanner/.cargo \
     && mkdir -p /home/scanner/.local/share \
     && cp -r /root/.local/share/ruby-advisory-db /home/scanner/.local/share/ \
-    && chown -R scanner:scanner /home/scanner/.local/share/ruby-advisory-db \
-    && chown -R scanner:scanner /opt/odc-data
-# /opt/odc-data is chowned, not just a+rX: dependency-check opens its H2
-# database (odc.mv.db) read-write even under --noupdate, and when the lock
-# cannot be taken H2 BLOCKS rather than failing, so the adapter burns its full
-# 900s timeout and returns nothing. Chowning here rather than in the NVD layer
-# keeps that expensive download cached.
+    && chown -R scanner:scanner /home/scanner/.local/share/ruby-advisory-db
 # /home/scanner is chowned explicitly: earlier layers (RustSec advisory-db
 # clone) pre-create it as root, so useradd -m's own home-dir ownership is a
 # no-op ("tolerates the home directory already existing" — it does not fix
 # it). Without this, tools that lazily write their own dotfiles under $HOME
 # at scan time (semgrep's ~/.semgrep, dotnet's ~/.dotnet first-run sentinel)
 # fail with PermissionError even though every baked asset is present.
+
+# dependency-check NVD database: copied from the pinned cache stage (NVD_DATA_REF,
+# top of file) — no NVD API call, no secret, no per-build sync. It is copied
+# owned by scanner, not just a+rX: dependency-check opens its H2 database
+# (odc.mv.db) read-write even under --noupdate, and when the lock cannot be
+# taken H2 BLOCKS rather than failing, so the adapter burns its full 900s
+# timeout and returns nothing (#451). `--chown` sets the owner in this one
+# layer; a `chown -R` in a later layer stored the whole database a second time
+# (about 120 MiB per pull, #2106). The user must exist before this line.
+COPY --chown=scanner:scanner --from=nvd-data /opt/odc-data /opt/odc-data
+
 ENV CARGO_HOME=/home/scanner/.cargo
 USER scanner
 WORKDIR /src
+
+# Copy panopticon adapter dispatcher into the image so Docker-based runs can
+# invoke Phase 1 adapters without relying on the target repo providing it.
+# It is the last thing copied in before the smoke test that runs it: every
+# layer below a COPY is rebuilt when the copied files change, and these change
+# on most merges. Higher up, a docstring edit rebuilt 21 of 38 layers, about
+# 1.7 GiB of new image (#2106).
+COPY skill/scripts /opt/panopticon/scripts
+ENV PYTHONPATH=/opt/panopticon
 
 # Gate the build on every tool actually running AS THE SCANNER USER. Building
 # and pushing proves only that the layers assembled: both the semgrep $HOME
