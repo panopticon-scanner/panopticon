@@ -301,7 +301,7 @@ def _assess_session_root(root, assessed, *, reset=False, runner=None):
     read the scope file without its row stamp, so for those families this
     halt is the only stop on a pre-planted one. `reset` moves an unverified
     one aside, as it does for the review root."""
-    if root is None or any(os.path.realpath(root) == os.path.realpath(r) for r in assessed):
+    if root is None or _among(root, assessed):
         return
     if reset and not _nothing_to_trust(os.path.join(root, PANO)):
         assess_artifacts(root, reset=True, runner=runner)
@@ -309,10 +309,26 @@ def _assess_session_root(root, assessed, *, reset=False, runner=None):
     assess_artifacts(root, runner=runner, read_only=True)
 
 
-def mark_session_root(root, runner=None):
+def _among(root, roots):
+    return any(os.path.realpath(root) == os.path.realpath(r) for r in roots)
+
+
+def contact_roots(args, review_root):
+    """The roots first contact checks before the session root: the operator's
+    checkout under --pr, then the review root. `driver loop` hands the same
+    tuple to its session guards, so the mark skips them as the contact does."""
+    return ((args.target,) if getattr(args, "pr", None) else ()) + (review_root,)
+
+
+def mark_session_root(root, assessed=(), runner=None):
     """Mark the session root ours before the session guards first write their
     state there (#3532), so the next invocation's read-only contact verifies
-    it rather than halting on our own allowlist."""
+    it rather than halting on our own allowlist. Skipped when its realpath is
+    one of the `assessed` roots: that root's own contact covers it, and its
+    owner.json names the root as the contact spelled it, not as --session-dir
+    does, so re-assessing it here would halt on our own run state."""
+    if _among(root, assessed):
+        return
     if _nothing_to_trust(os.path.join(root, PANO)):
         _mark_or_reassess(root, runner)
     else:
@@ -329,7 +345,7 @@ def assess_loop(args, resolved):
     review_root, worktree = resolved[0], resolved[1]
     reset = getattr(args, "reset", False)
     try:
-        roots = ((args.target,) if getattr(args, "pr", None) else ()) + (review_root,)
+        roots = contact_roots(args, review_root)
         for root in roots:
             assess_artifacts(root, reset=reset)
         _assess_session_root(session_root(args), roots, reset=reset)

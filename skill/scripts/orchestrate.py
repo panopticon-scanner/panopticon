@@ -64,8 +64,9 @@ def _after_first_run(review_root):
 class Guards:
     """Arm and disarm both guards for one mode (spec 5.1)."""
 
-    def __init__(self, mode, run_dir=None, session_root=None):
+    def __init__(self, mode, run_dir=None, session_root=None, assessed=()):
         self.mode = mode
+        self.assessed = tuple(assessed)  # #3532: roots first contact already checked
         self.armed_entries = []  # I4: session errors preserve older fan-outs.
         if mode == "headless":
             self.settings_path = os.path.join(run_dir, runners_base.SETTINGS_FILE)
@@ -85,8 +86,9 @@ class Guards:
             # before the first guard state lands there and before anything counts as
             # armed, so the next contact verifies it. Not at construction: a loop
             # builds its Guards on every invocation, most never arm, and the default
-            # root is cwd. Anything planted there since the contact halts here.
-            first_contact.mark_session_root(self.session_root)
+            # root is cwd. Anything planted there since the contact halts here. Skipped
+            # when it is a root the contact checked under another spelling (#3538 B1).
+            first_contact.mark_session_root(self.session_root, self.assessed)
         armed = {e.get("id") for e in self.armed_entries}
         self.armed_entries += [e for e in entries
                                if isinstance(e, dict) and e.get("id") not in armed]
@@ -168,7 +170,8 @@ def _loop(args, pause):
         # `run_dir` is not needed here: `Guards` ignores it outside headless mode, and the
         # settings/allowlist/scope paths it resolves depend only on `session_root`, which does not
         # change across a run.
-        guards = Guards(mode, session_root=session_root)
+        guards = Guards(mode, session_root=session_root,
+                        assessed=first_contact.contact_roots(args, review_root))
     # #1662: what a Ctrl-C has to take back. Bound BEFORE the try -- which (#2200) now opens
     # before `_first_run`, so the interrupt can land before the first batch ever opens one.
     batch = None
@@ -240,7 +243,8 @@ def _loop(args, pause):
             if getattr(args, attr, None):
                 setattr(runner, attr, getattr(args, attr))
         if guards is None:
-            guards = Guards(mode, run_dir=run_dir, session_root=session_root)
+            guards = Guards(mode, run_dir=run_dir, session_root=session_root,
+                            assessed=first_contact.contact_roots(args, review_root))
         ledger = ledger_mod.Ledger(run_dir)
         while status.get("status") == "checkpoint":
             iterations += 1

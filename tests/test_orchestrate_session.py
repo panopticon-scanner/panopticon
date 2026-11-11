@@ -240,6 +240,26 @@ class TestSessionMode(LoopCase):
             self.assertEqual(row, json.load(fh))
         self.assertFalse(write_guard_hook.is_armed(session_root=s)[0])
 
+    def test_a_session_dir_symlinked_to_the_review_root_dispatches(self):
+        # #3538 B1: the contact checks the review root and skips the session
+        # root as the same realpath. The first arm must skip it too: under the
+        # link's spelling the review root's own run state reads as planted.
+        d, floor = self._repo()
+        os.makedirs(os.path.join(d, ".claude"))
+        with open(os.path.join(d, ".claude", "settings.local.json"), "w") as fh:
+            fh.write("{}")
+        link = os.path.join(self._session_root(d), "link")
+        os.symlink(d, link)
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)):
+            s1, _ = self._loop(d, "--session-dir", link)
+        s2, _ = self._loop(d, "--session-dir", link)
+        self.assertEqual(("dispatch", "dispatch"), (s1["status"], s2["status"]), (s1, s2))
+        self.assertIn("review-app-SEC", self._armed_read_ids(d))
+        self.assertEqual([".panopticon"], [n for n in os.listdir(d) if n.startswith(".panopticon")])
+        owner = first_contact._load(os.path.join(d, ".panopticon", first_contact.OWNER))
+        self.assertEqual(d, owner["review_root"])
+
     def test_re_entry_after_persisting_every_entry_advances_and_disarms_the_done_ones(self):
         d, floor = self._repo(); s = self._session_root(d)
         # Ruling 1: drive the not-proven write-guard posture (so the review
@@ -829,3 +849,42 @@ class TestSetupOnRails(LoopCase):
         self.assertTrue(os.path.isfile(flat_ledger))
         self.assertTrue(os.path.isfile(flat_usage))
         self.assertNotEqual(os.path.realpath(flat_usage), os.path.realpath(stale_usage_path))
+
+
+class TestTheSessionGuardsMark(LoopCase):
+    """#3532: `Guards.arm`'s mark of the session root, on its own."""
+
+    _ENTRY = {"id": "review-app-SEC"}
+
+    def _planted(self):
+        s = self._session_root(None)
+        os.makedirs(os.path.join(s, ".panopticon"))
+        with open(os.path.join(s, ".panopticon", "read-scope.json"), "w", encoding="utf-8") as fh:
+            json.dump({"planted": {"files": [], "dirs": ["/"], "reads": []}}, fh)
+        return s
+
+    def test_a_halted_mark_leaves_nothing_counted_as_armed(self):
+        # #3538 N1: the mark comes before `armed_entries` grows, or an error
+        # exit's disarm would take down grants this invocation never installed.
+        s = self._planted()
+        guards = orchestrate.Guards("session", session_root=s)
+        with self.assertRaises(first_contact.FirstContactHalt) as halt:
+            guards.arm([self._ENTRY])
+        self.assertEqual(first_contact.H2, str(halt.exception))
+        self.assertEqual([], guards.armed_entries)
+
+    def test_an_assessed_root_under_another_spelling_is_not_marked(self):
+        # #3538 B1: under --pr the session root is the operator's checkout,
+        # which the contact already checked as `args.target`.
+        s = self._planted()
+        link = os.path.join(self._session_root(None), "link")
+        os.symlink(s, link)
+        pr = mock.Mock(target=s, pr="7")
+        self.assertEqual((s, "/wt/7"), first_contact.contact_roots(pr, "/wt/7"))
+        self.assertEqual(("/wt/7",), first_contact.contact_roots(mock.Mock(pr=None), "/wt/7"))
+        before = sorted(os.walk(s))
+        first_contact.mark_session_root(link, first_contact.contact_roots(pr, "/wt/7"))
+        self.assertEqual(before, sorted(os.walk(s)))
+        with self.assertRaises(first_contact.FirstContactHalt) as halt:
+            first_contact.mark_session_root(link, ("/wt/7",))
+        self.assertEqual(first_contact.H2, str(halt.exception))

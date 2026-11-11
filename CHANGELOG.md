@@ -32,6 +32,8 @@
     marks the directory ours (`orchestrate.Guards.arm`), so the state they leave there verifies
     on the next invocation. A row planted between the check and that arm halts there.
   - `--reset` moves an unverified one aside, as it does for the review root.
+  - A session root that is the review root or the `--pr` checkout under another spelling (a
+    symlinked `--session-dir`) is neither checked nor marked twice.
 - **The replay tests no longer leak `sys.path`; pytest drops `skill/scripts` (#3522, part of #1516).**
   `devtools/replay_report.replay()` installs a checkout's `skill/` on `sys.path` in the calling
   process, and `tests/test_replay_report.py` called it in-process with nothing to put the list back,
