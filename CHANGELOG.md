@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 5.3.0 — Red-team hardening and the armor audit
+
+Cut after the 5.2 red-team triage and the #3173 armor audit. 191 pull requests, 119 issues.
+
+- **The 5.2 red-team findings are closed.** Every MEDIUM and LOW from the triage
+  (#3244–#3256) and the post-5.2 audit (#3264, #3265, #3269–#3273) is fixed, or measured
+  below its rating.
+- **First contact is the trust check.** It vets `.panopticon/` at every entrypoint, including
+  the session root (#3532). It halts on hard links, an unreadable manifest, a foreign
+  `.panopticon/`, and a PATH entry inside the target, and it replaces the older per-read
+  provenance and symlink checks (#3271, #3270, #3452).
+- **Armor audit (#3173).** Layers that only guarded our own finished refactors, or
+  duplicated a stronger layer, are removed: duplicate config normalization, guard probes, and
+  split-parity scaffolding. Two guard checks that duplicate first contact's halt run log-only
+  for this release and record what they would have blocked in `shadow-denials.jsonl` (#3533).
+  They are removed in a later release only if the shadow log stays clean.
+- **CI at fighting weight (#3264).** The self-linting workflow guard and shell reader are gone.
+  actionlint and zizmor gate the workflows in the required `lint` job, coverage is sharded, and
+  main is audited nightly instead of on every push (#3292).
+- **Two more first-class hosts.** Google Antigravity (`agy`, #3493) and the restored Gemini
+  CLI (#3494) both prove 5/5 capabilities.
+- **The health grade no longer rewards scanning less (#1495).** Every report records the run
+  basis behind its grade (#3528). A full review at a non-default `max_per_group` reports a
+  provisional letter that names the setting. The formula and bands are unchanged.
+- **OCRDb 0.7** guides and severity ranges drive review and synthesis (#3330), and one
+  finding's line span counts at most 50 lines in the health index (#3230).
+
 - **actionlint and zizmor gate the workflows in the required `lint` job (#3264, audit I4).**
   They replace the removed workflow `run:` guard (#3513) beside the structural rules in
   `tests/test_workflow_allowlist.py`. actionlint checks syntax and expressions and runs the runner's

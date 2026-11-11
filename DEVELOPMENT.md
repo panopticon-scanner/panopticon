@@ -7,7 +7,7 @@ spec/plan docs. It records architecture, the design decisions that are settled, 
 history. The live backlog is the issue tracker: every self-scan finding is filed with `severity:*`,
 `evidence:*` and `panel:*` labels (`.github/labels.yml`), and nothing in this file is a to-do list.
 
-**Current version: 5.2.1** (semver — see Versioning below).
+**Current version: 5.3.0** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
@@ -754,7 +754,14 @@ changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.
 `version` together.
 
 History:
-- **5.2.1** (current) — security patch (GHSA-wjpr-jxg9-rmwh): a headless run's guard
+- **5.3.0** (current) — red-team hardening and the armor audit. 191 pull requests, 119
+  issues. Every MEDIUM and LOW from the 5.2 red-team triage is fixed or measured below its
+  rating. First contact becomes the single trust check on `.panopticon/`. The #3173 audit
+  retires armor that only guarded our own code or duplicated a stronger layer, and CI drops
+  its self-lint for actionlint and zizmor (#3264). Google Antigravity (`agy`) is a 5/5 host
+  (#3493), and the Gemini CLI returns as one (#3494). A full review at a non-default group
+  size now reports its letter as provisional (#1495).
+- **5.2.1** — security patch (GHSA-wjpr-jxg9-rmwh): a headless run's guard
   settings file is built fresh instead of merged from disk, and `driver setup --reset`
   clears setup's copy. No other change from 5.2.0.
 - **5.2.0** — host expansion and hardening. 653 pull requests, 1,223 issues:
