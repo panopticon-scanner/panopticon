@@ -88,7 +88,7 @@ def test_the_same_config_under_two_scout_sets_gives_the_same_letter_outcome(dete
     first = _summary([_cov(deterministic=deterministic, scout=[])])
     second = _summary([_cov(deterministic=deterministic, scout=["OPS", "DAT"])])
     assert _outcome(first) == _outcome(second)
-    assert (first["provisional_grade"] is None) is (not deterministic)
+    assert (first["provisional_grade"] is not None) == bool(deterministic)
 
 
 def test_a_record_written_before_the_lever_fields_keeps_the_letter_and_measures_nothing():
