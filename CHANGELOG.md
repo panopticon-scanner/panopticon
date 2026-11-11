@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Every model table must carry a `models-verified` marker (#3569).** A test requires one on
+  each table except `profiles:openrouter`, which is exempt until #3568 decides its fate, and the
+  exemption fails once it no longer applies. A marker that belongs to no table (above a role
+  key, or a blank line away) now fails the inventory and the monthly sweep instead of being
+  ignored. Marker age is still not checked in CI.
+
 - **A monthly model-list sweep issue (#3563, part 2).** On the 1st of each month a workflow
   opens one `model-list sweep due: YYYY-MM` issue listing every host model table with its
   `models-verified` date, stalest first, so stale model lists get a regular review.
