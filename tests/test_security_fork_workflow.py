@@ -121,7 +121,7 @@ class TestBothWorkflowsScanInRedteam(unittest.TestCase):
     ROUTES = (
         (BASE, "scan", "Run static-analysis tools", "run_tools.py"),
         (BASE, "scan", GATE, "security_gate.py"),
-        (BASE, "scan", "Strict full-tree gate", "security_gate.py"),
+        (BASE, "scan", "Strict full-tree verdict (reported, not gating)", "security_gate.py"),
         (FORK, "fork-scan", "Run static-analysis tools", "run_tools.py"),
         (FORK, "fork-scan", GATE, "security_gate.py"),
     )

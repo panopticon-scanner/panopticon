@@ -67,7 +67,9 @@ def h2_query(dc_home, user, password):
 
     def query(directory, sql):
         url = "jdbc:h2:file:%s;ACCESS_MODE_DATA=r" % os.path.join(os.path.abspath(directory), "odc")
-        proc = subprocess.run(
+        # Fixed argv, no shell; `java` from the operator's PATH on purpose (a dev
+        # tool run by hand against two local databases, never by the product).
+        proc = subprocess.run(  # nosec B603 B607
             ["java", "-cp", jars[0], "org.h2.tools.Shell", "-url", url,
              "-user", user, "-password", password, "-sql", sql],
             capture_output=True, text=True, timeout=600, check=False)

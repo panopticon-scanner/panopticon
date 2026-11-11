@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **The NVD cache workflow runs the seeded sync script; the weekly full-tree scan reports instead of failing (#3417 wiring half, owner 2026-11-10).**
+  - `nvd-cache.yml` calls `.github/scripts/nvd-cache-sync.sh` (merged in #3523) instead of its inline sync,
+    sets up Buildx before it (the seed is read with `docker buildx imagetools`), and gains a
+    `full_rebuild` dispatch input for a forced full download.
+  - The weekly `strict-full-tree` route counts accepted findings too, so it was red every week. Its gate
+    step now reports: findings give a warning and a summary line, and only a gate that could not
+    evaluate the captures (exit 2) fails the run. The nightly `main-audit` and the PR gate are unchanged.
+  - The three code-scanning alerts #3523 brought in are fixed in the code: the optional
+    `--nvdApiKey` argument is spelled out in two launches instead of an unquoted `${VAR:+...}`, and
+    `devtools/nvd_cache_compare.py`'s fixed `java` call carries a `# nosec` with its reason.
+  - Four workflow comments still named `tests/test_workflow_pins.py`, retired in #3527. They now name
+    `tests/test_action_pins.py`, or say that the runtime `id -u` check is the whole proof of the
+    container user, since no file test pins the `--user` flag any more.
+- **Health grades now state the effective run basis that made them (#3528, part of #1495).**
+  Report schema v2 records the normalized review type, group and cell counts, effective size
+  policy, a stable group-to-files layout fingerprint, and the Panopticon/OCRDb versions under
+  `summary.health.basis`. JSON, terminal and HTML output warn that the policy score is pending
+  calibration and comparable only across matching bases; older reports still render and explicitly
+  say their basis predates #3528. The score, bands, weights and gate are unchanged.
 - **A code change no longer rebuilds most of the tools image (#2106, option A).**
   - `COPY skill/scripts` and its `ENV PYTHONPATH` move from the middle of the Dockerfile to just
     above the smoke test. Every layer below a COPY is rebuilt when the copied files change, so
