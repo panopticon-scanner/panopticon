@@ -39,6 +39,27 @@ jobs:
         with:
           persist-credentials: false
 
+      # #3441: `load: true` below unpacks the finished image into the daemon while
+      # BuildKit still holds its own copy, and that peak ran the runner out of disk
+      # (`no space left on device` during "importing to docker"). Nothing in this job
+      # uses these preinstalled toolchains: it has no setup-* action, and the build
+      # reads only the checkout and the base images it pulls. Each directory is
+      # measured before it goes; one a newer runner image lacks is named and skipped.
+      # tests/test_action_pins.py pins the list and the no-setup rule.
+      - name: Free runner disk
+        run: |
+          set -euo pipefail
+          df -h /
+          for dir in /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache; do
+            if [ -e "$dir" ]; then
+              sudo du -sh "$dir"
+              sudo rm -rf "$dir"
+            else
+              echo "absent: $dir"
+            fi
+          done
+          df -h /
+
       - name: Lint Dockerfile
         env:
           # #1529: this binary is fetched and then EXECUTED, so what arrives has
