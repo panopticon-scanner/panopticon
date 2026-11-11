@@ -1823,6 +1823,17 @@ class TestToolOutputSelection(unittest.TestCase):
         self.assertEqual({"semgrep"}, set(dispositions))
         self.assertEqual(it.MAX_UNBOUND_OUTPUT_NAMES, len(unbound))
 
+    def test_unbound_name_truncation_keeps_the_sorted_prefix(self):
+        count = it.MAX_UNBOUND_OUTPUT_NAMES + 5
+        names = ["junk%03d.json" % i for i in range(count)]
+        with tempfile.TemporaryDirectory() as d:
+            for name in reversed(names):
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    fh.write("{}")
+            unbound = []
+            it._output_files(d, allowed_outputs=(), unbound_out=unbound)
+        self.assertEqual(names[:it.MAX_UNBOUND_OUTPUT_NAMES], unbound)
+
     def test_glob_parity_dotfiles_still_skipped(self):
         # `glob.glob("*.json")` never matched a leading-dot name; the scandir
         # walk must not start ingesting `.hidden.json`.

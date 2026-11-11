@@ -1391,6 +1391,37 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         self.assertNotIn("artifact invalid", stderr)
         self.assertIn("Grade:", stdout)
 
+    def test_duplicate_id_policy_error_remains_recorded_in_the_artifact(self):
+        # #3535 review r1: policy stays advisory for the exit code, but its
+        # errors are part of the published meta.schema_errors count as before.
+        real_build = report_mod.build_report
+
+        def build_with_duplicate(inputs):
+            report = real_build(inputs)
+            duplicate = dict(report["findings"][0])
+            duplicate["title"] = "second"
+            duplicate["location"] = {"file": "b.py", "line_start": 2}
+            report["findings"].append(duplicate)
+            return report
+
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = os.path.join(d, "findings-g1-COD.json")
+            with open(fp, "w", encoding="utf-8") as stream:
+                json.dump({"findings": [_agentic(
+                    "CD-001", sev="LOW", panel="code", title="first",
+                    location={"file": "a.py", "line_start": 1})]}, stream)
+            out = os.path.join(d, "report.json")
+            with mock.patch.object(report_mod, "build_report",
+                                   side_effect=build_with_duplicate):
+                rc, _stdout, stderr = self._run(
+                    ["--target", "src", "--out", out, fp])
+            with open(out, encoding="utf-8") as stream:
+                written = json.load(stream)
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertIn("REPORT policy: duplicate finding id:", stderr)
+        self.assertGreaterEqual(written["meta"]["schema_errors"], 1)
+
     def test_x0x_serialization_stays_ascii_escaped_and_multiline(self):
         import scripts.x0x_report as x0x_report
 

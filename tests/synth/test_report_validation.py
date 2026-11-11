@@ -11,6 +11,7 @@ import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
 import scripts.synth.codes as codes_mod
 import scripts.synth.report as report_mod
+import scripts.synth.validate_schema as validate_schema_mod
 import scripts.evidence as evidence_mod
 import scripts.ocrdb as ocrdb
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir, _agentic
@@ -107,6 +108,22 @@ class TestReconciliation(unittest.TestCase):
         errors, warnings = report_mod.validate_report(report)
         self.assertEqual(errors, [])
         self.assertTrue(any("location" in w for w in warnings))
+
+    def test_schema_rejects_empty_finding_title_and_category(self):
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None,
+                                     timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[_agentic(
+                fid="CD-001", panel="code", severity="LOW")]),
+        ))
+        for field in ("title", "category"):
+            with self.subTest(field=field):
+                report["findings"][0][field] = ""
+                errors = validate_schema_mod.schema_errors(report)
+                self.assertTrue(any(
+                    "$.findings[0].%s" % field in error for error in errors),
+                    errors)
+                report["findings"][0][field] = field
 
     def test_a_whole_file_location_is_silent_and_a_fileless_one_still_warns(self):
         # #2174 (#1784): `{"file": "README.md"}` with no line is the SANCTIONED

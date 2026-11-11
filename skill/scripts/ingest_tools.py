@@ -75,8 +75,8 @@ __all__ = [
 # A receipt limits the files we ingest to outputs this run vouched for. Keep a
 # separate disclosure bound for names the receipt did not vouch for: 100 is
 # more than six times today's 15 registered adapters, leaving ample room for
-# both supported suffixes and stale captures without retaining an attacker-sized
-# directory listing merely to report that the directory was planted (#3535).
+# both supported suffixes and stale captures. The published list is the sorted
+# prefix, so the disclosure stays reproducible across filesystem order (#3535).
 MAX_UNBOUND_OUTPUT_NAMES = 100
 _OUTPUT_SUFFIXES = (".sarif", ".json")
 
@@ -101,13 +101,12 @@ def _output_files(tools_dir, allowed_outputs=None, unbound_out=None):
             if name.startswith(".") or not name.endswith(_OUTPUT_SUFFIXES):
                 continue
             if allowed is not None and name not in allowed:
-                if len(unbound) < MAX_UNBOUND_OUTPUT_NAMES:
-                    unbound.append(name)
+                unbound.append(name)
                 continue
             kept.append(entry.path)
     kept.sort()
     if unbound_out is not None:
-        unbound_out.extend(sorted(unbound))
+        unbound_out.extend(sorted(unbound)[:MAX_UNBOUND_OUTPUT_NAMES])
     return kept
 # Top-level dirs that are never project source: a nested checkout, the git dir,
 # and panopticon's OWN artifact tree.

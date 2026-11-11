@@ -29,7 +29,8 @@
   fallback is gone, and both the readiness helper and its production caller require the envelope.
 - **Eight single-artifact writers share one atomic write primitive (#3535).** It confines the final
   name before creating directories, stages text or bytes through the exclusive no-follow opener,
-  cleans its own temporary file, and preserves tool-capture fsync and operator-selected outputs.
+  cleans its own temporary file, and preserves tool-capture private mode/fsync and operator-selected
+  outputs.
 - **PR config sync always rewrites the operator config (#3535).** It no longer re-reads both files
   to prove byte equality; each sync publishes the selected config and emits one direct sync note.
 - **The written artifact is the report schema authority (#3535).** The hydrated report and X0X

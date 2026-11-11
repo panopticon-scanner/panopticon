@@ -455,11 +455,10 @@ def cvss_unscored(findings):
 
 
 def attach_schema_status(report, errors):
-    """Record the written-artifact schema result in the report itself.
+    """Record validation errors in the report artifact itself.
 
-    The artifact pass owns this count (#3535). Policy errors from
-    `validate_report` are intentionally excluded: they are advisory rules the
-    published JSON schema cannot express.
+    The count includes semantic policy errors and written-artifact schema
+    errors (#3535). Policy warnings remain excluded.
     """
     report.setdefault("meta", {})["schema_errors"] = len(errors)
     return report
@@ -474,6 +473,13 @@ def validate_report(report):
     """
     errors, warnings = [], []
     for i, f in enumerate(report.get("findings") or []):
+        fid = f.get("id")
+        # Draft 7's `$` accepts the position before one final newline. The old
+        # ID_RE check used `\Z` and rejected that otherwise-valid id; keep only
+        # this schema gap as policy rather than duplicating the whole pattern.
+        if (isinstance(fid, str) and fid.endswith("\n")
+                and findings_mod.ID_RE.fullmatch(fid[:-1]) is not None):
+            errors.append("finding[%d] bad id: %r" % (i, fid))
         loc = f.get("location") or {}
         # #2174: a located finding with no line is the sanctioned whole-file shape (#1522).
         if not loc.get("file"):

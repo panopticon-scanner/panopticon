@@ -96,10 +96,11 @@ it safe for this failure to be terminal; it is also why `meta.host_capabilities`
 verbatim out of an untrusted artifact, is described in the schema without being constrained by it.
 The published schema is checked once, against what was written: the hydrated report union and its
 X0X siblings. Errors are labelled `SCHEMA artifact:`, and **every artifact is still written** — an
-invalid report is on disk so it can be inspected, and the main report is republished with
-`meta.schema_errors` equal to the artifact pass's total across every checked artifact (or `0` when
-they are clean). The `.panopticon/report.json` compat symlink still points at **this** run's report
-rather than the previous run's. *Coverage certification* is whether enough of the review
+invalid report is on disk so it can be inspected. `meta.schema_errors` combines those written-
+artifact schema errors with in-memory semantic-policy errors; policy warnings are excluded. The
+main report is republished with the combined total when the artifact pass finds schema errors. The
+`.panopticon/report.json` compat symlink still points at **this** run's report rather than the
+previous run's. *Coverage certification* is whether enough of the review
 actually happened for the verdict to mean anything — `summary.gate` and
 `summary.coverage_certified`, exits `1` and `2`, both of them VALID reports about a coverage
 question. **An unreadable tools manifest is an integrity failure** (#1644): a `tools-manifest.json`
@@ -123,8 +124,8 @@ have written an artifact no consumer can validate. So `4` is never a gate verdic
 mean the artifact is unreadable. The domain rules the schema cannot express — an agent-sourced
 security HIGH with no CVSS score or no exploit scenario, two findings sharing an id, or a missing
 file locus — are checked in memory as policy, separately from schema validation. They print as
-`WARN:` or `REPORT policy:` lines, are not counted in `meta.schema_errors`, and do not change the
-exit status.
+`WARN:` or `REPORT policy:` lines. Policy errors (duplicate ids, missing exploit scenarios, and id
+grammar gaps) count in `meta.schema_errors`; warnings do not. Neither changes the exit status.
 
 **Malformed OSV and Roslyn captures (#2105).** Invalid top-level containers fail ingestion.
 Malformed child containers or records retain usable sibling findings and disclose partial coverage

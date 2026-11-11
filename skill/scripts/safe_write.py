@@ -230,7 +230,7 @@ def _refuse_unless_sole_regular(fd):
                                   % info.st_nlink)
 
 
-def open_staging_nofollow(path):
+def open_staging_nofollow(path, mode=0o644):
     """Create a fixed staging leaf exclusively, reusing only a safe leftover.
 
     #2093: O_NOFOLLOW alone still opens and truncates a hard link, while opening
@@ -244,7 +244,7 @@ def open_staging_nofollow(path):
              | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
 
     def create():
-        return os.open(path, flags, 0o644)
+        return os.open(path, flags, mode)
 
     collisions = (errno.EEXIST, errno.ELOOP)
     try:
@@ -279,16 +279,17 @@ def open_staging_nofollow(path):
         raise
 
 
-def atomic_write(path, data, fsync=False):
+def atomic_write(path, data, fsync=False, mode=0o644):
     """Atomically replace ``path`` with text or bytes through ``path + '.tmp'``.
 
     The final name is confined before parent creation: doing this after
     ``makedirs`` would already have traversed a planted intermediate symlink.
     The fixed staging name then goes through the exclusive no-follow opener,
     which repeats confinement and refuses symlinks, hard links, and special
-    files. ``fsync`` flushes and syncs the staged file before publication; it
-    deliberately does not add a directory sync that the migrated callers did
-    not previously perform.
+    files. ``mode`` is applied when the staging inode is created, so callers
+    such as tool capture can retain a private 0600 artifact. ``fsync`` flushes
+    and syncs the staged file before publication; it deliberately does not add
+    a directory sync that the migrated callers did not previously perform.
     """
     path = os.fspath(path)
     if not isinstance(data, (str, bytes)):
@@ -299,7 +300,10 @@ def atomic_write(path, data, fsync=False):
     staging = path + ".tmp"
     opened = False
     try:
-        with open_staging_nofollow(staging) as stream:
+        stage = (open_staging_nofollow(staging)
+                 if mode == 0o644 else
+                 open_staging_nofollow(staging, mode=mode))
+        with stage as stream:
             opened = True
             if isinstance(data, bytes):
                 stream.buffer.write(data)

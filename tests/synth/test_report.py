@@ -56,6 +56,20 @@ class TestReport(unittest.TestCase):
         self.assertTrue(any("exploit" in e for e in errors))
         self.assertTrue(any("cvss" in warning for warning in warnings))
 
+    def test_validate_rejects_an_otherwise_valid_id_with_a_trailing_newline(self):
+        # JSON Schema's `$` accepts a position before one final newline, while
+        # findings.ID_RE's `\Z` never did. Keep that invariant in policy.
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None,
+                                     timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[
+                _make_finding(id="CD-001", panel="code", severity="LOW"),
+            ]),
+        ))
+        report["findings"][0]["id"] = "CD-001\n"
+        errors, _warnings = report_mod.validate_report(report)
+        self.assertTrue(any("bad id" in error for error in errors), errors)
+
     def test_validate_flags_duplicate_ids(self):
         report = report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="t", fail_on=None, timestamp=DEFAULT_TIMESTAMP),

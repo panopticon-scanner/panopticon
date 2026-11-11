@@ -219,6 +219,10 @@ class TestAtomicWrite(unittest.TestCase):
         with open(self.path, "rb") as stream:
             self.assertEqual(stream.read(), b"bytes")
 
+    def test_tool_capture_preserves_its_private_file_mode(self):
+        tool_capture._atomic_write(self.path, b"capture")
+        self.assertEqual(0o600, stat.S_IMODE(os.stat(self.path).st_mode))
+
 
 def _validate_atomic_writer(root, out):
     validate_phase._write_baseline(out, lambda stream: stream.write("baseline"))
@@ -259,38 +263,40 @@ def _run_manifest_atomic_writer(root, _out):
 
 
 _ATOMIC_WRITERS = (
-    ("validate", _validate_atomic_writer, False, str),
-    ("setup-flow", _setup_flow_atomic_writer, False, str),
-    ("setup-manifest", _setup_manifest_atomic_writer, False, str),
-    ("strain", _strain_atomic_writer, False, str),
-    ("diff-hunks", _diff_hunks_atomic_writer, False, str),
-    ("discovery-result", _discovery_result_atomic_writer, False, str),
-    ("tool-capture", _tool_capture_atomic_writer, True, bytes),
-    ("run-manifest", _run_manifest_atomic_writer, False, str),
+    ("validate", _validate_atomic_writer, False, str, 0o644),
+    ("setup-flow", _setup_flow_atomic_writer, False, str, 0o644),
+    ("setup-manifest", _setup_manifest_atomic_writer, False, str, 0o644),
+    ("strain", _strain_atomic_writer, False, str, 0o644),
+    ("diff-hunks", _diff_hunks_atomic_writer, False, str, 0o644),
+    ("discovery-result", _discovery_result_atomic_writer, False, str, 0o644),
+    ("tool-capture", _tool_capture_atomic_writer, True, bytes, 0o600),
+    ("run-manifest", _run_manifest_atomic_writer, False, str, 0o644),
 )
 
 
-@pytest.mark.parametrize("_name,invoke,expected_fsync,body_type", _ATOMIC_WRITERS,
+@pytest.mark.parametrize("_name,invoke,expected_fsync,body_type,expected_mode",
+                         _ATOMIC_WRITERS,
                          ids=[case[0] for case in _ATOMIC_WRITERS])
 def test_every_atomic_writer_routes_once_through_the_shared_helper(
-        tmp_path, _name, invoke, expected_fsync, body_type):
+        tmp_path, _name, invoke, expected_fsync, body_type, expected_mode):
     root = str(tmp_path)
     (tmp_path / ".panopticon").mkdir()
     out = str(tmp_path / ".panopticon" / "runs" / "tag" / "output.json")
     calls = []
 
-    def record(path, data, fsync=False):
-        calls.append((os.fspath(path), data, fsync))
+    def record(path, data, fsync=False, mode=0o644):
+        calls.append((os.fspath(path), data, fsync, mode))
         return os.fspath(path)
 
     with mock.patch.object(safe_write, "atomic_write", side_effect=record):
         expected_path = invoke(root, out)
 
     assert len(calls) == 1
-    path, body, used_fsync = calls[0]
+    path, body, used_fsync, used_mode = calls[0]
     assert path == expected_path
     assert isinstance(body, body_type)
     assert used_fsync is expected_fsync
+    assert used_mode == expected_mode
     if body_type is str and body.lstrip().startswith("{"):
         json.loads(body)
 
@@ -299,11 +305,11 @@ _CONFINED_ATOMIC_WRITERS = tuple(
     case for case in _ATOMIC_WRITERS if case[0] != "strain")
 
 
-@pytest.mark.parametrize("_name,invoke,_expected_fsync,_body_type",
+@pytest.mark.parametrize("_name,invoke,_expected_fsync,_body_type,_expected_mode",
                          _CONFINED_ATOMIC_WRITERS,
                          ids=[case[0] for case in _CONFINED_ATOMIC_WRITERS])
 def test_each_atomic_writer_refuses_its_inferred_panopticon_escape_before_mkdir(
-        tmp_path, _name, invoke, _expected_fsync, _body_type):
+        tmp_path, _name, invoke, _expected_fsync, _body_type, _expected_mode):
     pano = tmp_path / ".panopticon"
     outside = tmp_path / "outside"
     pano.mkdir()

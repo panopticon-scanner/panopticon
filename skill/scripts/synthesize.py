@@ -471,10 +471,10 @@ def main(argv=None):
     # anything a future producer derives, at any depth in the report.
     render_mod.redact_report_secrets(report)
     policy_errors, warnings = report_mod.validate_report(report)
-    # The written-artifact pass below owns the final count. Seed the valid
-    # value so the common path is published once; an invalid artifact is
-    # republished with its diagnosed count after that pass (#3535).
-    report_mod.attach_schema_status(report, [])
+    # Policy remains advisory for the exit code, but its errors have always
+    # been part of the published count. Seed them before the first write; the
+    # artifact pass below adds any written-schema errors (#3535 review r1).
+    report_mod.attach_schema_status(report, policy_errors)
     for w in warnings:
         print("WARN: %s" % w, file=sys.stderr)
     for e in policy_errors:
@@ -520,10 +520,9 @@ def main(argv=None):
     failure_validation_path = failure_path if failure_log is not None else None
     artifact_errors = validate_artifacts(
         paths[0], x0x_path, failure_validation_path)
-    report_mod.attach_schema_status(report, artifact_errors)
+    report_mod.attach_schema_status(report, policy_errors + artifact_errors)
     if artifact_errors:
-        # The artifact pass is the sole source of meta.schema_errors. The
-        # field itself is schema-valid, so publishing that diagnosed count
+        # The field itself is schema-valid, so publishing the combined count
         # cannot create a new schema defect; the original error remains the
         # terminal result even if a raced/unreadable file becomes writable.
         try:

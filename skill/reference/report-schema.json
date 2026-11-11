@@ -127,7 +127,7 @@
         },
         "schema_errors": {
           "type": "integer",
-          "description": "#3535: how many published-schema errors the written-artifact pass found across the hydrated report union and its X0X siblings. This pass is the sole source of the count; in-memory policy warnings and errors are excluded. A clean report is initially written with 0. When the artifact pass finds errors, the main report is republished with the diagnosed total so the invalid artifact remains inspectable, and the run exits with `artifact invalid: N schema errors`."
+          "description": "#3535: the combined count of in-memory semantic-policy errors and published-schema errors found across the hydrated written report and its X0X siblings. Policy warnings are excluded. Policy errors remain advisory for the exit code; written-artifact schema errors exit with `artifact invalid: N schema errors`. The first write carries the policy count, and the main report is republished with the combined total when the artifact pass finds schema errors."
         },
         "models_used": {
           "type": "array",
@@ -1415,7 +1415,8 @@
             "pattern": "^[A-Z]{2,8}-[0-9]{3,}$"
           },
           "title": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "severity": {
             "type": "string",
@@ -1477,7 +1478,8 @@
             }
           },
           "category": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "category_source": {
             "type": "string",

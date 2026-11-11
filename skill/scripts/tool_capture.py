@@ -559,5 +559,5 @@ def _redact_capture(tool, data):
 
 
 def _atomic_write(out_path, data):
-    """Atomically replace a capture, preserving the capture-side fsync."""
-    return safe_write.atomic_write(out_path, data, fsync=True)
+    """Atomically replace a capture, preserving its private mode and fsync."""
+    return safe_write.atomic_write(out_path, data, fsync=True, mode=0o600)
