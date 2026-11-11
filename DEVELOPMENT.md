@@ -420,6 +420,21 @@ proximity (`--line-window`, default 5), and tool findings on their fingerprint. 
 docstring documents the key. It reports agreement, CRITICAL/HIGH consistency, score spread and
 lost cells, and sets no thresholds.
 
+### The Dockerfile PR build's disk
+`docker-build-pr.yml` builds the tools image with `load: true`, so at the import the runner holds the
+gha cache blobs, BuildKit's unpacked copy and the daemon's unpacked copy at once. Measured on the
+#3562 runs, the two builds use about 19 GB. The current runner has a 145 GB root with about 88 GB
+free, so the 2026-11-03/04 `no space left on device` failures most likely came from an older or
+smaller runner image. The job's first step is insurance plus a visible margin: it removes
+preinstalled toolchains the job never uses, printing each one's size (on the #3562 run: Android SDK
+12 GB, .NET 5.8 GB, `.ghcup` 3.7 GB, hosted tool cache 5.3 GB, about 27 GB in all). `df -h /` lines
+after each build show what is left: 91 GB on that run, against 65 GB without the step (#3441). The job
+must not gain an action, a `setup-*` toolchain installer above all, without revisiting that list:
+`tests/test_action_pins.py` pins the job's exact action set and the list. The step after the tools image prints
+its `.Id` and RootFS diff IDs. Layers 26-37 rebuild on every run, so a change to the job's runner
+setup is shown not to reach the image when its layers differ from the base only where a re-run of
+the base differs from itself. The published image comes from `docker-publish.yml`, which pushes without loading.
+
 ### Test-only injection seams
 Two module attributes exist so the unit suite can refuse a real launch, and neither may ever be
 assigned outside `tests/`. `DEFAULT_RUNNER` (on each host-CLI launch seam —

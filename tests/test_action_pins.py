@@ -509,5 +509,149 @@ class TestVerifiedPinFreshnessJobs(unittest.TestCase):
                 self.assertIn(expected, self._defects(job, "rustup"))
 
 
+class TestThePrBuildFreesDiskAndReportsHeadroom(unittest.TestCase):
+    """#3441: docker-build-pr's `load: true` import ran the runner out of disk, so the
+    job removes preinstalled toolchains it never uses before the build, and logs the
+    margin and the image's layers after it."""
+
+    FREED = ("/usr/local/lib/android", "/usr/share/dotnet", "/opt/ghc", "/usr/local/.ghcup",
+             "/opt/hostedtoolcache")
+    FOR_LOOP = re.compile(r"^\s*for dir in (?P<dirs>[^;]+); do$", re.MULTILINE)
+    # The one setup-* action this job may use: it installs Buildx, not a toolchain.
+    SETUP_ALLOWED = ("docker/setup-buildx-action",)
+    # #3562 review: the job's whole action set, so an added action (a disk-freeing one
+    # included) fails the pin and makes its author revisit the free step.
+    ACTIONS = ("actions/checkout", "docker/setup-buildx-action", "docker/build-push-action")
+
+    @staticmethod
+    def _index(steps, predicate):
+        return next((i for i, step in enumerate(steps) if predicate(step)), None)
+
+    @classmethod
+    def _defects(cls, job):
+        steps = job.get("steps", [])
+
+        def run(step):
+            return str(step.get("run", ""))
+
+        def uses(step):
+            return str(step.get("uses", ""))
+
+        free = cls._index(steps, lambda st: st.get("name") == "Free runner disk")
+        buildx = cls._index(steps, lambda st: uses(st).startswith("docker/setup-buildx-action@"))
+        build = cls._index(steps, lambda st: st.get("name") == "Build Dockerfile")
+        fixtures = cls._index(steps, lambda st: st.get("name") == "Build Dockerfile.fixtures")
+        defects = []
+        if free is None:
+            return ["no free step"]
+        if buildx is None or build is None or not free < buildx < build:
+            defects.append("free step order")
+        body = run(steps[free])
+        loops = cls.FOR_LOOP.findall(body)
+        if "uses" in steps[free]:
+            defects.append("free step uses an action")
+        if not body.lstrip().startswith("set -euo pipefail"):
+            defects.append("free step strictness")
+        if "|| true" in body or "|| :" in body:
+            defects.append("free step swallows failures")
+        if len(loops) != 1 or tuple(loops[0].split()) != cls.FREED:
+            defects.append("freed directories")
+        if [line.strip() for line in body.splitlines() if "rm " in line] != [
+                'sudo rm -rf "$dir"']:
+            defects.append("free step removes something else")
+        if body.count("df -h /") != 2:
+            defects.append("free step headroom")
+        names = [uses(step).split("@", 1)[0] for step in steps if "uses" in step]
+        for name in names:
+            if "/setup-" in name and name not in cls.SETUP_ALLOWED:
+                defects.append("toolchain installer: " + name)
+        if sorted(names) != sorted(cls.ACTIONS):
+            defects.append("action set")
+        after_build = [st for st in steps[(build or 0) + 1:(fixtures or len(steps))]
+                       if "df -h /" in run(st)]
+        if not after_build or ("docker image inspect panopticon-tools:latest" not in
+                               run(after_build[0]) or ".RootFS.Layers" not in run(after_build[0])
+                               or "{{.Id}}" not in run(after_build[0])):
+            defects.append("headroom and layers after the tools image")
+        if fixtures is None or not any("df -h /" in run(st) for st in steps[fixtures + 1:]):
+            defects.append("headroom after the fixtures image")
+        return defects
+
+    def _job(self):
+        return _workflow_document("docker-build-pr.yml")["jobs"]["build"]
+
+    def test_the_build_job_frees_disk_and_reports_headroom(self):
+        self.assertEqual([], self._defects(self._job()))
+
+    def test_negative_controls(self):
+        def step(job, name):
+            return next(st for st in job["steps"] if st.get("name") == name)
+
+        def edit_free(old, new):
+            def mutate(job):
+                free = step(job, "Free runner disk")
+                free["run"] = free["run"].replace(old, new)
+            return mutate
+
+        def move_free_after_build(job):
+            free = step(job, "Free runner disk")
+            job["steps"].remove(free)
+            job["steps"].insert(job["steps"].index(step(job, "Build Dockerfile")) + 1, free)
+
+        def drop(name):
+            return lambda job: job["steps"].remove(step(job, name))
+
+        cases = (
+            (drop("Free runner disk"), "no free step"),
+            (move_free_after_build, "free step order"),
+            (lambda job: step(job, "Free runner disk").update(uses="x/free@" + "0" * 40),
+             "free step uses an action"),
+            (edit_free("set -euo pipefail", "set -e"), "free step strictness"),
+            (edit_free('sudo du -sh "$dir"', 'sudo du -sh "$dir" || true'),
+             "free step swallows failures"),
+            (edit_free(" /opt/hostedtoolcache;", ";"), "freed directories"),
+            (edit_free("/usr/share/dotnet", "/usr/share"), "freed directories"),
+            (edit_free(" /opt/hostedtoolcache;", " /opt/hostedtoolcache /var/lib/docker;"),
+             "freed directories"),
+            (edit_free('sudo rm -rf "$dir"', 'sudo rm -rf "$dir" /tmp/x'),
+             "free step removes something else"),
+            (edit_free("done\n", "done\nsudo rm -rf /usr/lib/jvm\n"),
+             "free step removes something else"),
+            (edit_free("df -h /\n", ""), "free step headroom"),
+            (edit_free("done\ndf -h /\n", "done\n"), "free step headroom"),
+            (lambda job: job["steps"].insert(1, {"uses": "actions/setup-go@" + "0" * 40}),
+             "toolchain installer: actions/setup-go"),
+            (lambda job: job["steps"].insert(1, {"uses": "astral-sh/setup-uv@" + "0" * 40}),
+             "toolchain installer: astral-sh/setup-uv"),
+            (lambda job: job["steps"].insert(1, {"name": "Free disk",
+                                                 "uses": "jlumbroso/free-disk-space@" + "0" * 40}),
+             "action set"),
+            (lambda job: job["steps"].insert(1, {"uses": "actions/cache@" + "0" * 40}),
+             "action set"),
+            (lambda job: job["steps"].append(dict(next(
+                st for st in job["steps"] if "uses" in st and "build-push" in st["uses"]))),
+             "action set"),
+            (lambda job: job["steps"].remove(next(
+                st for st in job["steps"] if "uses" in st and "build-push" in st["uses"])),
+             "action set"),
+            (drop("Report disk headroom after the tools image"),
+             "headroom and layers after the tools image"),
+            (lambda job: step(job, "Report disk headroom after the tools image").update(
+                run="set -euo pipefail\ndf -h /\n"),
+             "headroom and layers after the tools image"),
+            (lambda job: step(job, "Report disk headroom after the tools image").update(
+                run=step(job, "Report disk headroom after the tools image")["run"].replace(
+                    "{{.Id}} ", "")),
+             "headroom and layers after the tools image"),
+            (drop("Report disk headroom after the fixtures image"),
+             "headroom after the fixtures image"),
+        )
+        for mutate, expected in cases:
+            with self.subTest(expected=expected):
+                job = copy.deepcopy(self._job())
+                mutate(job)
+                self.assertIn(expected, self._defects(job))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

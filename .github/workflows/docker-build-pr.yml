@@ -39,6 +39,27 @@ jobs:
         with:
           persist-credentials: false
 
+      # #3441: `load: true` below unpacks the finished image into the daemon while
+      # BuildKit still holds its own copy, and that peak ran the runner out of disk
+      # (`no space left on device` during "importing to docker"). Nothing in this job
+      # uses these preinstalled toolchains: it has no setup-* action, and the build
+      # reads only the checkout and the base images it pulls. Each directory is
+      # measured before it goes; one a newer runner image lacks is named and skipped.
+      # tests/test_action_pins.py pins the list and the no-setup rule.
+      - name: Free runner disk
+        run: |
+          set -euo pipefail
+          df -h /
+          for dir in /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache; do
+            if [ -e "$dir" ]; then
+              sudo du -sh "$dir"
+              sudo rm -rf "$dir"
+            else
+              echo "absent: $dir"
+            fi
+          done
+          df -h /
+
       - name: Lint Dockerfile
         env:
           # #1529: this binary is fetched and then EXECUTED, so what arrives has
@@ -99,8 +120,24 @@ jobs:
           tags: panopticon-tools:latest
           cache-from: type=gha,scope=linux-amd64
 
+      # #3441: the margin the import left, and the image it produced. The layer
+      # list is what proves a change to this job's runner setup never reached the
+      # image: same Dockerfile and cache, same `.Id` and diff IDs.
+      - name: Report disk headroom after the tools image
+        run: |
+          set -euo pipefail
+          df -h /
+          docker system df
+          docker image inspect panopticon-tools:latest --format '{{.Id}} {{json .RootFS.Layers}}'
+
       - name: Lint Dockerfile.fixtures
         run: hadolint Dockerfile.fixtures
 
       - name: Build Dockerfile.fixtures
         run: docker build -f Dockerfile.fixtures .
+
+      - name: Report disk headroom after the fixtures image
+        run: |
+          set -euo pipefail
+          df -h /
+          docker system df
