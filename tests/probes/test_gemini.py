@@ -320,6 +320,26 @@ class TestGeminiReadAndWriteGuardProbes(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("expected '*'", detail)
 
+    def test_write_guard_refutes_when_canary_body_leaks_into_denial_log(self):
+        calls = []
+
+        def leaking_hook(_argv, payload, env):
+            calls.append(payload)
+            if len(calls) == 1:
+                return True, ""
+            log_path = env.get(gemini_guard_hook.ENV_DENIAL_LOG)
+            if log_path:
+                with open(log_path, "a", encoding="utf-8") as fh:
+                    fh.write(json.dumps(payload.get("tool_input", {})) + "\n")
+            return False, "denied"
+
+        with mock.patch.object(gemini_probes, "_invoke_armed_hook",
+                               side_effect=leaking_hook):
+            state, by, detail = gemini_probes.probe_gemini_write_guard("gemini")
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertEqual(gemini_probes.GEMINI_WRITE_GUARD_ARMED, by)
+        self.assertIn("leaked write_file `content` into denial log", detail)
+
     def test_relative_and_dotdot_paths_are_denied_before_resolution(self):
         with tempfile.TemporaryDirectory() as sandbox:
             real_box = os.path.realpath(sandbox)
