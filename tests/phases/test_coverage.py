@@ -843,6 +843,13 @@ class TestCoverageBridge(unittest.TestCase):
         self.assertEqual(cov["panels_added"], ["OPS"])
         self.assertEqual(cov["effective"], ["OPS", "SEC"])
 
+    def test_panels_added_names_only_what_the_fixed_floors_would_not_run(self):
+        # COD is already the gated global floor for code, so committing it adds nothing.
+        self._setup("groups:\n  Auth:\n    match: ['a.py']\n    panels: [COD, OPS]\n", [])
+        coverage.coverage_execute(self.root, self.manifest)
+        cov = runio._load_json(runio._pano(self.root, "coverage-Auth.json"))
+        self.assertEqual(cov["panels_added"], ["OPS"])
+
     def test_the_deterministic_lever_list_does_not_read_the_scout(self):
         for scout in ([], ["DAT", "OPS", "COD"]):
             with self.subTest(scout=scout):
