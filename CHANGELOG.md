@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **A monthly model-list sweep issue (#3563, part 2).** On the 1st of each month a workflow
+  opens one `model-list sweep due: YYYY-MM` issue listing every host model table with its
+  `models-verified` date, stalest first, so stale model lists get a regular review.
+  `devtools/model_inventory.py` prints the same inventory locally. Nothing is edited
+  automatically. The gh code shared with the pin-freshness report moved to `devtools/issue_bot.py`
+  unchanged.
+
 - **More disk headroom for the Dockerfile PR build (#3441).** Its `load: true` import of
   the tools image intermittently ran out of space. The job now removes preinstalled
   toolchains it never uses before building, and logs the free disk and the image's layer IDs

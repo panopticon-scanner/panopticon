@@ -291,6 +291,10 @@ groups:
       - devtools/pin_requirements.py
       - devtools/requirement_policy.py
       - devtools/report_pin_bump.py
+      # #3563: the shared issue-report plumbing and the monthly model-list sweep.
+      - devtools/issue_bot.py
+      - devtools/model_inventory.py
+      - devtools/report_model_sweep.py
       tests:
       - tests/test_dockerfile.py
       - tests/test_dockerfile_closures.py
@@ -298,6 +302,9 @@ groups:
       - tests/test_semgrep_rule_corrections.py
       - tests/test_bump_pins.py
       - tests/test_report_pin_bump.py
+      - tests/test_issue_bot.py
+      - tests/test_model_inventory.py
+      - tests/test_report_model_sweep.py
       panels:
       - ARC
       - SEC

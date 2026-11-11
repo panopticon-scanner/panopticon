@@ -653,5 +653,113 @@ class TestThePrBuildFreesDiskAndReportsHeadroom(unittest.TestCase):
                 self.assertIn(expected, self._defects(job))
 
 
+class TestTheModelSweepJob(unittest.TestCase):
+    """#3563: one monthly sweep issue, issues:write only, no push, no PR, no provider call."""
+
+    RUN = "python3 devtools/report_model_sweep.py"
+    # #3565 review: word-bounded, so `pip3 install`, pipx and uv count, not just `pip install`.
+    FORBIDDEN = re.compile(r"\b(pip3?|pipx|uv|curl|wget)\b|git push|\bgh pr\b|--write")
+
+    @classmethod
+    def _defects(cls, document):
+        defects = []
+        triggers = document.get("on", document.get(True)) or {}
+        if document.get("permissions") != {"contents": "read"}:
+            defects.append("workflow permissions")
+        if set(triggers) != {"schedule", "workflow_dispatch"}:
+            defects.append("triggers")
+        crons = [entry.get("cron", "") for entry in triggers.get("schedule") or []]
+        if len(crons) != 1 or crons[0].split()[2:] != ["1", "*", "*"]:
+            defects.append("monthly schedule")
+        jobs = document.get("jobs") or {}
+        if set(jobs) != {"sweep"}:
+            return defects + ["jobs"]
+        job = jobs["sweep"]
+        steps = job.get("steps", [])
+        if job.get("permissions") != {"contents": "read", "issues": "write"}:
+            defects.append("job permissions")
+        if "env" in job:
+            defects.append("job-level env")
+        # #3565 review: a job-level condition or continue-on-error could skip or mute the run.
+        if "if" in job or "continue-on-error" in job:
+            defects.append("job condition")
+        names = [str(step["uses"]).split("@", 1)[0] for step in steps if "uses" in step]
+        if names != ["actions/checkout"]:
+            defects.append("action set")
+        checkout = next((step for step in steps
+                         if str(step.get("uses", "")).startswith("actions/checkout@")), {})
+        if not re.fullmatch(r"actions/checkout@[0-9a-f]{40}", checkout.get("uses", "")):
+            defects.append("pinned checkout")
+        if (checkout.get("with") or {}).get("persist-credentials") is not False:
+            defects.append("checkout credentials")
+        report = [step for step in steps if "report_model_sweep" in step.get("run", "")]
+        if len(report) != 1 or report[0].get("run") != cls.RUN:
+            defects.append("report step")
+        elif report[0].get("env") != {"GH_TOKEN": "${{ github.token }}"}:
+            defects.append("report authentication")
+        elif "if" in report[0]:
+            defects.append("report condition")
+        if any("GH_TOKEN" in (step.get("env") or {}) for step in steps if step not in report):
+            defects.append("token outside the report step")
+        if any(cls.FORBIDDEN.search(str(step.get("run", ""))) for step in steps):
+            defects.append("writes, pushes or fetches")
+        return defects
+
+    def test_the_sweep_job_is_scoped_and_fails_closed(self):
+        self.assertEqual([], self._defects(_workflow_document("model-sweep.yml")))
+
+    def test_negative_controls(self):
+        original = _workflow_document("model-sweep.yml")
+
+        def job(doc):
+            return doc["jobs"]["sweep"]
+
+        def triggers(doc):
+            return doc["on"] if "on" in doc else doc[True]
+
+        cases = (
+            (lambda d: d.update(permissions={"contents": "write"}), "workflow permissions"),
+            (lambda d: triggers(d).update(push={}), "triggers"),
+            (lambda d: triggers(d).pop("workflow_dispatch"), "triggers"),
+            (lambda d: triggers(d).update(schedule=[{"cron": "17 6 * * 1"}]), "monthly schedule"),
+            (lambda d: triggers(d)["schedule"].append({"cron": "0 0 1 * *"}), "monthly schedule"),
+            (lambda d: d["jobs"].update(extra={}), "jobs"),
+            (lambda d: job(d).update(permissions={"contents": "read", "issues": "write",
+                                                  "pull-requests": "write"}),
+             "job permissions"),
+            (lambda d: job(d).update(permissions={"contents": "write", "issues": "write"}),
+             "job permissions"),
+            (lambda d: job(d).update(env={"GH_TOKEN": "${{ github.token }}"}), "job-level env"),
+            (lambda d: job(d)["steps"].insert(1, {"uses": "actions/setup-python@" + "0" * 40}),
+             "action set"),
+            (lambda d: job(d)["steps"][0].update(uses="actions/checkout@v7"), "pinned checkout"),
+            (lambda d: job(d)["steps"][0].pop("with"), "checkout credentials"),
+            (lambda d: job(d)["steps"][1].update(run=self.RUN + " || true"), "report step"),
+            (lambda d: job(d)["steps"].append({"run": self.RUN}), "report step"),
+            (lambda d: job(d)["steps"][1].pop("env"), "report authentication"),
+            (lambda d: job(d)["steps"][1].update({"if": "always()"}), "report condition"),
+            (lambda d: job(d)["steps"][0].update(env={"GH_TOKEN": "${{ github.token }}"}),
+             "token outside the report step"),
+            (lambda d: job(d)["steps"].append({"run": "pip install pyyaml"}),
+             "writes, pushes or fetches"),
+            (lambda d: job(d)["steps"].append({"run": "git push origin HEAD"}),
+             "writes, pushes or fetches"),
+            (lambda d: job(d)["steps"].append({"run": "pip3 install pyyaml"}),
+             "writes, pushes or fetches"),
+            (lambda d: job(d)["steps"].append({"run": "pipx run x"}), "writes, pushes or fetches"),
+            (lambda d: job(d)["steps"].append({"run": "uv pip install pyyaml"}),
+             "writes, pushes or fetches"),
+            (lambda d: job(d)["steps"].append({"run": "wget https://e.test/x"}),
+             "writes, pushes or fetches"),
+            (lambda d: job(d).update({"if": "false"}), "job condition"),
+            (lambda d: job(d).update({"continue-on-error": True}), "job condition"),
+        )
+        for mutate, expected in cases:
+            with self.subTest(expected=expected):
+                doc = copy.deepcopy(original)
+                mutate(doc)
+                self.assertIn(expected, self._defects(doc))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
