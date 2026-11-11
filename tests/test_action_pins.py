@@ -427,97 +427,67 @@ class TestThePinnedUidIsTheDockerfilesOwn(unittest.TestCase):
 
 
 class TestVerifiedPinFreshnessJobs(unittest.TestCase):
+    """#3420: each family verifies and reports through one issue; no push, no PR."""
+
+    FAMILIES = ("tinyproxy", "rustup", "trivy", "rust-toolchain")
+
     @staticmethod
     def _defects(job, family):
         steps = job.get("steps", [])
-        check = next((step for step in steps if step.get("id") == "check"), {})
-        apply = next(
-            (
-                step
-                for step in steps
-                if "python3 devtools/bump_pins.py " + family + " --write"
-                in step.get("run", "")
-            ),
-            {},
-        )
-        opening = next(
-            (step for step in steps if "devtools/open_pin_pr.py" in step.get("run", "")),
-            {},
-        )
+        report = [step for step in steps
+                  if "devtools/report_pin_bump.py" in step.get("run", "")]
+        checkout = next((step for step in steps
+                         if str(step.get("uses", "")).startswith("actions/checkout@")), {})
         defects = []
-        if job.get("permissions") != {
-            "contents": "write",
-            "pull-requests": "write",
-        }:
+        if job.get("permissions") != {"contents": "read", "issues": "write"}:
             defects.append("job permissions")
-        if not check.get("run", "").startswith("set -euo pipefail\n"):
-            defects.append("check shell fail-closed")
-        if (
-            "python3 devtools/bump_pins.py " + family + " | tee "
-            not in check.get("run", "")
-        ):
-            defects.append("check command")
-        write = "python3 devtools/bump_pins.py " + family + " --write"
-        if apply.get("run", "").strip() not in (write, "set -euo pipefail\n" + write):
-            defects.append("write command/failure propagation")
-        if apply.get("if") != "steps.check.outputs.stale == 'true'":
-            defects.append("write condition")
-        if opening.get("if") != "steps.check.outputs.stale == 'true'":
-            defects.append("PR condition")
-        if opening.get("run") != "python3 devtools/open_pin_pr.py " + family:
-            defects.append("PR helper/failure propagation")
-        if opening.get("env") != {"GH_TOKEN": "${{ github.token }}"}:
-            defects.append("PR authentication")
-        if not any(
-            re.fullmatch(r"actions/checkout@[0-9a-f]{40}", step.get("uses", ""))
-            for step in steps
-        ):
+        if not re.fullmatch(r"actions/checkout@[0-9a-f]{40}", checkout.get("uses", "")):
             defects.append("pinned checkout")
+        if (checkout.get("with") or {}).get("persist-credentials") is not False:
+            defects.append("checkout credentials")
+        if len(report) != 1 or report[0].get("run") != (
+                "python3 devtools/report_pin_bump.py " + family):
+            defects.append("report helper/failure propagation")
+        elif report[0].get("env") != {"GH_TOKEN": "${{ github.token }}"}:
+            defects.append("report authentication")
+        elif "if" in report[0]:
+            defects.append("report condition")
+        if any("--write" in step.get("run", "") or "git push" in step.get("run", "")
+               or "open_pin_pr" in step.get("run", "") for step in steps):
+            defects.append("writes or pushes")
         return defects
 
     def test_verified_pin_jobs_are_scoped_and_fail_closed(self):
         document = _workflow_document("pin-freshness.yml")
         self.assertEqual({"contents": "read"}, document["permissions"])
-        for family in ("rustup", "trivy", "rust-toolchain"):
+        self.assertEqual(set(self.FAMILIES), set(document["jobs"]))
+        for family in self.FAMILIES:
             with self.subTest(family=family):
                 self.assertEqual([], self._defects(document["jobs"][family], family))
-
-    def test_unsafe_shell_or_permission_changes_are_detected(self):
-        job = _workflow_document("pin-freshness.yml")["jobs"]["trivy"]
-        job["steps"][1]["run"] = job["steps"][1]["run"].replace(
-            "set -euo pipefail\n", ""
-        )
-        job["permissions"] = {"contents": "read"}
-        self.assertIn("check shell fail-closed", self._defects(job, "trivy"))
-        self.assertIn("job permissions", self._defects(job, "trivy"))
 
     def test_helper_boundary_negative_controls(self):
         original = _workflow_document("pin-freshness.yml")["jobs"]["rustup"]
         cases = (
-            (
-                lambda job: job["steps"][3].update(
-                    run="python3 devtools/open_pin_pr.py trivy"
-                ),
-                "PR helper/failure propagation",
-            ),
-            (
-                lambda job: job["steps"][3].update(
-                    run="python3 devtools/open_pin_pr.py rustup || true"
-                ),
-                "PR helper/failure propagation",
-            ),
-            (lambda job: job["steps"][3].pop("if"), "PR condition"),
-            (lambda job: job["steps"][3].pop("env"), "PR authentication"),
-            (
-                lambda job: job["steps"][0].update(uses="actions/checkout@v7"),
-                "pinned checkout",
-            ),
-            (
-                lambda job: job["steps"][2].update(
-                    run="python3 devtools/bump_pins.py rustup --write || true"
-                ),
-                "write command/failure propagation",
-            ),
+            (lambda job: job.update(permissions={"contents": "write", "issues": "write"}),
+             "job permissions"),
+            (lambda job: job.update(permissions={"contents": "read", "issues": "write",
+                                                 "pull-requests": "write"}),
+             "job permissions"),
+            (lambda job: job["steps"][0].update(uses="actions/checkout@v7"), "pinned checkout"),
+            (lambda job: job["steps"][0].update({"with": {"persist-credentials": True}}),
+             "checkout credentials"),
+            (lambda job: job["steps"][0].pop("with"), "checkout credentials"),
+            (lambda job: job["steps"][1].update(run="python3 devtools/report_pin_bump.py trivy"),
+             "report helper/failure propagation"),
+            (lambda job: job["steps"][1].update(
+                run="python3 devtools/report_pin_bump.py rustup || true"),
+             "report helper/failure propagation"),
+            (lambda job: job["steps"][1].pop("env"), "report authentication"),
+            (lambda job: job["steps"][1].update({"if": "always()"}), "report condition"),
+            (lambda job: job["steps"].append(
+                {"run": "python3 devtools/bump_pins.py rustup --write"}), "writes or pushes"),
+            (lambda job: job["steps"].append({"run": "git push origin HEAD"}),
+             "writes or pushes"),
         )
         for mutate, expected in cases:
             with self.subTest(expected=expected):
