@@ -67,7 +67,8 @@ def test_check_groups_manifest_never_raises_on_a_legacy_tree(tmp_path):
 
     checks = setup_preflight.setup_readiness(str(tmp_path), host="claude",
                                         runner=ok_runner,
-                                        environ={"NVD_API_KEY": "k"})
+                                        environ={"NVD_API_KEY": "k"},
+                                        envelope={})
     row = {c[0]: c for c in checks}["groups-manifest"]
     assert row[1] is False
     assert "migrate-config" in row[2]
@@ -89,9 +90,9 @@ def test_readiness_names_a_refused_codex_home_not_the_emit_remedy(tmp_path, monk
     monkeypatch.setitem(hosts.HOSTS, "codex", dataclasses.replace(
         hosts.HOSTS["codex"], registration_dir=os.path.join(".", "agents"),
         registration_refusal=refusal))
-    with mock.patch.object(setup_preflight.host_probes, "run_probes", return_value={}):
-        rows = {name: (ok, detail) for name, ok, detail in
-                setup_preflight._check_host_shells("codex", lambda *a, **k: None, str(tmp_path))}
+    rows = {name: (ok, detail) for name, ok, detail in
+            setup_preflight._check_host_shells(
+                "codex", lambda *a, **k: None, str(tmp_path), {})}
     assert rows["enforced-shells"] == (False, refusal)
 
 class TestSetupFlow(SetupFixtureBase):

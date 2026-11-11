@@ -197,7 +197,7 @@ class TestRunManifest(unittest.TestCase):
         path = rm.manifest_path(self.root)
         with open(path, "rb") as fh:
             original = fh.read()
-        for target, failure in (("scripts.run_manifest.json.dump", TypeError("bad json")),
+        for target, failure in (("scripts.run_manifest.json.dumps", TypeError("bad json")),
                                 ("scripts.run_manifest.os.replace", OSError("rename failed"))):
             with self.subTest(target=target):
                 with mock.patch(target, side_effect=failure):
@@ -539,7 +539,7 @@ class TestRewriteDoesNotFollowAPlantedTmpSymlink(unittest.TestCase):
         with open(victim, encoding="utf-8") as fh:
             self.assertEqual(fh.read(), "PRECIOUS")
         self.assertNotIn(rm.POSTURE_DISCLOSED, rm.load_manifest(self.root))
-        self.assertTrue(os.path.islink(self.tmp))
+        self.assertFalse(os.path.lexists(self.tmp))
 
     def test_a_singly_linked_regular_staging_leftover_is_reused(self):
         with open(self.tmp, "w", encoding="utf-8") as fh:
@@ -561,7 +561,7 @@ class TestRewriteDoesNotFollowAPlantedTmpSymlink(unittest.TestCase):
                 record(rm.load_manifest(self.root))
             with open(victim, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "PRECIOUS")
-            os.unlink(self.tmp)
+            self.assertFalse(os.path.lexists(self.tmp))
 
 
 class TestRecordDiscardedBatch(unittest.TestCase):

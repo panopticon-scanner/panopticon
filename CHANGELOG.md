@@ -25,6 +25,23 @@
   `panels:` (which only adds review) is recorded. All of them are in
   `summary.health.basis.config_levers`.
 
+- **Setup readiness consumes the invocation's measured host envelope (#3535).** The live-probe
+  fallback is gone, and both the readiness helper and its production caller require the envelope.
+- **Eight single-artifact writers share one atomic write primitive (#3535).** It confines the final
+  name before creating directories, stages text or bytes through the exclusive no-follow opener,
+  cleans its own temporary file, and preserves tool-capture private mode/fsync and operator-selected
+  outputs.
+- **PR config sync always rewrites the operator config (#3535).** It no longer re-reads both files
+  to prove byte equality; each sync publishes the selected config and emits one direct sync note.
+- **The written artifact is the report schema authority (#3535).** The hydrated report and X0X
+  siblings are schema-validated once after publication; `meta.schema_errors` records those errors
+  together with advisory in-memory semantic-policy errors, which remain separately labelled.
+- **Tool receipts, not a directory-wide file cap, select ingestion inputs (#3535).** Unrecorded
+  files cannot consume selected capacity, while their disclosed names retain a named bound well
+  above the supported adapter set; direct ingestion without a receipt stays compatible.
+- **`run_manifest.run_tag` solely owns the run-tag grammar (#3535).** Reset cleanup consumes the
+  sanitized, bounded tag instead of maintaining a second regex that could drift from its producer.
+
 ## 5.3.0 — Red-team hardening and the armor audit
 
 Cut after the 5.2 red-team triage and the #3173 armor audit. 191 pull requests, 119 issues.

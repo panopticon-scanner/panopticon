@@ -782,14 +782,13 @@ def _sync_config(repo, wt_path):
     against the operator's grouping, never the PR's (#1681; was `_sync_groups`).
 
     #run8 SEC-D1C: the worktree holds ATTACKER-CONTROLLED checked-out PR
-    content. Its root is symlink-checked in acquire_pr and again here; a
-    PR-shipped copy of the root config (file OR symlink) under either
+    content. Its root is already symlink-checked by acquire_pr; a PR-shipped
+    copy of the root config (file OR symlink) under either
     recognized config name at the worktree root is REMOVED with lstat+unlink
     -- never opened, never followed (CWE-59) -- before the operator's file is
-    copied in under the operator's own name. Overwriting is the point (the
+    written under the operator's own name. Overwriting is the point (the
     old copy-if-absent let the PR's file govern its own review); every
-    removal, refresh, and overwrite is returned as a disclosure line for the
-    caller to print.
+    removal and sync is returned as a disclosure line for the caller to print.
 
     #1681 fix round 2 item 5 (controller ruling R18): the removal loop runs
     UNCONDITIONALLY, even when the operator has no config (or a refused one)
@@ -800,23 +799,10 @@ def _sync_config(repo, wt_path):
     notes -- fix round 1 item 2 and fix round 2 item 4 -- so neither branch
     goes silent on the caller, who prints exactly this list.
 
-    An existing regular file at the destination whose bytes already match the
-    operator's copy (the reuse/resume call site: a PREVIOUS `_sync_config`
-    already wrote it) is left alone -- not removed, and not rewritten either:
-    the final write is skipped for it -- and disclosed as "refreshed", never
-    "removed". Three guards on that fast path (fix round 2 items 1-2):
-    the size from the already-done `lstat` must match before anything is
-    opened at all (a large PR-planted file at the config name is never read
-    just to prove it differs); reading what does match sizes uses O_NOFOLLOW
-    so the compare can't be tricked into opening through a same-named symlink
-    an attacker raced in after the `lstat`; and the fast path only ever
-    applies to the destination name that matches the operator's OWN file
-    (`os.path.basename(res.path)`) -- a fluke-identical file under the
-    OTHER name is still removed, so the worktree never ends up with both
-    names present (which would raise its own "both present" disclosure the
-    next time something reads config from the worktree).
-
-    Fix round 3, M1/M3. The copy is `_write_operator_config`, an EXCLUSIVE
+    The destination is never opened for a byte comparison (#3535). Every
+    existing config name is removed from the hostile worktree and the
+    operator's bounded bytes are written again, including on resume. The
+    write is `_write_operator_config`, an EXCLUSIVE
     O_NOFOLLOW create of bytes already in hand, not a second `shutil.copy2`
     open of the same name: removal and copy were a TOCTOU pair in a directory
     full of attacker-controlled PR content, and copy2 follows whatever is at
@@ -826,9 +812,6 @@ def _sync_config(repo, wt_path):
     shipped into the worktree for `read_document` to refuse again.
     """
     res = repo_config.resolve(repo)
-    if os.path.islink(wt_path):
-        raise RuntimeError(
-            "panopticon --pr: refusing to sync into a symlinked worktree (%s)" % wt_path)
     if not os.path.isdir(wt_path):
         raise RuntimeError(
             "panopticon --pr: refusing to sync into a missing worktree (%s)" % wt_path)
@@ -844,46 +827,26 @@ def _sync_config(repo, wt_path):
             notes.append("%s exceeds %d bytes; refused -- not copied into the "
                          "worktree" % (src, repo_config.MAX_CONFIG_BYTES))
             src, operator_bytes = None, None
-    removed, refreshed = set(), set()
+    removed = set()
+    operator_name = os.path.basename(src) if src is not None else None
     for name in repo_config.CONFIG_NAMES:
         dst = os.path.join(wt_path, name)
         try:
             st = os.lstat(dst)
         except FileNotFoundError:
             continue
-        existing = None
-        if (operator_bytes is not None
-                and name == os.path.basename(src)
-                and stat.S_ISREG(st.st_mode)
-                and st.st_size == len(operator_bytes)):
-            try:
-                fd = os.open(dst, os.O_RDONLY | os.O_NOFOLLOW)
-            except OSError:
-                fd = None
-            if fd is not None:
-                try:
-                    with os.fdopen(fd, "rb") as fh:
-                        existing = fh.read()
-                except OSError:
-                    existing = None
-        if existing is not None and existing == operator_bytes:
-            refreshed.add(name)
-            notes.append("refreshed the operator's %s in the worktree (unchanged)" % name)
-            continue
         if stat.S_ISDIR(st.st_mode):
             shutil.rmtree(dst)
         else:
             os.unlink(dst)
         removed.add(name)
-        notes.append("removed the PR's %s from the worktree "
-                     "(target content must not govern its own review)" % name)
+        if name != operator_name:
+            notes.append("removed the PR's %s from the worktree "
+                         "(target content must not govern its own review)" % name)
     if src is not None:
-        name = os.path.basename(src)
-        if name not in refreshed:           # M2: identical == left alone, truly
-            _write_operator_config(os.path.join(wt_path, name), operator_bytes)
-            if name in removed:
-                notes.append("overwrote %s in the worktree with the operator's copy"
-                             % name)
+        assert operator_name is not None and operator_bytes is not None
+        _write_operator_config(os.path.join(wt_path, operator_name), operator_bytes)
+        notes.append("synced the operator's %s into the worktree" % operator_name)
     elif removed:
         notes.append("no operator config; PR-shipped config removed, "
                      "reviewing with defaults")

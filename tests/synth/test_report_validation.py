@@ -11,6 +11,7 @@ import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
 import scripts.synth.codes as codes_mod
 import scripts.synth.report as report_mod
+import scripts.synth.validate_schema as validate_schema_mod
 import scripts.evidence as evidence_mod
 import scripts.ocrdb as ocrdb
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir, _agentic
@@ -108,32 +109,21 @@ class TestReconciliation(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertTrue(any("location" in w for w in warnings))
 
-    def test_schema_layer_rejects_a_location_with_no_file(self):
-        # #1639 P15: the published schema requires `file` on a `location` that
-        # is present at all, and validate_report never loaded it -- so a
-        # finding pointing at nowhere passed with a warning nobody had to
-        # read. The hand check still warns; the schema now also errors, and
-        # both land in the same list.
+    def test_schema_rejects_empty_finding_title_and_category(self):
         report = report_mod.build_report(report_mod.ReportInputs(
-            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
-            findings=findings_mod.FindingSet(
-                findings=[
-                    {
-                        "id": "CD-001",
-                        "title": "t",
-                        "severity": "LOW",
-                        "confidence": "POSSIBLE",
-                        "panel": "code",
-                        "category": "general",
-                        "location": {},
-                    }
-                ],
-            ),
+            run=report_mod.RunConfig(target="src", fail_on=None,
+                                     timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[_agentic(
+                fid="CD-001", panel="code", severity="LOW")]),
         ))
-        errors, warnings = report_mod.validate_report(report)
-        self.assertIn("schema: $.findings[0].location: 'file' is a required property",
-                      errors)
-        self.assertTrue(any("location" in w for w in warnings))
+        for field in ("title", "category"):
+            with self.subTest(field=field):
+                report["findings"][0][field] = ""
+                errors = validate_schema_mod.schema_errors(report)
+                self.assertTrue(any(
+                    "$.findings[0].%s" % field in error for error in errors),
+                    errors)
+                report["findings"][0][field] = field
 
     def test_a_whole_file_location_is_silent_and_a_fileless_one_still_warns(self):
         # #2174 (#1784): `{"file": "README.md"}` with no line is the SANCTIONED
@@ -165,34 +155,6 @@ class TestReconciliation(unittest.TestCase):
                 errors, warnings = report_mod.validate_report(report)
                 self.assertEqual(errors, [])
                 self.assertEqual([w for w in warnings if "location" in w], expected)
-
-    def test_validate_reports_the_null_sections_the_hand_checks_missed(self):
-        """#1639 P15, Codex's repro: `meta`/`summary`/`cross_panel` all null.
-
-        Every key is PRESENT, so the hand checks' `key not in report` test is
-        satisfied and the old validate_report returned no error and no warning
-        for a report three of whose five sections are nothing at all. Draft 7
-        validation rejects all three, and now so does this."""
-        report = report_mod.build_report(report_mod.ReportInputs(
-            run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
-            findings=findings_mod.FindingSet(findings=[]),
-        ))
-        report["meta"] = None
-        report["summary"] = None
-        report["cross_panel"] = None
-        errors, _warnings = report_mod.validate_report(report)
-        for section in ("$.meta", "$.summary", "$.cross_panel"):
-            self.assertTrue(
-                any(e.startswith("schema: %s:" % section) for e in errors),
-                "%s not rejected; got %r" % (section, errors))
-
-    def test_a_null_findings_list_is_reported_not_raised(self):
-        # `enumerate(None)` is a TypeError, and the hand checks used to reach
-        # it on exactly the shape schema validation exists to describe.
-        errors, _warnings = report_mod.validate_report(
-            {"meta": {}, "summary": {}, "groups": [], "findings": None,
-             "cross_panel": {}})
-        self.assertTrue(any("$.findings" in e for e in errors), errors)
 
     def test_tool_security_finding_exempt_from_cvss(self):
         report = report_mod.build_report(report_mod.ReportInputs(
@@ -291,17 +253,16 @@ class TestInternalFieldCleanup(unittest.TestCase):
             self.assertNotIn("_repo_root", finding)
 
 
-class TestSchemaErrorsAreNotSilent(unittest.TestCase):
-    def test_report_records_schema_error_count(self):
-        bad = _agentic(fid="ag-lower")  # id fails ID_RE
+class TestArtifactSchemaStatus(unittest.TestCase):
+    def test_report_records_the_artifact_pass_error_count(self):
         report = report_mod.build_report(report_mod.ReportInputs(
-            run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-03T00:00:00Z"),
-            findings=findings_mod.FindingSet(findings=[bad]),
+            run=report_mod.RunConfig(target="t", fail_on=None,
+                                     timestamp="2026-08-03T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[]),
         ))
-        errors, _ = report_mod.validate_report(report)
-        self.assertTrue(errors)
-        report_mod.attach_schema_status(report, errors)
-        self.assertEqual(report["meta"]["schema_errors"], len(errors))
+        artifact_errors = ["report.json: schema: $.schema_version: wrong"]
+        report_mod.attach_schema_status(report, artifact_errors)
+        self.assertEqual(report["meta"]["schema_errors"], 1)
 
     def test_clean_report_records_zero(self):
         clean = _agentic(panel="code", category="style", severity="LOW")
@@ -309,8 +270,7 @@ class TestSchemaErrorsAreNotSilent(unittest.TestCase):
             run=report_mod.RunConfig(target="t", fail_on=None, timestamp="2026-08-03T00:00:00Z"),
             findings=findings_mod.FindingSet(findings=[clean]),
         ))
-        errors, _ = report_mod.validate_report(report)
-        report_mod.attach_schema_status(report, errors)
+        report_mod.attach_schema_status(report, [])
         self.assertEqual(report["meta"]["schema_errors"], 0)
 
 

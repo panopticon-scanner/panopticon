@@ -24,7 +24,6 @@ import scripts.driver as driver
 import scripts.loop_batch as loop_batch
 import scripts.coverage_model as coverage_model
 import scripts.host_disclosure as host_disclosure
-import scripts.host_probes as host_probes
 import scripts.hosts as hosts
 import scripts.setup_flow as setup_flow
 import scripts.setup_preflight as setup_preflight
@@ -1380,9 +1379,9 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
     # #1598/#1599: a METHOD, not a module-level constant. As a constant it was
     # evaluated at COLLECTION time -- before any mock could be in place -- so
     # it reached the live probes with no repo_root and read whatever
-    # `~/.claude/agents` held on the machine running the suite. It was also
-    # the reason `repo_root` could not simply be made required. The posture is
-    # pinned to a deterministic shell-less envelope and a real tree is named;
+    # `~/.claude/agents` held on the machine running the suite. That history
+    # had kept `repo_root` optional. The posture is now pinned to a deterministic
+    # shell-less envelope and a real tree is named;
     # the REGISTRY rows above it are what these tests are about. (#3494
     # restored gemini as a 5/5 host with TOML policy shells after its #1621
     # retirement; generic remains the shell-less registry row.)
@@ -1397,9 +1396,8 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
 
     @property
     def GENERIC_CHECKS(self):
-        with mock.patch.object(host_probes, "run_probes",
-                               return_value=self.GENERIC_POSTURE):
-            return setup_preflight._check_host_shells("generic", None, ".")
+        return setup_preflight._check_host_shells(
+            "generic", None, ".", self.GENERIC_POSTURE)
 
     def test_the_generic_limitation_reaches_the_operator(self):
         rows = {c[0]: c for c in self.GENERIC_CHECKS}
@@ -1618,6 +1616,18 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
     # DriverError/EngineStalled/ValueError) as a traceback with no JSON
     # status, and the draft was never written.
 
+    def test_production_readiness_receives_this_invocations_envelope(self):
+        review_root = "/review-root"
+        established = {"host": "claude", "capabilities": {}}
+        with mock.patch.object(loop_batch, "envelope_for",
+                               return_value=established) as loaded, \
+                mock.patch.object(setup_preflight, "readiness",
+                                  return_value=[]) as readiness:
+            setup._take_readiness(review_root, "claude")
+        loaded.assert_called_once_with(review_root, loop_batch.SETUP_NAMESPACE)
+        readiness.assert_called_once_with(
+            review_root, host="claude", envelope=established)
+
     def _degraded(self, doc):
         """The single row a failed measurement leaves, off the artifact."""
         self.assertEqual(1, len(doc["readiness"]), doc["readiness"])
@@ -1649,7 +1659,7 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
         # Recording it as a row turned the guard into a pass -- the failure
         # tests/conftest.py's `_refuse_claude_run_entry` was written to end
         # ("a runner crash is a failed entry ... so the test goes green"), and
-        # the one `_check_host_shells` re-raises it by name to avoid.
+        # `_probe` deliberately leaves it uncaught so the guard remains loud.
         #
         # Reached for real: `--host codex` probes `codex --version` through
         # `setup_preflight.DEFAULT_RUNNER`, which the autouse guard has replaced
@@ -1693,19 +1703,27 @@ class TestReadinessRunsOnTheNormalSetupPath(unittest.TestCase):
         # nor the new. `ingest_proposal` may write straight through -- it is
         # creating the file -- but this write replaces one.
         opened = []
-        real = runio._open_w_nofollow
+        replaced = []
+        real_open = runio._open_w_nofollow
+        real_atomic = setup_flow.safe_write.atomic_write
 
-        def _spy(path, *a, **kw):
+        def _open_spy(path, *a, **kw):
             opened.append(path)
-            return real(path, *a, **kw)
+            return real_open(path, *a, **kw)
 
-        with mock.patch.object(runio, "_open_w_nofollow", _spy):
+        def _atomic_spy(path, data, fsync=False):
+            replaced.append(path)
+            return real_atomic(path, data, fsync=fsync)
+
+        with mock.patch.object(runio, "_open_w_nofollow", _open_spy), \
+                mock.patch.object(setup_flow.safe_write, "atomic_write",
+                                  side_effect=_atomic_spy):
             self._setup(self.OK)
         for name in ("setup-report.json", "setup-report.md"):
             with self.subTest(artifact=name):
                 live = runio._pano(self.repo, name)
                 self.assertEqual(1, opened.count(live), "created once")
-                self.assertEqual(1, opened.count(live + ".tmp"), "replaced once")
+                self.assertEqual(1, replaced.count(live), "replaced once")
                 self.assertFalse(os.path.exists(live + ".tmp"), "tmp left behind")
 
     def _plant_link(self, name):

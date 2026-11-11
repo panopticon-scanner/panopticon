@@ -44,16 +44,31 @@ class TestReport(unittest.TestCase):
         errors, _ = report_mod.validate_report(report)
         self.assertEqual(errors, [])
 
-    def test_validate_flags_bad_id_and_missing_cvss(self):
+    def test_validate_keeps_the_security_policy_checks_only(self):
         bad = _make_finding(id="lowercase", panel="security", severity="CRITICAL")
         report = report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
             findings=findings_mod.FindingSet(findings=[bad]),
             plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
         ))
-        errors, _ = report_mod.validate_report(report)
-        self.assertTrue(any("id" in e for e in errors))
-        self.assertTrue(any("cvss" in e or "exploit" in e for e in errors))
+        errors, warnings = report_mod.validate_report(report)
+        self.assertFalse(any("id" in e for e in errors))
+        self.assertTrue(any("exploit" in e for e in errors))
+        self.assertTrue(any("cvss" in warning for warning in warnings))
+
+    def test_validate_rejects_an_otherwise_valid_id_with_a_trailing_newline(self):
+        # JSON Schema's `$` accepts a position before one final newline, while
+        # findings.ID_RE's `\Z` never did. Keep that invariant in policy.
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="src", fail_on=None,
+                                     timestamp=DEFAULT_TIMESTAMP),
+            findings=findings_mod.FindingSet(findings=[
+                _make_finding(id="CD-001", panel="code", severity="LOW"),
+            ]),
+        ))
+        report["findings"][0]["id"] = "CD-001\n"
+        errors, _warnings = report_mod.validate_report(report)
+        self.assertTrue(any("bad id" in error for error in errors), errors)
 
     def test_validate_flags_duplicate_ids(self):
         report = report_mod.build_report(report_mod.ReportInputs(

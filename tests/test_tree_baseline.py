@@ -366,7 +366,8 @@ class TornBaselineTest(unittest.TestCase):
         path = validate_phase.capture_tree_baseline(repo)
         with open(path, "rb") as fh:
             before = fh.read()
-        with mock.patch.object(runio, "_open_staging_nofollow", _torn_open), \
+        with mock.patch.object(validate_phase.safe_write,
+                               "open_staging_nofollow", _torn_open), \
                 self.assertRaises(OSError):
             validate_phase._write_probe_failed_baseline(path)
         with open(path, "rb") as fh:
@@ -497,7 +498,8 @@ class TornBaselineTest(unittest.TestCase):
         def _refuse(_p):
             raise OSError("open refused")
 
-        with mock.patch.object(runio, "_open_staging_nofollow", _refuse), \
+        with mock.patch.object(validate_phase.safe_write,
+                               "open_staging_nofollow", _refuse), \
                 self.assertRaises(OSError):
             validate_phase.capture_tree_baseline(repo)
         self.assertTrue(os.path.exists(path + ".tmp"), "a refused open deleted a file")
@@ -632,6 +634,7 @@ class RunStartWriteFailureTest(unittest.TestCase):
 
     def test_a_failed_baseline_write_is_a_status_and_a_rerun_recaptures(self):
         real_replace = os.replace
+        real_open = validate_phase.safe_write.open_staging_nofollow
 
         def failing_open(path):
             raise _enospc(path)
@@ -657,9 +660,20 @@ class RunStartWriteFailureTest(unittest.TestCase):
                 raise OSError(errno.ENOSPC, os.strerror(errno.ENOSPC), src, None, dst)
             return real_replace(src, dst, *a, **kw)
 
+        def baseline_only(replacement):
+            def open_stage(path):
+                if str(path).endswith("tree-baseline.txt.tmp"):
+                    return replacement(path)
+                return real_open(path)
+            return open_stage
+
         cases = {
-            "the staging open": mock.patch.object(runio, "_open_staging_nofollow", failing_open),
-            "the staging write": mock.patch.object(runio, "_open_staging_nofollow", _FullDisk),
+            "the staging open": mock.patch.object(
+                validate_phase.safe_write, "open_staging_nofollow",
+                baseline_only(failing_open)),
+            "the staging write": mock.patch.object(
+                validate_phase.safe_write, "open_staging_nofollow",
+                baseline_only(_FullDisk)),
             "the replace": mock.patch.object(validate_phase.os, "replace", failing_replace),
         }
         for where, patch in cases.items():

@@ -443,10 +443,7 @@ def _rewrite(review_root, manifest, *, namespace=None):
     """
     body = {k: v for k, v in manifest.items() if k not in _EPHEMERAL_KEYS}
     path = manifest_path(review_root, namespace)
-    tmp = path + ".tmp"
-    with safe_write.open_staging_nofollow(tmp) as fh:
-        json.dump(body, fh, indent=2, sort_keys=True)
-    os.replace(tmp, path)
+    safe_write.atomic_write(path, json.dumps(body, indent=2, sort_keys=True))
     return manifest
 
 

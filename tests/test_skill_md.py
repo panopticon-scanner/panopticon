@@ -339,8 +339,8 @@ class TestSkillMd(unittest.TestCase):
             # safe to have at all.
             "The schema pins the *controller's* output",
             "never a lever a reviewed repository or a reviewer can pull",
-            "SCHEMA pre-write:",
             "SCHEMA artifact:",
+            "REPORT policy:",
         ):
             self.assertIn(token, out, token)
         # The exit code is stated with the others, not only in prose.

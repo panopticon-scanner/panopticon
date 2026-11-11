@@ -299,7 +299,7 @@ def load_baseline(baseline_dir, manifest_path, exclude_globs=None,
 
     FOUR probes, and every one of them exists because the layers underneath are
     TOLERANT (fix round 1, I2). `isdir` alone was the only structural check, and
-    past it: `_capped_output_files` swallows a `PermissionError` and reports no
+    past it: `_output_files` swallows a `PermissionError` and reports no
     files, the SARIF parse skips a file it cannot read instead of raising, and
     `load_manifest` validates a manifest's INTERNAL consistency without ever
     asking whether the scan behind it delivered. Three different broken

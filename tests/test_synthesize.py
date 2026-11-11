@@ -1391,6 +1391,37 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         self.assertNotIn("artifact invalid", stderr)
         self.assertIn("Grade:", stdout)
 
+    def test_duplicate_id_policy_error_remains_recorded_in_the_artifact(self):
+        # #3535 review r1: policy stays advisory for the exit code, but its
+        # errors are part of the published meta.schema_errors count as before.
+        real_build = report_mod.build_report
+
+        def build_with_duplicate(inputs):
+            report = real_build(inputs)
+            duplicate = dict(report["findings"][0])
+            duplicate["title"] = "second"
+            duplicate["location"] = {"file": "b.py", "line_start": 2}
+            report["findings"].append(duplicate)
+            return report
+
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            fp = os.path.join(d, "findings-g1-COD.json")
+            with open(fp, "w", encoding="utf-8") as stream:
+                json.dump({"findings": [_agentic(
+                    "CD-001", sev="LOW", panel="code", title="first",
+                    location={"file": "a.py", "line_start": 1})]}, stream)
+            out = os.path.join(d, "report.json")
+            with mock.patch.object(report_mod, "build_report",
+                                   side_effect=build_with_duplicate):
+                rc, _stdout, stderr = self._run(
+                    ["--target", "src", "--out", out, fp])
+            with open(out, encoding="utf-8") as stream:
+                written = json.load(stream)
+
+        self.assertEqual(rc, 0, stderr)
+        self.assertIn("REPORT policy: duplicate finding id:", stderr)
+        self.assertGreaterEqual(written["meta"]["schema_errors"], 1)
+
     def test_x0x_serialization_stays_ascii_escaped_and_multiline(self):
         import scripts.x0x_report as x0x_report
 
@@ -1696,12 +1727,9 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         self.assertEqual(rc, 4)
         self.assertIn("artifact invalid:", stderr)
 
-    def test_the_two_passes_are_labelled_and_an_error_is_not_printed_twice(self):
-        # M1/M2: the pre-write pass and the artifact pass validate different
-        # documents, so both run — but on the common case they find the SAME
-        # defect, and printing it twice with only a filename between the two
-        # copies reads as two problems. The status line is the source of truth
-        # for the count.
+    def test_only_the_written_artifact_emits_schema_errors(self):
+        # #3535: policy is checked in memory; the published schema is checked
+        # once, against the hydrated artifact a consumer actually reads.
         real_write = render_mod.write_report
 
         def _passthrough(report, out_path, max_bytes=None):
@@ -1712,17 +1740,21 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
             with open(fp, "w") as fh:
                 json.dump({"findings": [_agentic("SE-001")]}, fh)
             out = os.path.join(d, "report.json")
-            # Corrupt the built report AFTER validation would have seen it is
-            # impossible from outside; instead break it in a way BOTH passes
-            # see, by writing the same document through unchanged.
-            with mock.patch.object(render_mod, "write_report",
-                                   side_effect=_passthrough),                     mock.patch.object(report_mod, "REPORT_SCHEMA_VERSION", "one"):
+            # Make the built report schema-invalid while preserving the real
+            # writer, so the sole artifact pass diagnoses what landed on disk.
+            with mock.patch.object(
+                    render_mod, "write_report", side_effect=_passthrough), \
+                    mock.patch.object(report_mod, "REPORT_SCHEMA_VERSION", "one"):
                 rc, _stdout, stderr = self._run(["--target", "src", "--out", out, fp])
+            with open(out, encoding="utf-8") as stream:
+                written = json.load(stream)
         self.assertEqual(rc, 4, stderr)
-        self.assertIn("SCHEMA pre-write: schema: $.schema_version", stderr)
-        self.assertIn("already listed above as pre-write", stderr)
+        self.assertNotIn("SCHEMA pre-write:", stderr)
+        self.assertNotIn("already listed above as pre-write", stderr)
         self.assertEqual(stderr.count("$.schema_version:"), 1, stderr)
+        self.assertIn("SCHEMA artifact: report.json: schema: $.schema_version", stderr)
         self.assertIn("artifact invalid: 1 schema errors", stderr)
+        self.assertEqual(1, written["meta"]["schema_errors"])
 
     def test_the_gate_still_owns_codes_1_and_2(self):
         # Artifact validity must not shadow the gate's own verdicts.

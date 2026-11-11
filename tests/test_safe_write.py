@@ -12,16 +12,27 @@ and a SECOND implementation behind that name is exactly the drift layout rule
 4 exists to prevent -- so the identity is pinned here.
 """
 import errno
+import json
 import os
 import stat
 import subprocess
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest import mock
 
+import pytest
+
+import scripts.discovery as discovery
+import scripts.run_manifest as run_manifest
 import scripts.safe_write as safe_write
+import scripts.setup_flow as setup_flow
+import scripts.strain_report as strain_report
+import scripts.tool_capture as tool_capture
 from scripts.phases import runio
+from scripts.phases import setup as setup_phase
+from scripts.phases import validate as validate_phase
 
 
 class TestBoundedRegularRead(unittest.TestCase):
@@ -99,6 +110,235 @@ class TestHardLinkedArtifacts(unittest.TestCase):
             fh.write("new\n")
         with open(path, encoding="utf-8") as fh:
             self.assertEqual("new\n", fh.read())
+
+
+class TestAtomicWrite(unittest.TestCase):
+    """#3535: one atomic text/bytes writer owns staging and confinement."""
+
+    def setUp(self):
+        self._d = tempfile.TemporaryDirectory()
+        self.root = self._d.name
+        self.addCleanup(self._d.cleanup)
+        self.pano = os.path.join(self.root, ".panopticon")
+        os.makedirs(self.pano)
+        self.path = os.path.join(self.pano, "runs", "tag", "artifact.json")
+
+    def test_final_name_is_confined_before_parent_creation(self):
+        events = []
+        real_confine = safe_write.confine_artifact_path
+        real_makedirs = os.makedirs
+
+        def confine(path):
+            events.append(("confine", os.fspath(path)))
+            return real_confine(path)
+
+        def makedirs(path, *args, **kwargs):
+            events.append(("makedirs", os.fspath(path)))
+            return real_makedirs(path, *args, **kwargs)
+
+        with mock.patch.object(safe_write, "confine_artifact_path",
+                               side_effect=confine), \
+                mock.patch.object(safe_write.os, "makedirs",
+                                  side_effect=makedirs):
+            safe_write.atomic_write(self.path, "text")
+
+        self.assertEqual(events[0], ("confine", self.path))
+        mkdir_indexes = [i for i, event in enumerate(events)
+                         if event[0] == "makedirs"]
+        self.assertTrue(mkdir_indexes)
+        self.assertGreater(events.index(("confine", self.path + ".tmp")),
+                           max(mkdir_indexes))
+
+    def test_text_and_bytes_replace_prior_files_without_staging_litter(self):
+        os.makedirs(os.path.dirname(self.path))
+        with open(self.path, "w", encoding="utf-8") as stream:
+            stream.write("old and longer")
+        safe_write.atomic_write(self.path, "new\n")
+        with open(self.path, encoding="utf-8") as stream:
+            self.assertEqual(stream.read(), "new\n")
+        safe_write.atomic_write(self.path, b"\x00binary\xff")
+        with open(self.path, "rb") as stream:
+            self.assertEqual(stream.read(), b"\x00binary\xff")
+        self.assertFalse(os.path.lexists(self.path + ".tmp"))
+
+    def test_final_symlink_and_staging_plants_are_never_written_through(self):
+        victim = os.path.join(self.root, "victim")
+        with open(victim, "w", encoding="utf-8") as stream:
+            stream.write("PRECIOUS")
+        os.makedirs(os.path.dirname(self.path))
+        os.symlink(victim, self.path)
+        with self.assertRaises(ValueError):
+            safe_write.atomic_write(self.path, "new")
+        self.assertTrue(os.path.islink(self.path))
+        os.unlink(self.path)
+
+        os.symlink(victim, self.path + ".tmp")
+        with self.assertRaises(ValueError):
+            safe_write.atomic_write(self.path, "new")
+        with open(victim, encoding="utf-8") as stream:
+            self.assertEqual(stream.read(), "PRECIOUS")
+        self.assertFalse(os.path.lexists(self.path + ".tmp"))
+
+    def test_hard_link_and_fifo_at_staging_name_are_refused_untouched(self):
+        os.makedirs(os.path.dirname(self.path))
+        victim = os.path.join(self.root, "victim")
+        with open(victim, "w", encoding="utf-8") as stream:
+            stream.write("PRECIOUS")
+        os.link(victim, self.path + ".tmp")
+        with self.assertRaises(safe_write.UnsafeStagingPathError):
+            safe_write.atomic_write(self.path, "new")
+        with open(victim, encoding="utf-8") as stream:
+            self.assertEqual(stream.read(), "PRECIOUS")
+        self.assertTrue(os.path.samefile(victim, self.path + ".tmp"))
+        os.unlink(self.path + ".tmp")
+
+        if hasattr(os, "mkfifo"):
+            os.mkfifo(self.path + ".tmp")
+            with self.assertRaises(safe_write.UnsafeStagingPathError):
+                safe_write.atomic_write(self.path, "new")
+            self.assertTrue(stat.S_ISFIFO(os.lstat(self.path + ".tmp").st_mode))
+
+    def test_replace_failure_preserves_prior_file_and_cleans_stage(self):
+        os.makedirs(os.path.dirname(self.path))
+        with open(self.path, "w", encoding="utf-8") as stream:
+            stream.write("old")
+        with mock.patch.object(safe_write.os, "replace",
+                               side_effect=OSError("rename failed")), \
+                self.assertRaisesRegex(OSError, "rename failed"):
+            safe_write.atomic_write(self.path, "new")
+        with open(self.path, encoding="utf-8") as stream:
+            self.assertEqual(stream.read(), "old")
+        self.assertFalse(os.path.lexists(self.path + ".tmp"))
+
+    def test_fsync_is_opt_in_for_text_and_bytes(self):
+        with mock.patch.object(safe_write.os, "fsync") as fsync:
+            safe_write.atomic_write(self.path, "text")
+            fsync.assert_not_called()
+            safe_write.atomic_write(self.path, b"bytes", fsync=True)
+            fsync.assert_called_once()
+        with open(self.path, "rb") as stream:
+            self.assertEqual(stream.read(), b"bytes")
+
+    def test_tool_capture_preserves_its_private_file_mode(self):
+        tool_capture._atomic_write(self.path, b"capture")
+        self.assertEqual(0o600, stat.S_IMODE(os.stat(self.path).st_mode))
+
+
+def _validate_atomic_writer(root, out):
+    validate_phase._write_baseline(out, lambda stream: stream.write("baseline"))
+    return out
+
+
+def _setup_flow_atomic_writer(_root, out):
+    setup_flow._replace(out, "setup report\n")
+    return out
+
+
+def _setup_manifest_atomic_writer(root, _out):
+    setup_phase._rewrite_setup_manifest(root, {"z": 1})
+    return run_manifest.manifest_path(root, "setup")
+
+
+def _strain_atomic_writer(_root, out):
+    return strain_report.write_report({"z": 1}, out)
+
+
+def _diff_hunks_atomic_writer(root, out):
+    discovery.write_diff_hunks(root, None, "none", out, 0, False)
+    return out
+
+
+def _discovery_result_atomic_writer(_root, out):
+    discovery._write_result({"groups": {}}, SimpleNamespace(out=out))
+    return out
+
+
+def _tool_capture_atomic_writer(_root, out):
+    return tool_capture._atomic_write(out, b"capture")
+
+
+def _run_manifest_atomic_writer(root, _out):
+    run_manifest._rewrite(root, {"z": 1})
+    return run_manifest.manifest_path(root)
+
+
+_ATOMIC_WRITERS = (
+    ("validate", _validate_atomic_writer, False, str, 0o644),
+    ("setup-flow", _setup_flow_atomic_writer, False, str, 0o644),
+    ("setup-manifest", _setup_manifest_atomic_writer, False, str, 0o644),
+    ("strain", _strain_atomic_writer, False, str, 0o644),
+    ("diff-hunks", _diff_hunks_atomic_writer, False, str, 0o644),
+    ("discovery-result", _discovery_result_atomic_writer, False, str, 0o644),
+    ("tool-capture", _tool_capture_atomic_writer, True, bytes, 0o600),
+    ("run-manifest", _run_manifest_atomic_writer, False, str, 0o644),
+)
+
+
+@pytest.mark.parametrize("_name,invoke,expected_fsync,body_type,expected_mode",
+                         _ATOMIC_WRITERS,
+                         ids=[case[0] for case in _ATOMIC_WRITERS])
+def test_every_atomic_writer_routes_once_through_the_shared_helper(
+        tmp_path, _name, invoke, expected_fsync, body_type, expected_mode):
+    root = str(tmp_path)
+    (tmp_path / ".panopticon").mkdir()
+    out = str(tmp_path / ".panopticon" / "runs" / "tag" / "output.json")
+    calls = []
+
+    def record(path, data, fsync=False, mode=0o644):
+        calls.append((os.fspath(path), data, fsync, mode))
+        return os.fspath(path)
+
+    with mock.patch.object(safe_write, "atomic_write", side_effect=record):
+        expected_path = invoke(root, out)
+
+    assert len(calls) == 1
+    path, body, used_fsync, used_mode = calls[0]
+    assert path == expected_path
+    assert isinstance(body, body_type)
+    assert used_fsync is expected_fsync
+    assert used_mode == expected_mode
+    if body_type is str and body.lstrip().startswith("{"):
+        json.loads(body)
+
+
+_CONFINED_ATOMIC_WRITERS = tuple(
+    case for case in _ATOMIC_WRITERS if case[0] != "strain")
+
+
+@pytest.mark.parametrize("_name,invoke,_expected_fsync,_body_type,_expected_mode",
+                         _CONFINED_ATOMIC_WRITERS,
+                         ids=[case[0] for case in _CONFINED_ATOMIC_WRITERS])
+def test_each_atomic_writer_refuses_its_inferred_panopticon_escape_before_mkdir(
+        tmp_path, _name, invoke, _expected_fsync, _body_type, _expected_mode):
+    pano = tmp_path / ".panopticon"
+    outside = tmp_path / "outside"
+    pano.mkdir()
+    outside.mkdir()
+    (pano / "escape").symlink_to(outside, target_is_directory=True)
+    nested_root = pano / "escape" / "review"
+    out = nested_root / "output.json"
+
+    with pytest.raises(ValueError, match="escapes .panopticon"):
+        invoke(str(nested_root), str(out))
+
+    assert list(outside.iterdir()) == []
+
+
+def test_strain_operator_output_outside_panopticon_remains_writable(tmp_path):
+    path = strain_report.write_report({"z": 1}, str(tmp_path / "report.json"))
+    with open(path, encoding="utf-8") as stream:
+        assert json.load(stream) == {"z": 1}
+
+
+@pytest.mark.parametrize("invoke", (_diff_hunks_atomic_writer,
+                                    _discovery_result_atomic_writer),
+                         ids=("diff-hunks", "discovery-result"))
+def test_discovery_operator_outputs_outside_panopticon_remain_writable(tmp_path,
+                                                                       invoke):
+    out = str(tmp_path / "operator.json")
+    invoke(str(tmp_path), out)
+    with open(out, encoding="utf-8") as stream:
+        assert json.load(stream)["schema_version"] == 1
 
 
 class TestOneImplementation(unittest.TestCase):

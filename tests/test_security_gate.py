@@ -1735,7 +1735,7 @@ class TestTheDeltaAwareGate(unittest.TestCase):
     # --- fix round 1, I2: an unusable baseline is strict AND audible --------
     #
     # The `isdir` check was the only structural one, and everything past it is
-    # tolerant by design: `_capped_output_files` swallows `PermissionError` and
+    # tolerant by design: `_output_files` swallows `PermissionError` and
     # returns no files, the SARIF parse skips a file it cannot read rather than
     # raising, and `load_manifest` validates a manifest's INTERNAL consistency
     # without ever asking whether the scan behind it delivered. So three

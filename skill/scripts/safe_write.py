@@ -230,7 +230,7 @@ def _refuse_unless_sole_regular(fd):
                                   % info.st_nlink)
 
 
-def open_staging_nofollow(path):
+def open_staging_nofollow(path, mode=0o644):
     """Create a fixed staging leaf exclusively, reusing only a safe leftover.
 
     #2093: O_NOFOLLOW alone still opens and truncates a hard link, while opening
@@ -244,7 +244,7 @@ def open_staging_nofollow(path):
              | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0))
 
     def create():
-        return os.open(path, flags, 0o644)
+        return os.open(path, flags, mode)
 
     collisions = (errno.EEXIST, errno.ELOOP)
     try:
@@ -277,6 +277,58 @@ def open_staging_nofollow(path):
     except BaseException:
         os.close(fd)
         raise
+
+
+def atomic_write(path, data, fsync=False, mode=0o644):
+    """Atomically replace ``path`` with text or bytes through ``path + '.tmp'``.
+
+    The final name is confined before parent creation: doing this after
+    ``makedirs`` would already have traversed a planted intermediate symlink.
+    The fixed staging name then goes through the exclusive no-follow opener,
+    which repeats confinement and refuses symlinks, hard links, and special
+    files. ``mode`` is applied when the staging inode is created, so callers
+    such as tool capture can retain a private 0600 artifact. ``fsync`` flushes
+    and syncs the staged file before publication; it deliberately does not add
+    a directory sync that the migrated callers did not previously perform.
+    """
+    path = os.fspath(path)
+    if not isinstance(data, (str, bytes)):
+        raise TypeError("atomic write data must be str or bytes")
+    confine_artifact_path(path)            # before makedirs: traversal guard
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    staging = path + ".tmp"
+    opened = False
+    try:
+        stage = (open_staging_nofollow(staging)
+                 if mode == 0o644 else
+                 open_staging_nofollow(staging, mode=mode))
+        with stage as stream:
+            opened = True
+            if isinstance(data, bytes):
+                stream.buffer.write(data)
+            else:
+                stream.write(data)
+            if fsync:
+                stream.flush()
+                os.fsync(stream.fileno())
+        os.replace(staging, path)
+    except BaseException:                 # cleanup must include interrupts
+        # Only unlink a leaf under a parent that is still confined. A planted
+        # staging symlink is ours to clear; a hard link, FIFO, or regular file
+        # whose open was refused is not.
+        try:
+            confine_artifact_path(parent)
+        except (OSError, ValueError):
+            pass
+        else:
+            if opened or os.path.islink(staging):
+                try:
+                    os.unlink(staging)
+                except OSError:
+                    pass
+        raise
+    return path
 
 
 def open_a_nofollow(path):

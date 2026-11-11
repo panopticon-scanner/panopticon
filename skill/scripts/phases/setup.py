@@ -62,10 +62,7 @@ def record_dispatch_request(review_root, checkpoint, sha256, at=None):
 
 def _rewrite_setup_manifest(review_root, manifest):
     path = _setup_manifest_path(review_root)
-    tmp = path + ".tmp"
-    with runio._open_w_nofollow(tmp) as fh:
-        json.dump(manifest, fh, indent=2, sort_keys=True)
-    os.replace(tmp, path)
+    safe_write.atomic_write(path, json.dumps(manifest, indent=2, sort_keys=True))
     return manifest
 
 def _sha256_of(path):
@@ -385,7 +382,7 @@ def _take_readiness(review_root, host):
     except runners_base.LaunchRefused:
         # NOT an operational failure: the suite's guard against starting a
         # real host binary, whose whole value is that it FAILS a test (fix
-        # round 2, R1-1). `_check_host_shells` re-raises it by name for this
+        # round 2, R1-1). `_check_host_shells` leaves it uncaught for this
         # reason and the degrade below moved the swallow one frame up.
         raise
     except Exception as exc:        # noqa: BLE001 -- see the docstring

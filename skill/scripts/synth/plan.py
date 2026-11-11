@@ -541,8 +541,8 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
         # certification exactly as a plant does on the `--tools` path -- and
         # leave every other part of the report as a run with no tool axis.
         if args.tools_dir and unbound_out is not None:
-            ingest_tools._capped_output_files(args.tools_dir, allowed_outputs=(),
-                                              unbound_out=unbound_out)
+            ingest_tools._output_files(args.tools_dir, allowed_outputs=(),
+                                       unbound_out=unbound_out)
         return [], {}, None, None, [], excluded_block(args, 0)
     if not args.tools_dir:
         default_tools = os.path.join(plan_contract.ARTIFACT_DIR, "tools")

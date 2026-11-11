@@ -127,7 +127,7 @@
         },
         "schema_errors": {
           "type": "integer",
-          "description": "#1639 P15: how many validation errors the PRE-WRITE pass (`synth.report.validate_report`: the published schema plus the domain rules the schema cannot express) raised against this report. Stamped after that pass, so it is in the artifact on disk but was not in the document that was validated. It is not the run's whole answer and must not be read as one: the artifact pass that follows re-validates the hydrated split union and the X0X sibling, which this count cannot include, and the `artifact invalid: N schema errors` status line carries that full count. Every artifact is still written either way -- a report that failed validation is on disk, with this count in it, precisely so it can be inspected."
+          "description": "#3535: the combined count of in-memory semantic-policy errors and published-schema errors found across the hydrated written report and its X0X siblings. Policy warnings are excluded. Policy errors remain advisory for the exit code; written-artifact schema errors exit with `artifact invalid: N schema errors`. The first write carries the policy count, and the main report is republished with the combined total when the artifact pass finds schema errors."
         },
         "models_used": {
           "type": "array",
@@ -1415,7 +1415,8 @@
             "pattern": "^[A-Z]{2,8}-[0-9]{3,}$"
           },
           "title": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "severity": {
             "type": "string",
@@ -1477,7 +1478,8 @@
             }
           },
           "category": {
-            "type": "string"
+            "type": "string",
+            "minLength": 1
           },
           "category_source": {
             "type": "string",

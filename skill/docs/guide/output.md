@@ -94,12 +94,13 @@ their producers bound them, and a hand-named `--groups` file of the wrong shape 
 panopticon itself — never a lever a reviewed repository or a reviewer can pull. That is what makes
 it safe for this failure to be terminal; it is also why `meta.host_capabilities`, which is copied
 verbatim out of an untrusted artifact, is described in the schema without being constrained by it.
-The two passes are labelled `SCHEMA pre-write:` (the in-memory document) and `SCHEMA artifact:`
-(what was written), an error both find is printed once, and **every artifact is still written** — a
-report that failed validation is on disk with `meta.schema_errors` in it, so it can be inspected
-(that count is the report's own; an X0X-sibling-only failure leaves it `0`, and the `error` status
-carries the total), and the `.panopticon/report.json` compat symlink still points at **this** run's
-report rather than the previous run's. *Coverage certification* is whether enough of the review
+The published schema is checked once, against what was written: the hydrated report union and its
+X0X siblings. Errors are labelled `SCHEMA artifact:`, and **every artifact is still written** — an
+invalid report is on disk so it can be inspected. `meta.schema_errors` combines those written-
+artifact schema errors with in-memory semantic-policy errors; policy warnings are excluded. The
+main report is republished with the combined total when the artifact pass finds schema errors. The
+`.panopticon/report.json` compat symlink still points at **this** run's report rather than the
+previous run's. *Coverage certification* is whether enough of the review
 actually happened for the verdict to mean anything — `summary.gate` and
 `summary.coverage_certified`, exits `1` and `2`, both of them VALID reports about a coverage
 question. **An unreadable tools manifest is an integrity failure** (#1644): a `tools-manifest.json`
@@ -121,9 +122,10 @@ that parses with malformed FIELDS is a third, repaired at the read (`meta.tools.
 run can complete, write a valid artifact and still be `INCONCLUSIVE`; it can pass its gate and still
 have written an artifact no consumer can validate. So `4` is never a gate verdict and `1`/`2` never
 mean the artifact is unreadable. The domain rules the schema cannot express — an agent-sourced
-security HIGH with no CVSS score or no exploit scenario, two findings sharing an id, an unknown
-`evidence.status` — are checked alongside it and stay advisory: they print as `SCHEMA:` lines and
-are counted in `meta.schema_errors`, and they do not change the exit status.
+security HIGH with no CVSS score or no exploit scenario, two findings sharing an id, or a missing
+file locus — are checked in memory as policy, separately from schema validation. They print as
+`WARN:` or `REPORT policy:` lines. Policy errors (duplicate ids, missing exploit scenarios, and id
+grammar gaps) count in `meta.schema_errors`; warnings do not. Neither changes the exit status.
 
 **Malformed OSV and Roslyn captures (#2105).** Invalid top-level containers fail ingestion.
 Malformed child containers or records retain usable sibling findings and disclose partial coverage

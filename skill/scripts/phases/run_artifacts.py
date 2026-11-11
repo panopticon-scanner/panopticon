@@ -8,7 +8,6 @@ The --reset sweep (``_RESET_GLOBS``, ``_clear_run_artifacts``) moved whole from 
 import glob as _glob
 import json
 import os
-import re
 import shutil
 import sys
 
@@ -135,10 +134,6 @@ def _clear_run_artifacts(review_root):
     base = os.path.join(os.path.abspath(review_root), plan_contract.ARTIFACT_DIR)
     manifest = run_manifest.load_manifest(review_root)
     tag = run_manifest.run_tag(manifest) if manifest else None
-    # Defense at the deletion boundary, independent of the tag producer.
-    if tag is not None and (not isinstance(tag, str) or
-                            re.fullmatch(r"[A-Za-z0-9-]{1,220}", tag) is None):
-        raise runio.DriverError("refusing cleanup with unsafe run tag")
 
     # Collect and vet EVERY destination before the first removal. A linked
     # `runs` parent must never redirect the active folder or `latest` unlink.
