@@ -80,6 +80,13 @@ class Guards:
     def arm(self, entries):
         if not entries:
             return
+        if self.mode != "headless" and self.session_root is not None:
+            # #3532: first contact checked the session root read-only. Mark it here,
+            # before the first guard state lands there and before anything counts as
+            # armed, so the next contact verifies it. Not at construction: a loop
+            # builds its Guards on every invocation, most never arm, and the default
+            # root is cwd. Anything planted there since the contact halts here.
+            first_contact.mark_session_root(self.session_root)
         armed = {e.get("id") for e in self.armed_entries}
         self.armed_entries += [e for e in entries
                                if isinstance(e, dict) and e.get("id") not in armed]
@@ -404,6 +411,8 @@ def _loop(args, pause):
     except KeyboardInterrupt:
         status = _status("error", loop_batch.rolled_back(
             review_root, batch, pending, req, ledger, mode, runner, guards))
+    except first_contact.FirstContactHalt as exc:    # #3532: `Guards.arm`'s mark, its fixed reason
+        status = _status("error", str(exc))
     except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
         status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))
     return _finish(status, review_root, guards, ledger, namespace, mode, runner)

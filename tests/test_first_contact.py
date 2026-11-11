@@ -506,6 +506,104 @@ class TestDriverLoopMakesFirstContactFirst(_Trees):
         self.assertFalse(os.path.lexists(os.path.join(worktree, ".panopticon")))
 
 
+
+# A read-scope row granting the whole filesystem, as a planted file would.
+_PLANTED_ROW = {"planted": {"files": [], "dirs": ["/"], "reads": []}}
+
+
+class TestTheSessionRootIsAssessed(_Trees):
+    """#3532: session-mode guards keep their state under the session root
+    (`--session-dir`, else cwd), and Kimi's and agy's hooks read the scope file
+    there without its row stamp. So a `.panopticon/` planted there halts every
+    entry point, before any guard is installed; and the check writes nothing."""
+
+    def _session_root(self, name="read-scope.json"):
+        s = self._dir()
+        os.makedirs(os.path.join(s, ".panopticon"))
+        with open(os.path.join(s, ".panopticon", name), "w", encoding="utf-8") as fh:
+            json.dump(_PLANTED_ROW, fh)
+        return s
+
+    def _walk(self, s):
+        return sorted((d, sorted(dirs), sorted(files)) for d, dirs, files in os.walk(s))
+
+    def test_driver_run_halts_on_a_planted_scope_file_or_allowlist(self):
+        for name in ("read-scope.json", "write-allowlist.json"):
+            with self.subTest(name=name):
+                root, s = self._tree(False), self._session_root(name)
+                before = self._walk(s)
+                self._halts(root, H2, "--session-dir", s)
+                self.assertEqual(before, self._walk(s))      # nothing written or moved
+                self.assertFalse(os.path.lexists(os.path.join(root, ".panopticon", "runs")))
+
+    def test_driver_loop_halts_before_the_host_is_read(self):
+        for extra in ((), ("--setup",)):
+            with self.subTest(setup=bool(extra)):
+                root, s = self._tree(False), self._session_root()
+                before = self._walk(s)
+                status = TestDriverLoopMakesFirstContactFirst._loop(
+                    self, root, "--session-dir", s, *extra)
+                self.assertEqual(("error", H2), (status["status"], status["message"]))
+                self.assertEqual(before, self._walk(s))
+
+    def test_driver_setup_halts(self):
+        # `driver loop --setup` hands its own args, `--session-dir` included,
+        # to this flow; `driver setup` has no flag and uses cwd.
+        root, s = self._tree(True), self._session_root()
+        args = driver.build_parser().parse_args(["setup", root])
+        args.session_dir = s
+        before = self._walk(s)
+        status = setup.run_setup_flow(args)
+        self.assertEqual(("error", H2), (status["status"], status["message"]))
+        self.assertEqual(before, self._walk(s))
+
+    def test_cwd_is_the_default_session_root(self):
+        root, s = self._tree(False), self._session_root()
+        with mock.patch("os.getcwd", return_value=s):
+            self.assertEqual(s, first_contact.session_root(
+                driver.build_parser().parse_args(["run", root])))
+            self._halts(root, H2)
+
+    def _assessed(self, root, *extra, cwd=None):
+        calls = []
+        real = first_contact.assess_artifacts
+
+        def spy(r, **kw):
+            calls.append(r)
+            return real(r, **kw)
+        with mock.patch.object(first_contact, "assess_artifacts", side_effect=spy), \
+                mock.patch("os.getcwd", return_value=cwd or os.getcwd()):
+            status = self._run(root, *extra)
+        self.assertNotEqual("error", status["status"], status)
+        return calls
+
+    def test_a_session_root_that_is_the_review_root_is_assessed_once(self):
+        root = self._tree(False)
+        link = os.path.join(self._dir(), "spelled-otherwise")
+        os.symlink(root, link)
+        self.assertEqual([root], self._assessed(root, "--session-dir", root))
+        self.assertEqual([root], self._assessed(root, "--session-dir", link))
+        self.assertEqual([root], self._assessed(root, cwd=root))
+
+    def test_a_separate_session_root_is_assessed_and_an_absent_one_left_absent(self):
+        root, s = self._tree(False), self._dir()
+        self.assertEqual([root, s], self._assessed(root, "--session-dir", s))
+        self.assertEqual([], os.listdir(s))                  # read-only: never marked here
+
+    def test_a_session_root_of_ours_passes(self):
+        root, s = self._tree(False), self._session_root()
+        adopt_panopticon(s)
+        self.assertEqual([root, s], self._assessed(root, "--session-dir", s))
+
+    def test_reset_moves_a_planted_session_root_aside(self):
+        root, s = self._tree(False), self._session_root()
+        status = self._run(root, "--session-dir", s, "--reset")
+        self.assertNotEqual("error", status["status"], status)
+        (aside,) = [n for n in os.listdir(s) if n.startswith(".panopticon.unverified-")]
+        with open(os.path.join(s, aside, "read-scope.json"), encoding="utf-8") as fh:
+            self.assertEqual(_PLANTED_ROW, json.load(fh))     # moved, not destroyed
+
+
 class TestTheTrackedProbeIsTheTrustedGit(_Trees):
     def test_the_target_s_fsmonitor_never_runs(self):
         root = make_git_repo(test_case=self, files={"src/a.py": "x = 1\n"})

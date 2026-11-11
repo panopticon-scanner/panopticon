@@ -544,7 +544,8 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
         # #3271: first contact, before anything below removes or writes under
         # .panopticon/ -- the same halt `driver run` makes.
         first = first_contact.assess(review_root, SETUP_MANIFEST, reset=getattr(args, "reset", False),
-                                     host=args.host, walk_every_time=True)
+                                     host=args.host, walk_every_time=True,
+                                     session_dir=first_contact.session_root(args))
     except ValueError as exc:
         return runio._error_status(str(exc))
     if getattr(args, "reset", False):

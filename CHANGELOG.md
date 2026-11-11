@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **First contact checks the session root too (#3532).** Session-mode guards keep their state
+  under the session root (`--session-dir`, else cwd), and first contact assessed only the review
+  root and the `--pr` checkout. Kimi's and agy's hooks read the scope file there without its row
+  stamp, so nothing stopped a pre-planted read-scope row under a separate session root.
+  - `driver loop`, `driver run` and `driver setup` now halt on a `.panopticon/` there that no run
+    of ours created (H2), or one that is tracked or holds a link (H1, H3). It is checked once
+    when it is the review root or the `--pr` checkout (same realpath).
+  - The check is read-only, so a run writes nothing into cwd. The session guards' first arm
+    marks the directory ours (`orchestrate.Guards.arm`), so the state they leave there verifies
+    on the next invocation. A row planted between the check and that arm halts there.
+  - `--reset` moves an unverified one aside, as it does for the review root.
 - **The replay tests no longer leak `sys.path`; pytest drops `skill/scripts` (#3522, part of #1516).**
   `devtools/replay_report.replay()` installs a checkout's `skill/` on `sys.path` in the calling
   process, and `tests/test_replay_report.py` called it in-process with nothing to put the list back,

@@ -13,6 +13,7 @@ import tempfile
 from unittest import mock
 
 import scripts.driver as driver
+import scripts.first_contact as first_contact
 import scripts.host_disclosure as host_disclosure
 import scripts.orchestrate as orchestrate
 import scripts.phases.setup_readiness as setup_readiness
@@ -20,6 +21,7 @@ import scripts.probes.common as probes_common
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
 import scripts.repo_config as repo_config
+import scripts.run_stamp as run_stamp
 import scripts.runners.base as base
 from tests._test_helpers import docker_probe_runner
 from scripts import hosts
@@ -202,6 +204,41 @@ class TestSessionMode(LoopCase):
         # nothing advanced, so the id must still be armed after the re-entry
         # disarms-then-rearms it (R-P6-6) -- never left armed-over-nothing.
         self.assertIn("review-app-SEC", self._armed_read_ids(s))
+
+    def test_the_first_arm_marks_the_session_root_and_the_next_contact_verifies_it(self):
+        # #3532: first contact only checks the session root; the first arm marks
+        # it, so the guard state it leaves there is ours on the next invocation.
+        d, floor = self._repo(); s = self._session_root(d)
+        self.assertFalse(os.path.lexists(os.path.join(s, ".panopticon")))
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)):
+            s1, _ = self._loop(d, "--session-dir", s)
+        owner = first_contact._load(os.path.join(s, ".panopticon", first_contact.OWNER))
+        self.assertTrue(run_stamp.verifies(owner))
+        self.assertEqual(s, owner["review_root"])
+        s2, _ = self._loop(d, "--session-dir", s)
+        self.assertEqual(("dispatch", "dispatch"), (s1["status"], s2["status"]), (s1, s2))
+
+    def test_a_scope_row_planted_after_the_contact_halts_at_the_first_arm(self):
+        # #3532: between the read-only contact and the first arm, a row lands
+        # in the session root's scope file. The mark re-assesses and halts with
+        # the fixed reason; nothing is armed over it and it is left as found.
+        d, floor = self._repo(); s = self._session_root(d)
+        scope = os.path.join(s, ".panopticon", "read-scope.json")
+        row = {"planted": {"files": [], "dirs": ["/"], "reads": []}}
+
+        def plant(rr):
+            self._seed_coverage(rr, floor)
+            os.makedirs(os.path.dirname(scope), exist_ok=True)
+            with open(scope, "w", encoding="utf-8") as fh:
+                json.dump(row, fh)
+        with mock.patch.object(orchestrate, "_after_first_run", side_effect=plant):
+            status, _ = self._loop(d, "--session-dir", s)
+        self.assertEqual(("error", first_contact.H2), (status["status"], status["message"]))
+        self.assertEqual(["read-scope.json"], os.listdir(os.path.dirname(scope)))
+        with open(scope, encoding="utf-8") as fh:
+            self.assertEqual(row, json.load(fh))
+        self.assertFalse(write_guard_hook.is_armed(session_root=s)[0])
 
     def test_re_entry_after_persisting_every_entry_advances_and_disarms_the_done_ones(self):
         d, floor = self._repo(); s = self._session_root(d)
