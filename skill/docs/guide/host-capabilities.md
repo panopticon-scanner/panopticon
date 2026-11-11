@@ -179,10 +179,13 @@ cleanly via `agy agents` with no `[project]` shadow), `agy-read-guard-armed` and
 `PreToolUse` hook invoking `skill/scripts/agy_guard_hook.py`, plus 0-quota hook subprocess
 round-trips and a live `agy` unknown-tool + out-of-scope read canary), `agy-model-bound` (every
 role's shell frontmatter tier matches its profile and `agy --agent <shell> --model <slug>
-[--effort <level>] --output-format json -p "/model"` reports the resolved runtime model; a role
-with an effort, such as the domain roles' `gemini-4-carbon` + `high`, also runs the read-only
-`-p "/effort"`, and stays UNKNOWN until the owner's capture defines which field carries the
-effective level, #3564), and `agy-usage-envelope`
+[--effort <level>] --output-format json -p "/model"` reports the resolved runtime model in
+`command.data.id`; with an effort set agy reports `<model>-<effort>`, such as
+`gemini-4-carbon-high`, which matches only when `command.data.effort` is that level. A role with
+an effort, such as the domain roles' `gemini-4-carbon` + `high`, also runs the read-only
+`-p "/effort"`, which must report `command.data.adjustable` true and the level as `current` and
+among `available`. The levels are `low`, `medium` and `high`, the set the owner's capture lists,
+#3564), and `agy-usage-envelope`
 (`agy --help` advertises `-p` and `--output-format`, `parse_envelope` maps token usage, and any
 existing `dispatch-ledger.jsonl` carries token counts on every `ok` row). agy's
 `--output-format json` envelope reports no answering model: its documented fields are
@@ -190,7 +193,9 @@ existing `dispatch-ledger.jsonl` carries token counts on every `ok` row). agy's
 `structured_output`, `json_schema` and `usage` (https://antigravity.google/docs/cli/headless/).
 So an agy ledger row records the bound `requested_model` (and `requested_effort` when set) with
 `model` null, `usage.json`'s `by_model` has no agy split, and both probe details say so. What
-holds per launch is that headless agy exits non-zero instead of falling back from `--model`. If
+holds per launch is that headless agy exits non-zero instead of falling back from `--model`. The
+`stream-json` `init` event's `model` is the bound base slug echoed back, not the answering
+model, so it changes none of this. If
 a future envelope reports a model that differs from the bound one, the driver says so on stderr
 (#3550).
 

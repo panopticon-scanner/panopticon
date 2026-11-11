@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The agy effort is proven, not pending (#3564).** The owner's captures settled both open
+  questions. With `--effort high`, `agy -p /model` reports `gemini-4-carbon-high` and
+  `effort: "high"` in `command.data`. The `agy-model-bound` probe now accepts that id only when
+  `data.effort` matches, and refutes anything else. `agy -p /effort` reports
+  `{adjustable, current, available}`; the probe proves the level when it is current and
+  available, and refutes it when the effort is not adjustable. The agy effort levels narrow to
+  `low`, `medium` and `high`, the set the capture lists: an `xhigh` or `max` override is now
+  refused.
 - **agy ledger rows explain their null model (#3550).** agy's JSON envelope reports no
   answering model, so every agy row had `model: null` and `usage.json` had an empty `by_model`,
   with nothing saying why. Rows now carry the bound `requested_model` and `requested_effort`;
