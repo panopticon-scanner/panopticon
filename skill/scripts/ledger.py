@@ -26,6 +26,7 @@ import scripts.phases.persist as persist
 import scripts.phases.runio as runio
 import scripts.redact as redact
 import scripts.runners.base as runners_base
+import scripts.runners.gemini_home as gemini_home
 from scripts.collect_usage import PHASES, USAGE_FIELDS
 
 PHASE_OF_CHECKPOINT = {"scout": "scout", "review": "review", "verify": "verify",
@@ -215,14 +216,17 @@ class Ledger:
         if models:
             line["models"] = models
         bound_model = entry.get("model") if isinstance(entry, dict) else None
-        if (host == "gemini"
-                and isinstance(bound_model, str) and bound_model
-                and isinstance(result.model, str) and result.model
-                and result.model != bound_model):
+        if host == "gemini" and isinstance(bound_model, str) and bound_model:
             line["requested_model"] = bound_model
-            print("driver loop: %s: model rerouted by host %r: bound %r, envelope reported %r"
-                  % (entry.get("id"), host, bound_model, result.model),
-                  file=sys.stderr, flush=True)
+            model_keys = ({k for k in models if isinstance(k, str) and k}
+                          if isinstance(models, dict) and models
+                          else ({result.model} if isinstance(result.model, str) and result.model else set()))
+            if (bound_model not in gemini_home.MODEL_ALIASES
+                    and model_keys
+                    and bound_model not in model_keys):
+                print("driver loop: %s: model rerouted by host %r: bound %r, envelope reported %r"
+                      % (entry.get("id"), host, bound_model, result.model),
+                      file=sys.stderr, flush=True)
         # Host errors and persistence refusals can quote credentials. Redact at
         # the single writer, preserving null when the row has no error (#1709).
         if line["error"] is not None:

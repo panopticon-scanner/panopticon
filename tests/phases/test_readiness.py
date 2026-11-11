@@ -200,6 +200,34 @@ class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
         self.assertEqual(status["status"], "error", status)
         self.assertIn(PULL_REMEDY, status["message"])
 
+    def test_gemini_host_with_unconfigured_or_missing_api_key_auth_refuses_before_the_scout(self):
+        d = self._repo()
+        with tempfile.TemporaryDirectory() as empty_home, \
+                mock.patch.dict(os.environ, {"HOME": empty_home, "PATH": os.environ.get("PATH", "")}, clear=True):
+            status = driver.run(self._args(d, "--no-tools", "--host", "gemini"))
+        self.assertEqual(status["status"], "error", status)
+        self.assertIn("no Gemini auth configured: export GEMINI_API_KEY", status["message"])
+        self.assertFalse(os.path.exists(runio._pano(d, "dispatch-request.json")))
+        rows = self._rows(d)
+        self.assertIn("host-auth", rows)
+        self.assertIs(rows["host-auth"]["ok"], False)
+        self.assertIn("no Gemini auth configured: export GEMINI_API_KEY",
+                      rows["host-auth"]["detail"])
+
+        d_ok = self._repo()
+        with tempfile.TemporaryDirectory() as empty_home, \
+                mock.patch.dict(os.environ, {
+                    "HOME": empty_home,
+                    "PATH": os.environ.get("PATH", ""),
+                    "GEMINI_API_KEY": "my-secret-gemini-key",
+                }, clear=True):
+            status_ok = driver.run(self._args(d_ok, "--no-tools", "--host", "gemini"))
+        self.assertEqual(status_ok["status"], "checkpoint", status_ok)
+        rows_ok = self._rows(d_ok)
+        self.assertNotIn("host-auth", rows_ok)
+        self.assertIs(self._readiness_json(d_ok)["ready"], True)
+        self.assertNotIn("my-secret-gemini-key", json.dumps(self._readiness_json(d_ok)))
+
 
 class TestTheDisclosedOptOut(_ReadinessCase):
 

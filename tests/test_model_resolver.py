@@ -68,9 +68,12 @@ class TestModelResolver(unittest.TestCase):
         self.assertIsNone(mr._hardcoded_fallback("bogus", "banana")["model"])
 
     def test_gemini_defaults(self):
-        for role in ("scout", "advisor", "domain_panel", "domain_advisor"):
+        for role in ("scout", "advisor"):
             cfg = mr.resolve_model("gemini", role)
             self.assertEqual(cfg["model"], "gemini-3.6-flash")
+        for role in ("domain_panel", "domain_advisor"):
+            cfg = mr.resolve_model("gemini", role)
+            self.assertEqual(cfg["model"], "gemini-4-carbon")
         self.assertIsNone(mr.resolve_model("gemini", "setup_scan")["model"])
 
     def test_agy_defaults(self):

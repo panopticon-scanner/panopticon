@@ -424,24 +424,51 @@ class TestParseEnvelope(unittest.TestCase):
         self.assertIn("paused: the gemini host failed 1 of this batch's 1 launches", paused)
         self.assertEqual({}, tally.streaks)
 
-    def test_long_stderr_preserves_tail_reason_instead_of_startup_banner(self):
+    def test_realistic_multiline_stderr_with_stack_trace_preserves_cause_and_classifies_auth(self):
         r = gemini_runner.Runner("gemini")
-        long_stderr = "\n".join([
+        realistic_stderr = "\n".join([
             "YOLO mode is enabled. All tool calls will be automatically approved.",
             "Loaded cached credentials.",
-            "Ripgrep is not available, falling back to basic search (slower, less accurate)",
-            "Attempt 1 failed with status 429. Retrying with backoff...",
-            "    at stackFrameOne (/usr/local/lib/node_modules/@google/gemini-cli/bundle/chunk.js:100:10)",
-            "    at stackFrameTwo (/usr/local/lib/node_modules/@google/gemini-cli/bundle/chunk.js:200:20)",
-            "    at stackFrameThree (/usr/local/lib/node_modules/@google/gemini-cli/bundle/chunk.js:300:30)",
-            "    at stackFrameFour (/usr/local/lib/node_modules/@google/gemini-cli/bundle/chunk.js:400:40)",
-            "FINAL_ROOT_CAUSE: Quota exceeded for metric generate_content_requests",
+            'Attempt 1 failed with status 400. Retrying with backoff... ApiError: {"error":{"code":400,"message":"API key not valid. Please pass a valid API key. GEMINI_API_KEY=my-raw-secret-123","status":"INVALID_ARGUMENT"}}',
+            "    at throwErrorIfNotOk (file:///usr/local/lib/node_modules/@google/gemini-cli/bundle/chunk.js:100:10)",
+            "    at process.processTicksAndRejections (node:internal/process/task_queues:105:5)",
+            "    at async GeminiClient.sendMessageStream (file:///usr/local/lib/node_modules/@google/gemini-cli/bundle/chunk.js:200:20)",
+            "Error when talking to Gemini API Full report available at: /var/folders/xx/gemini-client-error-Turn.run-2026-11-10.json",
         ])
-        res = r.parse_envelope("scout", "", 1, stderr=long_stderr)
+        res = r.parse_envelope("scout", "", 1, stderr=realistic_stderr)
         self.assertFalse(res.ok)
-        self.assertIn("FINAL_ROOT_CAUSE: Quota exceeded", res.stderr)
-        self.assertIn("FINAL_ROOT_CAUSE: Quota exceeded", res.error)
+        self.assertEqual(outage.HOST_FAILURE, res.failure_class)
+        self.assertIn("Attempt 1 failed with status 400", res.stderr)
+        self.assertIn("API key not valid", res.stderr)
+        self.assertIn("API key not valid", res.error)
+        self.assertNotIn("my-raw-secret-123", res.stderr)
+        self.assertIn("GEMINI_API_KEY=[REDACTED_GOOGLE_KEY]", res.stderr)
+        self.assertNotIn("at throwErrorIfNotOk", res.stderr)
+        self.assertNotIn("Full report available at", res.stderr)
         self.assertNotIn("YOLO mode is enabled", res.stderr)
+
+        for auth_line in (
+            "Attempt 1 failed with status 401. Unauthenticated request to Gemini API",
+            "Attempt 1 failed with status 403. Permission denied: API key not authorized",
+        ):
+            res_auth = r.parse_envelope("scout", "", 1, stderr=auth_line)
+            self.assertEqual(outage.HOST_FAILURE, res_auth.failure_class, auth_line)
+
+    def test_banner_and_stack_frame_filter_strips_noise_on_short_stderr(self):
+        r = gemini_runner.Runner("gemini")
+        short_stderr = "\n".join([
+            "YOLO mode is enabled. All tool calls will be automatically approved.",
+            "Loaded cached credentials.",
+            "Ripgrep is not available, falling back to basic search",
+            "    at stackFrameOne (/bundle/chunk.js:10:20)",
+            "Fatal CLI error: unexpected EOF",
+        ])
+        res = r.parse_envelope("scout", "", 1, stderr=short_stderr)
+        self.assertEqual("Fatal CLI error: unexpected EOF", res.stderr)
+        self.assertNotIn("YOLO mode", res.stderr)
+        self.assertNotIn("Loaded cached credentials", res.stderr)
+        self.assertNotIn("Ripgrep is not available", res.stderr)
+        self.assertNotIn("at stackFrameOne", res.stderr)
 
 
 class TestRunEntry(unittest.TestCase):
@@ -563,7 +590,7 @@ class TestRunEntry(unittest.TestCase):
         self.assertIsNone(res.model)
         self.assertEqual(res.usage["total_tokens"], 15)
 
-    def test_run_entry_fails_early_when_selected_type_is_gemini_api_key_and_env_var_unset(self):
+    def test_run_entry_fails_early_when_selected_type_is_gemini_api_key_or_no_auth_configured(self):
         launched = []
 
         def should_not_launch(cmd, **kw):
@@ -586,6 +613,24 @@ class TestRunEntry(unittest.TestCase):
         self.assertEqual(outage.HOST_FAILURE, res.failure_class)
         self.assertIn(gemini_home.MISSING_API_KEY_REMEDY, res.error)
 
+        # Also fail early when nothing is configured at all (no selectedType,
+        # no oauth_creds.json, no GEMINI_API_KEY).
+        with tempfile.TemporaryDirectory() as d:
+            user_home, agents_dir = _fixture_user_home(d)
+            os.unlink(os.path.join(user_home, ".gemini", "oauth_creds.json"))
+            os.unlink(os.path.join(user_home, ".gemini", "settings.json"))
+            with mock.patch.dict(os.environ, {"HOME": user_home}, clear=True):
+                r_none = gemini_runner.Runner("gemini", runner=should_not_launch)
+                r_none.prepare(os.path.join(d, "run-none"), review_root=d,
+                               registration_dir=agents_dir)
+                self.addCleanup(r_none.teardown, "complete")
+                res_none = r_none.run_entry(_entry(True, model="gemini-3.6-flash"), self._env())
+        self.assertFalse(res_none.ok)
+        self.assertEqual([], launched)
+        self.assertEqual(outage.HOST_FAILURE, res_none.failure_class)
+        self.assertIn("no Gemini auth configured: " + gemini_home.MISSING_API_KEY_REMEDY,
+                      res_none.error)
+
     def test_rerouted_envelope_records_requested_model_in_ledger_and_discloses_on_stderr(self):
         rerouted_env = json.dumps({
             "session_id": "sess-reroute",
@@ -599,15 +644,34 @@ class TestRunEntry(unittest.TestCase):
                 }
             },
         })
-
-        def fake(cmd, **kw):
-            return subprocess.CompletedProcess(cmd, 0, stdout=rerouted_env, stderr="")
+        multi_model_env = json.dumps({
+            "session_id": "sess-multi",
+            "response": "ok",
+            "stats": {
+                "models": {
+                    "gemini-3.5-flash-lite": {
+                        "tokens": {"input": 10, "prompt": 10, "candidates": 5,
+                                   "cached": 0, "thoughts": 0, "total": 15},
+                    },
+                    "gemini-4-carbon": {
+                        "tokens": {"input": 100, "prompt": 100, "candidates": 50,
+                                   "cached": 0, "thoughts": 0, "total": 150},
+                    },
+                }
+            },
+        })
+        timing = {"started_at": "2026-11-10T00:00:00Z",
+                  "finished_at": "2026-11-10T00:00:01Z",
+                  "duration_ms": 1000}
 
         with tempfile.TemporaryDirectory() as d:
             user_home, agents_dir = _fixture_user_home(d)
             run_dir = os.path.join(d, "run")
             with mock.patch.dict(os.environ, {"HOME": user_home}):
-                r = gemini_runner.Runner("gemini", runner=fake)
+                r = gemini_runner.Runner(
+                    "gemini",
+                    runner=lambda cmd, **kw: subprocess.CompletedProcess(
+                        cmd, 0, stdout=rerouted_env, stderr=""))
                 r.prepare(run_dir, review_root=d, registration_dir=agents_dir)
                 self.addCleanup(r.teardown, "complete")
                 entry = _entry(True, model="gemini-3.6-flash")
@@ -615,17 +679,41 @@ class TestRunEntry(unittest.TestCase):
                 led = ledger.Ledger(run_dir)
                 stderr_buf = io.StringIO()
                 with contextlib.redirect_stderr(stderr_buf):
-                    led.record(entry, "review", res, "headless", "gemini",
-                               timing={"started_at": "2026-11-10T00:00:00Z",
-                                       "finished_at": "2026-11-10T00:00:01Z",
-                                       "duration_ms": 1000})
+                    led.record(entry, "review", res, "headless", "gemini", timing=timing)
                 with open(led.path, encoding="utf-8") as fh:
                     row = json.loads(fh.readline())
+
+                # Bound model present as second key in stats.models is NOT a reroute.
+                r_multi = gemini_runner.Runner(
+                    "gemini",
+                    runner=lambda cmd, **kw: subprocess.CompletedProcess(
+                        cmd, 0, stdout=multi_model_env, stderr=""))
+                r_multi.prepare(os.path.join(d, "run-multi"), review_root=d,
+                                registration_dir=agents_dir)
+                self.addCleanup(r_multi.teardown, "complete")
+                entry_carbon = _entry(True, model="gemini-4-carbon")
+                res_multi = r_multi.run_entry(entry_carbon, self._env())
+                stderr_multi = io.StringIO()
+                with contextlib.redirect_stderr(stderr_multi):
+                    led.record(entry_carbon, "review", res_multi, "headless", "gemini",
+                               timing=timing)
+
+                # Aliases in MODEL_ALIASES are not flagged as reroutes on stderr.
+                stderr_alias = io.StringIO()
+                for alias in ("auto", "pro", "flash", "flash-lite", "auto-gemini-3"):
+                    entry_alias = _entry(True, model=alias)
+                    res_alias = r.run_entry(entry_alias, self._env())
+                    with contextlib.redirect_stderr(stderr_alias):
+                        led.record(entry_alias, "review", res_alias, "headless", "gemini",
+                                   timing=timing)
+
         self.assertEqual("gemini-3.6-flash", row.get("requested_model"))
         self.assertEqual("gemini-3.5-flash-lite", row.get("model"))
         self.assertIn("model rerouted by host 'gemini'", stderr_buf.getvalue())
         self.assertIn("bound 'gemini-3.6-flash'", stderr_buf.getvalue())
         self.assertIn("envelope reported 'gemini-3.5-flash-lite'", stderr_buf.getvalue())
+        self.assertEqual("", stderr_multi.getvalue())
+        self.assertEqual("", stderr_alias.getvalue())
 
 
 if __name__ == "__main__":

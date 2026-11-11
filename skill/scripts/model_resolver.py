@@ -105,11 +105,16 @@ _AGY_FALLBACK: dict[str, dict[str, Any]] = {
     "domain_advisor": {"model": "gemini-4-argon-high", "tier": "pro"},
     "setup_scan": {"model": None},
 }
+# Google Gemini lineup (https://aistudio.google.com/docs/models,
+# https://ai.google.dev/gemini-api/docs/models, and
+# https://ai.google.dev/gemini-api/docs/deprecations, read 2026-11-10):
+# `gemini-4-carbon` is the Pro-class flagship reasoning model; `gemini-3.6-flash`
+# is the stable Flash model (`gemini-2.5-pro` and `gemini-2.5-flash` are deprecated).
 _GEMINI_FALLBACK: dict[str, dict[str, Any]] = {
     "scout": {"model": "gemini-3.6-flash"},
     "advisor": {"model": "gemini-3.6-flash"},
-    "domain_panel": {"model": "gemini-3.6-flash"},
-    "domain_advisor": {"model": "gemini-3.6-flash"},
+    "domain_panel": {"model": "gemini-4-carbon"},
+    "domain_advisor": {"model": "gemini-4-carbon"},
     "setup_scan": {"model": None},
 }
 

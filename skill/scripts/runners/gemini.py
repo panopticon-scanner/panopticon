@@ -38,8 +38,21 @@ DEFAULT_RUNNER = None
 _SAFE_TOKEN_RE = re.compile(r"\A[A-Za-z0-9._:-]+\Z")
 _UNESCAPED_AT_RE = re.compile(r"(?<!\\)@")
 _NOISY_STDERR_LINE_RE = re.compile(
-    r"^(?:YOLO mode is enabled\b|Loaded cached credentials\b|"
-    r"Ripgrep is not available\b|Attempt \d+ failed\b)",
+    r"^\s*(?:YOLO mode is enabled\b|Loaded cached credentials\b|"
+    r"Ripgrep is not available\b|at\s+)",
+    re.I,
+)
+_GENERIC_TRAILER_RE = re.compile(
+    r"(?:^Error when talking to Gemini API\b|\bFull report available at\s*:)",
+    re.I,
+)
+_ERROR_OR_STATUS_LINE_RE = re.compile(
+    r"(?:\bAttempt\s+\d+\s+failed\b"
+    r"|\bstatus(?:\s+code)?[\s:=]+[45]\d\d\b"
+    r"|\b(?:400|401|402|403|404|429|500|502|503|504|529)\b"
+    r"|\b(?:[A-Za-z0-9_]*Error|exception|invalid|unauthenticated|unauthorized|forbidden"
+    r"|quota|rate\s+limit|API\s+key|GEMINI_API_KEY|RESOURCE_EXHAUSTED|PERMISSION_DENIED"
+    r"|INVALID_ARGUMENT)\b)",
     re.I,
 )
 
@@ -155,11 +168,14 @@ def _extract_usage_and_model(doc):
         }
     stats = doc.get("stats")
     models = stats.get("models") if isinstance(stats, dict) else None
+    model_map: dict[str, object] = {}
     if isinstance(models, dict) and models:
         inp = out = cache_read = thinking = total = 0
         for slug, mdata in models.items():
-            if model is None and isinstance(slug, str) and slug:
-                model = slug
+            if isinstance(slug, str) and slug:
+                model_map[slug] = mdata
+                if model is None:
+                    model = slug
             tok = mdata.get("tokens") if isinstance(mdata, dict) else None
             if isinstance(tok, dict):
                 m_cached = _safe_int(tok.get("cached"))
@@ -184,7 +200,7 @@ def _extract_usage_and_model(doc):
                 "thinking_tokens": thinking,
                 "total_tokens": total or (inp + out + cache_read),
             }
-    return usage, model
+    return usage, model, model_map
 
 
 def _extract_error(raw_err):
@@ -198,9 +214,10 @@ def _extract_error(raw_err):
 
 
 def _stderr_diagnosis(stderr):
-    """Extract the structured `[ERROR]` JSON payload or the non-banner tail of
-    `stderr` (up to `base.STDERR_HEAD` chars, redacted) so startup banners never
-    crowd out the real failure reason at the end of `stderr`."""
+    """Extract the structured `[ERROR]` JSON payload or the non-banner cause line
+    of `stderr` (up to `base.STDERR_HEAD` chars, redacted) so startup banners,
+    stack frames, and generic report-path trailers never crowd out the real
+    failure reason."""
     if isinstance(stderr, bytes):
         stderr = stderr.decode("utf-8", errors="replace")
     if not isinstance(stderr, str) or not stderr.strip():
@@ -226,7 +243,12 @@ def _stderr_diagnosis(stderr):
                 pass
     lines = [ln.strip() for ln in stderr.splitlines() if ln.strip()]
     kept = [ln for ln in lines if not _NOISY_STDERR_LINE_RE.match(ln)] or lines
-    joined = "\n".join(kept)
+    substantive = [ln for ln in kept if not _GENERIC_TRAILER_RE.search(ln)] or kept
+    cause_lines = [ln for ln in substantive if _ERROR_OR_STATUS_LINE_RE.search(ln)]
+    joined = "\n".join(substantive)
+    if cause_lines and (len(joined) > base.STDERR_HEAD
+                        or not _ERROR_OR_STATUS_LINE_RE.search(substantive[-1])):
+        return redact.redact(cause_lines[-1])[:base.STDERR_HEAD]
     tail = joined[-base.STDERR_HEAD:] if len(joined) > base.STDERR_HEAD else joined
     return redact.redact(tail)[:base.STDERR_HEAD]
 
@@ -263,7 +285,7 @@ def parse_envelope(raw, returncode=0, stderr=None, *, entry_id=""):
             failure_class=forced_class,
             host_error_from_stderr=bool(err_text))
 
-    usage, model = _extract_usage_and_model(doc)
+    usage, model, model_map = _extract_usage_and_model(doc)
     session_id = doc.get("session_id") or doc.get("conversation_id")
     session_id = session_id if isinstance(session_id, str) else None
 
@@ -297,11 +319,13 @@ def parse_envelope(raw, returncode=0, stderr=None, *, entry_id=""):
             error="gemini -p exited %s: %s" % (_exit_label(returncode), reason),
             host_error=host_error or err_text or reason or None, stderr=diagnosis,
             failure_class=forced_class,
-            host_error_from_stderr=bool(not host_error and err_text))
+            host_error_from_stderr=bool(not host_error and err_text),
+            models=model_map)
 
     return base.RunResult(
         entry_id=entry_id, ok=True, text=text, usage=usage, cost_usd=None,
-        model=model, session_id=session_id, denials=denials, error=None)
+        model=model, session_id=session_id, denials=denials, error=None,
+        models=model_map)
 
 
 class Runner(base.HostRunner):

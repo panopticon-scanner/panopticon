@@ -791,10 +791,22 @@ class TestTheSelectedHostsBinaryIsGating(_VerbCase):
         self.assertIsNone(row["binary"])
         self.assertIsNone(row["on_path"])
 
-    def test_gemini_selected_with_api_key_auth_and_unset_env_var_fails_with_remedy(self):
+    def test_gemini_selected_with_unconfigured_or_api_key_auth_and_unset_env_var_fails_with_remedy(self):
         d = self._repo(groups_yml=GROUPS_YML)
         home = self._tmpdir()
         os.makedirs(os.path.join(home, ".gemini"), exist_ok=True)
+        # 1. Nothing configured: no selectedType, no oauth_creds.json, no GEMINI_API_KEY.
+        with mock.patch.dict(os.environ, {}, clear=True):
+            code_none, body_none = self._json(
+                d, "--host", "gemini", home=home,
+                which={"gemini": "/opt/bin/gemini"})
+        self.assertEqual(1, code_none)
+        self.assertEqual(["cli"], body_none["failed"])
+        self.assertIn(
+            "no Gemini auth configured: export GEMINI_API_KEY in the shell that runs panopticon",
+            body_none["cli"][0]["remedy"] or "")
+
+        # 2. selectedType == "gemini-api-key" without GEMINI_API_KEY.
         with open(os.path.join(home, ".gemini", "settings.json"), "w",
                   encoding="utf-8") as fh:
             json.dump({"security": {"auth": {"selectedType": "gemini-api-key"}}}, fh)
@@ -808,6 +820,7 @@ class TestTheSelectedHostsBinaryIsGating(_VerbCase):
             "export GEMINI_API_KEY in the shell that runs panopticon",
             body["cli"][0]["remedy"] or "")
 
+        # 3. Passes when GEMINI_API_KEY is exported (without leaking the value).
         with mock.patch.dict(os.environ, {"GEMINI_API_KEY": "secret-val"}, clear=True):
             code_ok, body_ok = self._json(
                 d, "--host", "gemini", home=home,
@@ -815,6 +828,7 @@ class TestTheSelectedHostsBinaryIsGating(_VerbCase):
         self.assertEqual(0, code_ok)
         self.assertEqual([], body_ok["failed"])
         self.assertIsNone(body_ok["cli"][0]["remedy"])
+        self.assertNotIn("secret-val", json.dumps(body_ok))
 
 
 class TestTheRowsThatSayNothingIsWrongSayItOnce(_VerbCase):

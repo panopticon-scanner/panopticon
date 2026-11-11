@@ -50,7 +50,10 @@ _KINDS = (
     r"client{s}is{s}no{s}longer{s}supported",    # Google Code Assist retired individual OAuth client
     r"invalid{s}api{s}key",
     r"(?:missing|no){s}api{s}key",
-    r"api{s}key{s}(?:not{s}found|expired|is{s}invalid)",
+    r"api{s}key{s}(?:not{s}(?:found|valid)|expired|is{s}(?:not{s}valid|invalid)|invalid)",
+    r"api_key_invalid",
+    r"(?:status(?:{s}code)?[\s:=]+|code[\s\":=]+)(?:400|401|403)\b[^\n]{{0,120}}"
+    r"(?<![/\\.\w])(?:api{s}key|unauthori[sz]ed|unauthenticated|forbidden|invalid{s}(?:credentials|grant))",
     r"please{s}run{s}/login",
     r"(?:not{s}authenticated|unauthenticated)",
     # N2: the WIRE key only (Google's canonical 403 name), never the

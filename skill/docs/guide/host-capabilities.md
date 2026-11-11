@@ -201,15 +201,17 @@ copied into `<run_home>/.gemini/extensions/`, plus no shadow in the target tree 
 `argv` policy paths, proven by hook subprocess round-trips across read-scope, `include_pattern`,
 git-pathspec-magic, strict `TOOL_INPUT_KEYS`, and v2 write-allowlist cases), `gemini-model-bound`
 (every role's resolved model in `skill/reference/model-profiles.yml` belongs to `Runner.KNOWN_MODELS`,
-`gemini -m <slug>` is advertised by `gemini --help`, and any existing `dispatch-ledger.jsonl` records no
-silent model reroute where the envelope's actual `model` differs from the bound `requested_model`), and
+`gemini -m <slug>` is advertised by `gemini --help`, model aliases in `MODEL_ALIASES` read `unknown`,
+and any existing `dispatch-ledger.jsonl` records no silent model reroute where the bound
+`requested_model` is absent from the envelope's `stats.models` keys), and
 `gemini-usage-envelope` (`gemini --help` advertises `-p` and `--output-format`, `parse_envelope` maps
 standard and cache-read-only `stats.models` token usage, and any existing `dispatch-ledger.jsonl`
 carries token counts on every `ok` row). For headless Gemini authentication, individual operators
 must `export GEMINI_API_KEY` in the shell that runs panopticon (the primary path — a key saved through
 `gemini`'s interactive sign-in dialog is stored in the OS keychain under the operator's `HOME` and is
 not visible to the isolated `<run_home>`, so when `selectedType` is `gemini-api-key` and
-`GEMINI_API_KEY` is unset, `driver readiness` and `gemini-shell-surface` fail early with that remedy)
+`GEMINI_API_KEY` is unset, or when no Gemini auth is configured at all, `driver readiness` and
+`gemini-shell-surface` fail early with that remedy)
 or configure Vertex AI (`GOOGLE_GENAI_USE_VERTEXAI=true`, `GOOGLE_CLOUD_PROJECT`,
 `GOOGLE_CLOUD_LOCATION`); personal-account `oauth-personal` ("Sign in with Google") for individuals is
 rejected by Google (`IneligibleTierError: This client is no longer supported for Gemini Code Assist

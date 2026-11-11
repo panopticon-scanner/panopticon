@@ -767,6 +767,21 @@ class TestEmitHostAgents(unittest.TestCase):
                 setup = fh.read()
             self.assertNotIn("model:", setup)
 
+    def test_gemini_policy_shells_emit_model_metadata_per_role(self):
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.emit_host_agents("gemini", d)
+            expected = {
+                "panopticon-scout.toml": "gemini-3.6-flash",
+                "panopticon-advisor.toml": "gemini-3.6-flash",
+                "panopticon-domain-panel.toml": "gemini-4-carbon",
+                "panopticon-domain-advisor.toml": "gemini-4-carbon",
+                "panopticon-setup-scan.toml": "inherit",
+            }
+            for fname, model in expected.items():
+                with open(os.path.join(d, fname), encoding="utf-8") as fh:
+                    text = fh.read()
+                self.assertIn("# panopticon-model: %s\n" % model, text, fname)
+
     def test_codex_toml_agents_are_read_only(self):
         with tempfile.TemporaryDirectory() as d:
             written = dispatch.emit_host_agents("codex", d)

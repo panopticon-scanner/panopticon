@@ -215,6 +215,25 @@ MISSING_API_KEY_REMEDY = (
     "A key saved through gemini's sign-in dialog is not visible to the isolated run home."
 )
 
+MODEL_ALIASES = frozenset({
+    "auto",
+    "pro",
+    "flash",
+    "flash-lite",
+    "auto-gemini-3",
+})
+
+
+def _has_oauth_creds(home):
+    if not home:
+        return False
+    cred_path = os.path.join(home, ".gemini", "oauth_creds.json")
+    try:
+        st = os.lstat(cred_path)
+    except OSError:
+        return False
+    return stat.S_ISREG(st.st_mode)
+
 
 def _read_user_selected_auth_type(real_user_home):
     """Read `security.auth.selectedType` (or legacy `selectedAuthType`) from
@@ -271,17 +290,31 @@ def _detect_auth_type(real_user_home, seeded_oauth, env=None):
 
 
 def auth_hazard(env=None, real_user_home=None):
-    """Return an actionable remedy when `selectedType == 'gemini-api-key'` in
-    `~/.gemini/settings.json` and `GEMINI_API_KEY` (or Vertex/GCA env auth) is
-    unset or empty in the launch environment. Never reads or echoes any secret."""
+    """Return an actionable remedy when Gemini auth is unconfigured or when
+    `selectedType == 'gemini-api-key'` in `~/.gemini/settings.json` without
+    `GEMINI_API_KEY` in the launch environment. Never reads or echoes any secret."""
+    check_env = os.environ if env is None else env
+    for env_key in ("GEMINI_API_KEY", "GOOGLE_GENAI_USE_VERTEXAI",
+                    "GOOGLE_GENAI_USE_GCA"):
+        val = check_env.get(env_key)
+        if isinstance(val, str) and val.strip():
+            return None
     home = os.path.expanduser("~") if real_user_home is None else real_user_home
-    if _detect_auth_type(home, False, env=env) == "gemini-api-key":
+    selected = _read_user_selected_auth_type(home)
+    if selected == "gemini-api-key":
         return (
             "gemini auth selectedType is 'gemini-api-key' in ~/.gemini/settings.json, "
             "but GEMINI_API_KEY is unset or empty in the launch environment: %s"
             % MISSING_API_KEY_REMEDY
         )
-    return None
+    if selected in ("vertex-ai", "compute-default-credentials", "cloud-shell"):
+        return None
+    if _has_oauth_creds(home):
+        return None
+    env_home = check_env.get("GEMINI_CLI_HOME") or check_env.get("HOME")
+    if isinstance(env_home, str) and env_home.strip() and _has_oauth_creds(env_home):
+        return None
+    return "no Gemini auth configured: %s" % MISSING_API_KEY_REMEDY
 
 
 def host_auth_hazard(host, env=None, real_user_home=None):
@@ -294,11 +327,16 @@ def host_auth_hazard(host, env=None, real_user_home=None):
 def ledger_model_reroute(ledger_path, bound_by_role=None):
     """Inspect `dispatch-ledger.jsonl` for silent Gemini model reroutes.
 
-    Returns `(False, detail)` if any `gemini` entry recorded an envelope `model`
-    different from its `requested_model` (or its role's bound model), else
+    A reroute means the entry's `requested_model` is not an alias in
+    `MODEL_ALIASES` and is NOT AMONG the envelope's `stats.models` keys
+    (`rec['models']` keys, falling back to `rec['model']`). Old ledger rows
+    with no `requested_model` are skipped so a profile or `--model` change
+    never produces a false `REFUTED`. Returns `(False, detail)` on a concrete
+    reroute, `(None, detail)` when only alias bindings were recorded, or
     `(True, 'ok')`."""
     if not ledger_path or not os.path.isfile(ledger_path):
         return True, "no ledger"
+    saw_alias = False
     try:
         with open(ledger_path, encoding="utf-8") as fh:
             for idx, raw in enumerate(fh, 1):
@@ -308,22 +346,39 @@ def ledger_model_reroute(ledger_path, bound_by_role=None):
                 rec = json.loads(line)
                 if not isinstance(rec, dict) or rec.get("host") != "gemini":
                     continue
-                actual = rec.get("model")
                 requested = rec.get("requested_model")
-                if not (isinstance(requested, str) and requested.strip()) and isinstance(bound_by_role, dict):
-                    role = rec.get("role") or ("scout" if rec.get("checkpoint") == "scout" else None)
-                    requested = bound_by_role.get(role) if isinstance(role, str) else None
-                if (isinstance(requested, str) and requested.strip()
-                        and isinstance(actual, str) and actual.strip()
-                        and actual != requested):
+                if not (isinstance(requested, str) and requested.strip()):
+                    continue
+                requested = requested.strip()
+                rec_models = rec.get("models")
+                if isinstance(rec_models, dict) and rec_models:
+                    reported = {k.strip() for k in rec_models
+                                if isinstance(k, str) and k.strip()}
+                elif isinstance(rec.get("model"), str) and rec["model"].strip():
+                    reported = {rec["model"].strip()}
+                else:
+                    reported = set()
+                if not reported:
+                    continue
+                if requested in MODEL_ALIASES:
+                    saw_alias = True
+                    continue
+                if requested not in reported:
                     entry_id = rec.get("entry_id") or rec.get("id") or ("line-%d" % idx)
+                    actual_display = rec.get("model") if len(reported) == 1 else sorted(reported)
                     return False, (
                         "dispatch-ledger.jsonl entry %r (line %d) bound model %r, "
                         "but the envelope reported %r (silent model reroute)"
-                        % (entry_id, idx, requested, actual)
+                        % (entry_id, idx, requested, actual_display)
                     )
     except (OSError, ValueError):
         pass
+    if saw_alias:
+        return None, (
+            "dispatch-ledger.jsonl entry bound a gemini model alias (%s), "
+            "which is not checkable against concrete envelope models"
+            % ", ".join(sorted(MODEL_ALIASES))
+        )
     return True, "ok"
 
 

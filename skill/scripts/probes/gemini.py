@@ -242,9 +242,6 @@ def probe_gemini_shell_surface(host, registration_dir=None, *, runner=None,
     hazards = gemini_home.system_policy_hazards(env=env, system_config_dir=system_config_dir)
     if hazards:
         return (hosts.REFUTED, GEMINI_SHELL_SURFACE, "; ".join(hazards))
-    auth_err = gemini_home.auth_hazard(env=env)
-    if auth_err:
-        return (hosts.REFUTED, GEMINI_SHELL_SURFACE, auth_err)
     row = hosts.spec("gemini")
     reg_dir = registration_dir or (row.registration_dir if row else "")
     if not reg_dir or not os.path.isdir(reg_dir):
@@ -341,6 +338,10 @@ def probe_gemini_shell_surface(host, registration_dir=None, *, runner=None,
         if home:
             gemini_home.teardown(home, "complete")
         shutil.rmtree(empty_user_home, ignore_errors=True)
+
+    auth_err = gemini_home.auth_hazard(env=env)
+    if auth_err:
+        return (hosts.REFUTED, GEMINI_SHELL_SURFACE, auth_err)
 
     return (hosts.PROVEN, GEMINI_SHELL_SURFACE,
             "%d/%d gemini Tier 5 --admin-policy shells (with catch-all deny) verified against gemini %s vocabulary in %s, @-tokens escaped, and settings.json surface locks verified"
@@ -558,6 +559,13 @@ def probe_gemini_model_bound(host, registration_dir=None, *, settings_path=None,
         ok, r_detail = gemini_home.ledger_model_reroute(ledger_path, dict(bound_models))
         if ok is False:
             return (hosts.REFUTED, GEMINI_MODEL_BOUND, r_detail)
+        if ok is None:
+            return (hosts.UNKNOWN, GEMINI_MODEL_BOUND, r_detail)
+    alias_roles = ["%s=%s" % (r, slug) for r, slug in bound_models if slug in gemini_home.MODEL_ALIASES]
+    if alias_roles:
+        return (hosts.UNKNOWN, GEMINI_MODEL_BOUND,
+                "role(s) bound to gemini model alias (%s), which is not checkable without concrete resolution"
+                % ", ".join(alias_roles))
     verified = sorted({slug for _, slug in bound_models})
     return (hosts.PROVEN, GEMINI_MODEL_BOUND,
             "all %d driver roles match emitted policy metadata and `-m` binding (%s)" % (len(common.DRIVER_ROLES), ", ".join(verified)))

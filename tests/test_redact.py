@@ -22,6 +22,7 @@ class TestRedact(unittest.TestCase):
             "AKIA" + "1234567890ABCDEF": "[REDACTED_AWS_KEY]",
             "xoxb-" + "1234567890-abcdefghij": "[REDACTED_SLACK_TOKEN]",
             "AIza" + "D" * 35: "[REDACTED_GOOGLE_KEY]",
+            "GEMINI_API_KEY=custom_secret_value_123": "GEMINI_API_KEY=[REDACTED_GOOGLE_KEY]",
         }
         for secret, marker in cases.items():
             out = redact.redact("leak: %s here" % secret)
@@ -689,6 +690,7 @@ class TestOnlyThePemRuleMayCrossAQuote(unittest.TestCase):
         fake_aws_key("1234567890ABCDEF"),
         "xoxb-1234567890-abcdefghij",
         "AIza" + "E" * 35,
+        "GEMINI_API_KEY=custom_gemini_secret_key",
         "xapp-1-" + "F" * 20,
         "https://hooks.slack.com/services/" + "T" * 9 + "/" + "B" * 9 + "/" + "Z" * 24,
         "glpat-" + "G" * 24,
