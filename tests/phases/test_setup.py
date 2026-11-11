@@ -1383,49 +1383,51 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
     # `~/.claude/agents` held on the machine running the suite. It was also
     # the reason `repo_root` could not simply be made required. The posture is
     # pinned to a deterministic shell-less envelope and a real tree is named;
-    # the REGISTRY rows above it are what these tests are about.
-    GEMINI_POSTURE = {
-        "schema_version": 1, "host": "gemini", "probed_at": "T",
+    # the REGISTRY rows above it are what these tests are about. (#3494
+    # restored gemini as a 5/5 host with TOML policy shells after its #1621
+    # retirement; generic remains the shell-less registry row.)
+    GENERIC_POSTURE = {
+        "schema_version": 1, "host": "generic", "probed_at": "T",
         "capabilities": {
             capability: {"state": hosts.UNKNOWN, "by": None,
-                         "detail": "no probe: gemini does not claim this "
+                         "detail": "no probe: generic does not claim this "
                                    "capability, so there is nothing to prove"}
             for capability in hosts.CAPABILITIES},
     }
 
     @property
-    def GEMINI_CHECKS(self):
+    def GENERIC_CHECKS(self):
         with mock.patch.object(host_probes, "run_probes",
-                               return_value=self.GEMINI_POSTURE):
-            return setup_preflight._check_host_shells("gemini", None, ".")
+                               return_value=self.GENERIC_POSTURE):
+            return setup_preflight._check_host_shells("generic", None, ".")
 
-    def test_the_gemini_limitation_reaches_the_operator(self):
-        rows = {c[0]: c for c in self.GEMINI_CHECKS}
+    def test_the_generic_limitation_reaches_the_operator(self):
+        rows = {c[0]: c for c in self.GENERIC_CHECKS}
         self.assertEqual(("enforced-shells", None,
-                          "gemini registers no enforcement shells; reviewers "
+                          "generic registers no enforcement shells; reviewers "
                           "run with a prompt-advisory tool policy"),
                          rows["enforced-shells"])
-        msg, marker = self._fallback(self.GEMINI_CHECKS, host="generic")
+        msg, marker = self._fallback(self.GENERIC_CHECKS, host="generic")
         self.assertIn("limitations", msg)
         self.assertIn("enforced-shells", msg)
-        self.assertIn("gemini registers no enforcement shells", msg)
+        self.assertIn("generic registers no enforcement shells", msg)
         self.assertIn(["enforced-shells", rows["enforced-shells"][2]],
                       marker["limitations"])
 
     def test_a_shell_less_host_still_discloses_its_capability_posture(self):
         # F3b: registering no enforcement shells is a fact about ONE check, not
-        # an exemption from §5.1. gemini claims nothing, so five-of-five
+        # an exemption from §5.1. generic claims nothing, so five-of-five
         # unproven IS its whole story -- and the `enforced-shells` early return
         # used to end the check list right here, leaving the operator one line
         # that named the host and no capability, no probe and no remedy.
-        rows = {c[0]: c for c in self.GEMINI_CHECKS}
+        rows = {c[0]: c for c in self.GENERIC_CHECKS}
         self.assertIn("host-capabilities", rows)
         for capability in hosts.CAPABILITIES:
             with self.subTest(capability=capability):
                 row = rows["host-capability:" + capability]
-                self.assertIn(host_disclosure.remedy(capability, "gemini"),
+                self.assertIn(host_disclosure.remedy(capability, "generic"),
                               row[2])
-        msg, marker = self._fallback(self.GEMINI_CHECKS, host="generic")
+        msg, marker = self._fallback(self.GENERIC_CHECKS, host="generic")
         self.assertIn(["host-capabilities", rows["host-capabilities"][2]],
                       marker["limitations"])
         self.assertIn("host-capabilities", msg)
@@ -1434,7 +1436,7 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
         # It must not gate READY: `gaps` stays empty and the readiness verdict
         # stays OK. Distinct clause, distinct key -- a consumer can tell "not
         # applicable" from "fine".
-        msg, marker = self._fallback(self.GEMINI_CHECKS, host="generic")
+        msg, marker = self._fallback(self.GENERIC_CHECKS, host="generic")
         self.assertEqual([], marker["gaps"])
         self.assertNotIn("readiness gaps", msg)
 
@@ -1449,12 +1451,12 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
         self.assertEqual([], marker["limitations"])
 
     def test_the_operator_message_lists_one_limitation_per_bounded_line(self):
-        # #1601, end to end on the shipped gemini posture: seven limitations,
+        # #1601, end to end on the shipped generic posture: seven limitations,
         # each carrying a full remedy, rendered as ONE 1847-character line on
         # the message the operator actually reads. One per line now, each
         # under the column bar, and one line per stored limitation -- so the
         # message and `setup-complete.json` still agree on the count.
-        msg, marker = self._fallback(self.GEMINI_CHECKS, host="generic")
+        msg, marker = self._fallback(self.GENERIC_CHECKS, host="generic")
         body = msg.splitlines()
         self.assertIn("limitations:", body)
         head = body.index("limitations:")
@@ -1464,7 +1466,7 @@ class TestReadinessLimitationsAreLoud(unittest.TestCase):
 
     def test_a_real_gap_is_still_reported_as_a_gap(self):
         checks = [("docker", False, "docker unavailable -- install/start Docker"),
-                  ("enforced-shells", None, "gemini registers no enforcement "
+                  ("enforced-shells", None, "generic registers no enforcement "
                                             "shells; reviewers run with a "
                                             "prompt-advisory tool policy")]
         msg, marker = self._fallback(checks, host="generic")

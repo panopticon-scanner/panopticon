@@ -122,22 +122,25 @@ class TestARegisteredButUnselectableHostGetsARemedy(unittest.TestCase):
     def test_every_unselectable_registered_host_names_the_remedy(self):
         # Read off the registry, not a literal list: a family PR that flips
         # its own row simply drops out of this set -- which is what kimi
-        # (#1620) and codex (#1619) did, leaving gemini. gemini is asserted by
-        # name so the loop below can never become vacuous; the rest is
-        # whatever the registry says today.
-        unselectable = [h for h in hosts.known_hosts()
-                        if h not in hosts.driver_hosts()]
-        self.assertIn("gemini", unselectable)
-        for host in unselectable:
-            for verb in ("run", "loop", "setup"):
-                with self.subTest(host=host, verb=verb):
-                    code, err = self._stderr_of([verb, ".", "--host", host])
-                    self.assertNotEqual(0, code)
-                    self.assertIn(
-                        "--host %s is registered but not driver-selectable "
-                        "(it proves no enforcement capability); use --host "
-                        "generic (session mode, unenforced, ack-gated)" % host,
-                        err)
+        # (#1620), codex (#1619), agy (#3493), and gemini (#3494, after #1621's
+        # retirement) did. We also patch a retired row in so the loop below can
+        # never become vacuous when all shipped rows are selectable.
+        retired = hosts.HostSpec(name="retiredhost", claims=frozenset(),
+                                 driver_selectable=False)
+        with mock.patch.dict(hosts.HOSTS, {"retiredhost": retired}):
+            unselectable = [h for h in hosts.known_hosts()
+                            if h not in hosts.driver_hosts()]
+            self.assertIn("retiredhost", unselectable)
+            for host in unselectable:
+                for verb in ("run", "loop", "setup"):
+                    with self.subTest(host=host, verb=verb):
+                        code, err = self._stderr_of([verb, ".", "--host", host])
+                        self.assertNotEqual(0, code)
+                        self.assertIn(
+                            "--host %s is registered but not driver-selectable "
+                            "(it proves no enforcement capability); use --host "
+                            "generic (session mode, unenforced, ack-gated)" % host,
+                            err)
 
     def test_an_unknown_host_still_gets_the_ordinary_invalid_choice_error(self):
         # The `type=` callable must let an unknown name through so `choices`
@@ -157,9 +160,10 @@ class TestARegisteredButUnselectableHostGetsARemedy(unittest.TestCase):
 
     def test_the_helper_decides_from_the_registry_not_a_host_name(self):
         # The remedy must follow the table. Patch a fictional row in as
-        # selectable and the helper stops objecting to it; nothing about the
-        # decision is spelled against a host's name.
-        row = dataclasses.replace(hosts.spec("gemini"), name="ghost")
+        # unselectable first, then selectable, and the helper follows the row;
+        # nothing about the decision is spelled against a host's name.
+        row = dataclasses.replace(hosts.spec("generic"), name="ghost",
+                                  driver_selectable=False)
         with mock.patch.dict(hosts.HOSTS, {"ghost": row}):
             self._stderr_of(["run", ".", "--host", "ghost"])
         with mock.patch.dict(hosts.HOSTS,
@@ -267,15 +271,18 @@ class TestDriverRunRefusesAnUnselectableManifestHost(unittest.TestCase):
     def test_a_resume_whose_manifest_host_is_no_longer_selectable_is_an_error(self):
         d = self._repo()
         self._mint(d)
-        unselectable = [h for h in hosts.known_hosts()
-                        if h not in hosts.driver_hosts()]
-        self.assertIn("gemini", unselectable,
-                      "guards the guard: the unselectable set must be non-empty")
-        self._retire_the_requests(d)
-        self._rewrite_host(d, "gemini")
-        status = self._resume(d)
+        retired = hosts.HostSpec(name="retiredhost", claims=frozenset(),
+                                 driver_selectable=False)
+        with mock.patch.dict(hosts.HOSTS, {"retiredhost": retired}):
+            unselectable = [h for h in hosts.known_hosts()
+                            if h not in hosts.driver_hosts()]
+            self.assertIn("retiredhost", unselectable,
+                          "guards the guard: the unselectable set must be non-empty")
+            self._retire_the_requests(d)
+            self._rewrite_host(d, "retiredhost")
+            status = self._resume(d)
         self.assertEqual("error", status["status"], status)
-        self.assertIn("gemini", status["message"])
+        self.assertIn("retiredhost", status["message"])
         self.assertIn("--host generic --reset", status["message"])
         self.assertEqual([], self._requests(d),
                          "nothing may be dispatched for it")

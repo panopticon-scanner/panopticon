@@ -101,7 +101,7 @@ downgraded; a doc-glob match that names no such file keeps its severity and is c
   codes, schema validation, per-run folders, and secret redaction.
 - [Host capabilities (5.2)](guide/host-capabilities.md) — the five measured capabilities, the four
   surfaces that disclose them, and where each host stands, including `--host generic` and the
-  not-selectable `gemini` row.
+  restored `gemini` row (#1621 -> #3494).
 - [Code layout (5.2)](guide/code-layout.md) — which module owns what behind
   `skill/scripts/synthesize.py`, `skill/scripts/driver.py` and `skill/scripts/host_probes.py`.
 - [Testing scanner fixtures (optional)](guide/testing-scanner-fixtures.md) — the local Docker

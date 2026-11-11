@@ -127,6 +127,10 @@ def _checks(review_root, manifest):
     # review has been paid for -- so it belongs before the first dispatch.
     dependencies = readiness_checks._dependencies_row()
     checks.append(("dependencies", dependencies["ok"], dependencies["detail"]))
+    hazard_code = setup_preflight.host_hazard_code(manifest.get("host"))
+    if hazard_code in setup_preflight.HAZARD_MESSAGES:
+        checks.append(("host-auth", False,
+                       setup_preflight.HAZARD_MESSAGES[hazard_code]))
     return checks
 
 

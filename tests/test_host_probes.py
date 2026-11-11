@@ -58,8 +58,10 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
         # Plan 5 shipped read-guard-armed for claude, so no capability is
         # probe-less by design any more (_NO_PROBE is empty); a host that
         # does not CLAIM one still gets the honest "nothing to prove" row.
+        # (#3494 gave gemini all five claims and probes, restoring the row
+        # #1621 had retired; generic remains the claim-nothing row.)
         with tempfile.TemporaryDirectory() as target:
-            art = host_probes.run_probes("gemini", target)
+            art = host_probes.run_probes("generic", target)
             row = art["capabilities"][hosts.READ_SCOPE_CONFINED]
             self.assertEqual(hosts.UNKNOWN, row["state"])
             self.assertIsNone(row["by"])
@@ -68,15 +70,16 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
 
     def test_an_unclaimed_capability_is_not_described_as_claimed(self):
         # Minor 1. One sentence covered both no-probe cases and said the host
-        # "claims this capability's proof is not shipped yet". gemini claims
-        # NOTHING, so its artifact asserted a claim it never made -- for two
+        # "claims this capability's proof is not shipped yet". generic claims
+        # NOTHING (#3494 restored gemini as a 5/5 host after its #1621
+        # retirement), so its artifact asserted a claim it never made -- for two
         # capabilities -- in the one artifact whose entire purpose is
         # separating claims from proof.
         with tempfile.TemporaryDirectory() as target:
-            art = host_probes.run_probes("gemini", target)
+            art = host_probes.run_probes("generic", target)
             unclaimed = [c for c in (hosts.ARTIFACT_WRITE_GUARD,
                                      hosts.USAGE_LEDGER)
-                         if not hosts.declares("gemini", c)]
+                         if not hosts.declares("generic", c)]
             self.assertEqual(2, len(unclaimed))   # the fixture is the real row
             for capability in unclaimed:
                 with self.subTest(capability=capability):
@@ -199,13 +202,14 @@ class TestRunProbesBuildsTheArtifact(unittest.TestCase):
                     self.assertIsNone(art["capabilities"][capability]["by"])
 
     def test_a_known_host_that_claims_nothing_probes_to_all_unknown(self):
-        # Distinct from the unknown-host-NAME case above: "gemini" IS a real
-        # row in the registry (unlike "no-such-host"), but it claims no
+        # Distinct from the unknown-host-NAME case above: "generic" IS a real
+        # row in the registry (unlike "no-such-host"; #3494 restored "gemini"
+        # as a 5/5 host after its #1621 retirement), but it claims no
         # capabilities and maps no probes. This path -- a known host with an
         # empty `probes` mapping -- was otherwise never exercised.
         with tempfile.TemporaryDirectory() as target:
-            art = host_probes.run_probes("gemini", target)
-            self.assertIsNotNone(hosts.spec("gemini"))
+            art = host_probes.run_probes("generic", target)
+            self.assertIsNotNone(hosts.spec("generic"))
             self.assertEqual({hosts.UNKNOWN},
                              {r["state"] for r in art["capabilities"].values()})
             self.assertEqual(

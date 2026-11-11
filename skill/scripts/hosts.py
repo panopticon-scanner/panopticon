@@ -7,8 +7,9 @@ the driver's `--host` choices, `emit_host_agents` (claude|kimi|codex),
 host could therefore be first-class in one and absent from another -- `gemini`
 was selectable by the driver while `emit_host_agents` raised `ValueError` for
 it, and setup told operators to run that exact command. That disagreement is
-what this table ends; `driver_selectable` is now one field on one row, and
-gemini's reads False (#1621).
+what this table ends; `driver_selectable` is now one field on one row (gemini's
+read False when #1621 retired it on 2026-09-13, and flipped back to True when
+#3494 proved all 5 capabilities on `@google/gemini-cli` 0.55.1).
 
 This module is DATA and PURE FUNCTIONS ONLY. It is imported by `phases/*`,
 which must not pay for templates, model resolution or a subprocess to ask
@@ -108,8 +109,8 @@ STATES = (PROVEN, REFUTED, UNKNOWN)
 # `spec(host).registration_dir`.
 CLAUDE_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".claude", "agents")
 KIMI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".kimi-code", "agents")
-AGY_AGENTS_DIR = os.path.join(
-    os.path.expanduser("~"), ".gemini", "config", "agents")
+AGY_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".gemini", "config", "agents")
+GEMINI_AGENTS_DIR = os.path.join(os.path.expanduser("~"), ".gemini", "cli-agents")
 
 
 def codex_home(value):
@@ -262,6 +263,7 @@ class HostSpec:
     name: str
     claims: frozenset
     self_write_delivery: bool = False
+    self_write_requires_tool_policy: bool = False
     session_root_capabilities: tuple = ()
     registration_dir: str = ""      # "" when the host registers no shells
     # Why this machine gives the row NO usable `registration_dir` although
@@ -436,21 +438,61 @@ HOSTS = {
                 USAGE_LEDGER: "agy-usage-envelope"},
         cli_flag_facts=(OUTPUT_SCHEMA,),
         cli_binary="agy"),
-    # Registered, not selectable: its family PR did not clear the gate (#1621,
-    # retired 2026-09-13). The row STAYS so the registry still knows the name
-    # -- `known_hosts()` lists it, `spec("gemini")` resolves, it still claims
-    # nothing, and every consumer that reads the registry keeps answering for
-    # it honestly. Operators use `--host generic` (session mode, unenforced,
-    # ack-gated), the same path as any host without a family runner. A future
-    # Gemini PR flips this back as part of proving its capabilities, exactly
-    # as kimi's and codex's rows did above.
-    "gemini": HostSpec(name="gemini", claims=frozenset(),
-                       driver_selectable=False),
+    # Retired 2026-09-13 (#1621) when the initial family PR lacked a runner;
+    # restored as a 5/5 first-class host (#3494) on `@google/gemini-cli` 0.55.1
+    # using per-run `GEMINI_CLI_HOME`, `<run_home>/workspace` `.git` ceiling,
+    # Tier 5 `--admin-policy` TOML role shells in `~/.gemini/cli-agents/`, and
+    # a `"*"` `BeforeTool` guard hook (`gemini_guard_hook.py`).
+    #
+    # GM-1 (`GEMINI.md`, `**/GEMINI.md`) remains OPEN (P4): in
+    # `packages/core/dist/src/tools/memoryTool.js` (`chunk-32XQ54AJ.js:11342670`),
+    # `DEFAULT_CONTEXT_FILENAME` is `"GEMINI.md"` and `setGeminiMdFilename` is
+    # additive (`for (const filename of current) { next.add(filename); }`), so
+    # `<run_home>/.gemini/settings.json` omits `context.fileName` to keep
+    # `getAllGeminiMdFilenames()` at `["GEMINI.md"]` only (closing `AGENTS.md`
+    # in GM-2). However, `ReadFileToolInvocation.execute` calls
+    # `discoverJitContext` -> `memoryContextManager.discoverContext`
+    # (`chunk-32XQ54AJ.js:15298800`), which walks upward from any read file
+    # toward trusted roots (including `--include-directories <review_root>`)
+    # and auto-injects any `GEMINI.md` found along that path without consulting
+    # `loadMemoryFromIncludeDirectories`. Targets shipping `GEMINI.md` are
+    # therefore refused on `tool_policy_enforced`.
+    "gemini": HostSpec(
+        name="gemini",
+        claims=frozenset({TOOL_POLICY_ENFORCED, READ_SCOPE_CONFINED,
+                          ARTIFACT_WRITE_GUARD, MODEL_BINDING, USAGE_LEDGER}),
+        self_write_delivery=True,
+        self_write_requires_tool_policy=True,
+        registration_dir=GEMINI_AGENTS_DIR,
+        shell_format="toml",
+        project_scope_dirs=(os.path.join(".agents", "agents"),
+                            os.path.join(".gemini", "agents")),
+        discovery_surface=(
+            Surface(("GEMINI.md", "**/GEMINI.md"), OPEN, None, "GM-1"),
+            Surface(("AGENTS.md", "**/AGENTS.md"), CONTROLLED,
+                    "gemini:isolated-home-default-context-filename", "GM-2"),
+            Surface((".gemini/settings.json",), CONTROLLED,
+                    "gemini:cwd-outside-target", "GM-3"),
+            Surface((".gemini/agents/*", ".agents/agents/*"), CONTROLLED,
+                    "gemini:cwd-outside-target", "GM-4"),
+            Surface((".gemini/skills/*/SKILL.md", ".agents/skills/*/SKILL.md",
+                     ".gemini/commands/**"), CONTROLLED,
+                    "gemini:cwd-outside-target", "GM-5"),
+            Surface((".gemini/policies/*",), CONTROLLED,
+                    "gemini:admin-policy-tier", "GM-6"),
+        ),
+        detect_env=("GEMINI_CLI",),
+        driver_selectable=True,
+        probes={TOOL_POLICY_ENFORCED: "gemini-shell-surface",
+                READ_SCOPE_CONFINED: "gemini-read-guard-armed",
+                ARTIFACT_WRITE_GUARD: "gemini-write-guard-armed",
+                MODEL_BINDING: "gemini-model-bound",
+                USAGE_LEDGER: "gemini-usage-envelope"},
+        cli_binary="gemini"),
     # The permanent, unenforced fallback (owner ruling D1, spec 8.3 option 1,
     # superseding D4's planned F5 deletion). It stays because the spec 8.1
     # bar is a floor, not a trigger (see `test_generic_retirement_bar`), and
-    # generic is the only path left for gemini and for any other host
-    # without a family runner.
+    # generic is the fallback path for any host without a family runner.
     "generic": HostSpec(name="generic", claims=frozenset(),
                         driver_selectable=True),
 }
@@ -482,6 +524,7 @@ def write_boundary_gaps(host, posture):
     """
     row = spec(host)
     if (row and row.self_write_delivery
+            and not row.self_write_requires_tool_policy
             and posture.get(ARTIFACT_WRITE_GUARD) == PROVEN
             and posture.get(TOOL_POLICY_ENFORCED) != PROVEN):
         return (BASH_PATH_ARTIFACT_WRITE_GAP,)
@@ -556,9 +599,9 @@ def is_unenforced_fallback(host):
     site: `tests/test_host_posture_wiring.py`'s AST guard exists precisely so
     nothing under `phases/` decides behaviour from a host's NAME, and this
     registry -- "the one table that knows what a host is" -- is where that
-    one comparison belongs. `gemini` also claims nothing, and since #1621 is
-    not selectable either, but it is still not this: this predicate gates the
-    fallback NOTICE, which describes the fallback specifically.
+    one comparison belongs. Any future registered-but-unselectable row that
+    claims nothing is still not this: this predicate gates the fallback
+    NOTICE, which describes the fallback specifically.
     """
     return host == "generic"
 
@@ -591,9 +634,9 @@ def posture(host, evidence):
       makes refuted the STRONGER answer. A refutation grants nothing, so
       letting it through is strictly non-permissive. It was latent only
       while every selectable host had empty `project_scope_dirs` -- generic
-      still does, and so does gemini, which #1621 left registered but
-      unselectable. It went LIVE when the family PRs flipped codex (#1619)
-      and kimi (#1620) to driver_selectable with scope dirs of their own, and
+      still does (as did gemini between #1621 and #3494). It went LIVE when
+      the family PRs flipped codex (#1619), kimi (#1620), agy (#3493), and
+      gemini (#3494) to driver_selectable with scope dirs of their own, and
       F5's entry-criterion test reads `posture()` -- so a genuinely refuted
       host would have read `unknown` and failed the bar for the wrong stated
       reason.

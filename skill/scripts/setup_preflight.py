@@ -18,7 +18,12 @@ from scripts import codex_host  # #1344: the suite's launch guard type
 from scripts import host_probes  # #1344 F3b: readiness probes live posture
 import scripts.probes.common as probes_common  # #1627: the shared probe helpers
 from scripts import host_disclosure  # #1344 F3b: one voice for the posture
+import scripts.runners.gemini_home as gemini_home
 from scripts import tools_image  # #3407: the local image name
+
+host_auth_hazard = gemini_home.host_auth_hazard
+host_hazard_code = gemini_home.host_hazard_code
+HAZARD_MESSAGES = gemini_home.HAZARD_MESSAGES
 
 
 # The roles the DRIVER dispatches and therefore needs registered shells for.
@@ -182,9 +187,10 @@ def _check_host_shells(host, runner, repo_root=None, envelope=None):
                        "Codex CLI unavailable -- install/authenticate `codex`"))
 
     # Registering no enforcement shells is a fact about ONE check, not an
-    # exemption from disclosure. This used to `return checks` here, so gemini
-    # and generic -- the two registry rows that claim NOTHING, and therefore
-    # the two whose whole story is five-of-five-unproven -- left
+    # exemption from disclosure. This used to `return checks` here, so generic
+    # (and gemini when #1621 retired it before #3494 restored it) -- any
+    # registry row that claims NOTHING, and whose whole story is
+    # five-of-five-unproven -- left
     # readiness with a single line naming the host and no capability, no probe
     # and no remedy. 5.1 names no shell-less exemption. Control falls through
     # to the probing block below instead, which is written once and runs for

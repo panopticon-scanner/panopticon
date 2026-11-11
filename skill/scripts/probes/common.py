@@ -416,7 +416,7 @@ def probe_shadow_shells(host, review_root):
                 "host %r discovers no project-scoped agents" % host)
     hits, unreadable = [], []
     dirs = [(rel, os.path.join(review_root, rel)) for rel in row.project_scope_dirs]
-    if host == "agy":
+    if host in ("agy", "gemini"):
         dirs.append(("~/.gemini/agents",
                      os.path.join(os.path.expanduser("~"), ".gemini", "agents")))
     for relative, directory in dirs:
@@ -520,6 +520,26 @@ CONTROLS = {
         "agy", ("--disable-slash-commands",),
         "`--disable-slash-commands` stops `/skill` and slash-command expansion "
         "of the `-p` prompt (`agy changelog` 1.1.9)"),
+    "gemini:cwd-outside-target": Control(
+        "gemini", (),
+        "`runners.gemini.Runner.run_entry` runs the child in `<gemini_home>/workspace` "
+        "(pinned with a `.git` ceiling), outside the review root, and sets "
+        "`mcpServers={}`, `mcp.allowed=[]`, `skills.enabled=false`, "
+        "`experimental.enableAgents=false`, and `general.plan.enabled=false` "
+        "in `<gemini_home>/.gemini/settings.json`"),
+    "gemini:isolated-home-default-context-filename": Control(
+        "gemini", (),
+        "the isolated `<gemini_home>/.gemini/settings.json` omits `context.fileName` "
+        "and sets `context.loadMemoryFromIncludeDirectories=false`, so "
+        "`@google/gemini-cli`'s `getAllGeminiMdFilenames()` (`chunk-32XQ54AJ.js:11342670`) "
+        "stays at its default `['GEMINI.md']` and never includes `AGENTS.md`"),
+    "gemini:admin-policy-tier": Control(
+        "gemini", ("--admin-policy",),
+        "`--admin-policy <role_policy.toml>` loads at `ADMIN_POLICY_TIER = 5` "
+        "(allow `5.900`, explicit deny `5.950`, catch-all deny `5.100`), which "
+        "strictly outranks workspace policies (Tier 3) and `--approval-mode yolo` "
+        "(Tier 1, `1.998`), and `cwd` is outside the review root so `.gemini/policies/` "
+        "in the target is never loaded"),
 }
 
 

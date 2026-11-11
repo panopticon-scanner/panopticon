@@ -241,7 +241,7 @@ a probe makes it **proven**. Anything unprobed reads `unknown` forever, and
 | `usage_ledger` | Tokens and cost per launch come back in the envelope your runner parses. |
 
 Write transport is a separate static registry fact. `self_write_delivery` is
-true only for Claude and Kimi; it is false for Codex, generic and Gemini. A
+true only for Claude, Kimi, Agy and Gemini; it is false for Codex and generic. A
 write-template role self-writes only when that fact **and** a proven
 `artifact_write_guard` both hold. Otherwise it uses `delivery: return_json`
 and the controller validates and persists the reply. Delivery never bypasses
@@ -409,16 +409,58 @@ treats `~/.gemini/agents/` as a shadow location for `agy`, and the Gemini CLI
 re-attempt (#3494) must not register shells where `agy` looks
 (`~/.gemini/agents/` or `~/.gemini/config/agents/`).
 
-**Gemini** is registered and **not** driver-selectable (#1621, retired
-2026-09-13 by #1625). The row stays, so the name still resolves everywhere and
-every surface answers for it honestly; it claims nothing, and `--host gemini`
-is refused with the remedy rather than a bare word list. A Gemini operator runs
-`--host generic`, the same path as any host whose family has not shipped a
-runner. A re-attempt starts from the Kimi or Codex shape -- a
-`skill/scripts/runners/gemini.py`, its own `probes/gemini.py`, an emit branch,
-both security capabilities probed and mutation-refuted -- clears section 5 in
-full, and attaches a real `driver loop . --host gemini` run. The row flips back
-in the same PR as the probes that earn it, never ahead of them.
+**Gemini (#3494, restoring the row #1621 retired)** claims all five, proven by
+`gemini-shell-surface`, `gemini-read-guard-armed`, `gemini-write-guard-armed`,
+`gemini-model-bound` and `gemini-usage-envelope`, all in `probes/gemini.py`.
+(`gemini` was originally retired from `driver_selectable` by #1621 / #1625 on
+2026-09-13 when its initial PR did not clear the gate; #3494 re-attempts and
+restores the row as a 5/5 first-class host on `@google/gemini-cli` `0.55.x`.)
+`skill/scripts/runners/gemini.py` sets `CLI = "gemini"`,
+`ENVELOPE_FLAGS = ("-p", "--output-format")`, `OUTPUT_SCHEMA_FLAG = ()`,
+`HONOURS_MAX_TURNS = False` and `default_concurrency = 4`, scrubs inherited
+`GEMINI_*` / `GEMINI_CLI_*` env vars (preserving only `ALLOWED_GEMINI_ENV_KEYS`),
+and escapes every `@` in `-p` as `\@` so `handleAtCommand` / `parseAllAtCommands`
+(`chunk-3PF5QBBI.js`) never invokes `ReadManyFilesTool` outside `PolicyEngine`
+and `BeforeTool`. Its `prepare` builds an isolated per-run home
+(`runners/gemini_home.py`) outside `review_root` and outside `.panopticon` that
+copies ONLY `oauth_creds.json` and `google_accounts.json` (`0600`,
+`O_NOFOLLOW | O_NONBLOCK`, `S_ISREG`), writes an isolated
+`<run_home>/.gemini/settings.json` setting `mcpServers = {}`, `mcp.allowed = []`,
+`skills.enabled = false`, `experimental.enableAgents = false`,
+`general.plan.enabled = false`, `security.folderTrust.enabled = false`, and
+`context.loadMemoryFromIncludeDirectories = false` (omitting `context.fileName`
+because `setGeminiMdFilename` is additive), writes a read-only
+`<run_home>/.gemini/policies/unenforced.toml`, and seeds a minimal Git ceiling
+`<run_home>/workspace/.git/{HEAD,objects,refs}` (`cwd` on every launch). Role
+shells are emitted to `~/.gemini/cli-agents/panopticon-*.toml` (disjoint from
+`agy`'s `~/.gemini/config/agents/` and `~/.gemini/agents/`) and passed via
+`--admin-policy <role_toml>` (Tier 5, `ADMIN_POLICY_TIER = 5` in
+`chunk-32XQ54AJ.js:11386058`), which sets the role's granted tools to
+`decision = "allow"` (`priority = 900`), denies every other tool in the
+versioned `0.55` CLI vocabulary plus all MCP tools (`priority = 950`), and
+installs a Tier 5 catch-all deny (`toolName = "*"`, `decision = "deny"`,
+`priority = 100`, effective `5.100`) that outranks `yolo.toml` (Tier 1, `1.998`).
+`gemini-shell-surface` refutes if any system policy `.toml` or system
+`settings.json` / `system-defaults.json` exists in `Storage.getSystemConfigDir()`
+(because `createPolicyEngineConfig` silently drops `--admin-policy` when system
+policies exist). Every tool invocation then passes through `hooks.BeforeTool`
+(`"matcher": "*"`) invoking `skill/scripts/gemini_guard_hook.py`, which enforces
+a hard tool-name allowlist (`read_file`, `grep_search`, `glob`,
+`list_directory`, `write_file`), a strict per-tool `TOOL_INPUT_KEYS` parameter
+allow-set, `PANOPTICON_ENTRY_ID` binding, authoritative `argv` policy paths,
+explicit absolute paths, `include_pattern` / git-pathspec-magic refusal,
+per-entry read scope, and v2 write allowlist grants (`self_write_delivery = True`).
+On the discovery surface (#1657), `GM-2`..`GM-6` are `CONTROLLED` by
+`gemini:cwd-outside-target`, `gemini:isolated-home-default-context-filename`
+and `gemini:admin-policy-tier`, while `GM-1` (`GEMINI.md`, `**/GEMINI.md`)
+remains `OPEN`: in `packages/core/dist/src/tools/memoryTool.js`
+(`chunk-32XQ54AJ.js:11342670`), `DEFAULT_CONTEXT_FILENAME` is `"GEMINI.md"` and
+`setGeminiMdFilename` is additive (`for (const filename of current) { next.add(filename); }`),
+while `ReadFileToolInvocation.execute` calls `discoverJitContext` ->
+`memoryContextManager.discoverContext` (`chunk-32XQ54AJ.js:15298800`), which
+walks upward from any read file inside `--include-directories <review_root>` and
+auto-injects any `GEMINI.md` found along that path without consulting
+`loadMemoryFromIncludeDirectories`.
 
 ## 3. What you may not do
 
@@ -564,13 +606,14 @@ construction through the transport-and-proof rule above. On this base that
 criterion was **met** -- the pin in section 2
 reads `{}`.
 
-Met was not due. `--host generic` is the only path left for a Gemini operator
-and for any host whose family has not shipped a runner, so deleting it was an
-owner **policy** decision rather than a consequence of the bar clearing: the
-bar could say that no remaining selectable host fell short, but it could not
-say there was anywhere else for those operators to go. The decision, its
-options and a recommendation were written up as section 8.3 of the
-first-class-hosts design spec in the private docs repo (panopticon-docs #55).
+Met was not due. At #1621 (before #3494 restored `gemini` as a 5/5 first-class
+host), `--host generic` was the only path left for a Gemini operator and for
+any host whose family had not shipped a runner, so deleting it was an owner
+**policy** decision rather than a consequence of the bar clearing: the bar
+could say that no remaining selectable host fell short, but it could not say
+there was anywhere else for those operators to go. The decision, its options
+and a recommendation were written up as section 8.3 of the first-class-hosts
+design spec in the private docs repo (panopticon-docs #55).
 
 The owner's ruling, D1 (2026-09-15), chose **option 1**: keep `--host generic`
 as the permanent, unenforced, ack-gated fallback, and retire F5 -- there is no

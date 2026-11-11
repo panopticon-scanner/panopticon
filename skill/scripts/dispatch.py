@@ -25,13 +25,11 @@ if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
 # SAME model_resolver every other importer holds -- one profile cache, one patch
 # target. The `from scripts import ...` line just below already requires
 # `scripts` to resolve, and the bootstrap above guarantees it when run by path.
-from scripts import model_resolver
+from scripts import claim_scope, codex_read_tools, hosts, model_resolver, plan_contract, toml_values
+import scripts.runners.gemini_home as gemini_home
 
-from scripts import claim_scope, codex_read_tools, hosts, plan_contract, toml_values
 
-
-TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                            os.pardir, "agents")
+TEMPLATE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), os.pardir, "agents")
 
 _FM_SCALAR_RE = re.compile(r"^([a-z_]+):\s*(.*)$")
 _FM_LIST_RE = re.compile(r"^\s{2}(allowed|forbidden):\s*\[([^\]]*)\]\s*$")
@@ -348,7 +346,8 @@ def _render_agy(role, agent, meta, tp):
 
 # How each registrable host renders one role's shell (ARC-981076646): the file's
 # whole text, from the role, its agent name, template meta and tool policy.
-_RENDERERS = {"claude": _render_claude, "kimi": _render_kimi, "codex": _render_codex, "agy": _render_agy}
+_RENDERERS = {"claude": _render_claude, "kimi": _render_kimi, "codex": _render_codex,
+              "agy": _render_agy, "gemini": gemini_home.render_shell}
 
 
 def _prune_retired_shells(host, out_dir, written):
@@ -503,7 +502,7 @@ def _detect_host():
     """
     warning = ("WARNING: host detected from environment; pass --host "
                "explicitly for stable behavior")
-    for name in ("codex", "kimi", "claude", "agy"):
+    for name in ("codex", "kimi", "claude", "agy", "gemini"):
         row = hosts.spec(name)
         if any(os.environ.get(var) for var in row.detect_env):
             print(warning, file=sys.stderr)

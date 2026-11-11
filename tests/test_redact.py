@@ -22,11 +22,21 @@ class TestRedact(unittest.TestCase):
             "AKIA" + "1234567890ABCDEF": "[REDACTED_AWS_KEY]",
             "xoxb-" + "1234567890-abcdefghij": "[REDACTED_SLACK_TOKEN]",
             "AIza" + "D" * 35: "[REDACTED_GOOGLE_KEY]",
+            "GEMINI_API_KEY=" + "custom_val_" + "123": "GEMINI_API_KEY=[REDACTED_GOOGLE_KEY]",
+            'GEMINI_API_KEY="' + "abc 123" + '"': 'GEMINI_API_KEY="[REDACTED_GOOGLE_KEY]"',
+            "--env GEMINI_API_KEY='" + "xyz" + "'": "--env GEMINI_API_KEY='[REDACTED_GOOGLE_KEY]'",
+            "GEMINI_API_KEY: " + "abc": "GEMINI_API_KEY: [REDACTED_GOOGLE_KEY]",
+            '"GEMINI_API_KEY": "' + "json_val_987" + '"': '"GEMINI_API_KEY": "[REDACTED_GOOGLE_KEY]"',
         }
         for secret, marker in cases.items():
             out = redact.redact("leak: %s here" % secret)
             self.assertIn(marker, out, secret)
             self.assertNotIn(secret, out, secret)
+        self.assertNotIn("abc 123", redact.redact('GEMINI_API_KEY="' + "abc 123" + '"'))
+        self.assertNotIn("123", redact.redact('GEMINI_API_KEY="' + "abc 123" + '"'))
+        self.assertNotIn("xyz", redact.redact("--env GEMINI_API_KEY='" + "xyz" + "'"))
+        self.assertNotIn("abc", redact.redact("GEMINI_API_KEY: " + "abc"))
+        self.assertNotIn("json_val_987", redact.redact('{"GEMINI_API_KEY": "' + "json_val_987" + '"}'))
 
     def test_masks_bearer_keeping_prefix(self):
         out = redact.redact("Authorization: Bearer " + "z" * 24)
@@ -689,6 +699,7 @@ class TestOnlyThePemRuleMayCrossAQuote(unittest.TestCase):
         fake_aws_key("1234567890ABCDEF"),
         "xoxb-1234567890-abcdefghij",
         "AIza" + "E" * 35,
+        "GEMINI_API_KEY=" + "E" * 24,
         "xapp-1-" + "F" * 20,
         "https://hooks.slack.com/services/" + "T" * 9 + "/" + "B" * 9 + "/" + "Z" * 24,
         "glpat-" + "G" * 24,

@@ -14,6 +14,7 @@ import scripts.probes.agy as agy_probes
 import scripts.probes.claude as claude_probes
 import scripts.probes.codex as codex_probes
 import scripts.probes.common as probes_common
+import scripts.probes.gemini as gemini_probes
 import scripts.probes.kimi as kimi_probes
 
 
@@ -219,7 +220,9 @@ class TestEntryModelBoundProbe(unittest.TestCase):
         self.assertIn("scout", detail)          # the absent ones are listed
 
     def test_a_host_without_shells_is_unknown(self):
-        state, by, _detail = claude_probes.probe_entry_model_bound("gemini")
+        # generic has no shells (#3494 restored gemini with TOML policy shells
+        # after its #1621 retirement).
+        state, by, _detail = claude_probes.probe_entry_model_bound("generic")
         self.assertEqual((hosts.UNKNOWN, None), (state, by))
 
     def test_the_probe_compares_against_resolve_model_not_the_profile_file(self):
@@ -291,7 +294,12 @@ class TestEntryModelBoundProbe(unittest.TestCase):
                                  agy_probes.AGY_READ_GUARD,
                                  agy_probes.AGY_WRITE_GUARD,
                                  agy_probes.AGY_MODEL_BOUND,
-                                 agy_probes.AGY_USAGE_ENVELOPE}))
+                                 agy_probes.AGY_USAGE_ENVELOPE,
+                                 gemini_probes.GEMINI_SHELL_SURFACE,
+                                 gemini_probes.GEMINI_READ_GUARD,
+                                 gemini_probes.GEMINI_WRITE_GUARD,
+                                 gemini_probes.GEMINI_MODEL_BOUND,
+                                 gemini_probes.GEMINI_USAGE_ENVELOPE}))
         with tempfile.TemporaryDirectory() as reg, \
              tempfile.TemporaryDirectory() as target, \
              tempfile.TemporaryDirectory() as home:
@@ -439,7 +447,9 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
         self.assertIn("version-1", detail)
 
     def test_a_host_that_claims_no_write_guard_is_unknown(self):
-        for name in ("gemini", "generic"):
+        # generic claims no write guard (#3494 gave gemini its own probe,
+        # restoring the row #1621 had retired).
+        for name in ("generic",):
             with self.subTest(host=name):
                 state, by, _detail = claude_probes.probe_write_guard_armed(name)
                 self.assertEqual(hosts.UNKNOWN, state)
@@ -704,7 +714,9 @@ class TestUsageSourceProbe(unittest.TestCase):
             self.assertIn(d, detail)
 
     def test_a_host_that_claims_no_usage_ledger_is_unknown(self):
-        for name in ("gemini", "generic", "codex"):
+        # generic and codex claim no usage ledger (#3494 gave gemini its own
+        # usage probe, restoring the row #1621 had retired).
+        for name in ("generic", "codex"):
             with self.subTest(host=name):
                 state, by, _detail = claude_probes.probe_usage_source(name, ".")
                 self.assertEqual(hosts.UNKNOWN, state)
@@ -1116,12 +1128,12 @@ class TestReadGuardArmedProbe(unittest.TestCase):
             self.assertIn(claude_dir, detail)
 
     def test_a_host_that_claims_no_read_confinement_is_unknown(self):
-        # codex and kimi both left this tuple in their own family PRs (#1619,
-        # #1620): each now claims READ_SCOPE_CONFINED and ships its own probe
-        # (codex-read-scope, kimi-read-guard-armed), so the claude-shaped probe
-        # must never run for either. What is left is every family with no
-        # read-confinement claim at all.
-        for name in ("gemini", "generic"):
+        # codex, kimi, agy and gemini all left this tuple in their own family
+        # PRs (#1619, #1620, #3493, #3494 -- restoring gemini after its #1621
+        # retirement): each now claims READ_SCOPE_CONFINED and ships its own
+        # probe, so the claude-shaped probe must never run for any of them.
+        # What is left is every family with no read-confinement claim at all.
+        for name in ("generic",):
             with self.subTest(host=name):
                 state, by, _detail = claude_probes.probe_read_guard_armed(name)
                 self.assertEqual(hosts.UNKNOWN, state)

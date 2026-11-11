@@ -18,6 +18,7 @@ from unittest import mock
 
 import scripts.agy_guard_hook as ag
 import scripts.codex_read_tools as codex_read_tools
+import scripts.gemini_guard_hook as gg
 import scripts.guard_rules as guard_rules
 import scripts.kimi_guard_hook as kg
 import scripts.read_guard_hook as rg
@@ -25,7 +26,7 @@ import scripts.write_guard_hook as wg
 
 SCRIPTS = os.path.dirname(os.path.realpath(guard_rules.__file__))
 HOOKS = ("read_guard_hook.py", "write_guard_hook.py", "kimi_guard_hook.py",
-         "agy_guard_hook.py")
+         "agy_guard_hook.py", "gemini_guard_hook.py")
 
 
 def _source(name):
@@ -122,7 +123,7 @@ class TestTheSharedRules(unittest.TestCase):
         # SIBLING module, so a patch on `scripts.guard_rules` is the one the hook
         # calls through. A second, path-loaded copy here would make every such
         # patch vacuous.
-        for hook in (rg, wg, kg, ag):
+        for hook in (rg, wg, kg, ag, gg):
             with self.subTest(hook=hook.__name__):
                 self.assertIs(hook.guard_rules, guard_rules)
                 self.assertEqual(hook._GUARD_RULES_FAULT, "")
@@ -134,7 +135,8 @@ class TestTheSharedRules(unittest.TestCase):
         for hook, names in ((rg, ("ENV_ENTRY_ID", "MARKER_PREFIX", "SCOPE_KEYS")),
                             (wg, ("ENV_ENTRY_ID", "UNBOUND_ENTRY", "ALLOWLIST_VERSION")),
                             (kg, ("ENV_ENTRY_ID", "UNBOUND_ENTRY", "SCOPE_KEYS")),
-                            (ag, ("ENV_ENTRY_ID", "UNBOUND_ENTRY", "SCOPE_KEYS"))):
+                            (ag, ("ENV_ENTRY_ID", "UNBOUND_ENTRY", "SCOPE_KEYS")),
+                            (gg, ("ENV_ENTRY_ID", "UNBOUND_ENTRY", "SCOPE_KEYS"))):
             for name in names:
                 with self.subTest(hook=hook.__name__, name=name):
                     self.assertIs(getattr(hook, name), getattr(guard_rules, name))
@@ -148,6 +150,7 @@ class TestAnUnloadedRuleSetDeniesInProcess(unittest.TestCase):
         (wg, lambda: wg.adjudicate({"tool_name": "Write", "tool_input": {}}, "/nowhere")),
         (kg, lambda: kg.adjudicate({"tool_name": "Read", "tool_input": {}}, "read", "/nowhere")),
         (ag, lambda: ag.adjudicate({"toolCall": {"name": "read_file", "arguments": {}}}, "/nowhere", "/nowhere")),
+        (gg, lambda: gg.adjudicate({"tool_name": "read_file", "tool_input": {}}, "/nowhere", "/nowhere")),
     )
 
     def test_every_adjudication_denies_and_names_the_fault(self):
@@ -191,6 +194,8 @@ class _HookLaunch(unittest.TestCase):
             ("agy_guard_hook.py", [self.scope, self.allowlist],
              {"hook": "PreToolUse", "lastUserInput": "<!-- panopticon-entry: e1 -->",
               "toolCall": {"name": "read_file", "arguments": {"Path": self.outside}}}),
+            ("gemini_guard_hook.py", [self.scope, self.allowlist],
+             {"tool_name": "read_file", "tool_input": {"file_path": self.outside}}),
         )
 
     def _launch(self, python, hook_path, argv, payload, cwd, extra_env=None):
@@ -262,7 +267,7 @@ class TestABrokenRuleSetDeniesAtLaunch(_HookLaunch):
             with self.subTest(hook=hook):
                 proc = self._launch(python, os.path.join(SCRIPTS, hook), argv, granted,
                                     cwd=self.root)
-                if hook == "agy_guard_hook.py":
+                if hook in ("agy_guard_hook.py", "gemini_guard_hook.py"):
                     self.assertEqual(proc.returncode, 0, proc.stderr)
                     self.assertEqual({"decision": "allow"}, json.loads(proc.stdout))
                 else:

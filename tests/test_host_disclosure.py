@@ -167,10 +167,10 @@ class TestTheWordingRule(unittest.TestCase):
     def test_the_generic_fallback_notice_says_what_and_why_it_is_still_here(self):
         # D4 said "deprecate now, remove when the families land", and the line
         # said generic was "removed once every remaining host clears the
-        # retirement bar". That became misleading at #1621: the bar is met on
-        # this base (claude, codex and kimi are the hosts it examines and
-        # all three clear it) and generic is still the only path a Gemini
-        # operator has. Owner ruling D1 (spec 8.3 option 1) settled it: keep
+        # retirement bar". That became misleading at #1621 (before #3494
+        # restored gemini as a 5/5 first-class host): the bar was met on this
+        # base while generic was still the only path for any host without a
+        # family runner. Owner ruling D1 (spec 8.3 option 1) settled it: keep
         # generic as the permanent ack-gated fallback and retire F5. The line
         # must name the flag, say it is unenforced and ack-gated, say what it
         # is still FOR, and never call it deprecated or promise a removal the
@@ -178,7 +178,7 @@ class TestTheWordingRule(unittest.TestCase):
         text = host_disclosure.GENERIC_FALLBACK_NOTICE
         self.assertNotIn("deprecat", text.lower())
         for token in ("--host generic", "unenforced", "ack-gated",
-                      "family runner", "gemini", "not going away"):
+                      "family runner", "not going away"):
             self.assertIn(token, text, token)
         self.assertNotIn("removed once every remaining host", text)
         self.assertLess(len(text), 400, "one line, not a paragraph")
@@ -188,7 +188,7 @@ class TestALineNeverContradictsItself(unittest.TestCase):
     """#1597: the masked state and the raw row's `by`/`detail` came from two
     different places, and a stale or foreign artifact makes them disagree:
 
-        artifact_write_guard is unknown on host 'gemini' -- probe
+        artifact_write_guard is unknown on host 'generic' -- probe
         write-guard-armed: round-trip denied
 
     "unknown" and "round-trip denied" cannot both be true of the same
@@ -204,10 +204,11 @@ class TestALineNeverContradictsItself(unittest.TestCase):
                     "line for " + capability)
 
     def test_a_proven_row_a_host_does_not_claim_drops_its_probe_and_detail(self):
-        # gemini claims nothing, so `posture()` masks this PROVEN row to
-        # UNKNOWN (a stale artifact must not GRANT anything).
-        self.assertNotIn(hosts.ARTIFACT_WRITE_GUARD, hosts.spec("gemini").claims)
-        line = self._masked_line("gemini", hosts.ARTIFACT_WRITE_GUARD,
+        # generic claims nothing (#3494 restored gemini as a 5/5 host after its
+        # #1621 retirement), so `posture()` masks this PROVEN row to UNKNOWN
+        # (a stale artifact must not GRANT anything).
+        self.assertNotIn(hosts.ARTIFACT_WRITE_GUARD, hosts.spec("generic").claims)
+        line = self._masked_line("generic", hosts.ARTIFACT_WRITE_GUARD,
                                  hosts.PROVEN, "write-guard-armed",
                                  "round-trip denied")
         self.assertIn(hosts.UNKNOWN, line)
@@ -220,8 +221,8 @@ class TestALineNeverContradictsItself(unittest.TestCase):
         self.assertIn(repr(hosts.PROVEN), line)
         # Still a disclosure, not a mood: capability, host and remedy survive.
         self.assertIn(hosts.ARTIFACT_WRITE_GUARD, line)
-        self.assertIn("gemini", line)
-        self.assertIn(host_disclosure.remedy(hosts.ARTIFACT_WRITE_GUARD, "gemini"),
+        self.assertIn("generic", line)
+        self.assertIn(host_disclosure.remedy(hosts.ARTIFACT_WRITE_GUARD, "generic"),
                       line)
 
     def test_an_unparseable_state_drops_them_too(self):
@@ -267,7 +268,7 @@ class TestALineNeverContradictsItself(unittest.TestCase):
         # R1 Major. `state` ABSENT is not silence when the row carries a
         # measurement: `posture()` still answers `unknown` for it, so the
         # sentence printed was #1597's reported one, verbatim.
-        env = {"schema_version": 1, "host": "gemini", "probed_at": "T",
+        env = {"schema_version": 1, "host": "generic", "probed_at": "T",
                "capabilities": {hosts.ARTIFACT_WRITE_GUARD: {
                    "by": "write-guard-armed", "detail": "round-trip denied"}}}
         line = only([x for x in host_disclosure.lines(env)
@@ -295,7 +296,7 @@ class TestALineNeverContradictsItself(unittest.TestCase):
         # `meta.host_capabilities` verbatim, and both renderers rebuild an
         # envelope from it and call `lines()`. A fresh probe always writes
         # `state`; a stale, foreign or truncated artifact need not.
-        env = {"schema_version": 1, "host": "gemini", "probed_at": "T",
+        env = {"schema_version": 1, "host": "generic", "probed_at": "T",
                "capabilities": {hosts.ARTIFACT_WRITE_GUARD: {
                    "by": "write-guard-armed", "detail": "round-trip denied"}}}
         report = report_mod.build_report(report_mod.ReportInputs(

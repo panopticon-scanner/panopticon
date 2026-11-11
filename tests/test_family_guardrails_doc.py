@@ -122,20 +122,16 @@ class TestFamilyGuardrailsDoc(unittest.TestCase):
                 for probe_id in sorted(set(hosts.spec(host).probes.values())):
                     self.assertIn("`%s`" % probe_id, section, probe_id)
 
-    def test_section_2_records_gemini_as_retired_not_as_a_family_still_owed_a_pr(self):
-        # #1625 took gemini out of the selectable set; its findings bullet used
-        # to tell a Gemini agent what to build. While the row is registered but
-        # not selectable, section 2 has to say exactly that and point its
-        # operators at the fallback. If a future Gemini PR flips the row back,
-        # this guard fails until section 2 is rewritten to match -- which is
-        # the same PR that re-pins the retirement bar, and which is therefore
-        # the one authorised to move this assertion (section 3).
+    def test_section_2_records_gemini_as_a_landed_first_class_host(self):
+        # #1625 took gemini out of the selectable set (#1621), and #3494
+        # restored it as a 5/5 first-class host with its own runner and probes.
+        # Section 2 must record **Gemini (#3494)** as a landed 5/5 host and cite
+        # the #1621 retirement as history.
         section = _section(_read_doc(), 2)
         self.assertIn("gemini", hosts.known_hosts())
-        self.assertFalse(hosts.spec("gemini").driver_selectable)
-        self.assertIn("**Gemini**", section)
-        self.assertIn("not** driver-selectable", section)
-        self.assertIn("--host generic", section)
+        self.assertTrue(hosts.spec("gemini").driver_selectable)
+        self.assertIn("**Gemini (#3494", section)
+        self.assertIn("#1621", section)
 
     def test_section_6_addresses_the_next_host_not_one_that_has_landed(self):
         # "`<host>` is `codex` or `kimi`" survived both of their PRs, so an

@@ -34,16 +34,15 @@ NO_EVIDENCE = ("NO EVIDENCE -- nobody looked. Nothing this "
 #
 # Spec D4 first shipped this notice and said it would end "once every
 # remaining host clears the retirement bar". That stopped being true at
-# #1621: with gemini out of the selectable set, claude is the only host the
-# bar examines and it clears it -- so the bar is MET while generic is still
-# the only path a Gemini operator has, and the only path for any host whose
-# family has not shipped a runner. D1 settles it for good: this row is not
-# going away, so the notice says what it is FOR rather than naming a trigger
-# that already fired and changed nothing.
+# #1621 (before #3494 restored gemini as a 5/5 first-class host): with gemini
+# out of the selectable set at the time, the bar was MET while generic was
+# still the only path for any host whose family had not shipped a runner. D1
+# settles it for good: this row is not going away, so the notice says what it
+# is FOR rather than naming a trigger that already fired and changed nothing.
 GENERIC_FALLBACK_NOTICE = (
     "driver: NOTICE: --host generic claims no capability, so every dispatch "
     "under it is unenforced and ack-gated. It is the permanent path for any "
-    "host with no family runner, gemini among them (#1621); it is not going "
+    "host with no family runner; it is not going "
     "away (owner ruling D1, spec 8.3 option 1).")
 
 # The remedy is the whole point of the line. A capability nobody can act on

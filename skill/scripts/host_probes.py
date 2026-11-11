@@ -38,6 +38,7 @@ import scripts.probes.claude as claude_probes
 import scripts.probes.claude_write_canary as claude_write_canary
 import scripts.probes.codex as codex_probes
 import scripts.probes.common as probes_common
+import scripts.probes.gemini as gemini_probes
 import scripts.probes.kimi as kimi_probes
 
 
@@ -56,7 +57,10 @@ PROBE_IDS = (probes_common.REGISTERED_SHELL_TOOLS,
             kimi_probes.KIMI_USAGE_WIRE,
             agy_probes.AGY_SHELL_SURFACE, agy_probes.AGY_READ_GUARD,
             agy_probes.AGY_WRITE_GUARD, agy_probes.AGY_MODEL_BOUND,
-            agy_probes.AGY_USAGE_ENVELOPE)
+            agy_probes.AGY_USAGE_ENVELOPE,
+            gemini_probes.GEMINI_SHELL_SURFACE, gemini_probes.GEMINI_READ_GUARD,
+            gemini_probes.GEMINI_WRITE_GUARD, gemini_probes.GEMINI_MODEL_BOUND,
+            gemini_probes.GEMINI_USAGE_ENVELOPE)
 
 # Which capability each shipped probe MEASURES. The retirement bar reads this
 # so a row cannot satisfy spec 8.1 by mapping a security capability to a
@@ -80,7 +84,12 @@ PROBE_CAPABILITY = {probes_common.REGISTERED_SHELL_TOOLS: hosts.TOOL_POLICY_ENFO
                     agy_probes.AGY_READ_GUARD: hosts.READ_SCOPE_CONFINED,
                     agy_probes.AGY_WRITE_GUARD: hosts.ARTIFACT_WRITE_GUARD,
                     agy_probes.AGY_MODEL_BOUND: hosts.MODEL_BINDING,
-                    agy_probes.AGY_USAGE_ENVELOPE: hosts.USAGE_LEDGER}
+                    agy_probes.AGY_USAGE_ENVELOPE: hosts.USAGE_LEDGER,
+                    gemini_probes.GEMINI_SHELL_SURFACE: hosts.TOOL_POLICY_ENFORCED,
+                    gemini_probes.GEMINI_READ_GUARD: hosts.READ_SCOPE_CONFINED,
+                    gemini_probes.GEMINI_WRITE_GUARD: hosts.ARTIFACT_WRITE_GUARD,
+                    gemini_probes.GEMINI_MODEL_BOUND: hosts.MODEL_BINDING,
+                    gemini_probes.GEMINI_USAGE_ENVELOPE: hosts.USAGE_LEDGER}
 
 
 _ProbeResult = tuple[str, str | None, str]
@@ -180,6 +189,20 @@ _PROBE_RUNNERS: dict[str, Callable[[_ProbeContext], _ProbeResult]] = {
     agy_probes.AGY_USAGE_ENVELOPE:
         lambda context: agy_probes.probe_agy_usage_envelope(
             context.host, settings_path=context.settings_path),
+    gemini_probes.GEMINI_SHELL_SURFACE:
+        lambda context: gemini_probes.probe_gemini_shell_surface(
+            context.host, context.registration_dir),
+    gemini_probes.GEMINI_READ_GUARD:
+        lambda context: gemini_probes.probe_gemini_read_guard(context.host),
+    gemini_probes.GEMINI_WRITE_GUARD:
+        lambda context: gemini_probes.probe_gemini_write_guard(context.host),
+    gemini_probes.GEMINI_MODEL_BOUND:
+        lambda context: gemini_probes.probe_gemini_model_bound(
+            context.host, context.registration_dir,
+            settings_path=context.settings_path),
+    gemini_probes.GEMINI_USAGE_ENVELOPE:
+        lambda context: gemini_probes.probe_gemini_usage_envelope(
+            context.host, settings_path=context.settings_path),
 }
 
 
@@ -218,7 +241,7 @@ def _no_probe_reason(row, capability, host):
     """Why a capability got no probe -- split on whether it is even CLAIMED.
 
     Minor 1: one sentence used to cover both, and it said the host "claims
-    this capability's proof is not shipped yet". For gemini -- which claims
+    this capability's proof is not shipped yet". For generic -- which claims
     NOTHING -- that was simply false, in the one artifact whose entire purpose
     is separating claims from proof. A host that does not claim a capability
     is not waiting on a probe; there is nothing to prove.

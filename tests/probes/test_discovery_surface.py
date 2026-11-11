@@ -57,6 +57,18 @@ _TABLE = (
     ("codex", (".codex/agents/*", ".agents/agents/*"), hosts.OPEN, None, "CX-6"),
     ("codex", (".codex/config.toml", ".rules"), hosts.CONTROLLED,
      "codex:ignore-user-config-and-rules", "CX-4/CX-5"),
+    ("gemini", ("GEMINI.md", "**/GEMINI.md"), hosts.OPEN, None, "GM-1"),
+    ("gemini", ("AGENTS.md", "**/AGENTS.md"), hosts.CONTROLLED,
+     "gemini:isolated-home-default-context-filename", "GM-2"),
+    ("gemini", (".gemini/settings.json",), hosts.CONTROLLED,
+     "gemini:cwd-outside-target", "GM-3"),
+    ("gemini", (".gemini/agents/*", ".agents/agents/*"), hosts.CONTROLLED,
+     "gemini:cwd-outside-target", "GM-4"),
+    ("gemini", (".gemini/skills/*/SKILL.md", ".agents/skills/*/SKILL.md",
+                ".gemini/commands/**"), hosts.CONTROLLED,
+     "gemini:cwd-outside-target", "GM-5"),
+    ("gemini", (".gemini/policies/*",), hosts.CONTROLLED,
+     "gemini:admin-policy-tier", "GM-6"),
     ("kimi", (".mcp.json", ".kimi-code/mcp.json"), hosts.CONTROLLED,
      "kimi:workspace-trust-gate", "KM-4"),
     ("kimi", ("AGENTS.md", "agents.md", "**/AGENTS.md", "**/.kimi-code/AGENTS.md"),
@@ -117,10 +129,11 @@ class TestTheRegistryTable(unittest.TestCase):
                 self.assertFalse(hosts.supported_surface_pattern(pattern))
 
     def test_a_host_without_a_surface_has_an_empty_tuple(self):
-        # generic and gemini discover nothing FOR US: no runner of ours
-        # launches them at the target, so the probe is a no-op rather than a
-        # row with an empty table to interpret.
-        for name in ("generic", "gemini"):
+        # generic discovers nothing FOR US (#3494 gave gemini its own GM-1..GM-6
+        # discovery surface, restoring the row #1621 had retired): no runner of
+        # ours launches generic at the target, so the probe is a no-op rather
+        # than a row with an empty table to interpret.
+        for name in ("generic",):
             self.assertEqual((), hosts.spec(name).discovery_surface)
 
 
@@ -141,7 +154,9 @@ class TestTheControlsAreLive(unittest.TestCase):
                "codex:ignore-user-config-and-rules", "kimi:workspace-trust-gate",
                "kimi:skills-dir", "claude:unenforced-tools-allow-list",
                "claude:unenforced-tool-deny-list", "agy:cwd-outside-target",
-               "agy:disable-slash-commands"}
+               "agy:disable-slash-commands", "gemini:cwd-outside-target",
+               "gemini:isolated-home-default-context-filename",
+               "gemini:admin-policy-tier"}
 
     def test_the_claude_tool_controls_are_on_every_unenforced_launch(self):
         import scripts.runners.claude as claude_runner
@@ -256,6 +271,38 @@ class TestTheControlsAreLive(unittest.TestCase):
             finally:
                 runner.teardown()
 
+    def test_the_gemini_controls_are_on_the_gemini_launch(self):
+        import scripts.runners.gemini as gemini_runner
+        from scripts import dispatch
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as home, \
+                tempfile.TemporaryDirectory() as reg:
+            root = os.path.realpath(target)
+            dispatch.emit_host_agents("gemini", reg)
+            runner = gemini_runner.Runner("gemini")
+            with mock.patch.dict(os.environ, {"HOME": home}):
+                runner.prepare(os.path.join(root, "run"), review_root=root, registration_dir=reg)
+            try:
+                argv = runner.command({"id": "e", "agent": "panopticon-domain-panel",
+                                       "enforced": True, "prompt": "review"},
+                                      "gemini-3.6-flash")
+                self.assertTrue(probes_common.control_is_on(
+                    "gemini:admin-policy-tier", argv), argv)
+                self.assertTrue(os.path.isdir(os.path.join(runner.workspace_dir, ".git")))
+                self.assertFalse(
+                    os.path.realpath(runner.workspace_dir).startswith(root + os.sep),
+                    "gemini:cwd-outside-target: %s is under %s" % (runner.workspace_dir, root))
+                settings_path = os.path.join(runner.gemini_home, ".gemini", "settings.json")
+                with open(settings_path, encoding="utf-8") as fh:
+                    settings = json.load(fh)
+                self.assertNotIn("fileName", settings.get("context", {}))
+                self.assertIs(False, settings.get("context", {}).get(
+                    "loadMemoryFromIncludeDirectories"))
+                self.assertIs(False, settings.get("security", {}).get(
+                    "folderTrust", {}).get("enabled"))
+            finally:
+                runner.teardown("complete")
+
 
 _HAZARDS = frozenset(chr(o) for o in
                      list(range(0x00, 0x20)) + [0x7f]
@@ -289,6 +336,8 @@ _PLANTED = (
      ".rules", "codex:ignore-user-config-and-rules"),
     ("kimi", "AGENTS.md", "KM-3",
      ".kimi-code/mcp.json", "kimi:workspace-trust-gate"),
+    ("gemini", "src/GEMINI.md", "GM-1",
+     ".gemini/settings.json", "gemini:cwd-outside-target"),
 )
 
 

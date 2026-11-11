@@ -223,10 +223,12 @@ class TestEverySeamThatCanStartAHostCliIsCovered(unittest.TestCase):
         found = sorted(relative for _, relative, _ in _seams())
         self.assertEqual(found, sorted(["codex_host.py", "setup_preflight.py",
                                         os.path.join("probes", "agy.py"),
+                                        os.path.join("probes", "gemini.py"),
                                         os.path.join("probes", "kimi.py"),
                                         os.path.join("runners", "agy.py"),
                                         os.path.join("runners", "claude.py"),
                                         os.path.join("runners", "codex.py"),
+                                        os.path.join("runners", "gemini.py"),
                                         os.path.join("runners", "kimi.py")]))
 
     def test_every_seam_reads_a_module_level_launcher(self):

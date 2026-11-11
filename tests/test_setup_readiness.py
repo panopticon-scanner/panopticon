@@ -197,13 +197,15 @@ class TestReadinessCannotAssertWhatItDidNotCheck(unittest.TestCase):
         self.assertTrue(ok)
         self.assertNotIn("codex_exec", detail)
 
-    def test_gemini_is_not_told_to_run_a_command_that_raises(self):
-        ok, detail = self._check("gemini")["enforced-shells"]
-        self.assertNotIn("--emit-host-agents gemini", detail)
+    def test_generic_is_not_told_to_run_a_command_that_raises(self):
+        # #3494 restored gemini with TOML policy shells (after its #1621
+        # retirement); generic remains the shell-less row.
+        ok, detail = self._check("generic")["enforced-shells"]
+        self.assertNotIn("--emit-host-agents generic", detail)
         self.assertIsNot(ok, True)
 
     def test_a_host_that_registers_no_shells_says_so_honestly(self):
-        for name in ("gemini", "generic"):
+        for name in ("generic",):
             with self.subTest(host=name):
                 ok, detail = self._check(name)["enforced-shells"]
                 self.assertIsNone(ok, "not-applicable is None, not False")
@@ -365,16 +367,12 @@ class TestReadinessNeverReadsAnUnreadableEnvelopeAsProof(unittest.TestCase):
                               if c[0].startswith("host-capability:")])
 
 class TestShellLessHostsGetTheWholeDisclosure(unittest.TestCase):
-    """`gemini` and `generic` are the two registry rows that claim NOTHING and
-    register no shells, so five-of-five-unproven is their entire story -- and
-    the `enforced-shells` early return handed them one line that named the
+    """`generic` is the registry row that claims NOTHING and registers no
+    shells (#3494 restored `gemini` as a 5/5 host with TOML policy shells after
+    its #1621 retirement), so five-of-five-unproven is its entire story -- and
+    the `enforced-shells` early return handed it one line that named the
     host and no capability, no probe and no remedy. 5.1 names no exemption for
     shell-less hosts.
-
-    Both rows are still exercised after gemini left the selectable set (#1621,
-    2026-09-13): `_check_host_shells` reads the REGISTRY, which still knows
-    gemini, and the disclosure it owes a shell-less host is a fact about the
-    row rather than about whether `--host` will accept the name.
     """
 
     def _rows(self, host):
@@ -384,14 +382,14 @@ class TestShellLessHostsGetTheWholeDisclosure(unittest.TestCase):
                         setup_preflight._check_host_shells(host, _runner_ok, "."))
 
     def test_the_enforced_shells_row_it_already_had_survives(self):
-        for host in ("gemini", "generic"):
+        for host in ("generic",):
             with self.subTest(host=host):
                 row = self._rows(host)["enforced-shells"]
                 self.assertIsNone(row[1])
                 self.assertIn("registers no", row[2])
 
     def test_it_gets_a_headline_and_a_row_per_capability_with_the_remedy(self):
-        for host in ("gemini", "generic"):
+        for host in ("generic",):
             with self.subTest(host=host):
                 rows = self._rows(host)
                 head = rows["host-capabilities"]

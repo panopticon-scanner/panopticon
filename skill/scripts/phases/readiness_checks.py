@@ -197,7 +197,9 @@ def _cli_rows(host):
                      "remedy": (hosts.unselectable_host_message(name, "loop")
                                 if selected and not selectable else
                                 SESSION_REMEDY % {"binary": binary, "host": name}
-                                if selected and binary and not found else None)})
+                                if selected and binary and not found else
+                                setup_preflight.host_auth_hazard(name)
+                                if selected else None)})
     rows.sort(key=lambda row: (not row["selected"], row["host"]))
     return rows
 

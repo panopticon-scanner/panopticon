@@ -767,6 +767,21 @@ class TestEmitHostAgents(unittest.TestCase):
                 setup = fh.read()
             self.assertNotIn("model:", setup)
 
+    def test_gemini_policy_shells_emit_model_metadata_per_role(self):
+        with tempfile.TemporaryDirectory() as d:
+            dispatch.emit_host_agents("gemini", d)
+            expected = {
+                "panopticon-scout.toml": "gemini-3.6-flash",
+                "panopticon-advisor.toml": "gemini-3.6-flash",
+                "panopticon-domain-panel.toml": "gemini-4-carbon",
+                "panopticon-domain-advisor.toml": "gemini-4-carbon",
+                "panopticon-setup-scan.toml": "inherit",
+            }
+            for fname, model in expected.items():
+                with open(os.path.join(d, fname), encoding="utf-8") as fh:
+                    text = fh.read()
+                self.assertIn("# panopticon-model: %s\n" % model, text, fname)
+
     def test_codex_toml_agents_are_read_only(self):
         with tempfile.TemporaryDirectory() as d:
             written = dispatch.emit_host_agents("codex", d)
@@ -1262,7 +1277,7 @@ class TestDispatchReadsTheHostRegistry(unittest.TestCase):
     """#1344 F2: dispatch stops carrying its own idea of which hosts exist."""
 
     def test_registration_dir_comes_from_the_registry(self):
-        for name in ("claude", "kimi", "codex", "agy"):
+        for name in ("claude", "kimi", "codex", "agy", "gemini"):
             with self.subTest(host=name):
                 self.assertEqual(hosts.spec(name).registration_dir,
                                  dispatch._registration_dir(name, None))
@@ -1279,13 +1294,17 @@ class TestDispatchReadsTheHostRegistry(unittest.TestCase):
             dispatch.registered_agent_filename("codex", "scout.md")
             .endswith(".toml"))
         self.assertTrue(
+            dispatch.registered_agent_filename("gemini", "scout.md")
+            .endswith(".toml"))
+        self.assertTrue(
             dispatch.registered_agent_filename("claude", "scout.md")
             .endswith(".md"))
 
     def test_emit_refuses_a_host_that_registers_no_shells(self):
-        # gemini and generic have no shell format; the refusal must name them
-        # rather than raising something opaque.
-        for name in ("gemini", "generic"):
+        # generic has no shell format (#3494 gave gemini its TOML policy shells,
+        # restoring the row #1621 had retired); the refusal must name it rather
+        # than raising something opaque.
+        for name in ("generic",):
             with self.subTest(host=name):
                 with self.assertRaises(ValueError) as caught:
                     dispatch.emit_host_agents(name, "/tmp/never-written")
@@ -1296,6 +1315,7 @@ class TestDispatchReadsTheHostRegistry(unittest.TestCase):
                               ({"KIMI_SESSION_ID": "x"}, "kimi"),
                               ({"CLAUDECODE": "1"}, "claude"),
                               ({"ANTIGRAVITY_CLI": "1"}, "agy"),
+                              ({"GEMINI_CLI": "1"}, "gemini"),
                               ({}, "generic")):
             with self.subTest(env=env):
                 with mock.patch.dict(os.environ, env, clear=True):

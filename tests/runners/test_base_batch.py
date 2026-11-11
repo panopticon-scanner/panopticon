@@ -151,7 +151,7 @@ class TestIterBatch(unittest.TestCase):
                        and f not in ("__init__.py", "base.py", "batch.py",
                                      "children.py", "outage.py", "resume.py",
                                      "schema.py", "settlement.py", "kimi_home.py",
-                                     "agy_home.py"))
+                                     "agy_home.py", "gemini_home.py"))
         self.assertIn("claude", names)                  # the directory really was read
         for name in names:
             mod = importlib.import_module("scripts.runners.%s" % name)
@@ -515,7 +515,7 @@ class TestTheOneConcurrencyCeiling(unittest.TestCase):
                        and f not in ("__init__.py", "base.py", "batch.py",
                                      "children.py", "outage.py", "resume.py",
                                      "schema.py", "settlement.py", "kimi_home.py",
-                                     "agy_home.py"))
+                                     "agy_home.py", "gemini_home.py"))
         for name in names:
             mod = importlib.import_module("scripts.runners.%s" % name)
             runner = getattr(mod, "Runner", None) or getattr(mod, "SessionRunner")

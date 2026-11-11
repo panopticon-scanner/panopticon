@@ -27,7 +27,8 @@ class TestFallbackMatchesProfiles(unittest.TestCase):
     """
 
     _TABLES = {"kimi": mr._KIMI_FALLBACK, "claude": mr._CLAUDE_FALLBACK,
-               "codex": mr._CODEX_FALLBACK, "agy": mr._AGY_FALLBACK}
+               "codex": mr._CODEX_FALLBACK, "agy": mr._AGY_FALLBACK,
+               "gemini": mr._GEMINI_FALLBACK}
 
     def test_every_live_role_is_in_every_fallback_table(self):
         for host, table in self._TABLES.items():
@@ -61,8 +62,19 @@ class TestModelResolver(unittest.TestCase):
                          {"model": "gpt-6-sol", "model_reasoning_effort": "medium"})
         self.assertEqual(mr._hardcoded_fallback("agy", "banana"),
                          {"model": "gemini-4-argon-high", "tier": "pro"})
+        self.assertEqual(mr._hardcoded_fallback("gemini", "banana"),
+                         {"model": "gemini-3.6-flash"})
         # an unknown HOST still resolves to None (inherit session), never kimi
         self.assertIsNone(mr._hardcoded_fallback("bogus", "banana")["model"])
+
+    def test_gemini_defaults(self):
+        for role in ("scout", "advisor"):
+            cfg = mr.resolve_model("gemini", role)
+            self.assertEqual(cfg["model"], "gemini-3.6-flash")
+        for role in ("domain_panel", "domain_advisor"):
+            cfg = mr.resolve_model("gemini", role)
+            self.assertEqual(cfg["model"], "gemini-4-carbon")
+        self.assertIsNone(mr.resolve_model("gemini", "setup_scan")["model"])
 
     def test_agy_defaults(self):
         for role in ("scout", "advisor"):
@@ -286,9 +298,10 @@ class TestUnknownHostsStayUnknown(unittest.TestCase):
                          mr._hardcoded_fallback("no-such-host", "scout"))
 
     def test_a_known_host_with_no_fallback_table_also_resolves_to_no_model(self):
-        # gemini and generic are in the registry and have no table. Falling
+        # generic is in the registry and has no table (#3494 gave gemini its
+        # own fallback table, restoring the row #1621 had retired). Falling
         # through to another host's table would be the bug this guards.
-        for name in ("gemini", "generic"):
+        for name in ("generic",):
             with self.subTest(host=name):
                 self.assertEqual({"model": None},
                                  mr._hardcoded_fallback(name, "scout"))

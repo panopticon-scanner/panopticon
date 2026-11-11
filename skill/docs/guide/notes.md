@@ -20,12 +20,13 @@ shells runs, with `meta.coverage.tool_policy_mode` reading `advisory` rather tha
 is exactly why the unenforced claude launch now carries its own tool deny-list (#1753, see Host
 capabilities).
 
-Claude proves that boundary with a `PreToolUse` write hook; Kimi ships its own equivalent
-(`kimi_guard_hook.py`, registered through the generated per-run `config.toml`). Those are the only
-two rows whose separate `self_write_delivery` fact is true. Codex has no self-write transport and
-proves the boundary by omission; its roles use `delivery: return_json`. Generic and Gemini do too.
-The delivery choice itself proves nothing. `dispatch.emit_host_agents` can only build a scoped agent
-shell for `claude`/`kimi`/`codex`. The
+Claude proves that boundary with a `PreToolUse` write hook; Kimi, Agy and Gemini ship their own
+equivalents (`kimi_guard_hook.py`, `agy_guard_hook.py`, and `gemini_guard_hook.py`, registered
+through their generated per-run homes). Those are the four rows whose separate `self_write_delivery`
+fact is true. Codex has no self-write transport and proves the boundary by omission; its roles use
+`delivery: return_json`. Generic does too. The delivery choice itself proves nothing.
+`dispatch.emit_host_agents` builds a scoped agent shell or policy for
+`claude`/`kimi`/`codex`/`agy`/`gemini`. The
 refusal that follows is keyed on **measured posture, not on the host's name** (#1344 F3a):
 `driver run` refuses to dispatch the write-capable roles (`domain-panel`, `domain-advisor`) unless
 this invocation's probe found `artifact_write_guard` `proven`. On `--host generic` it never is — a
