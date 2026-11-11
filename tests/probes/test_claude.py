@@ -373,13 +373,24 @@ class TestWriteGuardArmedProbe(unittest.TestCase):
         for label, outcomes in cases.items():
             with self.subTest(case=label), tempfile.TemporaryDirectory() as session_root:
                 self._session_root(session_root)
-                with mock.patch.object(claude_probes.children.ChildProcesses, "launch",
+                with mock.patch.object(claude_probes.claude_read_guard.children.ChildProcesses,
+                                       "launch",
                                        side_effect=outcomes):
                     state, by, detail = claude_probes.probe_write_guard_armed(
                         "claude", session_root=session_root)
             self.assertEqual((hosts.REFUTED, claude_probes.WRITE_GUARD_ARMED),
                              (state, by))
             self.assertIn("subprocess", detail)
+
+    def test_write_uses_the_shared_installed_hook_boundary(self):
+        """#3534 CR: read-side boundary pins must govern Write too."""
+        with mock.patch.object(claude_probes.claude_read_guard,
+                               "_measure_installed_hook",
+                               return_value=(False, "shared boundary sentinel")) as measure:
+            ok, detail = claude_probes._round_trip_denies_an_outside_write()
+        self.assertFalse(ok)
+        self.assertEqual("shared boundary sentinel", detail)
+        measure.assert_called_once()
 
     def test_it_does_not_require_the_guard_to_be_armed_right_now(self):
         # THE regression this probe exists to avoid. A prototype that gated on
@@ -1197,10 +1208,12 @@ class TestReadGuardArmedProbe(unittest.TestCase):
         self.assertIn("plus the probe's scope file", detail)
 
     def test_private_launch_boundary_rejects_untrusted_operands_before_launch(self):
+        from scripts import read_guard_hook
         from scripts.probes import claude_read_guard
         with tempfile.TemporaryDirectory() as d:
             scope = os.path.join(d, "scope.json")
-            process = claude_read_guard._ReadHookProcess(scope, d)
+            process = claude_read_guard._InstalledHookProcess(
+                read_guard_hook, scope, d)
             expected = process.expected
             candidates = (expected[:1] + expected[2:],
                           ("/bin/echo", *expected[1:]),
@@ -1212,6 +1225,32 @@ class TestReadGuardArmedProbe(unittest.TestCase):
                             ValueError, "trusted isolated tuple"):
                         process.launch(candidate, env={})
                 launch.assert_not_called()
+
+    def test_trusted_argv_plus_artifact_is_checked_before_launch(self):
+        """#3534 CR M11: settings equality cannot replace argv validation."""
+        from scripts import read_guard_hook
+        from scripts.probes import claude_read_guard
+        with tempfile.TemporaryDirectory() as d:
+            settings = os.path.join(d, "settings.json")
+            scope = os.path.join(d, "scope.json")
+            expected = read_guard_hook._hook_entry(scope)
+            with open(settings, "w", encoding="utf-8") as fh:
+                json.dump({"hooks": {"PreToolUse": [expected]}}, fh)
+            trusted = read_guard_hook._trusted_hook_argv()
+            wrong = trusted[:1] + trusted[2:]
+            allowed = subprocess.CompletedProcess([], 0, "", "")
+            with mock.patch.object(read_guard_hook, "_hook_entry",
+                                   return_value=expected), \
+                 mock.patch.object(read_guard_hook, "_trusted_hook_argv",
+                                   return_value=wrong), \
+                 mock.patch.object(claude_read_guard.children.ChildProcesses,
+                                   "launch", return_value=allowed) as launch:
+                ok, detail = claude_read_guard._measure_installed_hook(
+                    settings, scope, os.path.join(d, "s.jsonl"),
+                    os.path.join(d, "a.py"), os.path.join(d, "b.py"), d)
+            launch.assert_not_called()
+        self.assertFalse(ok)
+        self.assertIn("trusted argv plus", detail)
 
     def test_resolution_must_preserve_emitted_interpreter(self):
         from scripts import executable

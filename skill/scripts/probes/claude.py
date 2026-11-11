@@ -13,14 +13,10 @@ The probe-id -> function registry stays in `host_probes.py`.
 """
 import json
 import os
-import shlex
-import subprocess
-import sys
 import tempfile
 
 from scripts import (collect_usage, dispatch, executable, hosts, model_resolver,
                     read_guard_hook, write_guard_hook)
-import scripts.runners.children as children
 
 from . import common, claude_read_guard, claude_write_canary
 
@@ -194,75 +190,6 @@ def _headless_subject_ok(settings_path):
     return True, ""
 
 
-class _WriteHookProcess(children.ChildProcesses):
-    """Private proof that executes only the installed write-hook command."""
-
-    def __init__(self, allowlist, sandbox):
-        self.review_root = sandbox
-        self.expected = (os.path.realpath(sys.executable), "-I",
-                         os.path.abspath(write_guard_hook.__file__),
-                         os.path.abspath(allowlist))
-
-    def launch(self, argv, **kwargs):
-        if tuple(argv) != self.expected:
-            raise ValueError("write-guard command differs from the trusted isolated tuple")
-        resolved = executable.resolve(argv[0], self.review_root,
-                                      kwargs["env"].get("PATH", ""))
-        if resolved.path != argv[0]:
-            raise ValueError("write-guard executable resolution changed emitted identity")
-        return super().launch(argv, **kwargs)
-
-
-def _measure_installed_write_hook(settings, allowlist, parent, inside, outside, sandbox):
-    """Run the exact installed command once allowed and once denied."""
-    with open(settings, encoding="utf-8") as fh:
-        configured = json.load(fh)
-    if not isinstance(configured, dict) or not isinstance(configured.get("hooks"), dict):
-        return False, "installed write-guard settings are malformed"
-    entries = configured["hooks"].get("PreToolUse", [])
-    expected = write_guard_hook._hook_entry(allowlist)
-    if entries != [expected]:
-        return False, "installed write-guard command differs from the driver's emitted command"
-    argv = shlex.split(expected["hooks"][0]["command"])
-    if argv != list(write_guard_hook._trusted_hook_argv()) + [os.path.abspath(allowlist)]:
-        return False, "installed write-guard command is not the trusted argv plus the allowlist"
-    process = _WriteHookProcess(allowlist, sandbox)
-    payload = {"tool_name": "Write", "agent_id": "agent-x",
-               "transcript_path": parent, "cwd": sandbox,
-               "tool_input": {"file_path": inside}}
-    for label, path, denied in (("allowed", inside, False),
-                                ("denied", outside, True)):
-        payload["tool_input"] = {"file_path": path}
-        env = os.environ.copy()
-        env.pop(write_guard_hook.ENV_ENTRY_ID, None)
-        env.pop("PANOPTICON_WRITE_ALLOWLIST", None)
-        try:
-            result = process.launch(argv, input=json.dumps(payload), text=True,
-                                    capture_output=True, cwd=sandbox, env=env,
-                                    timeout=5)
-        except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
-            return False, "write-guard subprocess %s failed: %s" % (label, exc)
-        if result.returncode != 0 or result.stderr:
-            return False, "write-guard subprocess %s failed (exit %s): %s" % (
-                label, result.returncode, result.stderr[:500])
-        if not denied:
-            if result.stdout.strip():
-                return False, "write-guard subprocess allowed request emitted an unexpected decision"
-            continue
-        try:
-            response = json.loads(result.stdout)
-            hook = response["hookSpecificOutput"]
-            valid = (hook["hookEventName"] == "PreToolUse"
-                     and hook["permissionDecision"] == "deny"
-                     and isinstance(hook["permissionDecisionReason"], str)
-                     and bool(hook["permissionDecisionReason"]))
-        except (ValueError, KeyError, TypeError):
-            valid = False
-        if not valid:
-            return False, "write-guard subprocess denied request had a malformed or wrong decision"
-    return True, "installed write-guard subprocess allow/deny ok"
-
-
 def _round_trip_denies_an_outside_write():
     """Install the write hook in a sandbox and execute its trusted command.
 
@@ -287,8 +214,11 @@ def _round_trip_denies_an_outside_write():
                                                  allowlist_path=allowlist)
             if not state["armed"]:
                 return False, "install() did not register the PreToolUse hook"
-            ok, detail = _measure_installed_write_hook(
-                settings, allowlist, parent, declared, outside, sandbox)
+            ok, detail = claude_read_guard._measure_installed_hook(
+                settings, allowlist, parent, declared, outside, sandbox,
+                hook=write_guard_hook, tool_name="Write",
+                artifact_name="the allowlist",
+                legacy_env="PANOPTICON_WRITE_ALLOWLIST")
             if not ok:
                 return False, detail
             write_guard_hook.uninstall(settings_path=settings,
