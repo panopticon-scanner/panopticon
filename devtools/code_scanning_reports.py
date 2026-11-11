@@ -26,7 +26,7 @@ import jsonschema
 from scripts import groups_schema
 
 # Where run_tools mounts the reviewed tree inside the tools image
-# (`run_tools.TARGET_MOUNT`, pinned equal by test): scanners write locations
+# (`scanner_config.TARGET_MOUNT`, pinned equal by test): scanners write locations
 # as `/src/...` or `file:///src/...`, and the operator's globs are
 # repo-relative, so that prefix comes off before matching.
 SCAN_ROOT_MOUNT = "/src"

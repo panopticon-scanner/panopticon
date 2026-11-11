@@ -32,6 +32,7 @@ import tempfile
 import unittest
 
 import scripts.run_tools as rt
+import scripts.scanner_config as sc
 import scripts.venv_scope as vs
 
 
@@ -545,7 +546,7 @@ class TestNoTargetDirectoryNameReachesAnExclusionKnob(unittest.TestCase):
         flag = [a for a in cmd if a.startswith("--exclude=")]
         self.assertEqual(len(flag), 1, cmd)
         entries = flag[0][len("--exclude="):].split(",")
-        for owned in rt.BANDIT_SCANNER_EXCLUDES:
+        for owned in sc.BANDIT_SCANNER_EXCLUDES:
             self.assertIn(owned, entries)
     def test_a_bare_marker_row_is_refused_by_the_argv_builder_too(self):
         # Belt: the skip list and the argv are built in different functions, so

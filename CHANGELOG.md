@@ -11,6 +11,11 @@
   reason inline; `security-fork.yml`'s `pull_request_target` is ignored inline as the #1900 design;
   two intentional word splits carry scoped shellcheck disables. Both tools are pinned in the `dev`
   extra and group, where Dependabot updates them.
+- **Armor audit retires #1762 split-parity scaffolding and devtools-only lock hardening (#3536; #3173).**
+  Scanner config, tool capture, manifest and virtualenv tests now read their owning modules directly;
+  `run_tools` no longer re-exports the split modules' constants or ledgers, and the obsolete move
+  goldens/AST meta-tests are gone. The self-scan issue filer keeps its exclusive ledger lock and
+  atomic replacement while using ordinary trusted-repository lock and staging files.
 - **Armor audit removes duplicate config normalization and measures installed guard hooks (#3531, #3534; #3173 clusters A/E).**
   `load_resolution` now keeps the fail-closed read and five outer-shape checks while trusting the
   driver-bounded artifact instead of maintaining a second field-by-field schema. Headless Claude
