@@ -370,7 +370,8 @@ def test_setup_readiness_scalar_match_only_reports_gap_not_ok(tmp_path):
 
     checks = setup_preflight.setup_readiness(str(tmp_path), host="claude",
                                         runner=ok_runner,
-                                        environ={"NVD_API_KEY": "k"})
+                                        environ={"NVD_API_KEY": "k"},
+                                        envelope={})
     by = {c[0]: c for c in checks}
     ok, detail = by["groups-manifest"][1], by["groups-manifest"][2]
     assert ok is False                # not silently "OK -- 1 group(s)"

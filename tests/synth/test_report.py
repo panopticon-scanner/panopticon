@@ -44,16 +44,17 @@ class TestReport(unittest.TestCase):
         errors, _ = report_mod.validate_report(report)
         self.assertEqual(errors, [])
 
-    def test_validate_flags_bad_id_and_missing_cvss(self):
+    def test_validate_keeps_the_security_policy_checks_only(self):
         bad = _make_finding(id="lowercase", panel="security", severity="CRITICAL")
         report = report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="src", fail_on=None, timestamp=DEFAULT_TIMESTAMP),
             findings=findings_mod.FindingSet(findings=[bad]),
             plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]),
         ))
-        errors, _ = report_mod.validate_report(report)
-        self.assertTrue(any("id" in e for e in errors))
-        self.assertTrue(any("cvss" in e or "exploit" in e for e in errors))
+        errors, warnings = report_mod.validate_report(report)
+        self.assertFalse(any("id" in e for e in errors))
+        self.assertTrue(any("exploit" in e for e in errors))
+        self.assertTrue(any("cvss" in warning for warning in warnings))
 
     def test_validate_flags_duplicate_ids(self):
         report = report_mod.build_report(report_mod.ReportInputs(

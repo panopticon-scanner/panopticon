@@ -1,7 +1,7 @@
 """Every `.panopticon`-resident writer refuses a symlink planted at its path.
 
-#1735 (SEC-D1C) was `run_manifest._rewrite`; this is the rest of the sweep it
-prompted. `.panopticon/` lives INSIDE the reviewed tree, so under redteam every
+#1735 (SEC-D1C) prompted the original sweep. `.panopticon/` lives INSIDE the reviewed tree,
+# so under redteam every
 artifact path -- and every `<artifact>.tmp` staged beside it -- is a name the
 target can pre-commit as a symlink to a file the invoking user can write. A
 plain `open(path, "w")` follows it and replaces that file's contents.
@@ -19,11 +19,10 @@ must fail before a deadline and a hard link must never truncate its other name.
 Those two leaves cannot be committed by git, but can arrive in an unpacked tree
 or from another process already operating in it.
 
-The sites with a uuid-named staging file (`synth/render`, `discovery`) have no
-plantable leaf -- the name is unguessable and `os.replace` never dereferences
--- so what routing them through the helper buys is the INTERMEDIATE-component
-confinement (`.panopticon/runs -> /elsewhere`). Their tests pin the uuid to
-reach the same assertion.
+The eight single-artifact atomic writers moved to `safe_write.atomic_write` in
+#3535. Its plant/hard-link/FIFO/cleanup behavior lives once in
+`test_safe_write.py`, beside the eight routing and inferred-root cases. This
+file retains the other writer families.
 
 Deliberately NOT here, because their paths are not `.panopticon`-resident: the
 guard hooks' own `_atomic_write_json` (already O_EXCL|O_NOFOLLOW, and standalone
@@ -46,15 +45,12 @@ from unittest import mock
 
 import scripts.citations as citations
 import scripts.collect_usage as collect_usage
-import scripts.discovery as discovery
 import scripts.evidence as evidence
 import scripts.group_runner as group_runner
 import scripts.html_report as html_report
-import scripts.run_manifest as run_manifest
 import scripts.safe_write as safe_write
 import scripts.phases.runio as runio
 import scripts.phases.validate as validate_phase
-import scripts.tool_capture as tool_capture
 import scripts.tools_manifest as tools_manifest
 import scripts.synthesize as synthesize
 import scripts.synth.render as render_mod
@@ -193,24 +189,6 @@ class TestToolsManifest(_Planted):
         self.assert_victim_intact()
 
 
-class TestToolCaptures(_Planted):
-    """`tool_capture._atomic_write` is the choke point every SARIF capture goes
-    through. It stages with `mkstemp` -- unplantable leaf, which is why it was
-    not in the first sweep -- but `dir=os.path.dirname(out_path)`, so a planted
-    `.panopticon/tools` directory link carries EVERY capture out of the tree,
-    and `os.replace` then lands each one there. The confinement is the guard
-    that sees a symlinked intermediate component; O_NOFOLLOW never would."""
-
-    def test_a_planted_tools_directory_link_refuses_the_capture(self):
-        outside = os.path.join(self.root, "outside")
-        os.makedirs(outside)
-        os.symlink(outside, os.path.join(self.pano, "tools"))
-        with self.assertRaises(ValueError):
-            tool_capture._atomic_write(
-                os.path.join(self.pano, "tools", "semgrep.sarif"), b"{}")
-        self.assertEqual(os.listdir(outside), [])      # nothing escaped
-
-
 class TestUsageJson(_Planted):
     def test_collect_usage_refuses_a_planted_link(self):
         run_dir = os.path.join(self.pano, "runs", "tag")
@@ -243,32 +221,6 @@ class TestFixedNameJsonStaging(_Planted):
         staging = self.fifo("state.json.tmp")
         with _deadline(), self.assertRaises(ValueError):
             self._write()
-        self.assertTrue(stat.S_ISFIFO(os.lstat(staging).st_mode))
-
-
-class TestRunManifestStaging(_Planted):
-    """#2093: the manifest rewrite has its own fixed staging name."""
-
-    def setUp(self):
-        super().setUp()
-        run_manifest.write_manifest(self.root, {"run_id": "r1", "host": "claude"})
-
-    def _rewrite(self):
-        manifest = run_manifest.load_manifest(self.root)
-        return run_manifest.record_posture_disclosure(self.root, manifest, "digest")
-
-    def test_a_hard_link_at_the_staging_name_is_refused(self):
-        staging = self.hard_link("run-manifest.json.tmp")
-        with self.assertRaises(ValueError):
-            self._rewrite()
-        self.assert_victim_intact()
-        self.assertTrue(os.path.samefile(staging, self.victim))
-
-    @unittest.skipUnless(_FIFO_DEADLINE, "requires POSIX FIFO deadlines")
-    def test_a_fifo_at_the_staging_name_is_refused_before_the_deadline(self):
-        staging = self.fifo("run-manifest.json.tmp")
-        with _deadline(), self.assertRaises(ValueError):
-            self._rewrite()
         self.assertTrue(stat.S_ISFIFO(os.lstat(staging).st_mode))
 
 
@@ -374,38 +326,13 @@ class TestX0xArtifact(_Planted):
 
 
 class TestTreeBaseline(_Planted):
-    """`validate.capture_tree_baseline` stages `tree-baseline.txt.tmp` beside the
-    baseline -- the same fixed-name staging shape as `TestX0xArtifact` above, and
-    new in #1809 (the pre-fix writer opened the final name directly)."""
+    """The exists-means-done caller preserves final-name plant evidence."""
 
     def _capture(self):
         # No git here: the runner is the probe's only contact with the target,
         # and a clean `status --porcelain -z` is the empty string.
         runner = mock.Mock(return_value=mock.Mock(returncode=0, stdout="", stderr=""))
         return validate_phase.capture_tree_baseline(self.root, runner=runner)
-
-    def test_the_staging_write_refuses_a_planted_link(self):
-        staging = self.plant("tree-baseline.txt.tmp")
-        with self.assertRaises(ValueError):
-            self._capture()
-        self.assert_victim_intact()
-        # Round 1 ruling (x0x): a refusal must not leave the planted link sitting
-        # in the run folder for the next invocation to trip over.
-        self.assertFalse(os.path.lexists(staging))
-
-    def test_the_staging_write_refuses_a_hard_link(self):
-        staging = self.hard_link("tree-baseline.txt.tmp")
-        with self.assertRaises(ValueError):
-            self._capture()
-        self.assert_victim_intact()
-        self.assertTrue(os.path.samefile(staging, self.victim))
-
-    @unittest.skipUnless(_FIFO_DEADLINE, "requires POSIX FIFO deadlines")
-    def test_the_staging_write_refuses_a_fifo_before_the_deadline(self):
-        staging = self.fifo("tree-baseline.txt.tmp")
-        with _deadline(), self.assertRaises(ValueError):
-            self._capture()
-        self.assertTrue(stat.S_ISFIFO(os.lstat(staging).st_mode))
 
     def test_the_final_name_refuses_a_planted_dangling_link(self):
         # A plant pointing OUTSIDE the tree at a path that does not exist: the
@@ -465,17 +392,6 @@ class TestReportStaging(_Planted):
             self.plant(".part-%s.tmp" % _PinnedUuid.HEX)
             with self.assertRaises(ValueError):
                 render_mod.write_report(report, out, max_bytes=10)
-        self.assert_victim_intact()
-
-
-class TestDiffHunks(_Planted):
-    def test_diff_hunks_staging_refuses_a_planted_link(self):
-        out = os.path.join(self.pano, "diff-hunks.json")
-        with mock.patch.object(discovery.uuid, "uuid4",
-                               return_value=types.SimpleNamespace(hex="1" * 32)):
-            self.plant(".diff-hunks-%s.tmp" % ("1" * 32))
-            with self.assertRaises(ValueError):
-                discovery.write_diff_hunks(self.root, None, "none", out, 0, False)
         self.assert_victim_intact()
 
 

@@ -89,6 +89,12 @@ class TestResetGlobs(unittest.TestCase):
             self.assertFalse(hasattr(driver, name), name)
             self.assertTrue(hasattr(run_artifacts, name), name)
 
+    def test_run_tag_grammar_has_one_owner(self):
+        # #3535: run_manifest.run_tag sanitizes and bounds every component.
+        # Cleanup consumes that value; a second regex here can only drift from
+        # the producer's grammar and make recovery reject a tag it produced.
+        self.assertFalse(hasattr(run_artifacts, "re"))
+
     def test_reset_clears_stale_delta_artifacts(self):
         # #5.0-07: --reset must clear stale delta artifacts so they can't
         # silently re-scope (diff-hunks) or content-check (out-file-hashes) a run.

@@ -39,7 +39,6 @@ exists precisely because X0X could only ever argue `new_code` while OCRDb's
 vocabulary already had the other three.
 """
 from typing import Any
-import os
 import sys
 
 from scripts import ocrdb, report_records, safe_write
@@ -320,9 +319,5 @@ def write_report(report, out_path):
     import json
     stem = out_path[:-len(".json")] if out_path.endswith(".json") else out_path
     path = stem + "-strain.json"
-    tmp = path + ".tmp"
-    with safe_write.open_staging_nofollow(tmp) as fh:
-        json.dump(report, fh, indent=2)
-        fh.write("\n")
-    os.replace(tmp, path)
+    safe_write.atomic_write(path, json.dumps(report, indent=2) + "\n")
     return path

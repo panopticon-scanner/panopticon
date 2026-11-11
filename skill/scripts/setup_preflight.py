@@ -14,8 +14,6 @@ import subprocess
 from scripts import discovery
 from scripts import repo_config  # #1681: the one place the config names live
 from scripts import hosts  # #1344 F2: host readiness reads the registry
-from scripts import codex_host  # #1344: the suite's launch guard type
-from scripts import host_probes  # #1344 F3b: readiness probes live posture
 import scripts.probes.common as probes_common  # #1627: the shared probe helpers
 from scripts import host_disclosure  # #1344 F3b: one voice for the posture
 import scripts.runners.gemini_home as gemini_home
@@ -102,7 +100,7 @@ def _check_nvd_key(repo, env):
             "NVD_API_KEY or add it to .env (never commit it)")
 
 
-def _check_host_shells(host, runner, repo_root=None, envelope=None):
+def _check_host_shells(host, runner, repo_root, envelope):
     """Report what this host's registration actually looks like, and -- for a
     host with a real shell format -- what its capability posture proves right
     now.
@@ -118,50 +116,12 @@ def _check_host_shells(host, runner, repo_root=None, envelope=None):
     `ok=None` means NOT APPLICABLE, not "failed". setup's renderer already
     distinguishes the three.
 
-    `repo_root` still defaults to None, and a caller that omits it now gets a
-    SHORT-CIRCUIT with a remedy rather than a probe (#1598/#1599). It used to
-    be handed straight to `host_probes.run_probes` as `review_root`, where
-    `probe_shadow_shells` joins it with a relative path and raises -- which the
-    try/except below turned into
-
-        ('host-capabilities', None, "posture could not be probed: expected
-         str, bytes or os.PathLike object, not NoneType")
-
-    Honest, non-gating and useless: an internal type error is not a remedy,
-    and 5.1's rule is "name the capability, the host, the probe, and the
-    remedy". Worse, the probes it reached read `~/.claude/agents`,
-    `~/.codex/agents` and `.claude/settings.local.json`, so unit tests that
-    omitted the argument were measuring the developer's home directory rather
-    than the code (#1599; `tests/test_setup_security.py` has an AST guard over
-    every call site).
-
-    The parameter is kept optional rather than made required because the
-    checks ABOVE this point -- the registry row, the codex CLI, the registered
-    shells -- need no tree at all, and a caller with no repo to offer is still
-    entitled to those.
-
-    `envelope` (#1603 fix round 1) is the posture the driver ESTABLISHED for
-    this invocation, handed in by a caller that has it. Both production
-    callers do: `driver setup` and `driver loop --setup` run
-    `driver._establish_host_posture` before either setup phase, and it writes
-    the artifact `loop_batch.envelope_for` reads back. When it is given, no
-    probe runs here at all.
-
-    That is a correction, not an optimisation. Probing again measured a
-    DIFFERENT posture from the one the same invocation had just disclosed:
-    this call site names no `settings_path`, so a headless `driver loop
-    --setup` printed "all measured and PROVEN" on stderr and then wrote five
-    `unknown` remedies into the completion message and the setup report, for
-    capabilities it had itself proved a moment earlier -- the
-    self-contradicting disclosure §5.1 forbids and #1597 already refuses on
-    surface 1. It also re-ran `probe_shadow_shells` and
-    `probe_discovery_surface` over the whole reviewed tree, undoing the "run
-    ONCE per invocation" guarantee `run_probes` documents and reopening the
-    TOCTOU window between two scans of one tree.
-
-    `None` keeps the probing behaviour for a caller that has no posture to
-    offer -- the tests, and any future caller that runs outside a driver
-    invocation.
+    `repo_root` and `envelope` are required routing inputs (#3535). The driver
+    establishes one posture for that tree before setup begins; readiness only
+    renders that envelope. Re-probing here used weaker arguments, contradicted
+    the disclosure already emitted for the invocation, and scanned the same
+    untrusted tree twice. Keeping the tree explicit makes call sites name what
+    the envelope describes even though this renderer never touches it.
     """
     from scripts import dispatch
     resolved_host = host or dispatch._detect_host()
@@ -219,36 +179,6 @@ def _check_host_shells(host, runner, repo_root=None, envelope=None):
     # that established it (#1603 fix round 1) -- the only way surface 4 can
     # agree with surfaces 1-3 about the same invocation.
     fresh = envelope
-    if fresh is None:
-        # No posture on offer, so measure one -- but only with a tree to
-        # measure it against (#1598). Named explicitly, BEFORE the probes, so
-        # the row carries something a caller can act on and no probe reaches
-        # the filesystem on a call that was never going to produce a posture.
-        # `ok=None`, because a caller's omission is not a fault of the host's.
-        if repo_root is None:
-            checks.append(("host-capabilities", None,
-                           "posture not probed: _check_host_shells was called "
-                           "with neither an established posture nor repo_root, "
-                           "the tree whose posture is being measured. Pass one "
-                           "(as setup_readiness's callers do); there is no "
-                           "default, because guessing one would measure a tree "
-                           "nobody asked about"))
-            return checks
-        try:
-            fresh = host_probes.run_probes(resolved_host, repo_root)
-        except codex_host.LaunchRefused:
-            # N-M3: the suite's no-live-launch guard, re-raised exactly as
-            # probes.codex._codex_measure re-raises it. This path DOES reach a
-            # live Codex probe (it is why tests/test_setup_readiness.py has to
-            # isolate them), and swallowing the refusal into a benign row
-            # would put back the hole I-5 exists to close: a test that reached
-            # a real `codex` and failed would read as "posture could not be
-            # probed" and stay green.
-            raise
-        except Exception as exc:        # noqa: BLE001 -- readiness never crashes
-            checks.append(("host-capabilities", None,
-                           "posture could not be probed: %s" % exc))
-            return checks
     # THREE outcomes, read off host_disclosure's own contract rather than
     # re-derived from `lines()`. `lines()` returns [] for two different
     # reasons -- everything is proven, and the envelope is unreadable -- and
@@ -333,7 +263,7 @@ def _check_groups_manifest(repo):
             "group(s) with no match patterns: %s" % ", ".join(map(str, empty)))
 
 
-def setup_readiness(repo, host=None, runner=None, environ=None, envelope=None):
+def setup_readiness(repo, host=None, runner=None, environ=None, *, envelope):
     """#485(3): the preflight. Returns a list of (name, ok, detail) checks.
 
     ok is True/False/None -- None means informational (not gating READY).
@@ -343,9 +273,9 @@ def setup_readiness(repo, host=None, runner=None, environ=None, envelope=None):
     the signature, because one of the probes below starts a host CLI and the
     suite's guard has to be able to refuse it.
 
-    `envelope` is this invocation's established capability posture, passed
-    straight through to `_check_host_shells`, which explains why (#1603 fix
-    round 1). Both production callers have one; `None` measures, as before.
+    `envelope` is this invocation's established capability posture. It is
+    required and keyword-only: readiness never creates a second posture with
+    a different probe context (#3535).
     """
     runner = DEFAULT_RUNNER if runner is None else runner
     env = environ if environ is not None else os.environ
@@ -353,7 +283,7 @@ def setup_readiness(repo, host=None, runner=None, environ=None, envelope=None):
     checks.extend(_check_docker(runner))
     checks.append(_check_git_root(repo))
     checks.append(_check_nvd_key(repo, env))
-    checks.extend(_check_host_shells(host, runner, repo, envelope=envelope))
+    checks.extend(_check_host_shells(host, runner, repo, envelope))
     checks.append(_check_groups_manifest(repo))
     return checks
 

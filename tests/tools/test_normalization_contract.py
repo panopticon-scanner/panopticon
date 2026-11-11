@@ -31,6 +31,7 @@ from tests._test_helpers import only, skip_or_fail
 import scripts.phases.evidence_scope as evidence_scope
 import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
+import scripts.synth.validate_schema as validate_schema_mod
 import scripts.tools.base as base
 import scripts.tools.sarif_utils as sarif_utils
 from scripts.tools import ADAPTERS
@@ -584,7 +585,7 @@ class TestFindingsSurviveIntoAReport(unittest.TestCase):
             ),
             findings=findings_mod.FindingSet(findings=findings),
         ))
-        errors, _warnings = report_mod.validate_report(report)
+        errors = validate_schema_mod.schema_errors(report)
         self.assertEqual(
             errors, [],
             "findings from real tool output failed the report schema: %s"
@@ -604,7 +605,7 @@ class TestFindingsSurviveIntoAReport(unittest.TestCase):
             ),
             findings=findings_mod.FindingSet(findings=findings),
         ))
-        errors, _warnings = report_mod.validate_report(report)
+        errors = validate_schema_mod.schema_errors(report)
         self.assertTrue(errors, "validator accepted a malformed finding")
 
 

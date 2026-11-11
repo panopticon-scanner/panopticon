@@ -10,7 +10,6 @@ from unittest import mock
 from tests._test_helpers import only
 from scripts import host_disclosure, hosts
 import scripts.driver as driver
-import scripts.host_probes as host_probes
 import scripts.html_report as html_report
 import scripts.probes.codex as codex_probes
 import scripts.setup_preflight as setup_preflight
@@ -422,9 +421,11 @@ class TestTheHeadline(unittest.TestCase):
 
 
 def _runner_ok(cmd, **kwargs):
-    """A `runner` that never touches a real process. The capability probing
-    does not take `runner` at all (run_probes is mocked); this only stands in
-    for the codex-cli `_probe` call, which the claude path never reaches."""
+    """A `runner` that never touches a real process.
+
+    Readiness consumes the supplied capability envelope; this only stands in
+    for the codex-cli `_probe` call, which the claude path never reaches.
+    """
     return subprocess.CompletedProcess(cmd, 0, "", "")
 
 
@@ -446,8 +447,8 @@ class TestReadinessConsumesTheSelectionLinesMakes(unittest.TestCase):
                 for capability in hosts.CAPABILITIES]
 
     def _readiness(self, envelope_):
-        with mock.patch.object(host_probes, "run_probes", return_value=envelope_):
-            return setup_preflight._check_host_shells("claude", _runner_ok, ".")
+        return setup_preflight._check_host_shells(
+            "claude", _runner_ok, ".", envelope_)
 
     def test_moving_the_selection_moves_readiness_with_it(self):
         # The drift the old comment admitted, made concrete: a selection that
@@ -510,10 +511,9 @@ class TestReadinessConsumesTheSelectionLinesMakes(unittest.TestCase):
         # the invisible drift #1600 exists to end. `strict=True` makes it loud.
         with mock.patch.object(host_disclosure, "lines",
                                return_value=["one line only"]):
-            with mock.patch.object(host_probes, "run_probes",
-                                   return_value=MIXED):
-                with self.assertRaises(ValueError):
-                    setup_preflight._check_host_shells("claude", _runner_ok, ".")
+            with self.assertRaises(ValueError):
+                setup_preflight._check_host_shells(
+                    "claude", _runner_ok, ".", MIXED)
 
     def test_readiness_no_longer_writes_the_posture_chain_itself(self):
         # The structural half (memory: a text guard must read the AST). The
@@ -553,8 +553,8 @@ class TestTheFourSurfacesSayTheSameThing(unittest.TestCase):
                 timestamp="2026-08-03T00:00:00Z",
                 host_capabilities=envelope),
             findings=findings_mod.FindingSet(findings=[])))
-        with mock.patch.object(host_probes, "run_probes", return_value=envelope):
-            rows = setup_preflight._check_host_shells("claude", _runner_ok, ".")
+        rows = setup_preflight._check_host_shells(
+            "claude", _runner_ok, ".", envelope)
         return {"stderr": err.getvalue(),
                 "body": render_mod.render_summary(report),
                 # The body surface again, in the artifact an operator actually

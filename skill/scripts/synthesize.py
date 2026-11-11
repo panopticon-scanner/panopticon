@@ -154,9 +154,9 @@ def build_parser():
 def validate_artifacts(report_path, x0x_path=None, x0x_failure_path=None):
     """Validate the artifacts AS WRITTEN against their published schemas.
 
-    #1639 P15 ruling 2. `validate_report` checks the in-memory document; this
-    checks what is on disk, which is not the same object and is the only thing
-    a consumer will ever read. Two differences make it its own step:
+    #1639 P15 ruling 2 / #3535. `validate_report` now checks in-memory policy
+    only; this is the sole published-schema pass. It checks what is on disk,
+    which is the only document a consumer will ever read. Two details matter:
 
     * the report may be SPLIT. `report.json` then carries one chunk of
       `findings` and a `meta.parts` list, so validating the main file alone
@@ -464,17 +464,15 @@ def main(argv=None):
     # produced since (advisor reasoning merged into finding.evidence) and
     # anything a future producer derives, at any depth in the report.
     render_mod.redact_report_secrets(report)
-    errors, warnings = report_mod.validate_report(report)
-    report_mod.attach_schema_status(report, errors)
+    policy_errors, warnings = report_mod.validate_report(report)
+    # The written-artifact pass below owns the final count. Seed the valid
+    # value so the common path is published once; an invalid artifact is
+    # republished with its diagnosed count after that pass (#3535).
+    report_mod.attach_schema_status(report, [])
     for w in warnings:
         print("WARN: %s" % w, file=sys.stderr)
-    for e in errors:
-        # Labelled: this pass and the artifact pass below validate different
-        # documents (attach_schema_status and the split writer both add keys
-        # between them), so an unlabelled line left a reader guessing which
-        # document a message was about -- and, on the common case, seeing the
-        # same defect twice as if it were two.
-        print("SCHEMA pre-write: %s" % e, file=sys.stderr)
+    for e in policy_errors:
+        print("REPORT policy: %s" % e, file=sys.stderr)
 
     try:
         paths = render_mod.write_report(report, out)
@@ -513,6 +511,19 @@ def main(argv=None):
         print("synthesize: warning: discarded %d locus-free catalog-gap "
               "finding(s) from X0X; failure log: %s"
               % (discarded, failure_path), file=sys.stderr)
+    failure_validation_path = failure_path if failure_log is not None else None
+    artifact_errors = validate_artifacts(
+        paths[0], x0x_path, failure_validation_path)
+    report_mod.attach_schema_status(report, artifact_errors)
+    if artifact_errors:
+        # The artifact pass is the sole source of meta.schema_errors. The
+        # field itself is schema-valid, so publishing that diagnosed count
+        # cannot create a new schema defect; the original error remains the
+        # terminal result even if a raced/unreadable file becomes writable.
+        try:
+            paths = render_mod.write_report(report, out)
+        except (safe_write.ArtifactPathError, ValueError) as exc:
+            return _artifact_write_failed(exc)
     html_out = args.html_out
     if html_out is None and args.out:
         html_out = render_mod._derive_html_path(paths[0])
@@ -530,22 +541,9 @@ def main(argv=None):
     # question and are answered below; this is the artifact itself failing to
     # be what it claims to be, and it is reported AFTER the summary so the
     # grade/gate text a run always prints is unchanged by it.
-    failure_validation_path = failure_path if failure_log is not None else None
-    artifact_errors = validate_artifacts(
-        paths[0], x0x_path, failure_validation_path)
     if artifact_errors:
-        # An artifact error that the pre-write pass already printed is counted
-        # but not reprinted: the two passes agree about it, which is not two
-        # problems. The status line below is the source of truth for the count.
-        already, repeats = set(errors), 0
         for e in artifact_errors:
-            if (e.split(": ", 1)[-1] if ": " in e else e) in already:
-                repeats += 1
-                continue
             print("SCHEMA artifact: %s" % e, file=sys.stderr)
-        if repeats:
-            print("SCHEMA artifact: %d error(s) already listed above as pre-write"
-                  % repeats, file=sys.stderr)
         checked_paths = [paths[0], x0x_path]
         if failure_validation_path is not None:
             checked_paths.append(failure_validation_path)

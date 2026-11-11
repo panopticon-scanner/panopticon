@@ -1,6 +1,7 @@
 """Phase 7 -- validate: the working-tree baseline, delta and worktree finalization."""
 import glob as _glob
 import hashlib
+import io
 import json
 import os
 import stat
@@ -48,61 +49,18 @@ _BASELINE_EMPTY = ("clean-tree baseline is present but EMPTY: a torn write, or a
 _PORCELAIN_XY = " MTADRCU?!"
 
 def _write_baseline(baseline, emit):
-    """Write the baseline through `<baseline>.tmp` + `os.replace`, so an
-    interrupted PROCESS leaves the last complete baseline or the new one on
-    disk -- never half of either. (Nothing here fsyncs, exactly as
-    `runio._write_json` does not, so a power loss is still a torn file; the
-    classifier in `_tree_delta` is what makes that one diagnosable.)
+    """Serialize and atomically replace the baseline through ``safe_write``.
 
     #1809 (DAT-4027033499): this was a truncate-in-place write behind
     `capture_tree_baseline`'s exists-means-done guard, and that guard must NOT
     re-probe git on resume (it would baseline the reviewer's own writes as
     clean). So a write torn mid-way was PERMANENT: every later resume accepted
     the partial document, the run failed closed at validate forever, and the
-    only exit was `--reset`, which discards a paid run. tmp+replace is the shape
-    `runio._write_json` already uses, down to the staging path going through the
-    same exclusive staging opener (a `.tmp` in the reviewed tree is as plantable as
-    the artifact, and `os.replace` onto a symlinked destination replaces the
-    LINK). `_write_json` itself is not reusable here: it writes `indent=2` JSON,
-    and the probe-failure sentinel below is not JSON at all.
-
-    Confinement runs on the FINAL name first, then `makedirs`, then the staging
-    open -- `_write_json`'s order, and `safe_write`'s module docstring is why it
-    is that way round: confining after the makedirs would mean the traversal had
-    already happened. Staging alone would have dropped the final component's
-    check (which the pre-fix `_open_w_nofollow(baseline)` had), so a planted
-    final name would be quietly neutralized by `os.replace` instead of refused
-    -- and under redteam "your target planted a symlink at an artifact path" is
-    a signal the operator should get, not one the writer should absorb."""
-    runio._confine_artifact_path(baseline)   # SEC-X0X: before makedirs, which would
-    tmp = baseline + ".tmp"                  # otherwise follow a symlinked dir
-    os.makedirs(os.path.dirname(baseline), exist_ok=True)
-    opened = False
-    try:
-        with runio._open_staging_nofollow(tmp) as fh:
-            opened = True                    # set first thing: an exception between
-                                             # the open and here would orphan `tmp`
-            emit(fh)
-        os.replace(tmp, baseline)
-    except BaseException:                # noqa: BLE001 -- cleanup, then re-raise
-        # A KeyboardInterrupt mid-write is exactly the case that must not leave
-        # staging litter in the reviewed tree, which is why this catches
-        # everything rather than `Exception` -- and re-raises unchanged.
-        # Remove only what THIS call is answerable for: the file it opened, or a
-        # SYMLINK the target planted at our staging name (unlinking a link is
-        # never a delete of what it points at, and the x0x round-1 ruling wants
-        # a planted link gone). A regular file we never opened is not ours --
-        # with `.panopticon/runs` force-committed as a symlink,
-        # `<elsewhere>/<tag>/tree-baseline.txt.tmp` wears our name and unlinking
-        # it would be the delete-outside-the-tree primitive `runio._relink`'s
-        # docstring names (#1574).
-        if opened or os.path.islink(tmp):
-            try:
-                os.unlink(tmp)
-            except OSError:
-                pass
-        raise
-    return baseline
+    only exit was `--reset`, which discards a paid run. The callback remains so
+    the JSON and probe-failure sentinel keep their exact serialization."""
+    buffer = io.StringIO()
+    emit(buffer)
+    return safe_write.atomic_write(baseline, buffer.getvalue())
 
 def start_write_failure(review_root, baseline, exc):
     """#2094: the status message for an OSError from `driver.run`'s two run-start

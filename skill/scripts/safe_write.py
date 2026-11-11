@@ -279,6 +279,54 @@ def open_staging_nofollow(path):
         raise
 
 
+def atomic_write(path, data, fsync=False):
+    """Atomically replace ``path`` with text or bytes through ``path + '.tmp'``.
+
+    The final name is confined before parent creation: doing this after
+    ``makedirs`` would already have traversed a planted intermediate symlink.
+    The fixed staging name then goes through the exclusive no-follow opener,
+    which repeats confinement and refuses symlinks, hard links, and special
+    files. ``fsync`` flushes and syncs the staged file before publication; it
+    deliberately does not add a directory sync that the migrated callers did
+    not previously perform.
+    """
+    path = os.fspath(path)
+    if not isinstance(data, (str, bytes)):
+        raise TypeError("atomic write data must be str or bytes")
+    confine_artifact_path(path)            # before makedirs: traversal guard
+    parent = os.path.dirname(os.path.abspath(path))
+    os.makedirs(parent, exist_ok=True)
+    staging = path + ".tmp"
+    opened = False
+    try:
+        with open_staging_nofollow(staging) as stream:
+            opened = True
+            if isinstance(data, bytes):
+                stream.buffer.write(data)
+            else:
+                stream.write(data)
+            if fsync:
+                stream.flush()
+                os.fsync(stream.fileno())
+        os.replace(staging, path)
+    except BaseException:                 # cleanup must include interrupts
+        # Only unlink a leaf under a parent that is still confined. A planted
+        # staging symlink is ours to clear; a hard link, FIFO, or regular file
+        # whose open was refused is not.
+        try:
+            confine_artifact_path(parent)
+        except (OSError, ValueError):
+            pass
+        else:
+            if opened or os.path.islink(staging):
+                try:
+                    os.unlink(staging)
+                except OSError:
+                    pass
+        raise
+    return path
+
+
 def open_a_nofollow(path):
     """Open `path` for APPENDING, refusing to follow a symlink at the final
     path component -- the O_APPEND analogue of `open_w_nofollow` (#1095,

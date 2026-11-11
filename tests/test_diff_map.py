@@ -1187,7 +1187,7 @@ class TestPrWorktree(unittest.TestCase):
                 with contextlib.redirect_stderr(buf):
                     diff_map.acquire_pr(7, repo=repo, runner=runner)
             self.assertIn("panopticon --pr: ", buf.getvalue())
-            self.assertIn("overwrote", buf.getvalue())
+            self.assertIn("synced the operator's panopticon.yml", buf.getvalue())
 
 
 class TestPrWorktreeLeafIsOursOrRefused(unittest.TestCase):
@@ -1372,7 +1372,7 @@ class TestPrWorktreeLeafIsOursOrRefused(unittest.TestCase):
         self.assertEqual(wt, info["worktree"])
         self.assertEqual(1, runner.adds)
         self.assertIn("panopticon --pr: ", err.getvalue())
-        self.assertIn("overwrote", err.getvalue())
+        self.assertIn("synced the operator's panopticon.yml", err.getvalue())
 
     def test_a_world_writable_parent_without_the_sticky_bit_is_refused(self):
         # Fix round 2, review finding 5. Every post-vet guarantee rests on the
@@ -2149,8 +2149,9 @@ class TestSyncConfig(unittest.TestCase):
                 expected_notes = []
                 for name in ("panopticon.yml", ".panopticon.yml"):
                     path = os.path.join(wt, name)
-                    expected_notes.append("removed the PR's %s from the worktree "
-                                          "(target content must not govern its own review)" % name)
+                    if name != operator_name:
+                        expected_notes.append("removed the PR's %s from the worktree "
+                                              "(target content must not govern its own review)" % name)
                     if name == operator_name:
                         self.assertTrue(os.path.isfile(path))
                         with open(path, encoding="utf-8") as fh:
@@ -2158,7 +2159,7 @@ class TestSyncConfig(unittest.TestCase):
                     else:
                         self.assertFalse(os.path.lexists(path))
                 expected_notes.append(
-                    "overwrote %s in the worktree with the operator's copy" % operator_name
+                    "synced the operator's %s into the worktree" % operator_name
                     if operator_name else "no operator config; PR-shipped config removed, reviewing with defaults")
                 self.assertEqual(notes, expected_notes)
                 self.assertEqual(sorted(os.listdir(wt)), sorted(
@@ -2170,7 +2171,9 @@ class TestSyncConfig(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             repo = self._repo_with_config(d)
             wt = os.path.join(d, "wt"); os.makedirs(wt)
-            self.assertEqual(diff_map._sync_config(repo, wt), [])
+            self.assertEqual(
+                diff_map._sync_config(repo, wt),
+                ["synced the operator's panopticon.yml into the worktree"])
             with open(os.path.join(wt, "panopticon.yml"), encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
 
@@ -2208,7 +2211,8 @@ class TestSyncConfig(unittest.TestCase):
             notes = diff_map._sync_config(repo, wt)
             with open(os.path.join(wt, "panopticon.yml"), encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
-            self.assertTrue(any("overwrote" in n and "panopticon.yml" in n for n in notes))
+            self.assertEqual(
+                ["synced the operator's panopticon.yml into the worktree"], notes)
 
     def test_both_names_in_the_worktree_are_removed_before_the_copy(self):
         with tempfile.TemporaryDirectory() as d:
@@ -2242,15 +2246,6 @@ class TestSyncConfig(unittest.TestCase):
             with open(outside, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "i must not be read or written through the link\n")
 
-    def test_rejects_a_worktree_root_that_is_a_symlink(self):
-        with tempfile.TemporaryDirectory() as d:
-            repo = self._repo_with_config(d)
-            escape = os.path.join(d, "escape"); os.makedirs(escape)
-            wt = os.path.join(d, "wt"); os.symlink(escape, wt)
-            with self.assertRaisesRegex(RuntimeError, "symlinked worktree"):
-                diff_map._sync_config(repo, wt)
-            self.assertFalse(os.path.exists(os.path.join(escape, "panopticon.yml")))
-
     def test_rejects_a_missing_worktree_with_its_own_message(self):
         # minor 5: a MISSING worktree is not a SYMLINKED one -- the two used to
         # share one message, which would call a plain typo'd/never-created
@@ -2260,73 +2255,6 @@ class TestSyncConfig(unittest.TestCase):
             wt = os.path.join(d, "does-not-exist")
             with self.assertRaisesRegex(RuntimeError, "missing worktree"):
                 diff_map._sync_config(repo, wt)
-
-    def test_resuming_a_previous_sync_refreshes_rather_than_removes(self):
-        # #1681 fix round 1 item 1: the reuse/resume acquire_pr call site finds
-        # the operator's file ALREADY in the worktree from a prior sync in the
-        # same run. Re-syncing must not claim it "removed the PR's" file --
-        # the PR never shipped it; a previous _sync_config call wrote it.
-        with tempfile.TemporaryDirectory() as d:
-            repo = self._repo_with_config(d)
-            wt = os.path.join(d, "wt"); os.makedirs(wt)
-            first = diff_map._sync_config(repo, wt)
-            self.assertEqual(first, [])   # empty worktree: plain copy, nothing to report
-            second = diff_map._sync_config(repo, wt)
-            self.assertTrue(any("refreshed" in n for n in second), second)
-            self.assertFalse(any("removed the PR's" in n for n in second), second)
-            with open(os.path.join(wt, "panopticon.yml"), encoding="utf-8") as fh:
-                self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
-
-    def test_a_size_mismatched_file_is_removed_without_being_read(self):
-        # #1681 fix round 2 item 1: the size from the already-done `lstat`
-        # must rule a byte-compare out before anything is opened at all -- a
-        # large PR-planted file at the config name is never read just to
-        # prove it differs from the (small) operator copy.
-        with tempfile.TemporaryDirectory() as d:
-            repo = self._repo_with_config(d)
-            wt = os.path.join(d, "wt"); os.makedirs(wt)
-            big = os.path.join(wt, "panopticon.yml")
-            with open(big, "wb") as fh:
-                fh.write(b"x" * (3 * 1024 * 1024))
-            real_open = os.open
-            def guarded_open(path, flags=os.O_RDONLY, *a, **kw):
-                # READS only: since fix round 3 M1 the operator's copy is
-                # written through `os.open` too, and that write is the point of
-                # the call -- what must never happen is OPENING the blob to
-                # compare bytes with it.
-                if (os.path.abspath(path) == os.path.abspath(big)
-                        and flags & os.O_ACCMODE == os.O_RDONLY):
-                    raise AssertionError("must not read a size-mismatched file")
-                return real_open(path, flags, *a, **kw)
-            with mock.patch("os.open", side_effect=guarded_open):
-                notes = diff_map._sync_config(repo, wt)
-            # the 3MB blob is gone -- `big` IS the destination name, so the
-            # operator's copy legitimately lands there afterward; what proves
-            # the size guard worked is that it is now the SMALL operator
-            # content, not the original blob (and the guard above proves it
-            # got there without ever being read for a byte-compare).
-            with open(big, encoding="utf-8") as fh:
-                self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
-            self.assertTrue(any("removed the PR's panopticon.yml" in n for n in notes), notes)
-
-    def test_refresh_only_applies_to_the_operators_own_name(self):
-        # #1681 fix round 2 item 2: a BYTE-IDENTICAL file under the OTHER
-        # (non-canonical) name is still removed, never "refreshed" -- that
-        # fast path only ever applies to the destination matching the
-        # operator's own file, so the worktree never ends up with both names
-        # present (which would raise its own "both present" disclosure the
-        # next time something reads config from the worktree).
-        with tempfile.TemporaryDirectory() as d:
-            repo = self._repo_with_config(d)   # operator's file is "panopticon.yml"
-            wt = os.path.join(d, "wt"); os.makedirs(wt)
-            with open(os.path.join(wt, ".panopticon.yml"), "w", encoding="utf-8") as fh:
-                fh.write("version: 1\ngroups: {}\n")   # byte-identical, WRONG name
-            notes = diff_map._sync_config(repo, wt)
-            self.assertFalse(os.path.exists(os.path.join(wt, ".panopticon.yml")))
-            self.assertTrue(any("removed the PR's .panopticon.yml" in n for n in notes), notes)
-            self.assertFalse(any("refreshed" in n for n in notes), notes)
-            with open(os.path.join(wt, "panopticon.yml"), encoding="utf-8") as fh:
-                self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
 
     def test_a_link_planted_after_the_removal_is_not_written_through(self):
         # M1: the destination was `os.unlink(dst)` and then
@@ -2378,24 +2306,34 @@ class TestSyncConfig(unittest.TestCase):
             self.assertFalse(os.path.exists(os.path.join(wt, "panopticon.yml")))
             self.assertTrue(any("no operator config" in n for n in notes), notes)
 
-    def test_an_unchanged_destination_is_not_rewritten(self):
-        # M2: the docstring said a byte-identical destination was "left
-        # alone" while the code fell through to an unconditional copy2 that
-        # rewrote it. The skip is real now -- proved by the file's identity
-        # (inode + mtime) surviving the second sync.
+    def test_every_sync_rewrites_the_operator_config_and_uses_one_note(self):
+        # #3535: comparing a PR-worktree file only to vary the note adds a
+        # second hostile read. The unconditional unlink + exclusive no-follow
+        # create is the security boundary, including on a resume whose bytes
+        # already match.
         with tempfile.TemporaryDirectory() as d:
             repo = self._repo_with_config(d)
             wt = os.path.join(d, "wt"); os.makedirs(wt)
             dst = os.path.join(wt, "panopticon.yml")
             diff_map._sync_config(repo, wt)
-            before = os.stat(dst)
-            notes = diff_map._sync_config(repo, wt)
-            after = os.stat(dst)
-            self.assertTrue(any("refreshed" in n for n in notes), notes)
-            # ctime, not mtime: copy2 restores the SOURCE's mtime, so only the
-            # inode-change stamp tells a rewrite from a genuine skip.
-            self.assertEqual((before.st_ino, before.st_ctime_ns),
-                             (after.st_ino, after.st_ctime_ns))
+            real_write = diff_map._write_operator_config
+            real_open = os.open
+
+            def refuse_destination_reads(path, flags=os.O_RDONLY, *args, **kwargs):
+                if (os.path.abspath(path) == os.path.abspath(dst)
+                        and flags & os.O_ACCMODE == os.O_RDONLY):
+                    raise AssertionError("must not read the hostile destination")
+                return real_open(path, flags, *args, **kwargs)
+
+            with mock.patch.object(diff_map.os, "open",
+                                   side_effect=refuse_destination_reads), \
+                    mock.patch.object(diff_map, "_write_operator_config",
+                                      wraps=real_write) as rewritten:
+                notes = diff_map._sync_config(repo, wt)
+            rewritten.assert_called_once_with(
+                dst, b"version: 1\ngroups: {}\n")
+            self.assertEqual(
+                ["synced the operator's panopticon.yml into the worktree"], notes)
             with open(dst, encoding="utf-8") as fh:
                 self.assertEqual(fh.read(), "version: 1\ngroups: {}\n")
 

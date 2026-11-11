@@ -422,8 +422,8 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
     if held:                   # #3265: absent when nothing was withheld, like cleanup
         payload["withheld"] = held
     # #3270: the tools image's identity and docker's app record, from
-    # run_tools.main; absent on a direct caller, so every other manifest is
-    # byte-identical. `tools_image.repair`/`app_trace.repair` re-read them.
+    # run_tools.main; absent on a direct caller, which therefore omits these
+    # optional fields. `tools_image.repair`/`app_trace.repair` re-read them.
     if image is not None:
         payload["image"] = dict(image)
     if apps:

@@ -14,6 +14,7 @@ import unittest
 import scripts.synthesize as syn
 import scripts.synth.render as render_mod
 import scripts.synth.report as report_mod
+import scripts.synth.validate_schema as validate_schema_mod
 from tests.synth.helpers import _chdir
 
 _UNSET = object()
@@ -64,13 +65,13 @@ class CvssUnscoredTest(unittest.TestCase):
                 self.assertNotIn("cvss", report["findings"][0])
 
     def test_a_malformed_cvss_in_a_report_is_still_a_schema_error(self):
-        # The report-level contract: what validate_report sees present and wrong
-        # is an error, never an omission.
+        # The written-artifact schema sees present-and-wrong as an error, never
+        # an omission. In-memory validate_report owns policy only (#3535).
         report = _synthesize([_finding("SE-001", cvss={"score": 8.1, "vector": "v"})])
         for bad in ({"score": "high"}, "7.5x", {"score": 7.5, "vector": 3}):
             with self.subTest(cvss=bad):
                 report["findings"][0]["cvss"] = bad
-                errors, _ = report_mod.validate_report(report)
+                errors = validate_schema_mod.schema_errors(report)
                 self.assertTrue(any("cvss" in e for e in errors), errors)
                 self.assertEqual([], report_mod.cvss_unscored(report["findings"]))
 

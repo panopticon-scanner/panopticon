@@ -22,6 +22,7 @@ import os
 from scripts import discovery  # P6.5 Slice A: discovery primitives, moved off orchestrator
 from scripts import grouping_engine  # 5.2: stage-3 size policy + setup report
 from scripts import repo_config  # #1681: the one place the config names live
+from scripts import safe_write
 from scripts import tolerant_json  # #2959: the JSON depth bound
 from scripts import plan_contract  # #3409: the artifact directory's name
 from scripts import setup_config  # #3405: refusal, overrides, draft settings
@@ -125,11 +126,7 @@ def _replace(path, text):
     which would reformat a report written at `indent=1`, and the markdown is
     not JSON at all.
     """
-    runio._confine_artifact_path(path)
-    tmp = path + ".tmp"
-    with runio._open_w_nofollow(tmp) as fh:
-        fh.write(text)
-    os.replace(tmp, path)
+    safe_write.atomic_write(path, text)
 
 
 def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups=None):

@@ -21,7 +21,6 @@ import os
 import re
 import subprocess
 import sys
-import uuid
 
 # A standalone CLI entrypoint too (`python3 skill/scripts/discovery.py
 # --repo-scan`, run by the driver's discovery phase), so the bootstrap puts
@@ -266,22 +265,7 @@ def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitt
                 "diff_context": tolerance,
                 "files_changed": len(hmap),
                 "hunks": {p: [list(r) for r in rs] for p, rs in hmap.items()}}
-    out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
-    os.makedirs(out_dir, exist_ok=True)
-    tmp = os.path.join(out_dir, ".diff-hunks-%s.tmp" % uuid.uuid4().hex)
-    try:
-        # #1735: staged inside the reviewed tree's `.panopticon`; the uuid makes
-        # the leaf unplantable, the no-follow open confines the rest of the path.
-        with safe_write.open_w_nofollow(tmp) as fh:
-            json.dump(artifact, fh, indent=2)
-            fh.write("\n")
-        os.replace(tmp, out_path)
-    finally:
-        if os.path.exists(tmp):
-            try:
-                os.remove(tmp)
-            except OSError:
-                pass
+    safe_write.atomic_write(out_path, json.dumps(artifact, indent=2) + "\n")
 
 def _hunks_path_for(out, repo):
     """Place diff-hunks.json beside --out, or under the selected repository.
@@ -1015,19 +999,7 @@ def _write_result(result, args):
         result["schema_version"] = 1
 
     if args.out:
-        out_dir = os.path.dirname(os.path.abspath(args.out)) or "."
-        os.makedirs(out_dir, exist_ok=True)
-        tmp = os.path.join(out_dir, ".discovery-%s.tmp" % uuid.uuid4().hex)
-        try:
-            with safe_write.open_w_nofollow(tmp) as fh:   # #1735, as above
-                emit(result, fh)
-            os.replace(tmp, args.out)
-        finally:
-            if os.path.exists(tmp):
-                try:
-                    os.remove(tmp)
-                except OSError:
-                    pass
+        safe_write.atomic_write(args.out, json.dumps(result, indent=2) + "\n")
     else:
         emit(result)
 

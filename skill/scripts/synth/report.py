@@ -25,7 +25,6 @@ from . import severity_cap as severity_cap_mod
 from . import tool_axis as tool_axis_mod
 from . import cost as cost_mod
 from . import verdicts as verdicts_mod
-from . import validate_schema as validate_schema_mod
 
 
 # Format version of the report DOCUMENT itself (the meta/summary/groups/findings
@@ -427,58 +426,25 @@ def cvss_unscored(findings):
 
 
 def attach_schema_status(report, errors):
-    """Record schema-validation results in the artifact itself.
+    """Record the written-artifact schema result in the report itself.
 
-    Validation stays advisory — a run never aborts — but the count is no longer
-    stderr-only, so a downstream consumer (issue tracker, CI) can see that a
-    report failed its own schema.
+    The artifact pass owns this count (#3535). Policy errors from
+    `validate_report` are intentionally excluded: they are advisory rules the
+    published JSON schema cannot express.
     """
     report.setdefault("meta", {})["schema_errors"] = len(errors)
     return report
 
-def validate_report(report, schema_path=None):
-    """Validate report structure and content, returning error and warning lists.
 
-    Two layers, one error list (#1639 P15). FIRST the published Draft 7 schema
-    (`skill/reference/report-schema.json`), which is the contract every
-    downstream consumer validates against and which this function used to
-    ignore entirely -- a report with `meta`, `summary` and `cross_panel` all
-    `null` passed here while schema validation rejected all three. THEN the
-    hand checks below, which are NOT redundant with it: the schema can express
-    shape, but not "an agent-sourced security HIGH needs a CVSS score and an
-    exploit scenario", not "no two findings share an id", and not the
-    evidence-status vocabulary, because each of those is a policy about
-    meaning rather than a fact about structure.
+def validate_report(report):
+    """Return policy errors and warnings the JSON schema cannot express.
 
-    Schema failure is fail-closed (see `validate_schema`): an uninstallable
-    validator or an unreadable schema is an ERROR, never a silent pass.
-    `schema_path` overrides which schema file is loaded (tests).
+    The hydrated written artifact is the sole schema-validation surface
+    (#3535). This pass keeps only semantic policy: duplicate ids, the
+    exploit/CVSS rules, and the location warning.
     """
     errors, warnings = [], []
-    errors.extend(validate_schema_mod.schema_errors(report, schema_path=schema_path))
-    for key in ("meta", "summary", "groups", "findings", "cross_panel"):
-        if key not in report:
-            errors.append("missing top-level key: %s" % key)
-    # `or []`, not a default: a report whose `findings` is explicitly `null` is
-    # precisely the shape this function now promises to REPORT on, and
-    # `enumerate(None)` would raise instead -- turning a validation answer into
-    # a traceback at the moment validation started mattering.
     for i, f in enumerate(report.get("findings") or []):
-        if not findings_mod.ID_RE.match(f.get("id", "")):
-            errors.append("finding[%d] bad id: %r" % (i, f.get("id")))
-        if not f.get("title"):
-            errors.append("finding[%d] missing title" % i)
-        if not f.get("category"):
-            errors.append("finding[%d] missing category" % i)
-        if f.get("severity") not in findings_mod.SEVERITIES:
-            errors.append("finding[%d] bad severity: %r" % (i, f.get("severity")))
-        if f.get("confidence") not in findings_mod.CONFIDENCES:
-            errors.append("finding[%d] bad confidence: %r" % (i, f.get("confidence")))
-        if f.get("panel") not in findings_mod.VALID_PANELS:
-            errors.append("finding[%d] bad panel: %r" % (i, f.get("panel")))
-        ev = f.get("evidence") or {}
-        if ev.get("status") not in evidence_mod.EVIDENCE_STATUSES:
-            errors.append("finding[%d] bad evidence.status: %r" % (i, ev.get("status")))
         loc = f.get("location") or {}
         # #2174: a located finding with no line is the sanctioned whole-file shape (#1522).
         if not loc.get("file"):

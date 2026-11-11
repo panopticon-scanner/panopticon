@@ -72,63 +72,43 @@ __all__ = [
 ]
 
 
-# #1576 (run-13 OPS-2937048458): the most tool-output files one ingest reads
-# from a tools directory. A real one holds one file per registered adapter (15),
-# and a name with no registered adapter is rejected anyway -- at the cost of one
-# stderr diagnostic each -- so 1,000 is far past any legitimate directory and
-# only a hostile or runaway artifact tree reaches it. Past it the
-# lexicographically-later files are NOT read and the drop is announced on
-# stderr; it is never silent.
-TOOL_OUTPUT_FILES_MAX = 1_000
+# A receipt limits the files we ingest to outputs this run vouched for. Keep a
+# separate disclosure bound for names the receipt did not vouch for: 100 is
+# more than six times today's 15 registered adapters, leaving ample room for
+# both supported suffixes and stale captures without retaining an attacker-sized
+# directory listing merely to report that the directory was planted (#3535).
+MAX_UNBOUND_OUTPUT_NAMES = 100
 _OUTPUT_SUFFIXES = (".sarif", ".json")
 
 
-def _trim_to_cap(kept, cap):
-    """The lexicographically smallest `cap` paths of `kept`.
+def _output_files(tools_dir, allowed_outputs=None, unbound_out=None):
+    """Return receipt-selected output paths; disclose rejected names boundedly.
 
-    A named function, not an inline slice, so the growth-point trim is
-    OBSERVABLE: `_capped_output_files` also trims on the way out, and a test
-    that watches only the returned list cannot tell whether the buffer was ever
-    bounded while it was being built (#1576 fix round 1).
+    No receipt preserves direct-ingestion compatibility. With a receipt, only
+    its finite set of names can enter the returned list, regardless of how many
+    unrelated files are present in the directory.
     """
-    return sorted(kept)[:cap]
-
-
-def _capped_output_files(tools_dir, cap=None, allowed_outputs=None,
-                         unbound_out=None):
-    """Return capped output paths/count; receipt rejects reach ``unbound_out``
-    before spending the cap. No receipt preserves legacy selection."""
-    cap = TOOL_OUTPUT_FILES_MAX if cap is None else cap
     allowed = None if allowed_outputs is None else frozenset(allowed_outputs)
     kept: list[str] = []
     unbound: list[str] = []
-    seen = 0
     try:
         scan = os.scandir(tools_dir)
     except OSError:
-        return [], 0
+        return []
     with scan:
         for entry in scan:
             name = entry.name
             if name.startswith(".") or not name.endswith(_OUTPUT_SUFFIXES):
                 continue
             if allowed is not None and name not in allowed:
-                unbound.append(name)
-                if len(unbound) >= cap * 2:
-                    unbound = _trim_to_cap(unbound, cap)
+                if len(unbound) < MAX_UNBOUND_OUTPUT_NAMES:
+                    unbound.append(name)
                 continue
-            seen += 1
             kept.append(entry.path)
-            if len(kept) >= cap * 2:
-                kept = _trim_to_cap(kept, cap)
     kept.sort()
     if unbound_out is not None:
-        unbound_out.extend(_trim_to_cap(unbound, cap))
-    if seen > cap:
-        print("ingest: %s holds %d tool-output file(s); reading the first %d "
-              "(TOOL_OUTPUT_FILES_MAX). %d file(s) were NOT ingested"
-              % (tools_dir, seen, cap, seen - cap), file=sys.stderr)
-    return kept[:cap], seen
+        unbound_out.extend(sorted(unbound))
+    return kept
 # Top-level dirs that are never project source: a nested checkout, the git dir,
 # and panopticon's OWN artifact tree.
 _RUN_ARTIFACT_DIRS = {".worktrees", ".git", plan_contract.ARTIFACT_DIR}
@@ -821,9 +801,8 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     venv_cache: dict[str, bool] = {}   # per-run memo of the pyvenv.cfg lookups
     gl_excluded = 0   # dropped by an explicit exclude_glob (operator policy)
     suppressed: dict[str, int] = {}   # {reason: count} controlled body drops
-    for path in _capped_output_files(
-            tools_dir, allowed_outputs=allowed_outputs,
-            unbound_out=unbound_out)[0]:
+    for path in _output_files(tools_dir, allowed_outputs=allowed_outputs,
+                              unbound_out=unbound_out):
         tool = os.path.splitext(os.path.basename(path))[0]
         adapter = ADAPTERS.get(tool)
         if adapter is None:

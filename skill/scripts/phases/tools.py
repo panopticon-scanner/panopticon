@@ -186,7 +186,7 @@ def tools_execute(review_root, manifest):
         tool_manifest = {}
         receipt = ()
     unbound: list[str] = []
-    paths, _seen = ingest_tools._capped_output_files(
+    paths = ingest_tools._output_files(
         out_dir, allowed_outputs=receipt, unbound_out=unbound)
     produced = bool(paths)
     # #1033: a real scanner/runner CRASH (non-zero exit + no output) is NOT a

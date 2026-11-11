@@ -559,29 +559,5 @@ def _redact_capture(tool, data):
 
 
 def _atomic_write(out_path, data):
-    """Atomically replace out_path with data.
-
-    #1735: every SARIF capture goes through here, and `out_path` is under
-    `.panopticon/tools/` in the REVIEWED tree. `mkstemp` leaves no plantable
-    staging name, but it stages in `dirname(out_path)` -- so a target that
-    commits `.panopticon/tools` as a directory symlink has every capture
-    written, and then `os.replace`d, outside the tree. O_NOFOLLOW would never
-    see that (it guards the final component only); the whole-path confinement
-    is the guard that does.
-    """
-    safe_write.confine_artifact_path(out_path)
-    fd, temp_path = tempfile.mkstemp(
-        prefix=".%s-" % os.path.basename(out_path),
-        dir=os.path.dirname(out_path) or ".")
-    try:
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(temp_path, out_path)
-    finally:
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
-    return out_path
+    """Atomically replace a capture, preserving the capture-side fsync."""
+    return safe_write.atomic_write(out_path, data, fsync=True)

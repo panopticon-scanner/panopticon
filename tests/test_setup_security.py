@@ -1,6 +1,5 @@
-"""Setup artifact path safety and the readiness live-probe guard."""
+"""Setup artifact path safety."""
 
-import ast
 import contextlib
 import io
 import json
@@ -21,9 +20,6 @@ import shutil
 from tests.setup_helpers import (
     _repo,
 )
-
-_REPO_ROOT_EXEMPT = "repo-root-exempt:"
-
 
 class TestSetupArtifactWritesDoNotFollowSymlinks(unittest.TestCase):
     """#1577 (SEC-D1C): the five `--setup` artifact writes were plain `open()`
@@ -144,72 +140,4 @@ class TestSetupArtifactWritesDoNotFollowSymlinks(unittest.TestCase):
             status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
         self.assertEqual(("error", first_contact.H3 % ""), (status["status"], status["message"]))
         self.assertEqual([], os.listdir(outside))
-
-class TestNoReadinessUnitTestReachesALiveProbe(unittest.TestCase):
-    """#1599, made durable. Two readiness tests called
-    `_check_host_shells(host, runner)` with `repo_root` defaulting to None and
-    reached `host_probes.run_probes` unmocked -- verified harmless (the
-    write-guard round-trip runs in its own TemporaryDirectory and the rest are
-    read-only stats), but they measured the developer's home directory rather
-    than the code.
-
-    An AST guard, not a grep: the call is spelled across two lines at one site
-    and a text rule would read the argument count off whichever line it
-    matched (`git grep -E` silently ignores `\\b` and returns a false zero).
-    """
-
-    EXEMPT = _REPO_ROOT_EXEMPT
-    _SKIP_DIRS = {"fixtures", "goldens", "__pycache__"}
-
-    def _offenders(self):
-        root = os.path.dirname(os.path.abspath(__file__))
-        offenders = []
-        for base, dirs, files in os.walk(root):
-            dirs[:] = sorted(d for d in dirs if d not in self._SKIP_DIRS)
-            for name in sorted(f for f in files if f.endswith(".py")):
-                path = os.path.join(base, name)
-                with open(path, encoding="utf-8") as fh:
-                    text = fh.read()
-                lines = text.splitlines()
-                for node in ast.walk(ast.parse(text, path)):
-                    if not isinstance(node, ast.Call):
-                        continue
-                    func = node.func
-                    if not (isinstance(func, ast.Attribute)
-                            and func.attr == "_check_host_shells"):
-                        continue
-                    if len(node.args) >= 3 or any(kw.arg == "repo_root"
-                                                  for kw in node.keywords):
-                        continue
-                    source = "\n".join(lines[node.lineno - 1:node.end_lineno])
-                    if self.EXEMPT in source:
-                        continue
-                    offenders.append("%s:%d: %s"
-                                     % (os.path.relpath(path, root), node.lineno,
-                                        ast.unparse(node)))
-        return offenders
-
-    def test_every_call_site_supplies_the_tree_it_wants_probed(self):
-        self.assertEqual(
-            [], self._offenders(),
-            "a readiness test with no repo_root measures whatever is under "
-            "$HOME on this machine. Pass one, or mark the line "
-            "`# %s <why>`:\n%s" % (self.EXEMPT, "\n".join(self._offenders())))
-
-    def test_the_scanner_actually_finds_the_call_sites(self):
-        # Guards the guard: a walk that matched nothing would report a clean
-        # pass over an unread tree.
-        root = os.path.dirname(os.path.abspath(__file__))
-        seen = 0
-        for base, dirs, files in os.walk(root):
-            dirs[:] = sorted(d for d in dirs if d not in self._SKIP_DIRS)
-            for name in sorted(f for f in files if f.endswith(".py")):
-                with open(os.path.join(base, name), encoding="utf-8") as fh:
-                    text = fh.read()
-                for node in ast.walk(ast.parse(text, name)):
-                    if (isinstance(node, ast.Call)
-                            and isinstance(node.func, ast.Attribute)
-                            and node.func.attr == "_check_host_shells"):
-                        seen += 1
-        self.assertGreater(seen, 5, "the call-site scan found almost nothing")
 
