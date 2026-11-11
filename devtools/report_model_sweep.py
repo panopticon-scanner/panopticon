@@ -63,9 +63,9 @@ def body(tables: list, today: datetime.date) -> str:
     """The issue body: tables stalest first, every model row, the checklist."""
     lines = [LEAD, "",
              "Check each table below against its provider's current model list and "
-             "deprecation pages, update it in a reviewed PR, and refresh its "
-             "`models-verified` marker (the grammar is in `devtools/model_inventory.py`). "
-             "Close this issue when the sweep is done; next month's run opens a new one.",
+             + "deprecation pages, update it in a reviewed PR, and refresh its "
+             + "`models-verified` marker (the grammar is in `devtools/model_inventory.py`). "
+             + "Close this issue when the sweep is done; next month's run opens a new one.",
              "", "## Tables, stalest first", "",
              "| table | verified | age (days) | where | sources |", "|---|---|---|---|---|"]
     for t in model_inventory.stalest_first(tables):

@@ -154,7 +154,7 @@ def test_bad_repo_or_month_is_refused(repo, month):
     ["gh", "issue", "reopen", "41", "--repo", REPO],
     ["gh", "api", issue_bot.lookup(REPO) + "&x=1"],
     ["gh", "api", "repos/owner/repo/issues?state=all&creator=github-actions%5Bbot%5D"
-                  "&per_page=100"],
+                  + "&per_page=100"],
     ["gh", "issue", "create", "--repo", REPO, "--title", "model-list sweep due: 2026-13",
      "--body", body_text()],
     ["gh", "issue", "create", "--repo", REPO, "--title", TITLE, "--body", "not the lead"],
