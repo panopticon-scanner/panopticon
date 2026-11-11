@@ -63,7 +63,10 @@ CAUGHT_UP = "The pin has caught up with upstream; closing."
 DUPLICATE = "Duplicate of #%s; closing."
 _DUPLICATE = re.compile(r"Duplicate of #[1-9][0-9]{0,9}; closing\.\Z")
 _TITLE = re.compile(r"pin-freshness: (tinyproxy|rustup|trivy|rust-toolchain) "
-                    r"(\S{1,80}) -> (\S{1,80})\Z")
+                    r"(\S{1,80}) -> (\S{1,80})( \((checksums changed|pinned is ahead)\))?\Z")
+# One lookup page. A full page could hide an existing issue, and a run that missed it would
+# file a duplicate, so a full page is refused rather than guessed past (#3557 review).
+PAGE = 100
 
 REVIEW = {
     "tinyproxy": ("Review the image at docker.io/%s@<latest digest> and update PROXY_IMAGE in "
@@ -110,19 +113,53 @@ class Bump:
         return value[:len("sha256:") + 12] if self.family == "tinyproxy" else value
 
     @property
+    def kind(self) -> str:
+        """'current', 'bump', or one of the two cases that are not a bump (#3557 review):
+        'checksums' (same version, re-released archive: a supply-chain signal) and 'ahead'
+        (the pin is newer than upstream's latest, e.g. a yanked release)."""
+        if not self.stale:
+            return "current"
+        if self.family != "tinyproxy" and _version(self.pinned) > _version(self.latest):
+            return "ahead"
+        return "checksums" if self.pinned == self.latest else "bump"
+
+    @property
+    def warns(self) -> bool:
+        return self.family == "tinyproxy" or self.kind in ("checksums", "ahead")
+
+    @property
     def title(self) -> str:
-        return "%s%s %s -> %s" % (TITLE_PREFIX, self.family, self._short(self.pinned),
-                                  self._short(self.latest))
+        suffix = {"checksums": " (checksums changed)", "ahead": " (pinned is ahead)"}
+        return "%s%s %s -> %s%s" % (TITLE_PREFIX, self.family, self._short(self.pinned),
+                                    self._short(self.latest), suffix.get(self.kind, ""))
 
     @property
     def body(self) -> str:
-        lines = ["The pin-freshness workflow found a verified update for `%s`." % self.family,
-                 "", "- pinned: `%s`" % self.pinned, "- latest: `%s`" % self.latest]
-        lines += ["- %s SHA256: `%s`" % (arch, sha) for arch, sha in sorted(self.values.items())]
-        lines += ["", REVIEW[self.family], "",
-                  "This issue is kept current by the workflow: it is edited when upstream moves "
-                  "again and closed once the pin catches up."]
+        if self.kind == "ahead":
+            lines = ["The pin-freshness workflow found the `%s` pin newer than upstream's latest "
+                     "release." % self.family, "", "- pinned: `%s`" % self.pinned,
+                     "- upstream latest: `%s`" % self.latest, "",
+                     "Check whether `%s` was yanked upstream. Do not run `bump_pins.py %s "
+                     "--write`: it would downgrade the pin." % (self.pinned, self.family)]
+        else:
+            if self.kind == "checksums":
+                lead = ("The pin-freshness workflow found changed checksums for the same `%s` "
+                        "version. Checksums changed for the same version: verify before "
+                        "applying. A re-released upstream archive is a supply-chain signal, so "
+                        "confirm its maintainers re-published it." % self.family)
+            else:
+                lead = "The pin-freshness workflow found a verified update for `%s`." % self.family
+            lines = [lead, "", "- pinned: `%s`" % self.pinned, "- latest: `%s`" % self.latest]
+            lines += ["- %s SHA256: `%s`" % (arch, sha)
+                      for arch, sha in sorted(self.values.items())]
+            lines += ["", REVIEW[self.family]]
+        lines += ["", "This issue is kept current by the workflow: it is edited when upstream "
+                  "moves again and closed once the pin catches up."]
         return "\n".join(lines)
+
+
+def _version(value: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in value.split("."))
 
 
 def _read(path: str) -> str:
@@ -145,6 +182,8 @@ def verify(family: str, dockerfile: str = "Dockerfile",
         latest = bump_pins.latest_rustup_version()
         if latest == pinned:
             return Bump(family, pinned, latest, pinned_shas, False)
+        if _version(pinned) > _version(latest):        # ahead: nothing to download or apply
+            return Bump(family, pinned, latest, {}, True)
         return Bump(family, pinned, latest, bump_pins.verified_rustup_shas(latest), True)
     if family == "trivy":
         pinned, pinned_shas = bump_pins.current_trivy_pin(text)
@@ -255,13 +294,16 @@ def bot_issues(repo: str, family: str, cwd: Path, runner) -> list[dict]:
     counts: it can neither silence a report nor be edited or closed by it.
     """
     raw = _checked(["gh", "api", "repos/%s/issues?state=open&creator=github-actions%%5Bbot%%5D"
-                    "&per_page=100" % repo], cwd, runner)
+                    "&per_page=%d" % (repo, PAGE)], cwd, runner)
     try:
         entries = json.loads(raw)
     except ValueError:
         raise RuntimeError("gh api returned malformed issue JSON") from None
     if not isinstance(entries, list):
         raise RuntimeError("gh api returned malformed issue JSON")
+    if len(entries) >= PAGE:
+        raise RuntimeError("the issue lookup returned a full page of %d; refusing to report "
+                           "rather than risk filing a duplicate" % PAGE)
     found = []
     for entry in entries:
         if not isinstance(entry, dict) or "pull_request" in entry:
@@ -311,8 +353,10 @@ def _summary(bump: Bump, outcome: str) -> None:
         with open(path, "a", encoding="utf-8") as fh:
             fh.write("- %s\n" % line)
     if bump.stale:
-        level = "warning" if bump.family == "tinyproxy" else "notice"
-        print("::%s title=%s pin update available::%s" % (level, bump.family, line))
+        heading = {"checksums": "checksums changed for the same version",
+                   "ahead": "pin is ahead of upstream"}.get(bump.kind, "pin update available")
+        print("::%s title=%s %s::%s" % ("warning" if bump.warns else "notice", bump.family,
+                                        heading, line))
     else:
         print("report-pin-bump: %s" % line)
 

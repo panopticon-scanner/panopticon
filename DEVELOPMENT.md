@@ -521,6 +521,9 @@ verifies the update with `bump_pins`' own checks and then keeps one open issue t
 again, and closed once the pin catches up. The workflow opens no PR and pushes no branch: letting
 Actions create PRs would also let workflows approve them, so that repository setting stays off.
 Apply a reported bump by hand with `bump_pins.py <family> --write`, through the usual review.
+Two reports are warnings rather than bumps: new checksums for the same version (a re-released
+archive; verify it before applying), and a pin newer than upstream's latest (check whether the
+release was yanked; `--write` would downgrade it).
 
 The `rustup` family pins only the bootstrap installer. The `rust-toolchain` family reads Rust's
 stable channel manifest after checking its companion `.sha256` and requires both image Linux GNU

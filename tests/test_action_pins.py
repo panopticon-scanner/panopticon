@@ -455,6 +455,12 @@ class TestVerifiedPinFreshnessJobs(unittest.TestCase):
         if any("--write" in step.get("run", "") or "git push" in step.get("run", "")
                or "open_pin_pr" in step.get("run", "") for step in steps):
             defects.append("writes or pushes")
+        # #3557 review: the token is step-scoped, on the report step only.
+        if "env" in job:
+            defects.append("job-level env")
+        if any("GH_TOKEN" in (step.get("env") or {}) for step in steps
+               if step not in report):
+            defects.append("token outside the report step")
         return defects
 
     def test_verified_pin_jobs_are_scoped_and_fail_closed(self):
@@ -488,6 +494,13 @@ class TestVerifiedPinFreshnessJobs(unittest.TestCase):
                 {"run": "python3 devtools/bump_pins.py rustup --write"}), "writes or pushes"),
             (lambda job: job["steps"].append({"run": "git push origin HEAD"}),
              "writes or pushes"),
+            (lambda job: job.update(env={"GH_TOKEN": "${{ github.token }}"}), "job-level env"),
+            (lambda job: job.update(env={"OTHER": "x"}), "job-level env"),
+            (lambda job: job["steps"].insert(1, {"run": "true",
+                                                 "env": {"GH_TOKEN": "${{ github.token }}"}}),
+             "token outside the report step"),
+            (lambda job: job["steps"][0].update(env={"GH_TOKEN": "${{ github.token }}"}),
+             "token outside the report step"),
         )
         for mutate, expected in cases:
             with self.subTest(expected=expected):

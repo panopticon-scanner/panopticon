@@ -391,3 +391,70 @@ def test_the_generated_body_passes_the_runners_own_check():
                                    ("tinyproxy", DIGEST_OLD, DIGEST_NEW)):
         b = bump(family, pinned, latest)
         assert rpt._body_ok(b.body) and rpt._TITLE.fullmatch(b.title), family
+
+
+# --- #3557 review: a full lookup page, and the two cases that are not a bump --------------------
+@pytest.mark.parametrize("count, refused", [(rpt.PAGE - 1, False), (rpt.PAGE, True)])
+def test_a_full_lookup_page_is_refused_rather_than_guessed_past(count, refused):
+    others = [bot_issue(n, "something else %d" % n) for n in range(1, count + 1)]
+    gh = FakeGh(others)
+    if refused:
+        with pytest.raises(RuntimeError, match="full page of 100; refusing to report"):
+            rpt.report(bump(), REPO, runner=gh)
+        assert gh.writes() == []
+    else:
+        assert rpt.report(bump(), REPO, runner=gh) == "opened an issue"
+
+
+def test_same_version_new_checksums_is_a_warning_not_a_bump(tmp_path, monkeypatch, capsys):
+    b = bump(pinned="2.0.0", latest="2.0.0")
+    assert b.kind == "checksums" and b.warns
+    assert b.title == "pin-freshness: trivy 2.0.0 -> 2.0.0 (checksums changed)"
+    assert "Checksums changed for the same version: verify before applying." in b.body
+    assert rpt._TITLE.fullmatch(b.title) and rpt._body_ok(b.body)
+    (tmp_path / "Dockerfile").write_text("")
+    _patch_family(monkeypatch, "trivy", "2.0.0", "2.0.0", {"AMD64": SHA_B, "ARM64": SHA_B})
+    monkeypatch.setattr(rpt, "_run", FakeGh())
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GITHUB_REPOSITORY", REPO)
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    assert rpt.main(["trivy"]) == 0
+    assert capsys.readouterr().out.startswith(
+        "::warning title=trivy checksums changed for the same version::")
+
+
+@pytest.mark.parametrize("family", ["trivy", "rustup", "rust-toolchain"])
+def test_a_pin_ahead_of_upstream_is_a_warning_never_a_downgrade(family):
+    b = bump(family, pinned="2.0.0", latest="1.9.0", values={})
+    assert b.kind == "ahead" and b.warns
+    assert b.title == "pin-freshness: %s 2.0.0 -> 1.9.0 (pinned is ahead)" % family
+    assert "newer than upstream's latest release" in b.body
+    assert "Check whether `2.0.0` was yanked upstream" in b.body
+    assert "it would downgrade the pin" in b.body and "Apply with" not in b.body
+    assert rpt._TITLE.fullmatch(b.title) and rpt._body_ok(b.body)
+
+
+def test_versions_compare_numerically_not_as_text():
+    assert bump(pinned="1.10.0", latest="1.9.0", values={}).kind == "ahead"
+    assert bump(pinned="1.9.0", latest="1.10.0").kind == "bump"
+
+
+def test_an_ahead_rustup_does_not_download_the_older_release(tmp_path, monkeypatch):
+    (tmp_path / "Dockerfile").write_text("")
+    _patch_family(monkeypatch, "rustup", "1.30.0", "1.29.3")
+    monkeypatch.setattr(bump_pins, "verified_rustup_shas", lambda v: pytest.fail("downloaded"))
+    got = rpt.verify("rustup", dockerfile=str(tmp_path / "Dockerfile"))
+    assert (got.kind, got.values) == ("ahead", {})
+
+
+def test_an_ahead_pin_edits_the_familys_existing_issue():
+    b = bump(pinned="2.0.0", latest="1.9.0", values={})
+    gh = FakeGh([bot_issue(4, "pin-freshness: trivy 1.0.0 -> 2.0.0")])
+    assert rpt.report(b, REPO, runner=gh) == "updated issue #4"
+    assert gh.writes()[0][7] == "pin-freshness: trivy 2.0.0 -> 1.9.0 (pinned is ahead)"
+
+
+def test_an_ordinary_bump_is_still_a_notice():
+    b = bump()
+    assert (b.kind, b.warns) == ("bump", False)
+    assert "(" not in b.title
