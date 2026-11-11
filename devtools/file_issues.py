@@ -36,7 +36,6 @@ from sanitize import repo_root, repo_relative, scrub, defang
 # skill/scripts/reconcile.py owns the part-path confinement; this filer's own copy never got the
 # #run9 SEC-D1C realpath hardening (#1523), so import that one implementation, never mirror it.
 import scripts.reconcile as _reconcile
-import scripts.safe_write as safe_write
 import scripts.evidence as evidence
 import scripts.evidence_sections as evidence_sections
 
@@ -298,7 +297,7 @@ def _ledger_lock(path):
     if fcntl is None:                      # pragma: no cover - posix in CI
         yield
         return
-    with safe_write.open_lock_nofollow(path + ".lock") as handle:
+    with open(path + ".lock", "a", encoding="utf-8") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         try:
             yield
@@ -394,9 +393,9 @@ def _digest(value):
 
 
 def _atomic_json(path, value):
-    # Every caller holds the stable ledger lock, including pending writes. #3256: no link followed.
+    # Every caller holds the stable ledger lock, including pending writes.
     tmp = path + ".tmp"
-    with safe_write.open_staging_nofollow(tmp) as handle:
+    with open(tmp, "w", encoding="utf-8") as handle:
         json.dump(value, handle, indent=1, sort_keys=True)
         handle.flush()
         os.fsync(handle.fileno())
