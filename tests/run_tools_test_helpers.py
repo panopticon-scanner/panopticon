@@ -34,10 +34,11 @@ class _DockerStub:
     SUBNET = "172.28.0.0/16"
     GATEWAY = "172.28.0.1"
 
-    def __init__(self, fail=(), running=b"true\n"):
+    def __init__(self, fail=(), running=b"true\n", listings=()):
         self.calls = []
         self.fail = set(fail)
         self.running = running
+        self.listings = [list(row) for row in listings]
 
     @staticmethod
     def verb(cmd):
@@ -50,6 +51,8 @@ class _DockerStub:
             return "run -d" if "-d" in rest[:4] else "run"
         if rest[:1] == ["container"]:
             return "container %s" % rest[1]
+        if rest[:1] == ["ps"]:
+            return "ps"
         return rest[0] if rest else ""
 
     def __call__(self, cmd, **_kw):
@@ -64,6 +67,15 @@ class _DockerStub:
             return _FakeResult(returncode=0, stdout=body.encode("utf-8"))
         if verb == "inspect":
             return _FakeResult(returncode=0, stdout=self.running)
+        if verb == "ps":
+            rows = self.listings.pop(0) if self.listings else []
+            return _FakeResult(
+                returncode=0,
+                stdout=("".join("%s\n" % row for row in rows)).encode("ascii"))
+        if verb == "rm":
+            return _FakeResult(
+                returncode=0,
+                stdout=("".join("%s\n" % row for row in cmd[3:])).encode("ascii"))
         return _FakeResult(returncode=0, stdout=b'{"dependencies":[]}')
 
     def control(self):

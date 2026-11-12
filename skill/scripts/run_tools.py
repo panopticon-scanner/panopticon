@@ -6,6 +6,7 @@ code; roslyn-secguard executes target build logic inside a no-egress,
 no-secret container (recorded in report meta); pip-audit/npm-audit run only
 under --online. Degrades gracefully when Docker is absent. Stdlib-only."""
 import os
+import re
 import subprocess
 import sys
 
@@ -86,6 +87,14 @@ CONTAINER_MEMORY = os.environ.get("PANOPTICON_TOOL_MEMORY", "6g")
 CONTAINER_CPUS = os.environ.get("PANOPTICON_TOOL_CPUS", "4")
 CONTAINER_PIDS_LIMIT = os.environ.get("PANOPTICON_TOOL_PIDS", "1024")
 
+# #3583: two labels make the cleanup scope an intersection: this role, in this
+# run.  Egress owns its equivalent role label in `tools/egress.py`; keep each
+# complete Docker label here rather than copying string literals at launch and
+# cleanup sites that could drift apart.
+SCANNER_LABEL = "panopticon.role=scanner"
+SCANNER_RUN_LABEL = "panopticon.run"
+_CONTAINER_ID = re.compile(r"[0-9a-fA-F]{12,64}\Z")
+
 def resource_limit_flags():
     """docker-run resource ceilings for the containers this module and
     `run_fixture_tests.py` launch, beside `scanner_config.privilege_drop_flags`.
@@ -104,6 +113,60 @@ def resource_limit_flags():
     if CONTAINER_PIDS_LIMIT:
         flags += ["--pids-limit", CONTAINER_PIDS_LIMIT]
     return flags
+
+
+def _scanner_run_token(run_id):
+    """The label value for this invocation, and whether a resume can share it.
+
+    Driver runs always carry their persisted run id. A direct `run_tools.py`
+    invocation has no persisted identity, but its containers still need a
+    unique label so SIGINT/SIGTERM can reap them without touching another
+    direct scan running beside it.
+    """
+    value = "" if run_id is None else str(run_id)
+    if value:
+        return value, True
+    return "direct-%s-%s" % (os.getpid(), os.urandom(6).hex()), False
+
+
+def _scanner_label_flags(run_token):
+    return ["--label", SCANNER_LABEL,
+            "--label", "%s=%s" % (SCANNER_RUN_LABEL, run_token)]
+
+
+def _reap_scanner_containers(docker_bin, runner, run_token, reason):
+    """Force-remove only this run's scanner containers; True when verified.
+
+    `docker ps -q` emits container ids, not names. Refusing any other shape
+    keeps a compromised or defective runner response from becoming extra
+    docker-rm options. A failed lookup/removal makes startup fail closed; the
+    interrupt path reports it but preserves the interrupt.
+    """
+    labels = ["--filter", "label=%s" % SCANNER_LABEL,
+              "--filter", "label=%s=%s" % (SCANNER_RUN_LABEL, run_token)]
+    rc, out, _err = egress._control(
+        runner, [docker_bin, "ps", "-aq"] + labels)
+    if rc:
+        print("run_tools: scanner-container lookup failed (docker exited %s)" % rc,
+              file=sys.stderr)
+        return False
+    ids = [line.strip() for line in out.splitlines() if line.strip()]
+    if any(_CONTAINER_ID.fullmatch(container_id) is None for container_id in ids):
+        print("run_tools: scanner-container lookup returned an invalid id",
+              file=sys.stderr)
+        return False
+    if not ids:
+        return True
+    rc, _out, _err = egress._control(
+        runner, [docker_bin, "rm", "-f"] + ids)
+    if rc:
+        print("run_tools: scanner-container reap failed (docker exited %s)" % rc,
+              file=sys.stderr)
+        return False
+    print("run_tools: reaped %d scanner container%s %s"
+          % (len(ids), "" if len(ids) == 1 else "s", reason),
+          file=sys.stderr, flush=True)
+    return True
 
 
 def validate_output_dir(target, out_dir):
@@ -334,11 +397,12 @@ def run_tools(target, tools, out_dir, image=tools_image.LOCAL_NAME,
     nothing target-authored is honoured on either check (owner ruling of
     2026-09-26; the workflows move in their own PR).
 
-    `run_id` (#1645) names this run's egress network and proxy sidecar, so a
-    leftover from a crashed run is recognisable. The whole loop runs inside one
-    `scripts.tools.egress.session`: with an ONLINE_ONLY adapter selected that
-    session is a `--internal` network plus an allowlisting proxy, and with none
-    selected it is inert and every argv below is byte-identical to before.
+    `run_id` (#1645, #3583) names this run's egress network/proxy sidecar and
+    labels every scanner container. A resumed invocation removes only scanner
+    containers with this run's role + run-id labels before it can re-dispatch.
+    The whole loop runs inside one `scripts.tools.egress.session`: with an
+    ONLINE_ONLY adapter selected that session is a `--internal` network plus an
+    allowlisting proxy, and with none selected it is inert.
     """
     runner = runner or _popen_runner   # #run7 COD-A2A: stream by default, don't buffer-then-drop
     # Reset both ledgers so this scan never inherits a previous run's capture
@@ -368,6 +432,15 @@ def run_tools(target, tools, out_dir, image=tools_image.LOCAL_NAME,
     # command. The wrapper preserves the injected runner seam while making an
     # unsafe nested PATH impossible in production.
     docker_runner = _DockerRunner(runner, docker_env)
+    scanner_run_token, resumable_run = _scanner_run_token(run_id)
+    scanner_labels = _scanner_label_flags(scanner_run_token)
+    # A new process resuming this run reaches this before any scanner dispatch.
+    # A direct scan's generated token cannot have an earlier owner to reap.
+    if resumable_run and not _reap_scanner_containers(
+            docker_bin, docker_runner, scanner_run_token, "before dispatch"):
+        print("run_tools: scanner cleanup could not be verified; skipping tool scan",
+              file=sys.stderr)
+        return []
     # #1317: NullProgress by default, so the five call sites below need no
     # `if progress:` guard and the runner's behaviour is byte-identical unless
     # a caller opts in.
@@ -383,19 +456,28 @@ def run_tools(target, tools, out_dir, image=tools_image.LOCAL_NAME,
     scanner_config._SCANNER_CONFIG_POSTURE.clear()
     tools_manifest._IGNORE_FILE_POSTURE.clear()
     tools_manifest._SCANNER_SCOPE_POSTURE.clear()
-    with egress.session(docker_bin, tools, docker_runner, run_id=run_id,
-                        max_seconds=tool_capture.TOOL_TIMEOUT * total
-                        + egress.SIDECAR_SLACK) as online_egress:
-        written = _run_selected(target, tools, out_dir, image, docker_runner,
-                                progress, total, venv_dirs, docker_context,
-                                online_egress, security_mode, exclude_globs)
+    try:
+        with egress.session(docker_bin, tools, docker_runner, run_id=run_id,
+                            max_seconds=tool_capture.TOOL_TIMEOUT * total
+                            + egress.SIDECAR_SLACK) as online_egress:
+            written = _run_selected(target, tools, out_dir, image, docker_runner,
+                                    progress, total, venv_dirs, docker_context,
+                                    online_egress, security_mode, exclude_globs,
+                                    scanner_labels)
+    except KeyboardInterrupt:
+        # procgroup.Terminated (SIGTERM) subclasses KeyboardInterrupt, so the
+        # same exact-label cleanup covers both operator interrupt paths.
+        _reap_scanner_containers(
+            docker_bin, docker_runner, scanner_run_token,
+            "during interrupt cleanup")
+        raise
     progress.footer(len(written), total)
     return written
 
 
 def _run_selected(target, tools, out_dir, image, runner, progress, total,
                   venv_dirs, docker_context, online_egress,
-                  security_mode="standard", exclude_globs=()):
+                  security_mode="standard", exclude_globs=(), scanner_labels=()):
     """The dispatch loop, one docker invocation per selected tool.
 
     Split out of `run_tools` only so the `egress.session` context (#1645) does
@@ -439,7 +521,8 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                     progress.note("[%d/%d] %s skipped: scanner-owned config "
                                   "could not be staged" % (index, total, tool))
                     continue
-                docker = ([docker_bin, "run", "--rm"] + resource_limit_flags()
+                docker = ([docker_bin, "run", "--rm"] + list(scanner_labels)
+                          + resource_limit_flags()
                           + scanner_config.privilege_drop_flags()
                           + _working_dir_flags(tool)
                           + config_mount
@@ -465,7 +548,8 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
         if adapter:
             ext = "sarif" if tool in LEGACY_SARIF_TOOLS else "json"
             out_path = os.path.join(out_dir, "%s.%s" % (tool, ext))
-            docker = ([docker_bin, "run", "--rm"] + resource_limit_flags()
+            docker = ([docker_bin, "run", "--rm"] + list(scanner_labels)
+                      + resource_limit_flags()
                       + scanner_config.privilege_drop_flags())
             if online_egress.serves(tool):
                 docker.extend(online_egress.flags_for(tool))

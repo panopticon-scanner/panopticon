@@ -678,6 +678,8 @@ class TestDockerBoundary(unittest.TestCase):
 
         def runner(cmd, **kwargs):
             calls.append((list(cmd), dict(kwargs)))
+            if cmd[1] == "ps":
+                return Result()
             if list(cmd[1:3]) == ["network", "inspect"]:
                 body = [{"IPAM": {"Config": [
                     {"Subnet": "172.30.0.0/16", "Gateway": "172.30.0.1"}]}}]
