@@ -669,6 +669,12 @@ class TestTheSessionRootHookRegistrationIsAssessed(_Trees):
                         self.assertEqual(before, fh.read())
                     self.assertEqual([".claude"], os.listdir(s))      # nothing marked or moved
 
+    def test_a_planted_entry_beside_the_one_arming_writes_still_halts(self):
+        root, s = self._tree(False), self._dir()
+        label, guard = self._guards()[0]
+        path = self._settings(s, [self._ours(guard, s), self._variants(guard, s)["no policy file"]])
+        self._halts(root, H6 % (path, label), "--session-dir", s)
+
     def test_the_entries_arming_writes_pass_beside_the_owners_own(self):
         root, s = self._tree(False), self._dir()
         pre = [self._OWNER] + [self._ours(guard, s) for _label, guard in self._guards()]
