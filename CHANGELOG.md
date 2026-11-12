@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **The two guard checks that ran log-only for a release are removed (#3533, N+1).** Across three
+  redteam tags (clean, crash/resume/rollback, dirty folder) the shadow log stayed empty, so:
+  - The read guard no longer checks a scope row's stamp (#3436), on a read or at install. A row is
+    adjudicated as written and still confines its entry; a bound entry with no row still denies,
+    ours still wins on a shared id, and a row whose paths fail the M1 shape check is still dropped
+    at install. Rows are still stamped.
+  - The write guard no longer has the finer #1831 rule. A carried grant must sit under one of this
+    run's folders, and a grant on the guards' own state there is always dropped.
+  - First contact's halt on a planted `read-scope.json` or `write-allowlist.json` (#3532) covers
+    both. `shadow-denials.jsonl` and `guard_rules.record_shadow` are gone.
+
 - **Scanner containers are reaped by run id (#3583).** Every scanner Docker
   invocation carries scanner-role and run-id labels. A tools-phase start removes
   only this run's labelled leftovers before dispatch, and SIGINT/SIGTERM performs
