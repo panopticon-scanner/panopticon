@@ -412,6 +412,11 @@ class TestAgyAuthFailsClosed(unittest.TestCase):
         self.assertEqual(agy_home.AUTH_UNREACHABLE, res.host_error)
         self.assertEqual(outage.HOST_FAILURE, res.failure_class)
 
+    def test_the_message_alone_classifies_as_a_host_failure(self):
+        # Belt and braces with the explicit class: the outage pause reads it either way.
+        self.assertEqual(outage.HOST_FAILURE,
+                         outage.classify_failure(agy_home.AUTH_UNREACHABLE))
+
     def test_a_stopped_child_is_a_typed_host_failure(self):
         seen = {}
 
