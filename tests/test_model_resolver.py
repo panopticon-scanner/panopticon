@@ -3,7 +3,7 @@ import contextlib
 import io
 import json
 import os
-import subprocess
+import runpy
 import sys
 import tempfile
 import unittest
@@ -458,21 +458,19 @@ class TestUnknownHostsAreRefused(unittest.TestCase):
         self.assertEqual(mr._hardcoded_fallback("generic", "scout"), {"model": None})
 
     def test_run_by_path_cli_refuses_an_unregistered_host_without_a_traceback(self):
-        env = dict(os.environ)
-        env.pop("PANOPTICON_MODEL_SCOUT", None)
-        refused = subprocess.run(
-            [sys.executable, mr.__file__, "openrouter", "scout"],
-            capture_output=True, text=True, env=env, check=False)
-        self.assertEqual(refused.returncode, 2)
-        self.assertEqual(refused.stdout, "")
-        self.assertEqual(refused.stderr, "model_resolver: %s\n" % self.ERROR)
+        def run(host):
+            out, err = io.StringIO(), io.StringIO()
+            with patch.object(sys, "argv", [mr.__file__, host, "scout"]), \
+                    patch.dict(os.environ, {"PANOPTICON_MODEL_SCOUT": ""}), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                    self.assertRaises(SystemExit) as stopped:
+                runpy.run_path(mr.__file__, run_name="__main__")
+            return stopped.exception.code, out.getvalue(), err.getvalue()
 
-        allowed = subprocess.run(
-            [sys.executable, mr.__file__, "generic", "scout"],
-            capture_output=True, text=True, env=env, check=False)
-        self.assertEqual(allowed.returncode, 0)
-        self.assertEqual(allowed.stdout, "{'model': None}\n")
-        self.assertEqual(allowed.stderr, "")
+        self.assertEqual(
+            run("openrouter"),
+            (2, "", "model_resolver: %s\n" % self.ERROR))
+        self.assertEqual(run("generic"), (0, "{'model': None}\n", ""))
 
     def test_a_known_host_with_no_fallback_table_also_resolves_to_no_model(self):
         # generic is in the registry and has no table (#3494 gave gemini its
