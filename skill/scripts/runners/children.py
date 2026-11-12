@@ -170,7 +170,7 @@ class _Capture:
 
     def _wait_watched(self, deadline):
         """`wait` for a launch with a stop line: the same order, in slices."""
-        outcome = self._until(self.reader.is_alive, self.reader.join, deadline)
+        outcome = self._until(lambda: self.reader.is_alive(), self.reader.join, deadline)
         if outcome:
             return outcome
         if self.capped:
