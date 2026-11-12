@@ -235,7 +235,7 @@ def _load_scope(scope_path):
         entry[ESCAPES_KEY] = ({g: ([p for p in v if isinstance(p, str)] if isinstance(v, list)
                                    else None) for g, v in raw.items() if isinstance(g, str)}
                               if isinstance(raw, dict) else {})
-        out[eid] = dict(entry, _by=scope.get("_by"))  # #3436: the row stamp the read hook checks
+        out[eid] = entry
     return out, ""
 
 

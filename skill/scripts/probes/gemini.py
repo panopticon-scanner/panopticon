@@ -369,7 +369,7 @@ def probe_gemini_read_guard(host, *, matcher=gemini_home.HOOK_MATCHER):
         scope_path, allowlist_path = os.path.join(sandbox, "read-scope.json"), os.path.join(sandbox, "write-allowlist.json")
         scopes = read_guard_hook.scope_from_plan([{"id": "probe-entry", "scope": {"files": [in_file], "dirs": [in_dir], "reads": []}}])
         with open(scope_path, "w", encoding="utf-8") as fh:
-            json.dump(read_guard_hook.stamp_rows(scopes), fh)
+            json.dump(scopes, fh)
         with open(allowlist_path, "w", encoding="utf-8") as fh:
             json.dump({"version": 2, "entries": {}, "paths": []}, fh)
 
@@ -674,7 +674,7 @@ def run_live_canary(*, runner=None):
         scope_path, allowlist_path = os.path.join(run_dir, runners_base.SCOPE_FILE), os.path.join(run_dir, runners_base.ALLOWLIST_FILE)
         scopes = read_guard_hook.scope_from_plan([{"id": "canary-1", "scope": {"files": [in_file], "dirs": [], "reads": []}}])
         with open(scope_path, "w", encoding="utf-8") as fh:
-            json.dump(read_guard_hook.stamp_rows(scopes), fh)
+            json.dump(scopes, fh)
         with open(allowlist_path, "w", encoding="utf-8") as fh:
             json.dump({"version": 2, "entries": {}, "paths": []}, fh)
         r.prepare(run_dir, review_root=review_root, registration_dir=reg_dir)

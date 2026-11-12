@@ -364,7 +364,7 @@ class TestAgyReadAndWriteGuardProbes(unittest.TestCase):
                 {"id": "e1", "scope": {"files": [in_file], "dirs": [ws_dir], "reads": []}}
             ])
             with open(scope_path, "w", encoding="utf-8") as fh:
-                json.dump(read_guard_hook.stamp_rows(scopes), fh)
+                json.dump(scopes, fh)
             with open(allowlist_path, "w", encoding="utf-8") as fh:
                 json.dump({"version": 2, "entries": {"e1": [out_json]}, "paths": [out_json]}, fh)
 
@@ -410,7 +410,7 @@ class TestAgyReadAndWriteGuardProbes(unittest.TestCase):
                 {"id": "e1", "scope": {"files": [in_file], "dirs": [], "reads": []}}
             ])
             with open(scope_path, "w", encoding="utf-8") as fh:
-                json.dump(read_guard_hook.stamp_rows(scopes), fh)
+                json.dump(scopes, fh)
             with open(allowlist_path, "w", encoding="utf-8") as fh:
                 json.dump({"version": 2, "entries": {}, "paths": []}, fh)
             allow, reason = agy_guard_hook.adjudicate(
@@ -438,7 +438,7 @@ class TestAgyReadAndWriteGuardProbes(unittest.TestCase):
                 scopes = read_guard_hook.scope_from_plan([
                     {"id": "e1", "scope": {"files": [readable], "dirs": [], "reads": []}}
                 ])
-                json.dump(read_guard_hook.stamp_rows(scopes), fh)
+                json.dump(scopes, fh)
             with open(argv_allowlist, "w", encoding="utf-8") as fh:
                 json.dump({"version": 2, "entries": {"e1": [writable]},
                            "paths": [writable]}, fh)
@@ -446,7 +446,7 @@ class TestAgyReadAndWriteGuardProbes(unittest.TestCase):
                 scopes = read_guard_hook.scope_from_plan([
                     {"id": "e1", "scope": {"files": [], "dirs": [], "reads": []}}
                 ])
-                json.dump(read_guard_hook.stamp_rows(scopes), fh)
+                json.dump(scopes, fh)
             with open(env_allowlist, "w", encoding="utf-8") as fh:
                 json.dump({"version": 2, "entries": {"e1": []}, "paths": []}, fh)
 
@@ -480,7 +480,7 @@ class TestAgyReadAndWriteGuardProbes(unittest.TestCase):
                 {"id": "e1", "scope": {"files": [readable], "dirs": [], "reads": []}}
             ])
             with open(scope_path, "w", encoding="utf-8") as fh:
-                json.dump(read_guard_hook.stamp_rows(scopes), fh)
+                json.dump(scopes, fh)
             with open(allowlist_path, "w", encoding="utf-8") as fh:
                 json.dump({"version": 2, "entries": {"e1": []}, "paths": []}, fh)
 
