@@ -551,7 +551,8 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
             except ValueError as exc:
                 faults.append("%s: %s" % (role, exc))
                 continue
-            runtime_checks.append((role, agent_name, resolved_model, effort))
+            runtime_checks.append((role, agent_name, resolved_model, effort,
+                                   bool(policy.get("model_override"))))
     if faults:
         return (hosts.REFUTED, AGY_MODEL_BOUND, "; ".join(faults))
     if not runtime_checks:
@@ -559,14 +560,38 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
                 "no role carries an entry model, so no model binding could be measured")
 
     home = None
+    bound_names = []
     try:
+        route = agy_home.auth_route()
         home = agy_home.build(
             "/nonexistent/read-scope.json",
             "/nonexistent/write-allowlist.json",
-            registration_dir=reg_dir)
-        for role, agent_name, resolved_model, effort in runtime_checks:
+            registration_dir=reg_dir, route=route)
+        listed: frozenset = frozenset()
+        if route == "key":
+            listing = _run_agy(["models"], home, runner=runner)
+            listed = agy_runner.listed_models(getattr(listing, "stdout", ""))
+            if getattr(listing, "returncode", 1) != 0 or not listed:
+                return (hosts.UNKNOWN, AGY_MODEL_BOUND,
+                        "`agy models` on the API-key route exited %s with %d listed models, "
+                        "so no binding could be measured (#3576)"
+                        % (getattr(listing, "returncode", 1), len(listed)))
+        for role, agent_name, resolved_model, effort, explicit in runtime_checks:
+            if route == "key":
+                # #3576: the key route folds the effort into the name and takes no --effort.
+                try:
+                    launch_model = agy_runner.key_route_model(
+                        resolved_model, effort[1] if effort else None, listed,
+                        explicit=explicit)
+                except ValueError as exc:
+                    faults.append("%s: %s" % (role, exc))
+                    continue
+                launch_effort: list[str] = []
+            else:
+                launch_model, launch_effort = resolved_model, effort
+            bound_names.append(launch_model + (" " + launch_effort[1] if launch_effort else ""))
             proc = _run_agy(
-                ["--agent", agent_name, "--model", resolved_model, *effort,
+                ["--agent", agent_name, "--model", launch_model, *launch_effort,
                  "--output-format", "json", "-p", "/model"],
                 home, runner=runner)
             if getattr(proc, "returncode", 1) != 0:
@@ -579,16 +604,17 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
                 faults.append("%s: `agy -p /model` returned non-JSON stdout" % role)
                 continue
             data_block = _command_data(doc)
-            level = effort[1] if effort else None
-            if not _model_id_matches(data_block, resolved_model, level):
+            level = launch_effort[1] if launch_effort else None
+            if not _model_id_matches(data_block, launch_model, level):
                 actual_slug = data_block.get("id") if isinstance(data_block, dict) else None
                 faults.append("%s: `agy -p /model` did not report effective model %r%s "
                               "in command.data (got id %r)"
-                              % (role, resolved_model, " at effort %r" % level if level else "",
+                              % (role, launch_model, " at effort %r" % level if level else "",
                                  actual_slug))
                 continue
-            if effort:
-                fault = _effort_readback(role, agent_name, resolved_model, effort, home, runner)
+            if launch_effort:
+                fault = _effort_readback(role, agent_name, launch_model, launch_effort, home,
+                                         runner)
                 if fault:
                     faults.append(fault)
     except runners_base.LaunchRefused:
@@ -602,12 +628,11 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
 
     if faults:
         return (hosts.REFUTED, AGY_MODEL_BOUND, "; ".join(faults))
-    verified = sorted({check[2] + (" " + check[3][1] if check[3] else "")
-                       for check in runtime_checks})
     return (hosts.PROVEN, AGY_MODEL_BOUND,
             "all %d driver roles match frontmatter tiers and runtime `/model` "
-            "resolution (%s); %s" % (len(common.DRIVER_ROLES), ", ".join(verified),
-                                     agy_runner.NO_ANSWERING_MODEL))
+            "resolution (%s)%s; %s" % (len(common.DRIVER_ROLES), ", ".join(sorted(set(bound_names))),
+                                       " on the API-key route" if route == "key" else "",
+                                       agy_runner.NO_ANSWERING_MODEL))
 
 
 def _command_data(doc):

@@ -199,11 +199,34 @@ model, so it changes none of this. If
 a future envelope reports a model that differs from the bound one, the driver says so on stderr
 (#3550).
 
-agy's sign-in reaches a run home only as the linked
-`~/.gemini/antigravity-cli/antigravity-oauth-token`. agy 1.5.6 keeps its token in the macOS login
-Keychain, which an isolated HOME cannot reach, and an interactive `agy` session that refreshes the
-token deletes that file. So `agy_home.build()` refuses, before any child launches, when the file is
-missing or dangling, with the message `agy auth not reachable from the isolated HOME`. And every agy
+agy reaches a run home signed in one of two ways, chosen by `agy_home.auth_route()` (#3576).
+
+- **The consumer sign-in:** the linked `~/.gemini/antigravity-cli/antigravity-oauth-token`.
+- **A Gemini API key:** `GEMINI_API_KEY` in the child's environment, with `modelProvider:
+  "gemini"` written into the run home's settings.json (https://antigravity.google/docs/cli/reference/).
+  The key is never written to disk.
+
+The token wins when both are present: the consumer plan carries Carbon, and a stray key in a shell
+must not move a run to another model and per-token billing. `PANOPTICON_AGY_AUTH=key` or `=token`
+forces a route, and any other value is refused. With neither source, `agy_home.build()` refuses
+before any child launches, with `agy auth not reachable from the isolated HOME` and both routes
+named. agy 1.5.6 keeps its consumer token in the macOS login Keychain, which an isolated HOME cannot
+reach, and an interactive `agy` session that refreshes the token deletes the file.
+
+**API-key runs use Argon (High), not Carbon.** The key route offers no Carbon at any effort. It takes
+no `--effort`: the level is part of the model name, as in `gemini-4-argon-high`. A run on that route
+lists its models once with `agy models` and refuses to start if that fails or lists nothing. Each
+entry is launched as `--model <model>-<effort>` (or `<model>` with no effort), and only when that
+name is listed. A profile default the route does not list is bound through one table,
+`runners/agy.ROUTE_SUBSTITUTES`; today that is the Carbon domain roles, which become
+`gemini-4-argon-high`. The ledger row records `requested_model`, `requested_effort` and `bound_model`,
+so it says Argon when Argon is what ran. A model the operator named with `PANOPTICON_MODEL_<ROLE>` is
+never substituted: if the route does not list it, the entry is refused as a host failure. On the key
+route `agy-model-bound` binds the same names and skips the `/effort` read-back. It is **unverified
+on the API-key route** until a live run proves it. ADC/Vertex auth
+(https://antigravity.google/docs/enterprise/) is out of scope and unverified.
+
+Every agy
 child, entry or probe, is ended as soon as its stderr shows the print-mode fallback after silent auth
 fails (`Print mode: silent auth failed`, `triggering interactive OAuth`, `consumerOAuth: starting
 OAuth`), before a browser sign-in can open. An entry ended that way is a host failure, which the

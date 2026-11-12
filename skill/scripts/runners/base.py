@@ -169,6 +169,10 @@ class RunResult:
                                           # host_error for outage classification; it did
                                           # not observe the host's structured error event.
     models: dict = dataclasses.field(default_factory=dict)  # host-reported per-model usage
+    bound_model: object = None     # #3576: the model name the launch was BOUND to when the
+                                   # runner chose one other than the entry's (agy's key route
+                                   # folds the effort into the name, or substitutes a model
+                                   # that route does not list); None when it launched as asked
 
     def __post_init__(self):
         """Classify any result that did not say (#1623).

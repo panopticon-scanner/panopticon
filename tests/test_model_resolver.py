@@ -103,12 +103,16 @@ class TestModelResolver(unittest.TestCase):
             self.assertEqual({"model": "gemini-3.8-flash-medium"}, mr.entry_policy("agy", role))
         self.assertNotIn("effort", mr.entry_policy("gemini", "domain_panel"))
         self.assertNotIn("effort", mr.entry_policy("codex", "domain_panel"))
+        # #3576: an operator-named agy model is marked, so the runner never substitutes it.
         with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_DOMAIN_PANEL": "gemini-4-argon"}):
-            self.assertEqual({"model": "gemini-4-argon"}, mr.entry_policy("agy", "domain_panel"))
+            self.assertEqual({"model": "gemini-4-argon", "model_override": True},
+                             mr.entry_policy("agy", "domain_panel"))
         with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_DOMAIN_PANEL":
                                           '{"model": "gemini-4-carbon", "effort": "medium"}'}):
-            self.assertEqual({"model": "gemini-4-carbon", "effort": "medium"},
+            self.assertEqual({"model": "gemini-4-carbon", "effort": "medium",
+                              "model_override": True},
                              mr.entry_policy("agy", "domain_panel"))
+            self.assertNotIn("model_override", mr.entry_policy("gemini", "domain_panel"))
             # Only agy's runner takes `effort`: on any other host it never reaches the entry,
             # and codex, which has its own effort key, refuses it rather than drop it.
             for host in ("gemini", "claude", "kimi"):
