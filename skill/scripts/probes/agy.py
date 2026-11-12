@@ -68,8 +68,16 @@ def _run_agy(argv, home, *, runner=None, extra_env=None, timeout=PROBE_TIMEOUT):
         env.pop(marker, None)
     if extra_env:
         env.update(extra_env)
-    return run([_BINARY, *argv], env=env, cwd=agy_home.workspace_dir(home),
-               capture_output=True, text=True, timeout=timeout)
+    try:
+        proc = run([_BINARY, *argv], env=env, cwd=agy_home.workspace_dir(home),
+                   capture_output=True, text=True, timeout=timeout,
+                   stop_on=agy_runner.INTERACTIVE_AUTH)
+    except children.HostStopped as exc:
+        # #3576: ended before a browser sign-in could open; said as the auth it is.
+        raise agy_home.AgyAuthUnreachable() from exc
+    if agy_runner.reached_interactive_auth(getattr(proc, "stderr", None)):
+        raise agy_home.AgyAuthUnreachable()
+    return proc
 
 
 def _check_hooks_registered(home, probe_id, *, runner=None):
@@ -397,6 +405,9 @@ def probe_agy_read_guard(host, *, runner=None, hooks_runner=None,
                 "agy PreToolUse (*) hook verified via `/hooks`, %d/%d payloads, "
                 "and live canary denials (%s)"
                 % (total, total, ", ".join(sorted(denied_tools))))
+    except agy_home.AgyAuthUnreachable as exc:
+        # #3576: no sign-in reachable from a run home, so nothing could be measured.
+        return (hosts.UNKNOWN, AGY_READ_GUARD_ARMED, str(exc))
     finally:
         if home:
             agy_home.teardown(home, "complete")
@@ -478,6 +489,9 @@ def probe_agy_write_guard(host, *, runner=None, hooks_runner=None,
         return (hosts.PROVEN, AGY_WRITE_GUARD_ARMED,
                 "agy PreToolUse (*) write guard verified via `/hooks` and %d/%d "
                 "payloads" % (total, total))
+    except agy_home.AgyAuthUnreachable as exc:
+        # #3576: no sign-in reachable from a run home, so nothing could be measured.
+        return (hosts.UNKNOWN, AGY_WRITE_GUARD_ARMED, str(exc))
     finally:
         if home:
             agy_home.teardown(home, "complete")

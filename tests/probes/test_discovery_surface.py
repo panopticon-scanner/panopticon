@@ -255,6 +255,12 @@ class TestTheControlsAreLive(unittest.TestCase):
                 tempfile.TemporaryDirectory() as home, \
                 tempfile.TemporaryDirectory() as reg:
             root = os.path.realpath(target)
+            # #3576: a run home needs a reachable sign-in; a stand-in token, never the real one.
+            cli_dir = os.path.join(home, ".gemini", "antigravity-cli")
+            os.makedirs(cli_dir)
+            with open(os.path.join(cli_dir, "antigravity-oauth-token"), "w",
+                      encoding="utf-8") as fh:
+                fh.write("oauth-token-fixture")
             runner = agy_runner.Runner("agy")
             with mock.patch.dict(os.environ, {"HOME": home}):
                 runner.prepare(root, os.path.join(root, "run"), registration_dir=reg)

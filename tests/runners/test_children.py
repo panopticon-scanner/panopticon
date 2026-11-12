@@ -14,6 +14,7 @@ headless environment: the defect is a grandchild that outlives its parent's
 death, which no `Mock` can exhibit.
 """
 import os
+import re
 import signal
 import subprocess
 import sys
@@ -207,6 +208,58 @@ class TestAFinishedLaunchIsWhatSubprocessRunReturned(unittest.TestCase):
         # must not turn that into something else.
         with self.assertRaises(OSError):
             base.HostRunner().launch([os.path.join(os.sep, "nonexistent-binary-9x")])
+
+
+class TestAStopLineEndsTheLaunch(unittest.TestCase):
+    """#3576: a family can name stderr lines that end its child at once. agy names
+    its interactive-OAuth fallback, which would otherwise open a browser."""
+
+    STOP = re.compile(rb"triggering interactive OAuth")
+
+    def _child(self, *writes):
+        """A child that prints its pid, then each stderr write, then waits a minute."""
+        lines = ["import os, sys, time",
+                 "sys.stdout.write('%d\\n' % os.getpid()); sys.stdout.flush()"]
+        for text, pause in writes:
+            lines.append("sys.stderr.write(%r); sys.stderr.flush()" % text)
+            if pause:
+                lines.append("time.sleep(%r)" % pause)
+        lines.append("time.sleep(60)")
+        return [sys.executable, "-c", "\n".join(lines)]
+
+    def _stopped(self, argv):
+        started = time.monotonic()
+        with self.assertRaises(children.HostStopped) as caught:
+            base.HostRunner().launch(argv, timeout=20, stop_on=self.STOP)
+        self.assertLess(time.monotonic() - started, 8)        # stopped, not waited out
+        raised = caught.exception
+        self.assertTrue(await_death(int(raised.output.split("\n", 1)[0])),
+                        "the CLI went on running after its stop line")
+        return raised
+
+    def test_the_stop_line_ends_the_child_and_raises(self):
+        raised = self._stopped(self._child(
+            ("Print mode: silent auth failed\nPrint mode: triggering interactive OAuth\n", 0)))
+        self.assertIn("triggering interactive OAuth", raised.stderr)
+        self.assertIn("printed a stop line", str(raised))
+        self.assertNotIsInstance(raised, subprocess.TimeoutExpired)
+
+    def test_a_stop_line_split_across_writes_is_still_found(self):
+        self._stopped(self._child(("Print mode: triggering inter", 0.3),
+                                  ("active OAuth\n", 0)))
+
+    def test_without_the_line_the_launch_is_unchanged(self):
+        argv = [sys.executable, "-c",
+                "import sys; sys.stderr.write('Print mode: not authenticated, trying "
+                "silent auth\\n'); sys.stdout.write('ok'); sys.exit(3)"]
+        got = base.HostRunner().launch(argv, timeout=20, stop_on=self.STOP)
+        self.assertEqual((3, "ok"), (got.returncode, got.stdout))
+        self.assertIn("trying silent auth", got.stderr)
+
+    def test_a_watched_launch_still_times_out(self):
+        argv = [sys.executable, "-c", "import time; time.sleep(60)"]
+        with self.assertRaises(subprocess.TimeoutExpired):
+            base.HostRunner().launch(argv, timeout=1, stop_on=self.STOP)
 
 
 class TestTheLaunchKeepsABoundedCapture(unittest.TestCase):

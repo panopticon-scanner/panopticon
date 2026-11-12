@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **agy fails closed when its sign-in is unreachable (#3576).** When an interactive `agy`
+  session refreshed its token, agy 1.5.6 moved the token into the macOS Keychain and deleted the
+  token file a run home links. Every agy child after that opened a browser sign-in, and the probes
+  timed out. Now a run home is refused before any child launches when the token file is missing
+  or dangling, with `agy auth not reachable from the isolated HOME` and what to do. Any agy child
+  that reaches agy's interactive-OAuth fallback anyway is ended at that line, before a browser
+  opens. An entry ended that way is a host failure; a probe reads UNKNOWN. How a sign-in should
+  survive a token refresh is a separate decision.
 - **Model resolution now refuses unregistered hosts (#3568).** Registration,
   ordinary resolution, hardcoded fallback, and the standalone CLI all consult
   the host registry before accepting overrides or profile data. The registered

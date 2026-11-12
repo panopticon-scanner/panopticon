@@ -54,6 +54,26 @@ TOOL_VOCABULARY = {
 HOOK_MATCHER = "*"
 HOOK_TIMEOUT_SECONDS = 30
 OAUTH_TOKEN_FILE = "antigravity-oauth-token"
+
+# #3576: what an operator is told when no agy sign-in is reachable from a run home.
+# agy 1.5.6 keeps its token in the macOS login Keychain, which an isolated HOME
+# cannot reach, and the token file is only its fallback: an interactive agy
+# session that refreshes the token deletes the file.
+AUTH_UNREACHABLE = (
+    "agy auth not reachable from the isolated HOME: agy is not authenticated there "
+    "(~/.gemini/antigravity-cli/%s is missing; agy may now keep its sign-in only in "
+    "the macOS Keychain, which a panopticon run home cannot reach). Sign in with an "
+    "interactive `agy` session until that file exists, then re-run (#3576)." % OAUTH_TOKEN_FILE)
+
+
+class AgyAuthUnreachable(RuntimeError):
+    """No agy sign-in would be reachable from the run home (#3576).
+
+    Raised by `build()` before any child launches, so no paid work starts and
+    no child can fall back to a browser sign-in."""
+
+    def __init__(self):
+        super().__init__(AUTH_UNREACHABLE)
 SETTINGS_FILE = "settings.json"
 HOOKS_FILE = "hooks.json"
 WORKSPACE_DIR = "workspace"
@@ -161,7 +181,6 @@ def workspace_dir(home):
 def build(read_scope_path="", write_allowlist_path="", *, user_home=None,
           registration_dir=None, review_root=None, matcher=HOOK_MATCHER):
     """Create and populate the isolated per-run `HOME` for `agy`."""
-    _ensure_signal_handler()
     real_user_home = (os.path.abspath(user_home) if user_home
                       else os.path.expanduser("~"))
     row = hosts.spec("agy")
@@ -171,6 +190,13 @@ def build(read_scope_path="", write_allowlist_path="", *, user_home=None,
     if user_home and registration_dir is None:
         reg_dir = os.path.join(real_user_home, ".gemini", "config", "agents")
 
+    # #3576: refuse before a home exists. A missing or dangling token file used to
+    # be skipped silently, and every child then fell back to a browser sign-in.
+    src_token = os.path.join(real_user_home, ".gemini", "antigravity-cli", OAUTH_TOKEN_FILE)
+    if not os.path.isfile(src_token):
+        raise AgyAuthUnreachable()
+
+    _ensure_signal_handler()
     home = _create_home(review_root)
     _LIVE_HOMES.add(home)
     try:
@@ -182,11 +208,8 @@ def build(read_scope_path="", write_allowlist_path="", *, user_home=None,
         # Change 1: symlink ONLY `antigravity-oauth-token` from the user's
         # `~/.gemini/antigravity-cli/`. Never symlink `mcp/`, `brain/`,
         # `knowledge/`, `implicit/`, `annotations/`, or user `settings.json`.
-        src_token = os.path.join(
-            real_user_home, ".gemini", "antigravity-cli", OAUTH_TOKEN_FILE)
         dst_token = os.path.join(cli_dir, OAUTH_TOKEN_FILE)
-        if os.path.lexists(src_token):
-            os.symlink(os.path.abspath(src_token), dst_token)
+        os.symlink(os.path.abspath(src_token), dst_token)
 
         # Minimal isolated CLI settings: allow reaching `review_root` outside
         # `<run_home>/workspace` and enable `accept-edits` so `write_file`

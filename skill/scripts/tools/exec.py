@@ -10,7 +10,7 @@ from .base import (MAX_TOOL_OUTPUT_BYTES, MAX_TOOL_STDERR_BYTES,
                    _output_size, _raise_if_output_capped, read_capped)
 
 
-def drain_stderr_async(proc, cap=MAX_TOOL_STDERR_BYTES):
+def drain_stderr_async(proc, cap=MAX_TOOL_STDERR_BYTES, on_chunk=None):
     """Drain ``proc.stderr`` to EOF on a daemon thread, retaining ``cap`` bytes.
 
     Both capture paths need this. A child that fills its stderr pipe (64 KB on
@@ -28,6 +28,9 @@ def drain_stderr_async(proc, cap=MAX_TOOL_STDERR_BYTES):
     while discarding the only part worth printing. At least one chunk is always
     retained, so a single read larger than `cap` still yields diagnostics.
 
+    ``on_chunk``, when given, sees every chunk as it is read, before any is
+    dropped from the tail (#3576: a host's stop line must not be missed).
+
     Returns a ``join(timeout=2.0) -> bytes`` callable.
     """
     chunks: collections.deque[bytes] = collections.deque()
@@ -39,6 +42,8 @@ def drain_stderr_async(proc, cap=MAX_TOOL_STDERR_BYTES):
                 chunk = proc.stderr.read(64 * 1024)
                 if not chunk:
                     break
+                if on_chunk is not None:
+                    on_chunk(chunk)
                 chunks.append(chunk)
                 kept[0] += len(chunk)
                 while kept[0] > cap and len(chunks) > 1:
