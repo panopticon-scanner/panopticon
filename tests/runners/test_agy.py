@@ -498,6 +498,7 @@ class TestTheKeyRoute(unittest.TestCase):
             without, _ = self._homes(os.path.join(d, "b"), token=False)
             for env, home, why in (
                     ({}, without, agy_home.AUTH_UNREACHABLE),
+                    ({"GEMINI_API_KEY": "  "}, without, agy_home.AUTH_UNREACHABLE),
                     ({"PANOPTICON_AGY_AUTH": "key"}, with_token, "GEMINI_API_KEY is not set"),
                     ({"PANOPTICON_AGY_AUTH": "token", "GEMINI_API_KEY": FAKE_KEY}, without,
                      agy_home.AUTH_UNREACHABLE),
@@ -610,7 +611,8 @@ class TestTheKeyRoute(unittest.TestCase):
         self.assertEqual(FAKE_KEY, seen[0][1]["env"]["GEMINI_API_KEY"])
 
     def test_prepare_refuses_when_the_listing_fails_or_is_empty(self):
-        for rc, out, why in ((1, "", "exited 1"), (0, "Available models:\n", "listed no models")):
+        for rc, out, why in ((1, "", "exited 1"), (2, KEY_ROUTE_MODELS, "exited 2"),
+                             (0, "Available models:\n", "listed no models")):
             with self.subTest(why=why), tempfile.TemporaryDirectory() as d:
                 with self.assertRaisesRegex(agy_home.AgyAuthUnreachable, why):
                     self._key_runner(d, [], models_rc=rc, models_out=out)
