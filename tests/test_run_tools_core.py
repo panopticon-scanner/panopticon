@@ -250,7 +250,8 @@ class TestRunTools(unittest.TestCase):
                 fh.write("#!/bin/sh\nexit 99\n")
             os.chmod(docker, 0o700)
             out_dir = os.path.join(d, "out")
-            with mock.patch.dict(os.environ, {"PATH": trusted}, clear=False):
+            with mock.patch.dict(os.environ, {"PATH": trusted}, clear=False), \
+                    mock.patch.object(rt.os, "urandom", return_value=b"\xab" * 6):
                 rt.run_tools(d, ["semgrep"], out_dir, image="panopticon-tools",
                              runner=runner)
             docker_bin = os.path.realpath(docker)
@@ -268,7 +269,13 @@ class TestRunTools(unittest.TestCase):
             # #1877: and the working directory sits with them, so the container
             # starts OUTSIDE the `/src` mount rather than on the image's
             # `WORKDIR /src` -- the target's own tree.
-            self.assertEqual(cmd0[4:], (["--rm"] + rt.resource_limit_flags()
+            # #3583: even a direct scan with no persisted run id is uniquely
+            # labelled; the stable driver-run label uses its manifest run id.
+            direct_label = "panopticon.run=direct-%s-%s" % (os.getpid(), "ab" * 6)
+            self.assertEqual(cmd0[4:], (["--rm",
+                                        "--label", "panopticon.role=scanner",
+                                        "--label", direct_label]
+                       + rt.resource_limit_flags()
                         + sc.privilege_drop_flags()
                         + ["-w", rt.ADAPTER_EMPTY_CWD]
                         + ["--network", "none",

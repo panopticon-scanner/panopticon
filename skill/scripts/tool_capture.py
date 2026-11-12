@@ -320,6 +320,17 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
                 rc = proc.wait()
                 stderr = join_stderr()
             finally:
+                # #3583: end the producer BEFORE closing either pipe.  The
+                # concurrent stderr pump can be blocked in BufferedReader.read
+                # while holding that stream's lock; close() would then wait for
+                # the scanner (or the 900s watchdog) instead of propagating an
+                # operator's SIGINT/SIGTERM.  Killing first gives the pump EOF.
+                if proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+                    _kill_container()      # OPS-D1A: stop the container, not just the client
                 try:
                     proc.stdout.close()
                 except Exception:
@@ -328,12 +339,6 @@ def _stream_and_write(label, tool, proc, out_path, timeout=TOOL_TIMEOUT,
                     proc.stderr.close()
                 except Exception:
                     pass
-                if proc.poll() is None:
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
-                    _kill_container()      # OPS-D1A: stop the container, not just the client
 
             # A watchdog kill lands rc < 0 (signal). Only treat it as a timeout
             # when the child did NOT finish cleanly first -- else a tool that
