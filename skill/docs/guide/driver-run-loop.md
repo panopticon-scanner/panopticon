@@ -448,8 +448,9 @@ on Claude hooks, and always uses the return-persist path.
   on `complete`. Both guards are **fail-closed while registered**: an absent, unreadable, or
   malformed allowlist/scope file denies guarded access with a loud reason instead of silently
   allowing it. A planted scope file or allowlist halts the run at first contact, before any guard
-  reads it (#3532); `install` keeps a concurrent fan-out's rows and lets ours win on a shared id
-  (the read-scope row stamp of #3436 was removed in #3533). - **The loop dispatches one agent per entry** through the runner: `enforced` →
+  reads it (#3532); `install` keeps a concurrent fan-out's rows and lets ours win on a shared
+  id (the read-scope row stamp of #3436 was removed in #3533).
+- **The loop dispatches one agent per entry** through the runner: `enforced` →
   `--agent entry["agent"]` (a registered `panopticon-*` shell, tools+model host-enforced) plus one
   `--allowedTools=Edit(//<absolute out_file>)` token, the Write permission for that entry's own file
   (#3218: `claude -p` auto-denies an unapproved Write, and `Edit` is the rule a create needs; an
