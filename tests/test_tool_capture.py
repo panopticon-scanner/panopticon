@@ -270,17 +270,23 @@ class TestStreamingRunnerAndDeadline(unittest.TestCase):
         on the reader's lock until something else ends the child.
         """
         pump_reading = threading.Event()
+        stream_lock = threading.Lock()
 
         class _HeldStderr:
             def __init__(self, stream):
                 self._stream = stream
 
             def read(self, size=-1):
-                pump_reading.set()
-                return self._stream.read(size)
+                # Mirror BufferedReader's internal read/close lock with one we
+                # can synchronize explicitly: the child keeps the real read
+                # blocked while close() contends for this same lock.
+                with stream_lock:
+                    pump_reading.set()
+                    return self._stream.read(size)
 
             def close(self):
-                return self._stream.close()
+                with stream_lock:
+                    return self._stream.close()
 
         class _InterruptingStdout:
             def __init__(self, stream):
@@ -289,9 +295,6 @@ class TestStreamingRunnerAndDeadline(unittest.TestCase):
             def read(self, _size=-1):
                 if not pump_reading.wait(2):
                     raise RuntimeError("stderr pump did not start")
-                # Let the pump enter the real BufferedReader.read and acquire
-                # its lock before the interrupt starts teardown.
-                time.sleep(0.1)
                 raise KeyboardInterrupt("fixture interrupt")
 
             def close(self):
