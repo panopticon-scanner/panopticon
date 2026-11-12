@@ -146,6 +146,111 @@ class TestContainment(unittest.TestCase):
         self.assertEqual(dict(os.environ), original)
 
 
+class TestScannerContainerLifecycle(unittest.TestCase):
+    """#3583: scanner containers belong to, and are reaped by, one run."""
+
+    RUN_ID = "run-3583"
+    ROLE_LABEL = "panopticon.role=scanner"
+    RUN_LABEL = "panopticon.run=%s" % RUN_ID
+    ORPHAN = "a" * 12
+
+    @staticmethod
+    def _ps(docker):
+        return [docker, "ps", "-aq",
+                "--filter", "label=panopticon.role=scanner",
+                "--filter", "label=panopticon.run=run-3583"]
+
+    def _run(self, stub, tools=("semgrep", "osv-scanner"), interrupt=None,
+             run_id=RUN_ID):
+        runner = stub
+        if interrupt is not None:
+            def runner(cmd, **kw):
+                if _DockerStub.verb(cmd) == "run":
+                    stub.calls.append(list(cmd))
+                    raise interrupt("fixture interrupt")
+                return stub(cmd, **kw)
+
+        with tempfile.TemporaryDirectory() as trusted, \
+                tempfile.TemporaryDirectory() as target:
+            docker = os.path.join(trusted, "docker")
+            with open(docker, "w", encoding="utf-8") as fh:
+                fh.write("#!/bin/sh\nexit 99\n")
+            os.chmod(docker, 0o700)
+            with mock.patch.dict(os.environ, {"PATH": trusted}, clear=True), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                if interrupt is None:
+                    rt.run_tools(target, list(tools), os.path.join(target, "out"),
+                                 runner=runner, run_id=run_id)
+                else:
+                    with self.assertRaises(interrupt):
+                        rt.run_tools(target, list(tools), os.path.join(target, "out"),
+                                     runner=runner, run_id=run_id)
+        self.stderr = err.getvalue()
+        return os.path.realpath(docker)
+
+    def test_every_scanner_launch_has_role_and_run_labels(self):
+        stub = _DockerStub()
+        self._run(stub)
+        dispatches = [cmd for cmd in stub.calls if _DockerStub.verb(cmd) == "run"]
+        self.assertEqual(len(dispatches), 2)
+        for argv in dispatches:
+            labels = [argv[index + 1] for index, token in enumerate(argv)
+                      if token == "--label"]
+            self.assertIn(self.ROLE_LABEL, labels, argv)
+            self.assertIn(self.RUN_LABEL, labels, argv)
+
+    def test_a_direct_scan_without_a_manifest_run_id_is_still_labelled(self):
+        stub = _DockerStub()
+        self._run(stub, tools=("semgrep",), run_id=None)
+        launches = [cmd for cmd in stub.calls if _DockerStub.verb(cmd) == "run"]
+        self.assertEqual(len(launches), 1)
+        argv = launches[0]
+        labels = [argv[index + 1] for index, token in enumerate(argv)
+                  if token == "--label"]
+        self.assertIn(self.ROLE_LABEL, labels)
+        generated = [label for label in labels if label.startswith("panopticon.run=direct-")]
+        self.assertEqual(len(generated), 1, labels)
+        self.assertNotEqual(generated[0], "panopticon.run=direct-")
+
+    def test_resume_reaps_only_this_runs_labelled_scanners_before_dispatch(self):
+        stub = _DockerStub(listings=[(self.ORPHAN,)])
+        docker = self._run(stub, tools=("semgrep",))
+        self.assertEqual(stub.calls[:2], [
+            self._ps(docker),
+            [docker, "rm", "-f", self.ORPHAN],
+        ])
+        dispatch_index = next(index for index, cmd in enumerate(stub.calls)
+                              if _DockerStub.verb(cmd) == "run")
+        self.assertGreater(dispatch_index, 1)
+        self.assertIn("reaped 1 scanner container", self.stderr)
+
+    def test_sigint_and_sigterm_reap_the_run_before_the_interrupt_escapes(self):
+        for interrupt in (KeyboardInterrupt, rt.procgroup.Terminated):
+            with self.subTest(interrupt=interrupt.__name__):
+                stub = _DockerStub(listings=[(), (self.ORPHAN,)])
+                docker = self._run(stub, tools=("semgrep",), interrupt=interrupt)
+                self.assertEqual(stub.calls[-2:], [
+                    self._ps(docker),
+                    [docker, "rm", "-f", self.ORPHAN],
+                ])
+                self.assertIn("reaped 1 scanner container", self.stderr)
+
+    def test_unverified_cleanup_never_redispatches_a_scanner(self):
+        cases = {
+            "lookup failed": _DockerStub(fail=["ps"]),
+            "removal failed": _DockerStub(
+                fail=["rm"], listings=[(self.ORPHAN,)]),
+            "invalid id": _DockerStub(listings=[("--all",)]),
+        }
+        for label, stub in cases.items():
+            with self.subTest(case=label):
+                self._run(stub, tools=("semgrep",))
+                self.assertEqual(
+                    [cmd for cmd in stub.calls if _DockerStub.verb(cmd) == "run"],
+                    [])
+                self.assertIn("cleanup could not be verified", self.stderr)
+
+
 class TestOnlineEgress(unittest.TestCase):
     """#1645 (SEC-C1A): an ONLINE_ONLY adapter reaches its advisory endpoints
     through a per-run proxy on a `--internal` network, never Docker's default
@@ -184,6 +289,9 @@ class TestOnlineEgress(unittest.TestCase):
         conf = [c for c in stub.calls if _DockerStub.verb(c) == "run -d"][0]
         mounts = [conf[i + 1] for i, tok in enumerate(conf) if tok == "-v"]
         self.assertEqual([[docker] + c[1:] for c in stub.control()], [
+            [docker, "ps", "-aq",
+             "--filter", "label=%s" % rt.SCANNER_LABEL,
+             "--filter", "label=%s=r1645" % rt.SCANNER_RUN_LABEL],
             [docker, "container", "prune", "--force",
              "--filter", "label=%s" % rt_egress.EGRESS_LABEL,
              "--filter", "until=%s" % rt_egress.SWEEP_AGE],
@@ -261,7 +369,10 @@ class TestOnlineEgress(unittest.TestCase):
 
     def test_a_run_with_no_online_adapter_touches_no_control_plane(self):
         stub = self._run(["semgrep", "osv-scanner"], online=True)
-        self.assertEqual(stub.control(), [])
+        # #3583's scanner-orphan lookup is the one control call every persisted
+        # run makes. No egress network/sidecar control call is introduced.
+        self.assertEqual([_DockerStub.verb(cmd) for cmd in stub.control()], ["ps"])
+        self.assertNotIn(rt_egress.EGRESS_LABEL, " ".join(stub.control()[0]))
 
     def test_teardown_runs_when_an_adapter_dispatch_raises(self):
         stub = self._run(["pip-audit"], raise_on="pip-audit")
@@ -298,7 +409,9 @@ class TestOnlineEgress(unittest.TestCase):
         # things older than the sweep age -- so a concurrent scan's sidecar and
         # network are out of reach by construction, not by luck.
         stub = self._run(["pip-audit"])
-        for cmd in stub.control()[:2]:
+        prune = [cmd for cmd in stub.control() if "prune" in cmd]
+        self.assertEqual(len(prune), 2)
+        for cmd in prune:
             self.assertIn("prune", cmd)
             self.assertIn("label=%s" % rt_egress.EGRESS_LABEL, cmd)
             self.assertIn("until=%s" % rt_egress.SWEEP_AGE, cmd)

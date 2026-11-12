@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Scanner containers are reaped by run id (#3583).** Every scanner Docker
+  invocation carries scanner-role and run-id labels. A tools-phase start removes
+  only this run's labelled leftovers before dispatch, and SIGINT/SIGTERM performs
+  the same cleanup. An unverified lookup or removal now skips fresh dispatch
+  instead of risking two scanners writing the same capture; standalone scans get
+  their own unique invocation label.
+
 - **agy fails closed when its sign-in is unreachable (#3576).** When an interactive `agy`
   session refreshed its token, agy 1.5.6 moved the token into the macOS Keychain and deleted the
   token file a run home links. Every agy child after that opened a browser sign-in, and the probes
