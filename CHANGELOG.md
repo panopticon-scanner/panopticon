@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **The egress sidecar uses the reviewed current tinyproxy image (#3558).**
+  The new OCI index still provides `linux/amd64` and `linux/arm64`, and both
+  image configs retain the same command, unprivileged user, `8888/tcp` port,
+  and `/etc/tinyproxy/tinyproxy.conf` path.
+
 - **Model resolution now refuses unregistered hosts (#3568).** Registration,
   ordinary resolution, hardcoded fallback, and the standalone CLI all consult
   the host registry before accepting overrides or profile data. The registered

@@ -96,7 +96,7 @@ ALLOWLIST = {
 # the pin: an update still needs proxy tests on both architectures. The tools
 # image already has nightly builds and tools-image-health.yml freshness checks.
 PROXY_IMAGE = ("docker.io/kalaksi/tinyproxy@sha256:"
-               "8f9269b0b5b7b872b2fe8471299330c9fcf2ffb12eebdbb152feb7b9084f866a")
+               "fafafc7079ca29c6704564de1353f61d038f2166f09b01d4e460e8e499bf6b57")
 PROXY_PORT = 8888
 HTTPS_PORT = 443
 
