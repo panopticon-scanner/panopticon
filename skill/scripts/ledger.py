@@ -234,9 +234,15 @@ class Ledger:
             effort = entry.get("effort")
             if isinstance(effort, str) and effort:
                 line["requested_effort"] = effort
-            if isinstance(result.model, str) and result.model and result.model != bound_model:
+            launched = getattr(result, "bound_model", None)
+            if isinstance(launched, str) and launched:
+                # #3576: the name the launch was bound to when it is not the entry's own
+                # (agy's key route), so a row says Argon when Argon is what ran.
+                line["bound_model"] = launched
+            expected = launched if isinstance(launched, str) and launched else bound_model
+            if isinstance(result.model, str) and result.model and result.model != expected:
                 print("driver loop: %s: host %r reported model %r, bound %r"
-                      % (entry.get("id"), host, result.model, bound_model),
+                      % (entry.get("id"), host, result.model, expected),
                       file=sys.stderr, flush=True)
         # Host errors and persistence refusals can quote credentials. Redact at
         # the single writer, preserving null when the row has no error (#1709).

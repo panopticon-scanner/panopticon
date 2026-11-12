@@ -55,15 +55,29 @@ HOOK_MATCHER = "*"
 HOOK_TIMEOUT_SECONDS = 30
 OAUTH_TOKEN_FILE = "antigravity-oauth-token"
 
-# #3576: what an operator is told when no agy sign-in is reachable from a run home.
-# agy 1.5.6 keeps its token in the macOS login Keychain, which an isolated HOME
-# cannot reach, and the token file is only its fallback: an interactive agy
-# session that refreshes the token deletes the file.
+# #3576: the two ways an agy child can be signed in.
+# - "token": the consumer sign-in, `~/.gemini/antigravity-cli/<OAUTH_TOKEN_FILE>`
+#   linked into the run home. agy 1.5.6 keeps its token in the macOS login
+#   Keychain, which an isolated HOME cannot reach; the file is only its fallback,
+#   and an interactive agy session that refreshes the token deletes it.
+# - "key": a Gemini API key, `GEMINI_API_KEY` in the child's environment, with
+#   `modelProvider: "gemini"` in the run home's settings.json
+#   (https://antigravity.google/docs/cli/reference/). Never written to disk.
+# The token wins when both are present (owner ruling, 2026-11-12): the consumer
+# plan carries Carbon, the key route does not, and a stray key in a shell must not
+# move a run to another model and per-token billing. AUTH_ENV forces a route.
+AUTH_ENV = "PANOPTICON_AGY_AUTH"
+AUTH_ROUTES = ("token", "key")
+KEY_ENV = "GEMINI_API_KEY"
+
 AUTH_UNREACHABLE = (
-    "agy auth not reachable from the isolated HOME: agy is not authenticated there "
-    "(~/.gemini/antigravity-cli/%s is missing; agy may now keep its sign-in only in "
-    "the macOS Keychain, which a panopticon run home cannot reach). Sign in with an "
-    "interactive `agy` session until that file exists, then re-run (#3576)." % OAUTH_TOKEN_FILE)
+    "agy auth not reachable from the isolated HOME: agy is not authenticated there. "
+    "There is no consumer sign-in (~/.gemini/antigravity-cli/%s is missing; agy may now "
+    "keep its sign-in only in the macOS Keychain, which a panopticon run home cannot "
+    "reach) and no %s in the environment. Sign in with an interactive `agy` session "
+    "until that file exists, or export %s (API-key runs use gemini-4-argon-high in "
+    "place of Carbon, which that route does not offer), then re-run (#3576)."
+    % (OAUTH_TOKEN_FILE, KEY_ENV, KEY_ENV))
 
 
 class AgyAuthUnreachable(RuntimeError):
@@ -72,8 +86,36 @@ class AgyAuthUnreachable(RuntimeError):
     Raised by `build()` before any child launches, so no paid work starts and
     no child can fall back to a browser sign-in."""
 
-    def __init__(self):
-        super().__init__(AUTH_UNREACHABLE)
+    def __init__(self, message=AUTH_UNREACHABLE):
+        super().__init__(message)
+
+
+def token_path(user_home=None):
+    """The consumer sign-in a run home links."""
+    home = os.path.abspath(user_home) if user_home else os.path.expanduser("~")
+    return os.path.join(home, ".gemini", "antigravity-cli", OAUTH_TOKEN_FILE)
+
+
+def auth_route(env=None, user_home=None):
+    """"token" or "key": the sign-in an agy child would use (#3576).
+
+    Raises `AgyAuthUnreachable` when the chosen route has nothing to sign in with,
+    or when AUTH_ENV names a route that does not exist. Never echoes the key."""
+    env = os.environ if env is None else env
+    forced = (env.get(AUTH_ENV) or "").strip()
+    if forced and forced not in AUTH_ROUTES:
+        raise AgyAuthUnreachable("%s must be one of %s" % (AUTH_ENV, ", ".join(AUTH_ROUTES)))
+    has_token = os.path.isfile(token_path(user_home))
+    has_key = bool((env.get(KEY_ENV) or "").strip())
+    if forced == "key" or (not forced and not has_token and has_key):
+        if not has_key:
+            raise AgyAuthUnreachable("%s=key but %s is not set (#3576)" % (AUTH_ENV, KEY_ENV))
+        return "key"
+    if not has_token:
+        raise AgyAuthUnreachable()
+    return "token"
+
+
 SETTINGS_FILE = "settings.json"
 HOOKS_FILE = "hooks.json"
 WORKSPACE_DIR = "workspace"
@@ -179,8 +221,10 @@ def workspace_dir(home):
 
 
 def build(read_scope_path="", write_allowlist_path="", *, user_home=None,
-          registration_dir=None, review_root=None, matcher=HOOK_MATCHER):
-    """Create and populate the isolated per-run `HOME` for `agy`."""
+          registration_dir=None, review_root=None, matcher=HOOK_MATCHER, route=None):
+    """Create and populate the isolated per-run `HOME` for `agy`.
+
+    `route` is `auth_route()`'s answer when the caller already has it."""
     real_user_home = (os.path.abspath(user_home) if user_home
                       else os.path.expanduser("~"))
     row = hosts.spec("agy")
@@ -192,9 +236,11 @@ def build(read_scope_path="", write_allowlist_path="", *, user_home=None,
 
     # #3576: refuse before a home exists. A missing or dangling token file used to
     # be skipped silently, and every child then fell back to a browser sign-in.
-    src_token = os.path.join(real_user_home, ".gemini", "antigravity-cli", OAUTH_TOKEN_FILE)
-    if not os.path.isfile(src_token):
-        raise AgyAuthUnreachable()
+    if route is None:
+        route = auth_route(user_home=real_user_home)
+    if route not in AUTH_ROUTES:
+        raise AgyAuthUnreachable("unknown agy auth route (#3576)")
+    src_token = token_path(real_user_home)
 
     _ensure_signal_handler()
     home = _create_home(review_root)
@@ -208,17 +254,19 @@ def build(read_scope_path="", write_allowlist_path="", *, user_home=None,
         # Change 1: symlink ONLY `antigravity-oauth-token` from the user's
         # `~/.gemini/antigravity-cli/`. Never symlink `mcp/`, `brain/`,
         # `knowledge/`, `implicit/`, `annotations/`, or user `settings.json`.
-        dst_token = os.path.join(cli_dir, OAUTH_TOKEN_FILE)
-        os.symlink(os.path.abspath(src_token), dst_token)
+        settings = {"agentMode": "accept-edits", "allowNonWorkspaceAccess": True}
+        if route == "token":
+            os.symlink(os.path.abspath(src_token), os.path.join(cli_dir, OAUTH_TOKEN_FILE))
+        else:
+            # The key route: agy reads GEMINI_API_KEY from the child's environment.
+            # The key itself is never written here (#3576).
+            settings["modelProvider"] = "gemini"
 
         # Minimal isolated CLI settings: allow reaching `review_root` outside
         # `<run_home>/workspace` and enable `accept-edits` so `write_file`
         # executes in headless `-p` mode once our `"*"` PreToolUse hook allows
         # the entry's declared `out_file`.
-        guard_rules.atomic_write_json(
-            os.path.join(cli_dir, SETTINGS_FILE),
-            {"agentMode": "accept-edits", "allowNonWorkspaceAccess": True},
-            indent=2)
+        guard_rules.atomic_write_json(os.path.join(cli_dir, SETTINGS_FILE), settings, indent=2)
 
         # Link the registered enforcement shells into `<run_home>/.gemini/config/agents`.
         dst_agents = os.path.join(cfg_dir, "agents")

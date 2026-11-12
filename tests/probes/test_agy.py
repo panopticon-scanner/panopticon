@@ -59,6 +59,8 @@ def setUpModule():
         fh.write("oauth-token-fixture")
     _HOME_PATCH = mock.patch.dict(os.environ, {"HOME": _HOME_DIR.name})
     _HOME_PATCH.start()
+    for name in ("GEMINI_API_KEY", "PANOPTICON_AGY_AUTH"):        # #3576: chosen per test
+        os.environ.pop(name, None)
 
 
 def tearDownModule():
@@ -211,6 +213,52 @@ class TestTheProbesFailClosedOnAuth(unittest.TestCase):
                     self.assertEqual((hosts.UNKNOWN, probe_id), (state, by))
                     self.assertEqual(agy_home.AUTH_UNREACHABLE, detail)
         self.assertEqual([], launched)
+
+
+class TestTheModelProbeOnTheKeyRoute(unittest.TestCase):
+    """#3576 step 2: on the API-key route the probe binds what the runner binds."""
+
+    FAKE_KEY = "AIza" + "K" * 35
+    LISTED = "\n".join(["Available models:", "gemini-4-argon-high\tGemini 4 Argon (High)",
+                        "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)"]) + "\n"
+
+    def _run(self, models_rc=0, extra_env=None):
+        seen = []
+
+        def fake(cmd, **kw):
+            seen.append(list(cmd))
+            if cmd[1:] == ["models"]:
+                return subprocess.CompletedProcess(cmd, models_rc, stdout=self.LISTED, stderr="")
+            slug = cmd[cmd.index("--model") + 1]
+            return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(
+                {"command": {"name": "model", "data": {"id": slug}}}), stderr="")
+        with tempfile.TemporaryDirectory() as no_token, tempfile.TemporaryDirectory() as d:
+            env = dict({"HOME": no_token, "GEMINI_API_KEY": self.FAKE_KEY}, **(extra_env or {}))
+            with mock.patch.dict(os.environ, env):
+                _emit_agy_shells(d)
+                result = agy_probes.probe_agy_model_bound("agy", registration_dir=d, runner=fake)
+        return result, seen
+
+    def test_carbon_roles_are_proven_bound_to_argon_high(self):
+        (state, _by, detail), seen = self._run()
+        self.assertEqual(hosts.PROVEN, state, detail)
+        self.assertIn("on the API-key route", detail)
+        self.assertIn("gemini-4-argon-high", detail)
+        self.assertNotIn("gemini-4-carbon", detail)
+        self.assertEqual(["models"], seen[0][1:])
+        self.assertFalse(any("--effort" in c for c in seen))
+        self.assertFalse(any(c[-1] == "/effort" for c in seen))
+
+    def test_an_explicit_unlisted_override_refutes(self):
+        (state, _by, detail), _seen = self._run(extra_env={
+            "PANOPTICON_MODEL_DOMAIN_PANEL": '{"model": "gemini-4-carbon", "effort": "high"}'})
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("never substituted", detail)
+
+    def test_a_failed_listing_is_unknown(self):
+        (state, _by, detail), _seen = self._run(models_rc=2)
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn("`agy models` on the API-key route exited 2", detail)
 
 
 class TestAgyReadAndWriteGuardProbes(unittest.TestCase):

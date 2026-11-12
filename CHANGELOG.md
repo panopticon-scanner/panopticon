@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **agy can sign in with a Gemini API key, and those runs use Argon (High) (#3576).** With
+  no consumer sign-in, or with `PANOPTICON_AGY_AUTH=key`, agy runs on `GEMINI_API_KEY`, which
+  reaches the child only through its environment and is never written to disk. The consumer
+  sign-in still wins when both are present. The API-key route does not offer Carbon, so its
+  domain roles run `gemini-4-argon-high`. That route takes the effort as part of the model
+  name, never as `--effort`, and a run checks every name against `agy models` before
+  launching. Ledger rows record the requested and the bound model. A model named with
+  `PANOPTICON_MODEL_*` is never substituted: if the route does not list it, the entry is
+  refused. The binding is unverified on the API-key route until a live run proves it.
+
 - **The two guard checks that ran log-only for a release are removed (#3533, N+1).** Across three
   redteam tags (clean, crash/resume/rollback, dirty folder) the shadow log stayed empty, so:
   - The read guard no longer checks a scope row's stamp (#3436), on a read or at install. A row is

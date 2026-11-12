@@ -85,6 +85,45 @@ INTERACTIVE_AUTH = re.compile(
     rb"Print mode: silent auth failed|triggering interactive OAuth|consumerOAuth: starting OAuth")
 
 
+# #3576: route substitutions, keyed by (auth route, requested model). The key route
+# lists no Carbon at any effort (owner's `agy models` on that route, 2026-11-12), and
+# the owner chose Argon (High) in its place. #3582 generalises this into a per-role
+# fallback ladder. An explicit PANOPTICON_MODEL_* override is never substituted.
+ROUTE_SUBSTITUTES = {("key", "gemini-4-carbon"): "gemini-4-argon-high"}
+_MODEL_ID = re.compile(r"[a-z0-9][a-z0-9.\-]*")
+MODELS_TIMEOUT = 60
+
+
+def listed_models(stdout):
+    """The model names `agy models` lists: each line's first field, when it is an ID."""
+    names = set()
+    for line in (stdout or "").splitlines():
+        fields = line.split()
+        if fields and _MODEL_ID.fullmatch(fields[0]):
+            names.add(fields[0])
+    return frozenset(names)
+
+
+def key_route_model(model, effort, listed, explicit=False):
+    """The `--model` name a key-route launch is bound to, or ValueError (#3576).
+
+    That route takes no `--effort`: the level is part of the name. The name must be
+    one `agy models` lists for the route; else a profile default may be substituted
+    from ROUTE_SUBSTITUTES, and nothing else is ever tried."""
+    if not model:
+        raise ValueError("agy key route needs a model, and the entry names none (#3576)")
+    name = "%s-%s" % (model, effort) if effort else model
+    if name in listed:
+        return name
+    substitute = None if explicit else ROUTE_SUBSTITUTES.get(("key", model))
+    if substitute is not None and substitute in listed:
+        return substitute
+    raise ValueError(
+        "agy key route lists no model %r (configured %s%s)%s (#3576)"
+        % (name, model, " at effort %s" % effort if effort else "",
+           "; an explicit PANOPTICON_MODEL_* override is never substituted" if explicit else ""))
+
+
 def reached_interactive_auth(stderr):
     """Whether a finished child's stderr shows agy's interactive-auth fallback (#3576)."""
     if isinstance(stderr, str):
@@ -299,6 +338,34 @@ class Runner(base.HostRunner):
         self.registration_dir = None
         self.max_turns = 60
         self.entry_timeout = 1800
+        self.auth_route = None
+        self.key_models: frozenset = frozenset()
+
+    def _launch_callable(self):
+        return (DEFAULT_RUNNER
+                if (self.runner == self.launch and DEFAULT_RUNNER is not None)
+                else self.launcher(self.runner, DEFAULT_RUNNER))
+
+    def _list_models(self):
+        """The models the key route offers, from one `agy models` (#3576).
+
+        Refused when it fails or lists nothing: no entry may launch on a route
+        whose models are unknown."""
+        try:
+            proc = self._launch_callable()(
+                [self.CLI, "models"], cwd=self.workspace_dir, env=self.launch_env(),
+                capture_output=True, text=True, timeout=MODELS_TIMEOUT,
+                stop_on=INTERACTIVE_AUTH)
+        except children.HostStopped as exc:
+            raise agy_home.AgyAuthUnreachable() from exc
+        names = listed_models(getattr(proc, "stdout", ""))
+        if getattr(proc, "returncode", 1) != 0 or not names:
+            raise agy_home.AgyAuthUnreachable(
+                "`agy models` on the API-key route %s, so no entry can be bound to a "
+                "listed model (#3576)"
+                % ("exited %s" % getattr(proc, "returncode", 1)
+                   if getattr(proc, "returncode", 1) != 0 else "listed no models"))
+        return names
 
     def prepare(self, run_dir, review_root=None, *, registration_dir=None):
         self.run_dir = os.path.abspath(run_dir)
@@ -310,12 +377,16 @@ class Runner(base.HostRunner):
             return
         read_scope = os.path.join(self.run_dir, base.SCOPE_FILE)
         write_allowlist = os.path.join(self.run_dir, base.ALLOWLIST_FILE)
+        route = agy_home.auth_route(self.launch_env())
         self.agy_home = agy_home.build(
             read_scope, write_allowlist,
             review_root=self.review_root,
-            registration_dir=self.registration_dir)
+            registration_dir=self.registration_dir, route=route)
         self.run_home = self.agy_home
         self.workspace_dir = agy_home.workspace_dir(self.agy_home)
+        self.auth_route = route
+        if route == "key":
+            self.key_models = self._list_models()
 
     def teardown(self, status=None):
         if self.agy_home is not None:
@@ -423,9 +494,17 @@ class Runner(base.HostRunner):
             effort_argv(entry.get("effort"), eff_model)
         except ValueError as exc:
             return base.RunResult.failed(entry_id, redact.redact(str(exc)))
-        launcher = (DEFAULT_RUNNER
-                    if (self.runner == self.launch and DEFAULT_RUNNER is not None)
-                    else self.launcher(self.runner, DEFAULT_RUNNER))
+        launch_entry, launch_model, bound_model = entry, eff_model, None
+        if self.auth_route == "key":
+            try:
+                bound_model = key_route_model(eff_model, entry.get("effort"), self.key_models,
+                                              explicit=bool(entry.get("model_override")))
+            except ValueError as exc:
+                return base.RunResult.failed(entry_id, str(exc), host_error=str(exc),
+                                             failure_class=outage.HOST_FAILURE)
+            launch_entry = {k: v for k, v in entry.items() if k != "effort"}
+            launch_model = bound_model
+        launcher = self._launch_callable()
         fd, denial_log = tempfile.mkstemp(
             prefix="denials-", suffix=".jsonl", dir=self.agy_home)
         os.close(fd)
@@ -434,7 +513,7 @@ class Runner(base.HostRunner):
         try:
             child_env = self.launch_env(env)
             child_env[agy_guard_hook.ENV_DENIAL_LOG] = denial_log
-            cmd = self.command(entry, eff_model)
+            cmd = self.command(launch_entry, launch_model)
             proc = launcher(
                 cmd, cwd=self.workspace_dir, env=child_env,
                 capture_output=True, text=True, timeout=self.entry_timeout,
@@ -473,4 +552,5 @@ class Runner(base.HostRunner):
                 stderr=getattr(proc, "stderr", None))
         if hook_denials:
             result.denials = list(result.denials or []) + hook_denials
+        result.bound_model = bound_model
         return result

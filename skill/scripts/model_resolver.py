@@ -342,7 +342,11 @@ def entry_policy(host, role):
         if problem:
             raise ValueError("model policy for %s %s %s" % (host, role, problem))
     extra = {"codex": ("model_reasoning_effort",), "agy": ("effort",)}.get(host, ())
-    return {"model": cfg.get("model"), **{key: cfg[key] for key in extra if cfg.get(key)}}
+    policy = {"model": cfg.get("model"), **{key: cfg[key] for key in extra if cfg.get(key)}}
+    if host == "agy" and _env_override(role):
+        # #3576: the agy runner never substitutes a model the operator named.
+        policy["model_override"] = True
+    return policy
 
 
 def _as_model_dict(v):
