@@ -177,7 +177,7 @@ class _HookLaunch(unittest.TestCase):
                 fh.write("x")
         self.scope = os.path.join(self.root, "read-scope.json")
         with open(self.scope, "w", encoding="utf-8") as fh:
-            json.dump(rg.stamp_rows({"e1": {"files": [self.inside], "dirs": [], "reads": []}}), fh)
+            json.dump({"e1": {"files": [self.inside], "dirs": [], "reads": []}}, fh)
         self.allowlist = os.path.join(self.root, "write-allowlist.json")
         with open(self.allowlist, "w", encoding="utf-8") as fh:
             json.dump({"version": 2, "entries": {"e1": [self.inside]}, "paths": [self.inside]}, fh)

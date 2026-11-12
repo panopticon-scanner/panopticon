@@ -41,7 +41,7 @@ class EntryScopes:
             scopes = read_guard_hook.scope_from_plan([entry])
             if entry_id not in scopes:
                 raise ValueError("entry %r carries no read scope" % entry_id)
-            self.write(read_guard_hook.stamp_rows(scopes))       # #3436: as install() writes them
+            self.write(scopes)
             self.transient.add(entry_id)
         return self.paths[entry_id]
 

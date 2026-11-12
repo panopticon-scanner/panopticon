@@ -45,8 +45,8 @@ class _Run(unittest.TestCase):
             fh.write("x = 1\n")
         self.scope = os.path.join(self.run_dir, "read-scope.json")
         self.allowlist = os.path.join(self.run_dir, "write-allowlist.json")
-        self._write(self.scope, read_guard_hook.stamp_rows(          # #3436: as install() writes it
-            {"e1": {"files": [self.inside], "dirs": [], "reads": []}}))
+        self._write(self.scope,           # #3436: as install() writes it
+            {"e1": {"files": [self.inside], "dirs": [], "reads": []}})
         self._write(self.allowlist, {"version": guard_rules.ALLOWLIST_VERSION,
                                      "entries": {"e1": [self.out_file]},
                                      "paths": [self.out_file]})

@@ -357,7 +357,7 @@ class TestGeminiReadAndWriteGuardProbes(unittest.TestCase):
                 {"id": "e1", "scope": {"files": [in_file], "dirs": [ws_dir], "reads": []}}
             ])
             with open(scope_path, "w", encoding="utf-8") as fh:
-                json.dump(read_guard_hook.stamp_rows(scopes), fh)
+                json.dump(scopes, fh)
             with open(allowlist_path, "w", encoding="utf-8") as fh:
                 json.dump({"version": 2, "entries": {"e1": [out_json]}, "paths": [out_json]}, fh)
 
@@ -401,7 +401,7 @@ class TestGeminiReadAndWriteGuardProbes(unittest.TestCase):
                 {"id": "e1", "scope": {"files": [in_file], "dirs": [in_dir], "reads": []}}
             ])
             with open(scope_path, "w", encoding="utf-8") as fh:
-                json.dump(read_guard_hook.stamp_rows(scopes), fh)
+                json.dump(scopes, fh)
             with open(allowlist_path, "w", encoding="utf-8") as fh:
                 json.dump({"version": 2, "entries": {}, "paths": []}, fh)
 
@@ -449,13 +449,13 @@ class TestGeminiReadAndWriteGuardProbes(unittest.TestCase):
             env_scope = os.path.join(real_box, "env-scope.json")
             allowlist_path = os.path.join(real_box, "write-allowlist.json")
             with open(argv_scope, "w", encoding="utf-8") as fh:
-                json.dump(read_guard_hook.stamp_rows(read_guard_hook.scope_from_plan([
+                json.dump(read_guard_hook.scope_from_plan([
                     {"id": "e1", "scope": {"files": [in_file], "dirs": [], "reads": []}}
-                ])), fh)
+                ]), fh)
             with open(env_scope, "w", encoding="utf-8") as fh:
-                json.dump(read_guard_hook.stamp_rows(read_guard_hook.scope_from_plan([
+                json.dump(read_guard_hook.scope_from_plan([
                     {"id": "e1", "scope": {"files": [other_file], "dirs": [], "reads": []}}
-                ])), fh)
+                ]), fh)
             with open(allowlist_path, "w", encoding="utf-8") as fh:
                 json.dump({"version": 2, "entries": {}, "paths": []}, fh)
 

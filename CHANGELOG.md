@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Read-scope rows are no longer stamped (#3533 follow-up).** No guard checked the #3436 row
+  stamp after the N+1 removal, so `install()`, the headless per-entry bindings and the agy and
+  gemini probes write plain rows. Arming no longer needs the run-stamp key. A leftover `_by` in an
+  older scope file is ignored. The key itself stays, because first contact, settlement and the
+  batch records still sign with it. First contact (#3532), M1, ours-wins-on-a-shared-id and the
+  guard-state rule (#3545) are unchanged.
+
 - **agy can sign in with a Gemini API key, and those runs use Argon (High) (#3576).** With
   no consumer sign-in, or with `PANOPTICON_AGY_AUTH=key`, agy runs on `GEMINI_API_KEY`, which
   reaches the child only through its environment and is never written to disk. The consumer

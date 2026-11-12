@@ -32,13 +32,6 @@ def _scope(files=(), dirs=(), reads=()):
             "escapes": rg.guard_rules.grant_escapes(grants)}
 
 
-def _unstamped(scopes):
-    """`scopes` without each row's #3436 stamp, after checking every stamp verifies."""
-    key = rg._stamp_key()
-    assert all(rg._row_verifies(key, eid, row) for eid, row in scopes.items()), scopes
-    return {eid: {k: v for k, v in row.items() if k != rg.STAMP_KEY} for eid, row in scopes.items()}
-
-
 class TestMarker(unittest.TestCase):
     def test_marker_line_is_the_prefix_plus_the_id(self):
         self.assertEqual("panopticon-entry: review-app-SEC", rg.marker_line("review-app-SEC"))
@@ -424,8 +417,8 @@ class TestAdjudicate(unittest.TestCase):
             os.makedirs(os.path.dirname(p), exist_ok=True); open(p, "w").close()
         self.scope_path = os.path.join(d, "read-scope.json")
         with open(self.scope_path, "w", encoding="utf-8") as fh:
-            json.dump(rg.stamp_rows({"review-app-SEC": _scope(files=[self.inside]),
-                                     "setup-scan": _scope(dirs=[self.root])}), fh)
+            json.dump({"review-app-SEC": _scope(files=[self.inside]),
+                                     "setup-scan": _scope(dirs=[self.root])}, fh)
         _write_subagent_transcript(self.parent, "cell-agent", "panopticon-entry: review-app-SEC\nbody")
         _write_subagent_transcript(self.parent, "scan-agent", "panopticon-entry: setup-scan\nbody")
         _write_subagent_transcript(self.parent, "stray-agent", "panopticon-entry: nobody-dispatched-this\nbody")
@@ -501,8 +494,8 @@ class TestEnvBinding(unittest.TestCase):
         # and on macOS $TMPDIR resolves through a /var -> /private/var symlink.
         scope_path = os.path.join(d, "read-scope.json")
         with open(scope_path, "w", encoding="utf-8") as fh:
-            json.dump(rg.stamp_rows({entry_id: {"files": [os.path.realpath(allowed_file)],
-                                                "dirs": [], "reads": []}}), fh)
+            json.dump({entry_id: {"files": [os.path.realpath(allowed_file)],
+                                                "dirs": [], "reads": []}}, fh)
         return scope_path
 
     def test_env_bound_call_is_confined_to_that_entry(self):
@@ -547,9 +540,9 @@ class TestEnvBinding(unittest.TestCase):
             other = os.path.join(d, "c.py"); open(other, "w").close()
             scope_path = os.path.join(d, "read-scope.json")
             with open(scope_path, "w", encoding="utf-8") as fh:
-                json.dump(rg.stamp_rows({
+                json.dump({
                     "cell-1": {"files": [os.path.realpath(inside)], "dirs": [], "reads": []},
-                    "cell-2": {"files": [os.path.realpath(other)], "dirs": [], "reads": []}}), fh)
+                    "cell-2": {"files": [os.path.realpath(other)], "dirs": [], "reads": []}}, fh)
             parent = os.path.join(d, "parent.jsonl"); open(parent, "w").close()
             claude_probes._fake_subagent(parent, "agent-x", "cell-2")
             payload = {"tool_name": "Read", "tool_input": {"file_path": other},
@@ -655,7 +648,7 @@ class TestMain(unittest.TestCase):
             a = os.path.join(d, "a.py"); open(a, "w").close()
             scope_path = os.path.join(d, "scope.json")
             with open(scope_path, "w", encoding="utf-8") as fh:
-                json.dump(rg.stamp_rows({"e": _scope(files=[a])}), fh)
+                json.dump({"e": _scope(files=[a])}, fh)
             _write_subagent_transcript(parent, "a", "panopticon-entry: e\n")
             rc, out = self._run({"tool_name": "Read", "agent_id": "a", "transcript_path": parent,
                                  "tool_input": {"file_path": a}}, [scope_path])
@@ -772,10 +765,10 @@ def _entry(eid, files=(), dirs=()):
     return {"id": eid, "scope": {"files": list(files), "dirs": list(dirs), "reads": []}}
 
 
-class TestStampedRows(unittest.TestCase):
-    """#3436 (R-P5-5) stamps every row install() writes. #3533 removed the check: a row is
-    adjudicated as written whatever its stamp, because first contact halts on a planted scope
-    file (#3532), and the row still confines the entry it names."""
+class TestUnionAndConfinement(unittest.TestCase):
+    """What covers a planted scope row since #3533 removed the #3436 row stamp: first contact
+    halts on a planted scope file (#3532), the row still confines the entry it names, a bound
+    entry with no row denies, ours wins on a shared id (R-P5-4), and M1 drops a malformed row."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -796,24 +789,18 @@ class TestStampedRows(unittest.TestCase):
         with open(self.scope_path, "w", encoding="utf-8") as fh:
             json.dump(on_disk, fh)
 
-    def _assert_no_shadow_log(self):
-        # #3533 release N's log, `shadow-denials.jsonl`: nothing writes it any more.
-        self.assertNotIn("shadow-denials.jsonl", os.listdir(os.path.dirname(self.scope_path)))
-
-    def test_a_badly_stamped_row_is_adjudicated_as_written_and_kept_at_install(self):
-        # Each row release N logged as "would have denied" is allowed inside its own grant,
-        # denied outside it, and survives the next install's union, exactly as in release N.
+    def test_install_writes_rows_with_no_stamp(self):
         rg.install([_entry("e1", files=[self.a])], settings_path=self.settings,
                    scope_path=self.scope_path)
-        good = rg._read_scope_file(self.scope_path)["e1"]
-        planted = {
-            "unstamped": _scope(files=[self.b]),
-            "wrong-stamp": dict(_scope(files=[self.b]), _by="0" * 64),
-            "copied-stamp": dict(_scope(files=[self.b]), _by=good["_by"]),
-            "foreign-key": rg.stamp_rows({"foreign-key": _scope(files=[self.b])},
-                                         key=b"k" * 32)["foreign-key"],
-            "non-ascii": dict(_scope(files=[self.b]), _by="\u00e9" * 64),
-        }
+        self.assertEqual({"e1": _scope(files=[self.a])}, rg._read_scope_file(self.scope_path))
+
+    def test_a_planted_row_is_adjudicated_as_written_and_kept_at_install(self):
+        # A leftover `_by` from a release that stamped rows is ignored like any unknown key.
+        rg.install([_entry("e1", files=[self.a])], settings_path=self.settings,
+                   scope_path=self.scope_path)
+        planted = {"plain": _scope(files=[self.b]),
+                   "old-stamp": dict(_scope(files=[self.b]), _by="0" * 64),
+                   "odd-stamp": dict(_scope(files=[self.b]), _by=["\u00e9"])}
         self._plant(planted)
         for eid in planted:
             with self.subTest(row=eid):
@@ -827,19 +814,17 @@ class TestStampedRows(unittest.TestCase):
         rg.install([_entry("e2", files=[self.b])], settings_path=self.settings,
                    scope_path=self.scope_path)
         self.assertEqual({"e1", "e2"} | set(planted), set(rg._read_scope_file(self.scope_path)))
-        self._assert_no_shadow_log()
 
-    def test_ours_still_wins_on_a_shared_id_whatever_the_planted_stamp(self):
-        # R-P5-4, the rule that now covers a planted row under an id we dispatch.
-        good = rg.stamp_rows({"e1": _scope(files=[self.b])})["e1"]
-        self._plant({"e1": good, "e2": _scope(files=[self.b])})
+    def test_ours_wins_on_a_shared_id(self):
+        # R-P5-4, the rule that covers a planted row under an id we dispatch.
+        self._plant({"e1": _scope(files=[self.b]), "e2": _scope(files=[self.b])})
         rg.install([_entry("e1", files=[self.a]), _entry("e2", files=[])],
                    settings_path=self.settings, scope_path=self.scope_path)
         self.assertTrue(self._read("e1", self.a)[0])
         self.assertFalse(self._read("e1", self.b)[0])
         self.assertFalse(self._read("e2", self.b)[0])
 
-    def test_install_still_drops_a_row_whose_paths_fail_m1_and_the_scope_keeps_loading(self):
+    def test_install_drops_a_row_whose_paths_fail_m1_and_the_scope_keeps_loading(self):
         # #3545 round 1: M1 stays enforcing (#3533 ruling Q2). Kept, a relative or unnormalised
         # path voids the whole scope at load and denies every bound read of the run.
         rg.install([_entry("e1", files=[self.a])], settings_path=self.settings,
@@ -853,53 +838,8 @@ class TestStampedRows(unittest.TestCase):
         self.assertEqual({"e1", "e2", "/etc/passwd"}, set(rg._read_scope_file(self.scope_path)))
         self.assertTrue(self._read("e1", self.a)[0])
         self.assertTrue(self._read("e2", self.b)[0])
-        self._assert_no_shadow_log()
 
-    def test_a_stamp_still_binds_its_entry_id_and_every_grant_but_no_read_checks_it(self):
-        rows = rg.stamp_rows({"e1": _scope(files=[self.a])})
-        key = rg._stamp_key()
-        self.assertTrue(rg._row_verifies(key, "e1", rows["e1"]))
-        for label, (eid, row) in (("renamed", ("e1-renamed", rows["e1"])),
-                                  ("widened", ("e1", dict(rows["e1"], files=[self.a, self.b])))):
-            with self.subTest(label=label):
-                self.assertFalse(rg._row_verifies(key, eid, row))
-                with open(self.scope_path, "w", encoding="utf-8") as fh:
-                    json.dump({eid: row}, fh)
-                self.assertTrue(self._read(eid, self.a)[0])
-
-    def test_editing_one_field_of_an_installed_row_decides_as_the_edited_row_says(self):
-        # #3437 round 1: the stamp covers every grant, the escape walk included.
-        root = os.path.join(self.tmp.name, "root")
-        os.makedirs(root)
-        os.symlink(self.b, os.path.join(root, "out.py"))
-        rg.install([_entry("scan", dirs=[root])], settings_path=self.settings,
-                   scope_path=self.scope_path)
-        row = rg._read_scope_file(self.scope_path)["scan"]
-        grant = os.path.realpath(root)
-        self.assertEqual([os.path.join(grant, "out.py")], row["escapes"][grant])
-        for label, change in (("escapes", {"escapes": {grant: []}}),
-                              ("files", {"files": [self.b]}),
-                              ("dirs", {"dirs": [grant, os.path.realpath(self.tmp.name)]}),
-                              ("reads", {"reads": [self.b]})):
-            with self.subTest(field=label):
-                edited = dict(row, **change)
-                self.assertFalse(rg._row_verifies(rg._stamp_key(), "scan", edited))
-                with open(self.scope_path, "w", encoding="utf-8") as fh:
-                    json.dump({"scan": edited}, fh)
-                glob = {"tool_name": "Glob", "tool_input": {"pattern": "*.py", "path": root}}
-                got = rg.adjudicate(glob, self.scope_path, env={rg.ENV_ENTRY_ID: "scan"})
-                bare = {k: v for k, v in edited.items() if k != rg.STAMP_KEY}
-                with open(self.scope_path, "w", encoding="utf-8") as fh:
-                    json.dump(rg.stamp_rows({"scan": bare}), fh)
-                self.assertEqual(rg.adjudicate(glob, self.scope_path,
-                                               env={rg.ENV_ENTRY_ID: "scan"}), got)
-                with open(self.scope_path, "w", encoding="utf-8") as fh:
-                    json.dump({"scan": edited}, fh)
-                rg.install([_entry("other", files=[self.a])], settings_path=self.settings,
-                           scope_path=self.scope_path)
-                self.assertEqual({"other", "scan"}, set(rg._read_scope_file(self.scope_path)))
-
-    def test_a_concurrent_fan_outs_stamped_rows_survive_a_second_install(self):
+    def test_a_concurrent_fan_outs_rows_survive_a_second_install(self):
         rg.install([_entry("fan-1", files=[self.a])], settings_path=self.settings,
                    scope_path=self.scope_path)
         rg.install([_entry("fan-2", files=[self.b])], settings_path=self.settings,
@@ -909,22 +849,17 @@ class TestStampedRows(unittest.TestCase):
         self.assertTrue(self._read("fan-2", self.b)[0])
         self.assertFalse(self._read("fan-1", self.b)[0])
 
-    def test_a_missing_key_does_not_deny_and_still_refuses_to_arm(self):
-        rg.install([_entry("e1", files=[self.a])], settings_path=self.settings,
-                   scope_path=self.scope_path)
+    def test_arming_and_reading_need_no_run_stamp_key_and_create_none(self):
         empty = os.path.join(self.tmp.name, "no-key-here")
         os.mkdir(empty, 0o700)
         with mock.patch.dict(os.environ, {"PANOPTICON_STATE_DIR": empty}):
+            rg.install([_entry("e1", files=[self.a])], settings_path=self.settings,
+                       scope_path=self.scope_path)
             self.assertEqual((True, ""), self._read("e1", self.a))
             self.assertFalse(self._read("e1", self.b)[0])
-            self.assertFalse(os.listdir(empty), "the hook must never create a key")
-        with mock.patch.object(rg, "_stamp_key", return_value=None), \
-                self.assertRaisesRegex(ValueError, "run-stamp key is unavailable"):
-            rg.install([_entry("e2", files=[self.b])], settings_path=self.settings,
-                       scope_path=self.scope_path)
-        self.assertEqual({"e1"}, set(rg._read_scope_file(self.scope_path)))
+        self.assertEqual([], os.listdir(empty))
 
-    def test_a_headless_entry_binding_is_stamped_as_install_writes_it(self):
+    def test_a_headless_entry_binding_confines_its_entry(self):
         # The headless runner binds each child to a one-row file of its own (scope_bindings).
         import scripts.scope_bindings as scope_bindings
         bindings = scope_bindings.EntryScopes(self.scope_path)
@@ -933,7 +868,7 @@ class TestStampedRows(unittest.TestCase):
         self.assertEqual((True, ""), self._read("probe-1", self.a, path))
         self.assertFalse(self._read("probe-1", self.b, path)[0])
 
-    def test_the_hook_process_does_not_check_the_stamp(self):
+    def test_the_hook_process_adjudicates_a_planted_row_as_written(self):
         # Run as the hosts run it: `<python> -I <hook> <scope>`.
         rg.install([_entry("e1", files=[self.a])], settings_path=self.settings,
                    scope_path=self.scope_path)
@@ -950,7 +885,6 @@ class TestStampedRows(unittest.TestCase):
                 self.assertEqual(0, proc.returncode, proc.stderr)
                 self.assertEqual("", proc.stdout)
                 self.assertEqual("", proc.stderr)
-        self._assert_no_shadow_log()
 
 
 class TestInstallUninstall(unittest.TestCase):
@@ -982,7 +916,7 @@ class TestInstallUninstall(unittest.TestCase):
         self.assertEqual({"e1"}, set(added))
         self.assertEqual({"e1": {"files": [os.path.realpath(self.a)], "dirs": [],
                                  "reads": [], "escapes": {}}},
-                         _unstamped(rg._read_scope_file(self.scope_path)))
+                         rg._read_scope_file(self.scope_path))
         hooks = self._settings()["hooks"]["PreToolUse"]
         self.assertEqual(1, len(hooks))
         self.assertEqual(rg._MATCHER, hooks[0]["matcher"])
@@ -1047,7 +981,7 @@ class TestInstallUninstall(unittest.TestCase):
         rg.install([_entry("e1")], settings_path=self.settings, scope_path=self.scope_path)
         self.assertEqual((True, 1), rg.is_armed(settings_path=self.settings, scope_path=self.scope_path))
         self.assertEqual({"e1": {"files": [], "dirs": [], "reads": [], "escapes": {}}},
-                         _unstamped(rg._read_scope_file(self.scope_path)))
+                         rg._read_scope_file(self.scope_path))
 
     def test_install_overwrites_a_planted_row_under_a_dispatched_empty_scope_id(self):
         # C1: a row planted on disk under an id the driver is ABOUT TO
@@ -1060,7 +994,7 @@ class TestInstallUninstall(unittest.TestCase):
         rg.install([_entry("verify-tool-X")], settings_path=self.settings, scope_path=self.scope_path)
         on_disk = rg._read_scope_file(self.scope_path)
         self.assertEqual({"files": [], "dirs": [], "reads": [], "escapes": {}},
-                         _unstamped(on_disk)["verify-tool-X"])
+                         on_disk["verify-tool-X"])
         # ...and adjudicate() actually denies a read of a file that used to be
         # inside the planted grant, for a subagent bound to that id.
         parent = os.path.join(self.tmp.name, "session.jsonl")
@@ -1425,7 +1359,7 @@ class TestGlobThroughASymlink(unittest.TestCase):
     def test_a_malformed_walk_on_disk_reads_as_no_walk(self):
         scope_path = os.path.join(self.tmp.name, "scope.json")
         with open(scope_path, "w", encoding="utf-8") as fh:
-            json.dump(rg.stamp_rows({"scan": dict(self.scan, escapes={self.root: "junk"})}), fh)
+            json.dump({"scan": dict(self.scan, escapes={self.root: "junk"})}, fh)
         payload = {"tool_name": "Glob", "tool_input": {"pattern": "clean/*.py", "path": self.root},
                    "cwd": self.tmp.name}
         self.assertFalse(rg.adjudicate(payload, scope_path, env={rg.ENV_ENTRY_ID: "scan"})[0])

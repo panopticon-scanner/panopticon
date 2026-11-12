@@ -290,7 +290,7 @@ def probe_agy_read_guard(host, *, runner=None, hooks_runner=None,
                                             "reads": []}}
         ])
         with open(scope_path, "w", encoding="utf-8") as fh:
-            json.dump(read_guard_hook.stamp_rows(scopes), fh)
+            json.dump(scopes, fh)
         with open(allowlist_path, "w", encoding="utf-8") as fh:
             json.dump({"version": 2, "entries": {}, "paths": []}, fh)
 

@@ -297,9 +297,9 @@ def _assess_session_root(root, assessed, *, reset=False, runner=None):
     `assessed` roots (cwd == target is assessed once). Read-only: nothing is
     written to an absent or empty `.panopticon/` there, because cwd is the
     default and most runs never arm a guard in it. `mark_session_root` marks
-    it where the session guards are about to write. Kimi's and agy's hooks
-    read the scope file without its row stamp, so for those families this
-    halt is the only stop on a pre-planted one. `reset` moves an unverified
+    it where the session guards are about to write. No guard checks a scope
+    row's origin (#3533), so this halt is the stop on a pre-planted scope
+    file or allowlist. `reset` moves an unverified
     one aside, as it does for the review root."""
     if root is None or _among(root, assessed):
         return
