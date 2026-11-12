@@ -18,7 +18,9 @@ reason, on clear hostility:
       i.e. hard-linked to something outside the target. `.git/` is not counted
       (ruling A1): `git clone /local/path` hard-links its objects by default,
       and those are the operator's own repository, not a read lever;
-  H5  something the sweep cannot read, which fails closed.
+  H5  something the sweep cannot read, which fails closed;
+  H6  the session root's `.claude/settings.local.json` registers a panopticon
+      guard hook entry other than the one this install writes there (#3541).
 
 The whole-tree walk (H4) runs once per run, when its manifest is new: the
 manifest records `first_contact`, and a resume of a stamped run skips it --
@@ -59,6 +61,8 @@ H3 = ("%s/%%s is a symlink, and the artifact directory holds none but the run's 
 H4 = ("%s is hard-linked outside the target (st_nlink=%d, %d in-tree names); review a copy "
       "without hard links (a plain cp)")
 H5 = "the target cannot be assessed at first contact: %s: %s"
+H6 = ("%s registers a panopticon %s hook that this install did not write; remove panopticon's "
+      "entries from its hooks.PreToolUse (only those) and re-run")
 MORE = " (and %d more)"
 PRIOR_HOST = build_disclosure.PRIOR_RUN
 _MANIFESTS = ("run-manifest.json", "setup-manifest.json")
@@ -292,6 +296,51 @@ def session_root(args):
     return os.path.abspath(given) if given else os.getcwd()
 
 
+def _session_hooks():
+    """[(guard label, its install module)] whose entries session mode registers in `root`'s
+    `.claude/settings.local.json`. Imported here: most contacts never reach a session root."""
+    import scripts.read_guard_hook as read_guard_hook
+    import scripts.write_guard_hook as write_guard_hook
+    return [("read guard", read_guard_hook), ("write guard", write_guard_hook)]
+
+
+def assess_session_settings(root):
+    """#3541: H6 on `root`'s `.claude/settings.local.json`, read only.
+
+    Session mode registers each guard there as exactly `_hook_entry(<policy path>)`, with the
+    policy path that guard's `_resolve(None, None, root)` gives (`orchestrate.Guards`, through
+    `guard_rules._write_hook_entry`). An entry a guard claims (`_is_our_entry`, the matcher
+    install and uninstall use) that is not that entry was written by something else: a planted
+    hook is planted guard state, like a planted allowlist. One equal to it is what arming would
+    write, whoever wrote it. Absent, or holding no entry a guard claims: nothing to do. Not a
+    JSON object, or a `hooks` / `PreToolUse` of the wrong shape: H5, as for a manifest. The
+    owner's other entries are never read beyond that, and nothing is written."""
+    if root is None:
+        return
+    path = os.path.join(root, ".claude", "settings.local.json")
+    settings = _load(os.path.realpath(path)) if os.path.lexists(path) else None
+    if settings is None:
+        return
+    shown = _quote(path)
+    if settings is UNREADABLE:
+        raise FirstContactHalt(H5 % (shown, "not a JSON object that can be read whole"))
+    hooks = settings.get("hooks", {})
+    pre = hooks.get("PreToolUse", []) if isinstance(hooks, dict) else None
+    if not isinstance(pre, list):
+        raise FirstContactHalt(H5 % (shown, "its hooks.PreToolUse is not a list"))
+    for label, guard in _session_hooks():
+        claimed = [entry for entry in pre if guard._is_our_entry(entry)]
+        if not claimed:
+            continue
+        policy = guard._resolve(None, None, root)[1]
+        try:
+            ours = guard._hook_entry(policy)
+        except RuntimeError as exc:
+            raise FirstContactHalt(H5 % (label, exc)) from None
+        if any(entry != ours for entry in claimed):
+            raise FirstContactHalt(H6 % (shown, label))
+
+
 def _assess_session_root(root, assessed, *, reset=False, runner=None):
     """#3532: H1-H3 on the session root, unless its realpath is one of the
     `assessed` roots (cwd == target is assessed once). Read-only: nothing is
@@ -300,7 +349,9 @@ def _assess_session_root(root, assessed, *, reset=False, runner=None):
     it where the session guards are about to write. No guard checks a scope
     row's origin (#3533), so this halt is the stop on a pre-planted scope
     file or allowlist. `reset` moves an unverified
-    one aside, as it does for the review root."""
+    one aside, as it does for the review root. Its hook registration is
+    assessed whichever root it is (`assess_session_settings`)."""
+    assess_session_settings(root)
     if root is None or _among(root, assessed):
         return
     if reset and not _nothing_to_trust(os.path.join(root, PANO)):

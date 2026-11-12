@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **First contact checks the session root's hook registration (#3541).** Session mode registers
+  both guards in the session root's `.claude/settings.local.json`. A hook entry there that a guard
+  claims but that is not exactly the entry arming writes now halts the run before anything is
+  armed (H6), whatever the session root is, the review root included. Contact reads the file and
+  never rewrites it: the message says to remove panopticon's entries and re-run. The owner's own
+  entries, an absent file and a file with no guard entries pass as before. A file that cannot be
+  read as a settings object halts as unassessable (H5).
+
 - **Read-scope rows are no longer stamped (#3533 follow-up).** No guard checked the #3436 row
   stamp after the N+1 removal, so `install()`, the headless per-entry bindings and the agy and
   gemini probes write plain rows. Arming no longer needs the run-stamp key. A leftover `_by` in an
