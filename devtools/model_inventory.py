@@ -83,9 +83,7 @@ class Marker:
 # #3569: tables allowed to carry no marker, each with the issue that decides its fate.
 # `presence_problems` fails once an exemption is stale (the table gained a marker or
 # is gone), so an entry here has to be removed when its issue resolves.
-EXEMPT = {
-    "profiles:openrouter": "#3568",     # openrouter's fate is open; no marker until it is decided
-}
+EXEMPT: dict[str, str] = {}
 
 
 @dataclass

@@ -3,6 +3,8 @@ import contextlib
 import io
 import json
 import os
+import runpy
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -68,8 +70,8 @@ class TestModelResolver(unittest.TestCase):
                          {"model": "gemini-4-carbon", "effort": "high", "tier": "pro"})
         self.assertEqual(mr._hardcoded_fallback("gemini", "banana"),
                          {"model": "gemini-3.8-flash"})
-        # an unknown HOST still resolves to None (inherit session), never kimi
-        self.assertIsNone(mr._hardcoded_fallback("bogus", "banana")["model"])
+        # The registered generic host still inherits the session model, never kimi.
+        self.assertIsNone(mr._hardcoded_fallback("generic", "banana")["model"])
 
     def test_gemini_defaults(self):
         for role in ("scout", "advisor"):
@@ -273,9 +275,8 @@ class TestModelResolver(unittest.TestCase):
         }
         self.assertTrue(gemini_home.MODEL_ALIASES.isdisjoint(defaults))
 
-    def test_unknown_host_falls_back(self):
+    def test_registered_generic_host_inherits_the_session_model(self):
         self.assertIsNone(mr.resolve_model("generic", "domain_panel")["model"])
-        self.assertIsNone(mr.resolve_model("someday-host", "scout")["model"])
 
     # Override precedence is host-agnostic, but only Kimi constrains the
     # resulting value (primary|secondary), so these exercise it on claude,
@@ -409,13 +410,67 @@ class TestModelResolver(unittest.TestCase):
                              "claude-opus-5-5")
 
 
-class TestUnknownHostsStayUnknown(unittest.TestCase):
-    """#1344 F2: the resolver's 'never silently assume kimi' rule now has one
-    definition of 'unknown host' rather than an implicit else-branch."""
+class TestUnknownHostsAreRefused(unittest.TestCase):
+    """#3568: only registered hosts may enter the resolver."""
 
-    def test_a_host_the_registry_does_not_know_resolves_to_no_model(self):
-        self.assertEqual({"model": None},
-                         mr._hardcoded_fallback("no-such-host", "scout"))
+    ERROR = ("unknown host 'openrouter' "
+             "(known: agy|claude|codex|gemini|generic|kimi)")
+
+    def assert_unknown(self, call):
+        with self.assertRaises(ValueError) as caught:
+            call()
+        self.assertEqual(str(caught.exception), self.ERROR)
+
+    def test_registration_entry_points_refuse_an_unregistered_host(self):
+        self.assert_unknown(lambda: mr.registration_config("openrouter", "scout"))
+        self.assert_unknown(lambda: mr.registration_model("openrouter", "scout"))
+        self.assertEqual(mr.registration_config("generic", "scout"), {"model": None})
+        self.assertIsNone(mr.registration_model("generic", "scout"))
+
+    def test_a_stale_profile_cannot_make_an_unregistered_host_resolvable(self):
+        stale = {"hosts": {"someday": {"scout": {"model": "x"}}}}
+        expected = ("unknown host 'someday' "
+                    "(known: agy|claude|codex|gemini|generic|kimi)")
+        with patch.object(mr, "_profiles", return_value=stale):
+            for entry in (mr.registration_config, mr.registration_model,
+                          mr.resolve_model):
+                with self.subTest(entry=entry.__name__):
+                    with self.assertRaises(ValueError) as caught:
+                        entry("someday", "scout")
+                    self.assertEqual(str(caught.exception), expected)
+
+    def test_resolution_refuses_before_cli_and_environment_overrides(self):
+        for resolver in (mr.resolve_model, mr._resolve_raw):
+            with self.subTest(entry=resolver.__name__, override="cli"):
+                self.assert_unknown(
+                    lambda resolver=resolver: resolver(
+                        "openrouter", "scout", {"scout": "override-model"}))
+            with self.subTest(entry=resolver.__name__, override="environment"), \
+                    patch.dict(os.environ,
+                               {"PANOPTICON_MODEL_SCOUT": "override-model"}):
+                self.assert_unknown(
+                    lambda resolver=resolver: resolver("openrouter", "scout"))
+        self.assertEqual(mr.resolve_model("generic", "scout"), {"model": None})
+        self.assertEqual(mr._resolve_raw("generic", "scout"), {"model": None})
+
+    def test_hardcoded_fallback_refuses_an_unregistered_host(self):
+        self.assert_unknown(lambda: mr._hardcoded_fallback("openrouter", "scout"))
+        self.assertEqual(mr._hardcoded_fallback("generic", "scout"), {"model": None})
+
+    def test_run_by_path_cli_refuses_an_unregistered_host_without_a_traceback(self):
+        def run(host):
+            out, err = io.StringIO(), io.StringIO()
+            with patch.object(sys, "argv", [mr.__file__, host, "scout"]), \
+                    patch.dict(os.environ, {"PANOPTICON_MODEL_SCOUT": ""}), \
+                    contextlib.redirect_stdout(out), contextlib.redirect_stderr(err), \
+                    self.assertRaises(SystemExit) as stopped:
+                runpy.run_path(mr.__file__, run_name="__main__")
+            return stopped.exception.code, out.getvalue(), err.getvalue()
+
+        self.assertEqual(
+            run("openrouter"),
+            (2, "", "model_resolver: %s\n" % self.ERROR))
+        self.assertEqual(run("generic"), (0, "{'model': None}\n", ""))
 
     def test_a_known_host_with_no_fallback_table_also_resolves_to_no_model(self):
         # generic is in the registry and has no table (#3494 gave gemini its
