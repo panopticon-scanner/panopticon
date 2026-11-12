@@ -20,8 +20,11 @@ import unittest.mock
 
 from scripts import semgrep_targets as st
 import scripts.ingest_tools as ingest
+import scripts.run_tools as run_tools
 from scripts.synth import findings as findings_mod, plan, report, tool_axis
 from scripts.tools.legacy_sarif import SEMGREP_SCANNER_EXCLUDES, TOOL_CMD
+from tests._test_helpers import REPO_ROOT
+from tests.run_tools_test_helpers import _FakeResult
 
 PATHS = (
     '.git/config', 'a/.git/x', '.gitx/y', '.DS_Store', 'a/.DS_Store', 'x.DS_Store', '_darcs/d',
@@ -336,6 +339,165 @@ class TestTheStamp(unittest.TestCase):
                 self.assertEqual(st.stamp(payload, {}), payload)
 
 
+def _dockerfile_capture(covered):
+    result = ({"ruleId": "dockerfile.security.last-user-is-root.last-user-is-root",
+               "level": "error",
+               "message": {"text": "The last user in the container is 'root'."},
+               "locations": [{"physicalLocation": {
+                   "artifactLocation": {"uri": "/src/Dockerfile.prod"},
+                   "region": {"startLine": 2, "endLine": 2}}}]}
+              if covered else None)
+    return {"version": "2.1.0", "runs": [{
+        "tool": {"driver": {"name": "Semgrep OSS", "rules": [{
+            "id": "dockerfile.security.last-user-is-root.last-user-is-root",
+            "defaultConfiguration": {"level": "error"}}]}},
+        "results": [result] if result else [],
+        "invocations": [{"executionSuccessful": True}],
+    }]}
+
+
+class TestDockerfileVariantCoverage(unittest.TestCase):
+    """#3579: Dockerfile-like names are explicit Semgrep targets, and the
+    capture says exactly how many still missed Dockerfile-rule analysis."""
+
+    FIXTURE = os.path.join(REPO_ROOT, "tests", "fixtures", "dockerfile-variant")
+
+    def _run(self, mutate=False):
+        seen = []
+
+        def runner(cmd, **_kwargs):
+            seen.append(list(cmd))
+            covered = ("--scan-unknown-extensions" in cmd
+                       and "/src/Dockerfile.prod" in cmd)
+            payload = json.dumps(_dockerfile_capture(covered)).encode()
+            return _FakeResult(returncode=int(covered), stdout=payload, stderr=b"")
+
+        with tempfile.TemporaryDirectory() as out:
+            mutation = (unittest.mock.patch.object(
+                st, "with_dockerfile_targets", side_effect=lambda _tool, cmd, _root: cmd)
+                if mutate else contextlib.nullcontext())
+            with mutation:
+                written = run_tools.run_tools(
+                    self.FIXTURE, ["semgrep"], out,
+                    image="panopticon-tools", runner=runner)
+            self.assertEqual(len(written), 1)
+            with open(written[0], "rb") as fh:
+                capture = json.load(fh)
+            findings, dispositions = ingest.ingest_dir_detailed(out, "g1")
+        return seen, capture, findings, dispositions["semgrep"]
+
+    @staticmethod
+    def _report(findings, disposition):
+        dispositions = {"semgrep": disposition}
+        return report.build_report(report.ReportInputs(
+            run=report.RunConfig(
+                target="t", fail_on="high", timestamp="2026-11-12T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=findings),
+            plan=plan.PlanInputs(scout_requested=["semgrep"]),
+            tools=tool_axis.ToolAxis(
+                tools_ran=tool_axis.tools_ran_from_dispositions(dispositions),
+                dispositions=dispositions)))
+
+    def test_variant_gets_dockerfile_rules_and_keeps_its_original_path_and_line(self):
+        seen, capture, findings, disposition = self._run()
+        self.assertIn("--scan-unknown-extensions", seen[0])
+        self.assertLess(seen[0].index("/src/Dockerfile.prod"), seen[0].index("/src"))
+        self.assertEqual(len(findings), 1)
+        self.assertEqual(findings[0]["location"], {
+            "file": "Dockerfile.prod", "line_start": 2})
+        coverage = capture["runs"][0]["properties"][st.DOCKERFILE_STAMP_KEY]
+        self.assertEqual(coverage, {
+            "count": 1, "analyzed": 1, "unanalyzed": 0,
+            "files": [], "complete": True})
+        self.assertNotIn("file_coverage", disposition)
+
+    def test_mutant_without_explicit_target_is_counted_and_named_in_coverage_note(self):
+        seen, capture, findings, disposition = self._run(mutate=True)
+        self.assertNotIn("--scan-unknown-extensions", seen[0])
+        self.assertEqual(findings, [])
+        coverage = capture["runs"][0]["properties"][st.DOCKERFILE_STAMP_KEY]
+        self.assertEqual(coverage, {
+            "count": 1, "analyzed": 0, "unanalyzed": 1,
+            "files": ["Dockerfile.prod"], "complete": True})
+        facts = disposition["file_coverage"]
+        self.assertEqual((facts["dockerfile_unanalyzed"], facts["unparsed_files"]), (1, 1))
+        self.assertEqual(facts["files"], [{
+            "file": "Dockerfile.prod", "reason": "dockerfile_rules_skipped"}])
+        published = self._report(findings, disposition)
+        self.assertIn("1 Dockerfile-like file(s) received no Dockerfile rule analysis",
+                      published["summary"]["coverage_note"])
+
+    def test_all_ruled_name_shapes_are_found_but_plain_containerfile_is_native(self):
+        with tempfile.TemporaryDirectory() as root:
+            names = ("Dockerfile.prod", "api.Dockerfile", "job.dockerfile",
+                     "Containerfile.dev", "Containerfile")
+            for name in names:
+                with open(os.path.join(root, name), "w", encoding="utf-8") as fh:
+                    fh.write("FROM busybox\n")
+            listing = st.dockerfile_coverage(root, TOOL_CMD["semgrep"])
+        self.assertEqual(listing, {
+            "count": 4, "analyzed": 0, "unanalyzed": 4,
+            "files": sorted(names[:-1]), "complete": True})
+
+    @unittest.skipIf(sys.platform == "win32", "POSIX symlinks")
+    def test_excluded_and_symlinked_variants_are_not_reintroduced(self):
+        with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as outside:
+            os.makedirs(os.path.join(root, "ignored"))
+            for rel in ("kept/Dockerfile.prod", "ignored/Dockerfile.prod"):
+                path = os.path.join(root, rel)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as fh:
+                    fh.write("FROM busybox\n")
+            external = os.path.join(outside, "Dockerfile.prod")
+            with open(external, "w", encoding="utf-8") as fh:
+                fh.write("FROM busybox\n")
+            os.symlink(external, os.path.join(root, "linked.Dockerfile"))
+            cmd = list(TOOL_CMD["semgrep"])
+            at = cmd.index("/src")
+            cmd.insert(at, "--exclude=ignored/**")
+            launched = st.with_dockerfile_targets("semgrep", cmd, root)
+        self.assertIn("/src/kept/Dockerfile.prod", launched)
+        self.assertNotIn("/src/ignored/Dockerfile.prod", launched)
+        self.assertNotIn("/src/linked.Dockerfile", launched)
+
+    def test_argv_budget_leaves_the_remainder_disclosed_not_silent(self):
+        with tempfile.TemporaryDirectory() as root:
+            for i in range(3):
+                with open(os.path.join(root, "Dockerfile.%d" % i), "w",
+                          encoding="utf-8") as fh:
+                    fh.write("FROM busybox\n")
+            with unittest.mock.patch.object(st, "MAX_DOCKERFILE_TARGETS", 1):
+                launched = st.with_dockerfile_targets(
+                    "semgrep", list(TOOL_CMD["semgrep"]), root)
+                listing = st.dockerfile_coverage(root, launched)
+        self.assertEqual(listing, {
+            "count": 3, "analyzed": 1, "unanalyzed": 2,
+            "files": ["Dockerfile.1", "Dockerfile.2"], "complete": True})
+
+    def test_missing_malformed_and_incomplete_disclosure_stamps_fail_closed(self):
+        good = {"count": 0, "analyzed": 0, "unanalyzed": 0,
+                "files": [], "complete": True}
+        cases = {
+            "absent": None,
+            "malformed": dict(good, count=1),
+            "incomplete": dict(good, complete=False),
+        }
+        for state, listing in cases.items():
+            with self.subTest(state=state), tempfile.TemporaryDirectory() as tools:
+                doc = _dockerfile_capture(False)
+                properties = doc["runs"][0].setdefault("properties", {})
+                properties[st.STAMP_KEY] = {
+                    "limit": 1_000_000, "count": 0, "files": [], "complete": True}
+                if listing is not None:
+                    properties[st.DOCKERFILE_STAMP_KEY] = listing
+                with open(os.path.join(tools, "semgrep.sarif"), "w", encoding="utf-8") as fh:
+                    json.dump(doc, fh)
+                _findings, dispositions = ingest.ingest_dir_detailed(tools, "g1")
+            facts = dispositions["semgrep"]["file_coverage"]
+            self.assertEqual(facts["dockerfile_listing"], state)
+            self.assertEqual(facts["unlocated_records"], 1)
+
+
 def _canary_capture():
     return {"runs": [{"tool": {"driver": {"name": "Semgrep OSS", "rules": []}},
                       "results": [{"ruleId": "eval-detected", "level": "error",
@@ -433,8 +595,11 @@ class TestASkippedFileReachesTheReport(unittest.TestCase):
         for name, listing in cases.items():
             with self.subTest(case=name):
                 doc = _canary_capture()
+                doc["runs"][0]["properties"] = {st.DOCKERFILE_STAMP_KEY: {
+                    "count": 0, "analyzed": 0, "unanalyzed": 0,
+                    "files": [], "complete": True}}
                 if listing is not None:
-                    doc["runs"][0]["properties"] = {st.STAMP_KEY: listing}
+                    doc["runs"][0]["properties"][st.STAMP_KEY] = listing
                 findings, disposition, _ = self._ingest(json.dumps(doc).encode())
                 facts = disposition["file_coverage"]
                 self.assertEqual((facts["status"], facts["unlocated_records"], facts["size_listing"]),

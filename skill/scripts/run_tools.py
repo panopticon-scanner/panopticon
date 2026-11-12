@@ -509,6 +509,10 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
             # honoured and `suppression_comments` says so.
             cmd = scanner_config._with_suppression_flags(
                 tool, cmd, security_mode)
+            # #3579: the pinned Semgrep applies unknown-extension handling only
+            # to files named directly on argv. Keep /src for the ordinary tree,
+            # and add Dockerfile-like variants as explicit native-path targets.
+            cmd = semgrep_targets.with_dockerfile_targets(tool, cmd, target)
             tools_manifest._record_semgrep_scope(tool, cmd, SEMGREP_SCANNER_SCOPE_ARGS)
             out_path = os.path.join(out_dir, "%s.sarif" % tool)
             # #1839 / #run7: bandit's ini and trivy's ignorefile are the

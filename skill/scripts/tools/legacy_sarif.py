@@ -244,6 +244,9 @@ def _disclose_semgrep_rows(rows, omitted):
             detail.append("%d syntax error(s)" % row["syntax_errors"])
         if row.get("reason") == "size_skipped" or row.get("size_skipped"):
             detail.append("over the size limit")
+        if (row.get("reason") == "dockerfile_rules_skipped"
+                or row.get("dockerfile_rules_skipped")):
+            detail.append("no Dockerfile rule analysis")
         if row.get("rules"):
             detail.append("rules: %s" % ", ".join(row["rules"]))
         if row.get("rule_scope") == "all_applicable":
@@ -277,6 +280,32 @@ def _size_listing(sarif):
             "listed" if listing["complete"] else "incomplete")
 
 
+def _dockerfile_listing(sarif):
+    """#3579: (uncovered files, total, analyzed, uncovered, state).
+
+    Like the size stamp, absence or malformed input is an unlocated coverage
+    gap. Historical captures cannot make a claim the runner never measured.
+    """
+    try:
+        listing = sarif["runs"][0]["properties"][semgrep_targets.DOCKERFILE_STAMP_KEY]
+    except (KeyError, IndexError, TypeError):
+        return [], 0, 0, 0, "absent"
+    integers = (listing.get("count"), listing.get("analyzed"),
+                listing.get("unanalyzed")) if isinstance(listing, dict) else ()
+    if not (isinstance(listing, dict)
+            and len(integers) == 3 and all(type(value) is int and value >= 0
+                                           for value in integers)
+            and listing["count"] == listing["analyzed"] + listing["unanalyzed"]
+            and type(listing.get("complete")) is bool
+            and isinstance(listing.get("files"), list)
+            and all(isinstance(path, str) and path for path in listing["files"])
+            and len(set(listing["files"])) == len(listing["files"])
+            and len(listing["files"]) <= listing["unanalyzed"]):
+        return [], 0, 0, 0, "malformed"
+    return (listing["files"], listing["count"], listing["analyzed"],
+            listing["unanalyzed"], "listed" if listing["complete"] else "incomplete")
+
+
 def semgrep_file_coverage(sarif):
     """Semgrep's file gaps as partial file coverage, or None when it has none.
 
@@ -289,8 +318,12 @@ def semgrep_file_coverage(sarif):
     per_file, timeout_rules, timeouts_unlocated, located = _timeouts(sarif)
     syntax, syntax_rules, syntax_all, syntax_unlocated = _syntax_errors(sarif)
     sized, size_count, limit, state = _size_listing(sarif)
-    unlocated = timeouts_unlocated + syntax_unlocated + (state != "listed")
-    if not per_file and not syntax and not unlocated and not size_count:
+    dockerfiles, docker_count, docker_analyzed, docker_unanalyzed, docker_state = (
+        _dockerfile_listing(sarif))
+    unlocated = (timeouts_unlocated + syntax_unlocated + (state != "listed")
+                 + (docker_state != "listed"))
+    if (not per_file and not syntax and not unlocated and not size_count
+            and not docker_unanalyzed):
         return None
     timeouts = sum(per_file.values()) + timeouts_unlocated
     syntax_count = sum(syntax.values()) + syntax_unlocated
@@ -305,6 +338,10 @@ def semgrep_file_coverage(sarif):
     if size_count or state != "listed":
         print("semgrep: partial file coverage: %d file(s) over the size limit not "
               "scanned (listing %s)" % (size_count, state), file=sys.stderr)
+    if docker_unanalyzed or docker_state != "listed":
+        print("semgrep: partial file coverage: %d Dockerfile-like file(s) received "
+              "no Dockerfile rule analysis (listing %s)"
+              % (docker_unanalyzed, docker_state), file=sys.stderr)
     facts_by_path: dict[str, dict[str, object]] = {}
     for path in set(per_file) | set(syntax):
         timed_out, failed_parse = per_file.get(path, 0), syntax.get(path, 0)
@@ -329,14 +366,22 @@ def semgrep_file_coverage(sarif):
             facts_by_path[path]["size_skipped"] = True
         else:
             facts_by_path[path] = {"reason": "size_skipped"}
+    for path in dockerfiles:
+        if path in facts_by_path:
+            facts_by_path[path]["reason"] = "multiple_gaps"
+            facts_by_path[path]["dockerfile_rules_skipped"] = True
+        else:
+            facts_by_path[path] = {"reason": "dockerfile_rules_skipped"}
     rows = [(path, facts_by_path[path]) for path in sorted(facts_by_path)]
     known_size_files = len(set(sized))
-    unparsed = len(facts_by_path) + max(0, size_count - known_size_files)
+    known_dockerfiles = len(set(dockerfiles))
+    unparsed = (len(facts_by_path) + max(0, size_count - known_size_files)
+                + max(0, docker_unanalyzed - known_dockerfiles))
     published_rows = [dict(file=inert_text(path, limit=239, mode="path"), **facts)
                       for path, facts in rows[:_SEMGREP_DISCLOSED_FILES]]
     files_omitted = max(0, unparsed - len(published_rows))
     _disclose_semgrep_rows(published_rows, files_omitted)
-    return {
+    facts = {
         "status": "partial",
         "parsed_files": len(located - set(facts_by_path)),
         "unparsed_files": unparsed, "unavailable_files": 0,
@@ -347,6 +392,12 @@ def semgrep_file_coverage(sarif):
         "size_skipped": size_count, "size_limit": limit,
         "size_listing": state, "unlocated_records": unlocated,
     }
+    if docker_count or docker_state != "listed":
+        facts.update({"dockerfile_variants": docker_count,
+                      "dockerfile_analyzed": docker_analyzed,
+                      "dockerfile_unanalyzed": docker_unanalyzed,
+                      "dockerfile_listing": docker_state})
+    return facts
 
 
 class LegacySarifAdapter:

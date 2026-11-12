@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Semgrep covers Dockerfile variants and discloses any remainder (#3579).**
+  `Dockerfile.*`, `*.Dockerfile`, `*.dockerfile`, and suffixed `Containerfile*`
+  files are passed as explicit targets under Semgrep 1.183.0's
+  `--scan-unknown-extensions`, while the ordinary `/src` tree scan remains.
+  Findings keep the repository path and line. A capture stamp counts variants
+  that did and did not receive Dockerfile-rule analysis; an uncovered, missing,
+  malformed, incomplete, oversized, or argv-bounded remainder is partial file
+  coverage and its count reaches `coverage_note`. Trivy misconfiguration
+  scanning remains a possible follow-up rather than a new scanner surface here.
+
 - **Read-scope rows are no longer stamped (#3533 follow-up).** No guard checked the #3436 row
   stamp after the N+1 removal, so `install()`, the headless per-entry bindings and the agy and
   gemini probes write plain rows. Arming no longer needs the run-stamp key. A leftover `_by` in an

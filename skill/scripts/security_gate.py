@@ -271,9 +271,13 @@ def disclose_file_coverage(dispositions, label):
             # #2957: Semgrep's facts add the rule timeouts behind those files.
             timeouts = (", %d rule timeout(s)" % facts["rule_timeouts"]
                         if facts.get("rule_timeouts") else "")
+            dockerfiles = (", %d Dockerfile-like file(s) without Dockerfile-rule analysis"
+                           % facts["dockerfile_unanalyzed"]
+                           if facts.get("dockerfile_unanalyzed") else "")
             print("security-gate: %s %s partial file coverage: %d unparsed, "
-                  "%d unavailable%s; capabilities unavailable: %s"
+                  "%d unavailable%s%s; capabilities unavailable: %s"
                   % (label, tool, facts["unparsed_files"], facts["unavailable_files"], timeouts,
+                     dockerfiles,
                      ", ".join(facts["capabilities_unavailable"]) or "none"), file=sys.stderr)
 
 
