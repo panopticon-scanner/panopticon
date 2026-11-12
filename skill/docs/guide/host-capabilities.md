@@ -199,6 +199,19 @@ model, so it changes none of this. If
 a future envelope reports a model that differs from the bound one, the driver says so on stderr
 (#3550).
 
+agy's sign-in reaches a run home only as the linked
+`~/.gemini/antigravity-cli/antigravity-oauth-token`. agy 1.5.6 keeps its token in the macOS login
+Keychain, which an isolated HOME cannot reach, and an interactive `agy` session that refreshes the
+token deletes that file. So `agy_home.build()` refuses, before any child launches, when the file is
+missing or dangling, with the message `agy auth not reachable from the isolated HOME`. And every agy
+child, entry or probe, is ended as soon as its stderr shows the print-mode fallback after silent auth
+fails (`Print mode: silent auth failed`, `triggering interactive OAuth`, `consumerOAuth: starting
+OAuth`), before a browser sign-in can open. An entry ended that way is a host failure, which the
+outage pause acts on. A probe ended that way reads UNKNOWN. Google documents that a run with no
+terminal exits instead (https://antigravity.google/docs/cli/headless/). panopticon's children already
+run with no stdin and in their own session, and still reached the fallback, which is why the line is
+watched (#3576).
+
 Gemini claims all five (#3494, restoring the row #1621 had retired), measured under an isolated
 per-run home (`runners/gemini_home.py`, copying only `oauth_creds.json` and `google_accounts.json`)
 with `cwd` pinned at `<run_home>/workspace`: `gemini-shell-surface` (no system policy `.toml` or

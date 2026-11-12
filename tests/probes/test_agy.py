@@ -17,6 +17,7 @@ import scripts.read_guard_hook as read_guard_hook
 import scripts.runners.agy as agy_runner
 import scripts.runners.agy_home as agy_home
 import scripts.runners.base as runners_base
+import scripts.runners.children as children
 
 
 AGENTS_STDOUT = """Available subagents:
@@ -40,6 +41,29 @@ HOOKS_STDOUT = json.dumps({
         "`/usr/bin/python3 -I %s`\n" % os.path.abspath(agy_guard_hook.__file__)
     ),
 })
+
+
+# #3576: `agy_home.build()` refuses a home with no reachable sign-in, and the probes
+# build homes from HOME. Every test here gets a fixture HOME with a stand-in token,
+# so none reads the real ~/.gemini.
+_HOME_PATCH = None
+_HOME_DIR = None
+
+
+def setUpModule():
+    global _HOME_PATCH, _HOME_DIR
+    _HOME_DIR = tempfile.TemporaryDirectory()
+    cli_dir = os.path.join(_HOME_DIR.name, ".gemini", "antigravity-cli")
+    os.makedirs(cli_dir)
+    with open(os.path.join(cli_dir, agy_home.OAUTH_TOKEN_FILE), "w", encoding="utf-8") as fh:
+        fh.write("oauth-token-fixture")
+    _HOME_PATCH = mock.patch.dict(os.environ, {"HOME": _HOME_DIR.name})
+    _HOME_PATCH.start()
+
+
+def tearDownModule():
+    _HOME_PATCH.stop()
+    _HOME_DIR.cleanup()
 
 
 def _emit_agy_shells(directory):
@@ -139,6 +163,54 @@ class TestAgyShellSurfaceProbe(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, state)
         self.assertEqual(probes_common.SHADOW_SHELL_SCAN, by)
         self.assertIn(".gemini/agents/panopticon-scout.md", detail)
+
+
+class TestTheProbesFailClosedOnAuth(unittest.TestCase):
+    """#3576: a probe whose child would reach a browser sign-in is UNKNOWN, with the
+    operator message, and no probe builds a home without a reachable sign-in."""
+
+    LOG = ("Print mode: not authenticated, trying silent auth\n"
+           "Print mode: silent auth failed\n"
+           "Print mode: triggering interactive OAuth\n")
+
+    def test_a_stopped_child_reads_as_the_auth_message(self):
+        seen = {}
+
+        def stopped(cmd, **kw):
+            seen.update(kw)
+            raise children.HostStopped(cmd, output="", stderr=self.LOG)
+        with tempfile.TemporaryDirectory() as d:
+            _emit_agy_shells(d)
+            state, _by, detail = agy_probes.probe_agy_model_bound(
+                "agy", registration_dir=d, runner=stopped)
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn(agy_home.AUTH_UNREACHABLE, detail)
+        self.assertIs(agy_runner.INTERACTIVE_AUTH, seen["stop_on"])
+
+    def test_a_child_that_finished_on_the_line_reads_the_same(self):
+        def finished(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=self.LOG)
+        with tempfile.TemporaryDirectory() as d:
+            _emit_agy_shells(d)
+            state, _by, detail = agy_probes.probe_agy_model_bound(
+                "agy", registration_dir=d, runner=finished)
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn(agy_home.AUTH_UNREACHABLE, detail)
+
+    def test_the_guard_probes_are_unknown_without_a_reachable_sign_in(self):
+        launched = []
+        with tempfile.TemporaryDirectory() as empty, \
+                mock.patch.dict(os.environ, {"HOME": empty}):
+            for probe, probe_id in ((agy_probes.probe_agy_read_guard,
+                                     agy_probes.AGY_READ_GUARD_ARMED),
+                                    (agy_probes.probe_agy_write_guard,
+                                     agy_probes.AGY_WRITE_GUARD_ARMED)):
+                with self.subTest(probe=probe_id):
+                    state, by, detail = probe(
+                        "agy", hooks_runner=lambda cmd, **kw: launched.append(cmd))
+                    self.assertEqual((hosts.UNKNOWN, probe_id), (state, by))
+                    self.assertEqual(agy_home.AUTH_UNREACHABLE, detail)
+        self.assertEqual([], launched)
 
 
 class TestAgyReadAndWriteGuardProbes(unittest.TestCase):

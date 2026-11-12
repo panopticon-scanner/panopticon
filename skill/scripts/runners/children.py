@@ -70,6 +70,27 @@ class HostOutputExceeded(RuntimeError):
         self.output, self.stderr = output, stderr
 
 
+class HostStopped(RuntimeError):
+    """A host CLI printed a line its family named as a stop line (#3576).
+
+    Raised AFTER its group is ended, like `HostOutputExceeded`. agy names its
+    interactive-OAuth lines: a headless child that reaches them is about to open
+    a browser sign-in, which no panopticon child may do. The partial streams
+    ride on `output` and `stderr`."""
+
+    def __init__(self, argv, output=None, stderr=None):
+        super().__init__("%s printed a stop line; the launch was stopped"
+                         % os.path.basename(str(argv[0])))
+        self.output, self.stderr = output, stderr
+
+
+# How often a launch with a stop line looks for it while waiting (#3576).
+STOP_POLL = 0.1
+# How much of the stderr tail a stop line is searched in, so one split across
+# two reads is still found.
+STOP_WINDOW = 8192
+
+
 def _feed(stream, data):
     """Write the prompt and close stdin. A CLI that exits or closes stdin early
     is not an error here (EPIPE): its exit code and stdout decide (#3246)."""
@@ -93,15 +114,37 @@ class _Capture:
     caller's thread with a deadline, as `communicate`'s did, so no timer exists
     that could fire late at a recycled group."""
 
-    def __init__(self, proc, data):
+    def __init__(self, proc, data, stop_on=None):
         self.proc, self.chunks, self.capped = proc, [], False
+        self.stop_on, self.stop, self.window = stop_on, threading.Event(), b""
         self.feeder = None
         if proc.stdin is not None:
             self.feeder = threading.Thread(target=_feed, args=(proc.stdin, data), daemon=True)
             self.feeder.start()
-        self.join_stderr = tools_exec.drain_stderr_async(proc, cap=STDERR_CAP)
+        self.join_stderr = tools_exec.drain_stderr_async(
+            proc, cap=STDERR_CAP, on_chunk=self._watch if stop_on is not None else None)
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
+
+    def _watch(self, chunk):
+        """Flag the stop line. The drain thread only flags it: the group is
+        ended on the waiting thread, as a timeout's is, so the leader is never
+        reaped under a kill in progress."""
+        self.window = (self.window + chunk)[-STOP_WINDOW:]
+        if self.stop_on.search(self.window):
+            self.stop.set()
+
+    def _until(self, alive, step, deadline):
+        """Wait while `alive()`: "stopped" once the stop line is flagged,
+        "timeout" at the deadline, else None when it is no longer alive."""
+        while alive():
+            if self.stop.is_set():
+                return "stopped"
+            left = None if deadline is None else deadline - time.monotonic()
+            if left is not None and left <= 0:
+                return "timeout"
+            step(STOP_POLL if left is None else min(STOP_POLL, left))
+        return "stopped" if self.stop.is_set() else None
 
     def _read(self):
         try:
@@ -110,8 +153,10 @@ class _Capture:
             pass
 
     def wait(self, timeout):
-        """"done", "capped" or "timeout"; on "done" the child has exited."""
+        """"done", "capped", "stopped" or "timeout"; on "done" the child has exited."""
         deadline = None if timeout is None else time.monotonic() + timeout
+        if self.stop_on is not None:
+            return self._wait_watched(deadline)
         self.reader.join(timeout)
         if self.reader.is_alive():
             return "timeout"
@@ -122,6 +167,22 @@ class _Capture:
         except subprocess.TimeoutExpired:
             return "timeout"
         return "done"
+
+    def _wait_watched(self, deadline):
+        """`wait` for a launch with a stop line: the same order, in slices."""
+        outcome = self._until(lambda: self.reader.is_alive(), self.reader.join, deadline)
+        if outcome:
+            return outcome
+        if self.capped:
+            return "capped"
+
+        def exited_within(seconds):
+            try:
+                self.proc.wait(seconds)
+            except subprocess.TimeoutExpired:
+                pass
+        outcome = self._until(lambda: self.proc.poll() is None, exited_within, deadline)
+        return outcome or "done"
 
     def streams(self, grace):
         """(stdout bytes, stderr tail bytes), waiting at most `grace` for each."""
@@ -173,7 +234,7 @@ class ChildProcesses:
         return self.launch
 
     def launch(self, argv, *, input=None, cwd=None, env=None, timeout=None,
-               text=True, capture_output=True):
+               text=True, capture_output=True, stop_on=None):
         """Run `argv` to completion and return its `CompletedProcess`.
 
         The seam's own launcher: `subprocess.run`-SHAPED on purpose, keyword
@@ -211,6 +272,10 @@ class ChildProcesses:
         `capture_output` exists for signature parity and must be true: both
         streams are always piped, because the parsers downstream read both and
         an un-piped stream would go to the operator's terminal mid-run.
+
+        #3576: `stop_on`, a compiled bytes pattern, ends the group as soon as
+        stderr matches it and raises `HostStopped`. Without it the wait is
+        exactly what it was.
         """
         if not capture_output:
             raise ValueError("HostRunner.launch always captures both streams")
@@ -241,7 +306,7 @@ class ChildProcesses:
             # go back in the `finally` below.
             self.register_child(proc)
             try:
-                capture = _Capture(proc, data)
+                capture = _Capture(proc, data, stop_on)
                 outcome = capture.wait(timeout)
                 if outcome != "done":
                     procgroup.kill_group(proc)
@@ -250,11 +315,13 @@ class ChildProcesses:
                         raise HostOutputExceeded(requested_argv, STDOUT_CAP, out, err)
                     if text:
                         out, err = _text(out, encoding, "replace"), _text(err, encoding, "replace")
+                    if outcome == "stopped":
+                        raise HostStopped(requested_argv, out, err)
                     raise subprocess.TimeoutExpired(requested_argv, timeout, output=out, stderr=err)
                 out, err = capture.streams(PARTIAL_OUTPUT_GRACE)
                 if text:
                     out, err = _text(out, encoding), _text(err, encoding)
-            except (subprocess.TimeoutExpired, HostOutputExceeded):
+            except (subprocess.TimeoutExpired, HostOutputExceeded, HostStopped):
                 raise
             except BaseException:
                 # The timeout is not the only way out. A Ctrl-C on one of

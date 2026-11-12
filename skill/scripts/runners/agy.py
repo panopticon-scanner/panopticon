@@ -21,6 +21,8 @@ import scripts.model_resolver as model_resolver
 import scripts.redact as redact
 import scripts.runners.agy_home as agy_home
 import scripts.runners.base as base
+import scripts.runners.children as children
+import scripts.runners.outage as outage
 import scripts.runners.schema as schema
 
 
@@ -69,6 +71,34 @@ KNOWN_MODELS = frozenset({
 # #3564: the documented `agy --effort` levels, owned by the resolver beside its tables.
 AGY_EFFORTS = model_resolver.AGY_EFFORTS
 _combined_slug = model_resolver.names_effort
+
+
+# #3576: agy's print-mode auth fallback, in the order it logs it (owner capture, agy 1.5.6):
+#   Print mode: not authenticated, trying silent auth
+#   Print mode: silent auth failed
+#   Print mode: triggering interactive OAuth
+#   consumerOAuth: starting OAuth flow
+# The child is ended at the first line after silent auth fails, before a browser opens.
+# A documented "no terminal" run should exit instead (https://antigravity.google/docs/cli/headless/),
+# but children already run with no stdin and their own session, and still reached it.
+INTERACTIVE_AUTH = re.compile(
+    rb"Print mode: silent auth failed|triggering interactive OAuth|consumerOAuth: starting OAuth")
+
+
+def reached_interactive_auth(stderr):
+    """Whether a finished child's stderr shows agy's interactive-auth fallback (#3576)."""
+    if isinstance(stderr, str):
+        stderr = stderr.encode("utf-8", "replace")
+    return isinstance(stderr, bytes) and bool(INTERACTIVE_AUTH.search(stderr))
+
+
+def auth_stopped(entry_id, exc):
+    """The failed entry for a child ended on its interactive-auth line (#3576)."""
+    return base.RunResult.failed(
+        entry_id, "agy -p was stopped before it could open a browser sign-in: "
+        + agy_home.AUTH_UNREACHABLE,
+        host_error=agy_home.AUTH_UNREACHABLE, failure_class=outage.HOST_FAILURE,
+        stderr=base.stderr_head(getattr(exc, "stderr", None)))
 
 
 # #3550: why an agy ledger row's `model` is null. The `--output-format json` envelope's
@@ -407,9 +437,12 @@ class Runner(base.HostRunner):
             cmd = self.command(entry, eff_model)
             proc = launcher(
                 cmd, cwd=self.workspace_dir, env=child_env,
-                capture_output=True, text=True, timeout=self.entry_timeout)
+                capture_output=True, text=True, timeout=self.entry_timeout,
+                stop_on=INTERACTIVE_AUTH)
         except base.LaunchRefused:
             raise
+        except children.HostStopped as exc:
+            result = auth_stopped(entry_id, exc)
         except subprocess.TimeoutExpired as exc:
             result = base.RunResult.failed(
                 entry_id, "agy -p timed out after %ss" % self.entry_timeout,
@@ -430,6 +463,9 @@ class Runner(base.HostRunner):
             except OSError:
                 pass
 
+        if result is None and reached_interactive_auth(getattr(proc, "stderr", None)):
+            # A child that printed the line and exited before the watch saw it.
+            result = auth_stopped(entry_id, proc)
         if result is None:
             result = self.parse_envelope(
                 entry_id, getattr(proc, "stdout", ""),

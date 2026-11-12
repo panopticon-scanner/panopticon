@@ -11,6 +11,7 @@ import scripts.hosts as hosts
 import scripts.runners.agy as agy_runner
 import scripts.runners.agy_home as agy_home
 import scripts.runners.base as base
+import scripts.runners.children as children
 import scripts.runners.outage as outage
 
 
@@ -330,6 +331,111 @@ class TestTheLedgerRowForAgy(unittest.TestCase):
         raw = json.dumps(dict(json.loads(ENVELOPE), model="gemini-4-carbon"))
         _row, err, _usage = self._row(_entry(False, model="gemini-4-carbon"), raw)
         self.assertEqual("", err)
+
+
+class TestAgyAuthFailsClosed(unittest.TestCase):
+    """#3576: no agy child may reach a browser sign-in, and no run starts without auth.
+    Fixture homes only: nothing here reads the real ~/.gemini or the Keychain."""
+
+    # The owner's live log lines (agy 1.5.6, 2026-11-11), in order.
+    LOG = ("Print mode: not authenticated, trying silent auth\n"
+           "Print mode: silent auth failed\n"
+           "Print mode: triggering interactive OAuth\n"
+           "consumerOAuth: starting OAuth flow\n")
+
+    def _env(self):
+        return {base.ENV_ENTRY_ID: "review-app-SEC",
+                base.ENV_WRITE_ALLOWLIST: "/w.json", base.ENV_READ_SCOPE: "/s.json"}
+
+    def _home_without_token(self, d, dangling=False):
+        user_home, agents_dir = _fixture_user_home(d)
+        token = os.path.join(user_home, ".gemini", "antigravity-cli",
+                             agy_home.OAUTH_TOKEN_FILE)
+        os.unlink(token)
+        if dangling:
+            os.symlink(os.path.join(d, "gone"), token)
+        return user_home, agents_dir
+
+    def test_build_refuses_when_the_token_is_missing_or_dangling(self):
+        for dangling in (False, True):
+            with self.subTest(dangling=dangling), tempfile.TemporaryDirectory() as d:
+                user_home, agents_dir = self._home_without_token(d, dangling)
+                before = set(agy_home._LIVE_HOMES)
+                with self.assertRaises(agy_home.AgyAuthUnreachable) as caught:
+                    agy_home.build("/s.json", "/w.json", user_home=user_home,
+                                   registration_dir=agents_dir)
+                self.assertEqual(before, agy_home._LIVE_HOMES)   # no home was made
+                message = str(caught.exception)
+                self.assertIn("agy auth not reachable from the isolated HOME", message)
+                self.assertIn("antigravity-oauth-token is missing", message)
+                self.assertIn("#3576", message)
+                self.assertNotIn(user_home, message)
+
+    def test_build_links_a_present_token(self):
+        with tempfile.TemporaryDirectory() as d:
+            user_home, agents_dir = _fixture_user_home(d)
+            home = agy_home.build("/s.json", "/w.json", user_home=user_home,
+                                  registration_dir=agents_dir)
+            self.addCleanup(agy_home.teardown, home, "complete")
+            self.assertTrue(os.path.islink(os.path.join(
+                home, ".gemini", "antigravity-cli", agy_home.OAUTH_TOKEN_FILE)))
+
+    def test_prepare_refuses_before_any_launch(self):
+        seen = {}
+        with tempfile.TemporaryDirectory() as d:
+            user_home, agents_dir = self._home_without_token(d)
+            with mock.patch.dict(os.environ, {"HOME": user_home}):
+                r = agy_runner.Runner("agy", runner=lambda cmd, **kw: seen.setdefault("cmd", cmd))
+                with self.assertRaises(agy_home.AgyAuthUnreachable):
+                    r.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
+        self.assertEqual({}, seen)
+        self.assertIsNone(r.agy_home)
+
+    def test_the_stop_pattern_names_the_lines_after_silent_auth_fails(self):
+        lines = self.LOG.splitlines()
+        self.assertIsNone(agy_runner.INTERACTIVE_AUTH.search(lines[0].encode()))
+        for line in lines[1:]:
+            self.assertIsNotNone(agy_runner.INTERACTIVE_AUTH.search(line.encode()), line)
+
+    def _run(self, fake):
+        with tempfile.TemporaryDirectory() as d:
+            user_home, agents_dir = _fixture_user_home(d)
+            with mock.patch.dict(os.environ, {"HOME": user_home}):
+                r = agy_runner.Runner("agy", runner=fake)
+                r.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
+                self.addCleanup(r.teardown, "complete")
+                return r.run_entry(_entry(True), self._env())
+
+    def _assert_auth_failure(self, res):
+        self.assertFalse(res.ok)
+        self.assertIn("stopped before it could open a browser sign-in", res.error)
+        self.assertEqual(agy_home.AUTH_UNREACHABLE, res.host_error)
+        self.assertEqual(outage.HOST_FAILURE, res.failure_class)
+
+    def test_the_message_alone_classifies_as_a_host_failure(self):
+        # Belt and braces with the explicit class: the outage pause reads it either way.
+        self.assertEqual(outage.HOST_FAILURE,
+                         outage.classify_failure(agy_home.AUTH_UNREACHABLE))
+
+    def test_a_stopped_child_is_a_typed_host_failure(self):
+        seen = {}
+
+        def fake(cmd, **kw):
+            seen.update(kw)
+            raise children.HostStopped(cmd, output="", stderr=self.LOG)
+        self._assert_auth_failure(self._run(fake))
+        self.assertIs(agy_runner.INTERACTIVE_AUTH, seen["stop_on"])
+
+    def test_a_child_that_finished_on_the_line_is_the_same_failure(self):
+        def fake(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=self.LOG)
+        self._assert_auth_failure(self._run(fake))
+
+    def test_silent_auth_alone_is_not_an_auth_failure(self):
+        def fake(cmd, **kw):
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=ENVELOPE, stderr=self.LOG.splitlines()[0] + "\n")
+        self.assertTrue(self._run(fake).ok)
 
 
 class TestRunEntry(unittest.TestCase):
