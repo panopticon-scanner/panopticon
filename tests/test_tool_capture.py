@@ -9,6 +9,7 @@ import subprocess as sp
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest import mock
 
@@ -259,6 +260,82 @@ class TestStreamingRunnerAndDeadline(unittest.TestCase):
             with open(out, "rb") as fh:
                 self.assertEqual(fh.read(), b"{}")
         self.assertNotIn("timed out", err.getvalue())
+
+    def test_interrupt_kills_real_child_before_closing_blocked_stderr(self):
+        """#3583: pipe teardown must not wait for the scanner watchdog.
+
+        The real child keeps stderr open while the drain thread blocks in its
+        BufferedReader.  Raising from stdout reproduces SIGINT/SIGTERM reaching
+        the streaming read: closing stderr before killing the child deadlocks
+        on the reader's lock until something else ends the child.
+        """
+        pump_reading = threading.Event()
+
+        class _HeldStderr:
+            def __init__(self, stream):
+                self._stream = stream
+
+            def read(self, size=-1):
+                pump_reading.set()
+                return self._stream.read(size)
+
+            def close(self):
+                return self._stream.close()
+
+        class _InterruptingStdout:
+            def __init__(self, stream):
+                self._stream = stream
+
+            def read(self, _size=-1):
+                if not pump_reading.wait(2):
+                    raise RuntimeError("stderr pump did not start")
+                # Let the pump enter the real BufferedReader.read and acquire
+                # its lock before the interrupt starts teardown.
+                time.sleep(0.1)
+                raise KeyboardInterrupt("fixture interrupt")
+
+            def close(self):
+                return self._stream.close()
+
+        proc = rt._popen_runner(
+            [sys.executable, "-c", "import time; time.sleep(60)"],
+            stdout=sp.PIPE, stderr=sp.PIPE)
+        self.assertIsInstance(proc, sp.Popen)
+        self.assertIsNotNone(proc.stdout)
+        self.assertIsNotNone(proc.stderr)
+        proc.stdout = _InterruptingStdout(proc.stdout)
+        proc.stderr = _HeldStderr(proc.stderr)
+        caught = []
+        finished = threading.Event()
+
+        def capture():
+            try:
+                with tempfile.TemporaryDirectory() as d:
+                    tc._stream_and_write(
+                        "tool", "blocked", proc, os.path.join(d, "out"),
+                        timeout=30)
+            except BaseException as exc:  # the interrupt is the assertion
+                caught.append(exc)
+            finally:
+                finished.set()
+
+        worker = threading.Thread(target=capture, daemon=True)
+        started = time.monotonic()
+        worker.start()
+        prompt = finished.wait(2)
+        elapsed = time.monotonic() - started
+        if not prompt and proc.poll() is None:
+            proc.kill()
+        worker.join(2)
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait(timeout=2)
+
+        self.assertTrue(prompt, "interrupt cleanup waited on the blocked stderr pump")
+        self.assertLess(elapsed, 2)
+        self.assertEqual(len(caught), 1)
+        self.assertIsInstance(caught[0], KeyboardInterrupt)
+        self.assertIsNotNone(proc.poll())
 
     def test_watchdog_kills_hung_tool_and_skips(self):
         # A tool whose stdout.read() BLOCKS (hang) must be killed at the deadline
