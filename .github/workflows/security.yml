@@ -74,12 +74,65 @@ env:
   # directory: a blind spot should be exactly as wide as its argument.
   GOLDEN_GLOB: tests/goldens/tool-raw/**
 jobs:
+  # #3581: the audit step below needs CodeQL's analysis at THIS run's main SHA.
+  # Both nightly crons fire hours late, inside the merge window, so codeql.yml's
+  # own nightly often analysed an older SHA. On the audit route only, dispatch
+  # codeql.yml when main has no CodeQL analysis at this SHA, and wait for it.
+  # codeql.yml runs as itself, so its analysis key stays the one PRs compare to.
+  # GITHUB_TOKEN may trigger workflow_dispatch; this job alone holds actions: write.
+  codeql-current:
+    name: codeql-current
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      (github.event.schedule == '41 6 * * *' ||
+      (github.event_name == 'workflow_dispatch' && inputs.route == 'main-audit'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      actions: write
+      contents: read
+      security-events: read
+    steps:
+      - name: Ensure CodeQL has analysed this main SHA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          analysed() {
+            gh api "repos/$REPO/code-scanning/analyses?ref=refs/heads/main&tool_name=CodeQL&per_page=20" \
+              --jq "[.[] | select(.commit_sha == \"$SHA\")] | length"
+          }
+          if [ "$(analysed)" -gt 0 ]; then
+            echo "CodeQL already analysed $SHA"
+            exit 0
+          fi
+          head="$(gh api "repos/$REPO/commits/main" --jq .sha)"
+          if [ "$head" != "$SHA" ]; then
+            echo "::error::main moved from $SHA to $head; a dispatch would analyse the wrong SHA"
+            exit 1
+          fi
+          gh workflow run codeql.yml --repo "$REPO" --ref main
+          for poll in $(seq 1 70); do
+            sleep 30
+            if [ "$(analysed)" -gt 0 ]; then
+              echo "CodeQL analysed $SHA after $poll polls"
+              exit 0
+            fi
+          done
+          echo "::error::CodeQL did not analyse $SHA within 35 minutes"
+          exit 1
+
   scan:
     name: >-
       ${{ github.event_name == 'pull_request' && 'scan' ||
       ((github.event.schedule == '23 7 * * 1' ||
       (github.event_name == 'workflow_dispatch' && inputs.route != 'main-audit'))
       && 'strict-full-tree' || 'main-audit') }}
+    # Skipped on the pr and strict routes; `!cancelled()` below keeps `scan`
+    # running then, and also when it fails (the audit step then fails loudly).
+    needs: codeql-current
     runs-on: ubuntu-latest
     timeout-minutes: 30
     # push always runs; a PR runs only from a SAME-REPO head. A fork PR skips
@@ -87,9 +140,10 @@ jobs:
     # security-fork.yml instead. Full events run only on main and carry their
     # own check name even when skipped.
     if: >-
+      !cancelled() && (
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository) ||
-      ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main')
+      ((github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && github.ref == 'refs/heads/main'))
     # One route per run, decided once (#3292): `pr` (the required `scan`),
     # `strict` (weekly or dispatched full tree) and `audit` (nightly or
     # dispatched main-audit). Every step below selects on it. Neither

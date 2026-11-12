@@ -4,7 +4,9 @@ on:
   pull_request:
     branches: [main]
   # No `push` (#3292). Nightly, one hour before security.yml's `main-audit`,
-  # whose alert audit needs this analysis at main's current SHA.
+  # whose alert audit needs this analysis at main's current SHA. Crons fire
+  # late, so main-audit's `codeql-current` job dispatches this workflow when
+  # that SHA has no analysis yet (#3581).
   schedule:
     - cron: '41 5 * * *'
   workflow_dispatch:
