@@ -100,26 +100,40 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
+          # A count, or a loud failure: an API error is never read as "not yet".
           analysed() {
-            gh api "repos/$REPO/code-scanning/analyses?ref=refs/heads/main&tool_name=CodeQL&per_page=20" \
-              --jq "[.[] | select(.commit_sha == \"$SHA\")] | length"
+            local n
+            n="$(gh api "repos/$REPO/code-scanning/analyses?ref=refs/heads/main&tool_name=CodeQL&per_page=20" \
+              --jq "[.[] | select(.commit_sha == \"$SHA\")] | length")" || true
+            case "$n" in
+              ''|*[!0-9]*)
+                echo "::error::CodeQL analyses API gave no count for $SHA"
+                exit 1 ;;
+            esac
+            [ "$n" -gt 0 ]
           }
-          if [ "$(analysed)" -gt 0 ]; then
+          # Once main moves, no dispatch can analyse this SHA: fail at once.
+          require_main_at_sha() {
+            local head
+            head="$(gh api "repos/$REPO/commits/main" --jq .sha)"
+            if [ "$head" != "$SHA" ]; then
+              echo "::error::main moved from $SHA to $head; CodeQL can no longer analyse this SHA"
+              exit 1
+            fi
+          }
+          if analysed; then
             echo "CodeQL already analysed $SHA"
             exit 0
           fi
-          head="$(gh api "repos/$REPO/commits/main" --jq .sha)"
-          if [ "$head" != "$SHA" ]; then
-            echo "::error::main moved from $SHA to $head; a dispatch would analyse the wrong SHA"
-            exit 1
-          fi
+          require_main_at_sha
           gh workflow run codeql.yml --repo "$REPO" --ref main
           for poll in $(seq 1 70); do
             sleep 30
-            if [ "$(analysed)" -gt 0 ]; then
+            if analysed; then
               echo "CodeQL analysed $SHA after $poll polls"
               exit 0
             fi
+            require_main_at_sha
           done
           echo "::error::CodeQL did not analyse $SHA within 35 minutes"
           exit 1

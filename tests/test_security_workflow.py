@@ -127,5 +127,85 @@ class TestSecurityGateExitStatus(unittest.TestCase):
                 if annotation:
                     self.assertIn(annotation, proc.stdout)
 
+CODEQL_STEP = "Ensure CodeQL has analysed this main SHA"
+AUDIT_ROUTE = ("(github.event.schedule == '41 6 * * *' || "
+               "(github.event_name == 'workflow_dispatch' && inputs.route == 'main-audit'))")
+SCAN_NAME = ("${{ github.event_name == 'pull_request' && 'scan' || "
+             "((github.event.schedule == '23 7 * * 1' || "
+             "(github.event_name == 'workflow_dispatch' && inputs.route != 'main-audit')) "
+             "&& 'strict-full-tree' || 'main-audit') }}")
+# A stand-in `gh`: each API answers from its own queue file, one line per call
+# ("ERR" fails the call); a dispatch is recorded. `sleep` is a no-op.
+GH_STUB = r"""
+pop() { local f="$STUB/$1" line; line="$(head -n 1 "$f")"; tail -n +2 "$f" > "$f.n"; mv "$f.n" "$f"
+        [ "$line" != ERR ] || return 1; printf '%s\n' "$line"; }
+gh() {
+  case "$*" in
+    "api repos/o/r/code-scanning/analyses"*) pop analyses ;;
+    "api repos/o/r/commits/main"*) pop commits ;;
+    "workflow run codeql.yml --repo o/r --ref main") echo x >> "$STUB/dispatched" ;;
+    *) echo "unexpected gh $*" >&2; return 9 ;;
+  esac
+}
+sleep() { :; }
+"""
+
+
+class TestCodeqlCurrentJob(unittest.TestCase):
+    """#3581: main-audit dispatches CodeQL at its own SHA, and `scan` still runs."""
+
+    def setUp(self):
+        self.jobs = _load(SECURITY)["jobs"]
+
+    def test_runs_on_the_audit_route_only(self):
+        job = self.jobs["codeql-current"]
+        self.assertEqual(" ".join(job["if"].split()),
+                         "github.ref == 'refs/heads/main' && " + AUDIT_ROUTE)
+        self.assertEqual(job["permissions"],
+                         {"actions": "write", "contents": "read", "security-events": "read"})
+        self.assertNotIn("uses", json.dumps(job["steps"]))
+
+    def test_scan_keeps_its_name_and_runs_when_the_new_job_is_skipped(self):
+        # Without `!cancelled()`, a skipped `needs` skips `scan`, and a skipped
+        # required check reports green without scanning (#1900).
+        scan = self.jobs["scan"]
+        self.assertEqual(scan["needs"], "codeql-current")
+        self.assertTrue(" ".join(scan["if"].split()).startswith("!cancelled() && ("))
+        self.assertEqual(" ".join(scan["name"].split()), SCAN_NAME)
+
+    def _run(self, analyses, commits):
+        body = _step(self.jobs["codeql-current"], CODEQL_STEP)["run"]
+        with tempfile.TemporaryDirectory() as stub:
+            for name, lines in (("analyses", analyses), ("commits", commits)):
+                with open(os.path.join(stub, name), "w", encoding="utf-8") as fh:
+                    fh.write("".join(line + "\n" for line in lines))
+            proc = subprocess.run(
+                ["bash", "--noprofile", "--norc", "-eo", "pipefail", "-c", GH_STUB + body],
+                env={"PATH": os.environ.get("PATH", ""), "STUB": stub,
+                     "REPO": "o/r", "SHA": "abc"},
+                capture_output=True, text=True, timeout=30)
+            dispatched = os.path.exists(os.path.join(stub, "dispatched"))
+        return proc.returncode, proc.stdout + proc.stderr, dispatched
+
+    def test_step_outcomes(self):
+        cases = (
+            ("already analysed", ["1"], [], 0, "already analysed", False),
+            ("main moved first", ["0"], ["def"], 1, "main moved from abc to def", False),
+            ("dispatched then analysed", ["0", "0", "1"], ["abc", "abc"], 0,
+             "after 2 polls", True),
+            ("main moved while waiting", ["0", "0"], ["abc", "def"], 1,
+             "main moved from abc to def", True),
+            ("analyses API error", ["ERR"], [], 1, "gave no count", False),
+            ("API error while waiting", ["0", "ERR"], ["abc"], 1, "gave no count", True),
+            ("never analysed", ["0"] * 71, ["abc"] * 71, 1, "within 35 minutes", True),
+        )
+        for label, analyses, commits, rc, text, dispatched in cases:
+            with self.subTest(label):
+                got_rc, out, got_dispatch = self._run(analyses, commits)
+                self.assertEqual(got_rc, rc, out)
+                self.assertIn(text, out)
+                self.assertEqual(got_dispatch, dispatched, out)
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
