@@ -218,7 +218,7 @@ class TestTheProbesFailClosedOnAuth(unittest.TestCase):
 class TestTheModelProbeOnTheKeyRoute(unittest.TestCase):
     """#3576 step 2: on the API-key route the probe binds what the runner binds."""
 
-    FAKE_KEY = "AIzaSyTESTsentinel0123456789abcdefghijk"
+    FAKE_KEY = "AIza" + "K" * 35
     LISTED = "\n".join(["Available models:", "gemini-4-argon-high\tGemini 4 Argon (High)",
                         "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)"]) + "\n"
 

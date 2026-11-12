@@ -42,7 +42,7 @@ KEY_ROUTE_MODELS = "\n".join(
         "gemini-3.7-flash-high", "gemini-3.7-flash-medium", "gemini-3.7-flash-low",
         "gemini-3.6-flash-high", "gemini-3.6-flash-medium", "gemini-3.6-flash-low",
         "gemini-3.1-pro-high", "gemini-3.1-pro-low")]) + "\n"
-FAKE_KEY = "AIzaSyTESTsentinel0123456789abcdefghijk"  # AIza + 35, a real key's shape
+FAKE_KEY = "AIza" + "K" * 35  # a real key's shape, built like the test_redact sentinels
 
 # #3550: agy's DOCUMENTED `--output-format json` envelope (field table at
 # https://antigravity.google/docs/cli/headless/, read 2026-11-11). It carries no model:
