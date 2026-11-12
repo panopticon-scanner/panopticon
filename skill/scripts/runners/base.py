@@ -67,11 +67,11 @@ ALLOWLIST_FILE = "write-allowlist.json"
 SCOPE_FILE = "read-scope.json"
 # #3545 round 1: every name the guards keep in a headless run folder -- the settings file, both
 # policy files, the per-entry scope documents (`scope_bindings.EntryScopes` keeps them in the
-# directory named by SCOPE_FILE's stem), and the hooks' two record files. A carried write grant
-# on any of them is dropped at install, never carried, shadow window or not: a writable allowlist
-# is a self-grant the hook re-reads on every call.
+# directory named by SCOPE_FILE's stem), and the hooks' denial record. A carried write grant on
+# any of them is dropped at install, never carried: a writable allowlist is a self-grant the hook
+# re-reads on every call.
 GUARD_STATE = (SETTINGS_FILE, ALLOWLIST_FILE, SCOPE_FILE, os.path.splitext(SCOPE_FILE)[0],
-               guard_rules.DENIALS_FILE, guard_rules.SHADOW_FILE)
+               guard_rules.DENIALS_FILE)
 # The loop's per-launch ledger, beside the settings file in the run folder.
 # Named here for the same one-owner reason: `ledger.Ledger` writes it
 # and the usage probe names it as the headless evidence surface, and the two

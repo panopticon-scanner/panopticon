@@ -773,7 +773,9 @@ def _entry(eid, files=(), dirs=()):
 
 
 class TestStampedRows(unittest.TestCase):
-    """#3436 (R-P5-5): a scope row counts only with this machine's stamp."""
+    """#3436 (R-P5-5) stamps every row install() writes. #3533 removed the check: a row is
+    adjudicated as written whatever its stamp, because first contact halts on a planted scope
+    file (#3532), and the row still confines the entry it names."""
 
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -794,48 +796,48 @@ class TestStampedRows(unittest.TestCase):
         with open(self.scope_path, "w", encoding="utf-8") as fh:
             json.dump(on_disk, fh)
 
-    def _shadows(self):
-        try:
-            with open(os.path.join(os.path.dirname(self.scope_path), rg.guard_rules.SHADOW_FILE),
-                      encoding="utf-8") as fh:
-                return [json.loads(line) for line in fh]
-        except FileNotFoundError:
-            return []
+    def _assert_no_shadow_log(self):
+        # #3533 release N's log, `shadow-denials.jsonl`: nothing writes it any more.
+        self.assertNotIn("shadow-denials.jsonl", os.listdir(os.path.dirname(self.scope_path)))
 
-    def _assert_no_path_in_shadows(self):
-        text = json.dumps(self._shadows())
-        for path in (self.a, self.b, self.tmp.name):
-            self.assertNotIn(path, text)
-
-    def test_a_planted_row_is_recorded_not_denied_and_kept_at_install(self):
-        # #3533 release N: the stamp only duplicates first contact's halt, so a row without a
-        # valid one is recorded and adjudicated as written, and the next install keeps it.
+    def test_a_badly_stamped_row_is_adjudicated_as_written_and_kept_at_install(self):
+        # Each row release N logged as "would have denied" is allowed inside its own grant,
+        # denied outside it, and survives the next install's union, exactly as in release N.
         rg.install([_entry("e1", files=[self.a])], settings_path=self.settings,
                    scope_path=self.scope_path)
         good = rg._read_scope_file(self.scope_path)["e1"]
         planted = {
-            "unstamped": (_scope(files=[self.b]), "unstamped row"),
-            "wrong-stamp": (dict(_scope(files=[self.b]), _by="0" * 64), "mis-stamped row"),
-            "copied-stamp": (dict(_scope(files=[self.b]), _by=good["_by"]), "mis-stamped row"),
-            "foreign-key": (rg.stamp_rows({"foreign-key": _scope(files=[self.b])},
-                                          key=b"k" * 32)["foreign-key"], "mis-stamped row"),
-            "non-ascii": (dict(_scope(files=[self.b]), _by="\u00e9" * 64), "mis-stamped row"),
+            "unstamped": _scope(files=[self.b]),
+            "wrong-stamp": dict(_scope(files=[self.b]), _by="0" * 64),
+            "copied-stamp": dict(_scope(files=[self.b]), _by=good["_by"]),
+            "foreign-key": rg.stamp_rows({"foreign-key": _scope(files=[self.b])},
+                                         key=b"k" * 32)["foreign-key"],
+            "non-ascii": dict(_scope(files=[self.b]), _by="\u00e9" * 64),
         }
-        self._plant({eid: row for eid, (row, _why) in planted.items()})
-        for eid, (_row, why) in planted.items():
+        self._plant(planted)
+        for eid in planted:
             with self.subTest(row=eid):
                 self.assertEqual((True, ""), self._read(eid, self.b))
-                self.assertIn({"kind": "read-stamp", "entry_id": eid,
-                               "reason": "would have denied: %s" % why}, self._shadows())
-        self.assertFalse(self._read("unstamped", self.a)[0])     # the row still confines
+                allowed, reason = self._read(eid, self.a)               # the row still confines
+                self.assertFalse(allowed)
+                self.assertIn("(bound to entry %r)" % eid, reason)
         self.assertTrue(self._read("e1", self.a)[0])
-        self.assertNotIn("e1", {r["entry_id"] for r in self._shadows()})
+        self.assertFalse(self._read("e1", self.b)[0])
+        self.assertFalse(self._read("not-in-the-scope", self.a)[0])   # no row still denies
         rg.install([_entry("e2", files=[self.b])], settings_path=self.settings,
                    scope_path=self.scope_path)
         self.assertEqual({"e1", "e2"} | set(planted), set(rg._read_scope_file(self.scope_path)))
-        self.assertEqual(sorted(planted), sorted(r["entry_id"] for r in self._shadows()
-                                                 if r["kind"] == "install-union"))
-        self._assert_no_path_in_shadows()
+        self._assert_no_shadow_log()
+
+    def test_ours_still_wins_on_a_shared_id_whatever_the_planted_stamp(self):
+        # R-P5-4, the rule that now covers a planted row under an id we dispatch.
+        good = rg.stamp_rows({"e1": _scope(files=[self.b])})["e1"]
+        self._plant({"e1": good, "e2": _scope(files=[self.b])})
+        rg.install([_entry("e1", files=[self.a]), _entry("e2", files=[])],
+                   settings_path=self.settings, scope_path=self.scope_path)
+        self.assertTrue(self._read("e1", self.a)[0])
+        self.assertFalse(self._read("e1", self.b)[0])
+        self.assertFalse(self._read("e2", self.b)[0])
 
     def test_install_still_drops_a_row_whose_paths_fail_m1_and_the_scope_keeps_loading(self):
         # #3545 round 1: M1 stays enforcing (#3533 ruling Q2). Kept, a relative or unnormalised
@@ -851,16 +853,9 @@ class TestStampedRows(unittest.TestCase):
         self.assertEqual({"e1", "e2", "/etc/passwd"}, set(rg._read_scope_file(self.scope_path)))
         self.assertTrue(self._read("e1", self.a)[0])
         self.assertTrue(self._read("e2", self.b)[0])
-        rows = [r for r in self._shadows() if r["kind"] == "install-union"]
-        self.assertIn({"kind": "install-union", "entry_id": "relative",
-                       "reason": "dropped row: a path is not absolute and normalised"}, rows)
-        self.assertIn({"kind": "install-union", "entry_id": "climbs",
-                       "reason": "dropped row: a path is not absolute and normalised"}, rows)
-        self.assertIn({"kind": "install-union", "entry_id": rg.guard_rules.INVALID_ID,
-                       "reason": "would have dropped row"}, rows)
-        self.assertNotIn("passwd", json.dumps(self._shadows()))
+        self._assert_no_shadow_log()
 
-    def test_a_stamp_still_binds_its_entry_id_and_every_grant(self):
+    def test_a_stamp_still_binds_its_entry_id_and_every_grant_but_no_read_checks_it(self):
         rows = rg.stamp_rows({"e1": _scope(files=[self.a])})
         key = rg._stamp_key()
         self.assertTrue(rg._row_verifies(key, "e1", rows["e1"]))
@@ -871,11 +866,8 @@ class TestStampedRows(unittest.TestCase):
                 with open(self.scope_path, "w", encoding="utf-8") as fh:
                     json.dump({eid: row}, fh)
                 self.assertTrue(self._read(eid, self.a)[0])
-                self.assertEqual({"kind": "read-stamp", "entry_id": eid,
-                                  "reason": "would have denied: mis-stamped row"},
-                                 self._shadows()[-1])
 
-    def test_editing_one_field_of_an_installed_row_voids_its_stamp_and_is_recorded(self):
+    def test_editing_one_field_of_an_installed_row_decides_as_the_edited_row_says(self):
         # #3437 round 1: the stamp covers every grant, the escape walk included.
         root = os.path.join(self.tmp.name, "root")
         os.makedirs(root)
@@ -894,17 +886,18 @@ class TestStampedRows(unittest.TestCase):
                 self.assertFalse(rg._row_verifies(rg._stamp_key(), "scan", edited))
                 with open(self.scope_path, "w", encoding="utf-8") as fh:
                     json.dump({"scan": edited}, fh)
-                before = len(self._shadows())
-                rg.adjudicate({"tool_name": "Glob", "tool_input": {"pattern": "*.py", "path": root}},
-                              self.scope_path, env={rg.ENV_ENTRY_ID: "scan"})
-                self.assertEqual([{"kind": "read-stamp", "entry_id": "scan",
-                                   "reason": "would have denied: mis-stamped row"}],
-                                 self._shadows()[before:])
+                glob = {"tool_name": "Glob", "tool_input": {"pattern": "*.py", "path": root}}
+                got = rg.adjudicate(glob, self.scope_path, env={rg.ENV_ENTRY_ID: "scan"})
+                bare = {k: v for k, v in edited.items() if k != rg.STAMP_KEY}
+                with open(self.scope_path, "w", encoding="utf-8") as fh:
+                    json.dump(rg.stamp_rows({"scan": bare}), fh)
+                self.assertEqual(rg.adjudicate(glob, self.scope_path,
+                                               env={rg.ENV_ENTRY_ID: "scan"}), got)
+                with open(self.scope_path, "w", encoding="utf-8") as fh:
+                    json.dump({"scan": edited}, fh)
                 rg.install([_entry("other", files=[self.a])], settings_path=self.settings,
                            scope_path=self.scope_path)
                 self.assertEqual({"other", "scan"}, set(rg._read_scope_file(self.scope_path)))
-                self.assertEqual({"kind": "install-union", "entry_id": "scan",
-                                  "reason": "would have dropped row"}, self._shadows()[-1])
 
     def test_a_concurrent_fan_outs_stamped_rows_survive_a_second_install(self):
         rg.install([_entry("fan-1", files=[self.a])], settings_path=self.settings,
@@ -916,7 +909,7 @@ class TestStampedRows(unittest.TestCase):
         self.assertTrue(self._read("fan-2", self.b)[0])
         self.assertFalse(self._read("fan-1", self.b)[0])
 
-    def test_a_missing_key_is_recorded_not_denied_and_still_refuses_to_arm(self):
+    def test_a_missing_key_does_not_deny_and_still_refuses_to_arm(self):
         rg.install([_entry("e1", files=[self.a])], settings_path=self.settings,
                    scope_path=self.scope_path)
         empty = os.path.join(self.tmp.name, "no-key-here")
@@ -925,9 +918,6 @@ class TestStampedRows(unittest.TestCase):
             self.assertEqual((True, ""), self._read("e1", self.a))
             self.assertFalse(self._read("e1", self.b)[0])
             self.assertFalse(os.listdir(empty), "the hook must never create a key")
-        self.assertEqual({"kind": "read-stamp", "entry_id": "e1",
-                          "reason": "would have denied: run-stamp key unreadable"},
-                         self._shadows()[0])
         with mock.patch.object(rg, "_stamp_key", return_value=None), \
                 self.assertRaisesRegex(ValueError, "run-stamp key is unavailable"):
             rg.install([_entry("e2", files=[self.b])], settings_path=self.settings,
@@ -943,8 +933,8 @@ class TestStampedRows(unittest.TestCase):
         self.assertEqual((True, ""), self._read("probe-1", self.a, path))
         self.assertFalse(self._read("probe-1", self.b, path)[0])
 
-    def test_the_hook_process_records_the_stamp_and_does_not_deny(self):
-        # Run as the hosts run it: `<python> -I <hook> <scope>`, which loads run_stamp by path.
+    def test_the_hook_process_does_not_check_the_stamp(self):
+        # Run as the hosts run it: `<python> -I <hook> <scope>`.
         rg.install([_entry("e1", files=[self.a])], settings_path=self.settings,
                    scope_path=self.scope_path)
         self._plant({"planted": _scope(files=[self.b])})
@@ -959,8 +949,8 @@ class TestStampedRows(unittest.TestCase):
                     capture_output=True, text=True, env=env, timeout=60)
                 self.assertEqual(0, proc.returncode, proc.stderr)
                 self.assertEqual("", proc.stdout)
-        self.assertEqual([{"kind": "read-stamp", "entry_id": "planted",
-                           "reason": "would have denied: unstamped row"}], self._shadows())
+                self.assertEqual("", proc.stderr)
+        self._assert_no_shadow_log()
 
 
 class TestInstallUninstall(unittest.TestCase):

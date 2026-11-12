@@ -355,13 +355,9 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
         with open(allow, encoding="utf-8") as fh:
             return json.load(fh)
 
-    @staticmethod
-    def _shadows(run):
-        try:
-            with open(os.path.join(run, wg.guard_rules.SHADOW_FILE), encoding="utf-8") as fh:
-                return [json.loads(line) for line in fh]
-        except FileNotFoundError:
-            return []
+    def _assert_no_shadow_log(self, run):
+        # #3533 release N's log, `shadow-denials.jsonl`: nothing writes it any more.
+        self.assertNotIn("shadow-denials.jsonl", os.listdir(run))
 
     def test_a_planted_path_outside_the_run_folder_is_dropped(self):
         # (a) inside `.panopticon`, outside `runs/<tag>/`: the old anchor kept
@@ -378,10 +374,10 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
                          {"review-Core-SEC": [os.path.join(run,
                                                            "findings-Core-SEC.json")]})
 
-    def test_a_planted_non_findings_name_in_the_run_folder_is_carried_and_shadowed(self):
-        # (b) the run's own integrity artifacts. #3533 release N: inside this run's folder the
-        # exact-artifact rule only duplicates first contact's halt on a planted allowlist, so the
-        # paths are carried and recorded for one release, by entry id and count, never by path.
+    def test_a_planted_non_findings_name_in_the_run_folder_is_carried(self):
+        # (b) the run's own integrity artifacts. #3533 removed the exact-artifact rule inside
+        # this run's folder: first contact halts on a planted allowlist (#3532), so the paths
+        # are carried, as they were in release N.
         _root, run, allow, settings = self._target()
         planted = [os.path.join(run, "out-file-hashes.json"),
                    os.path.join(run, "dispatch-plan-driver.json")]
@@ -389,15 +385,14 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
         final = self._install(run, allow, settings)
         for p in planted:
             self.assertIn(p, final["paths"], p)
-        self.assertEqual([{"kind": "carried-grant", "entry_id": "review-Core-SEC",
-                           "reason": "%s: 2 path(s)" % wg._SHADOW_NOT_DECLARED}],
-                         self._shadows(run))
-        self.assertNotIn(run, json.dumps(self._shadows(run)))
+        self.assertEqual(sorted(planted + [os.path.join(run, "findings-Core-SEC.json")]),
+                         final["entries"]["review-Core-SEC"])
+        self._assert_no_shadow_log(run)
 
-    def test_a_live_entry_ids_carried_peer_findings_file_is_shadowed(self):
-        # (c) the #1831 exploit, asserted where it lands: the bound reviewer. #3533 release N
-        # carries the peer path (first contact halts on the planted allowlist that would hold
-        # it, #3532), so the reviewer CAN write it for one release, and the carry is recorded.
+    def test_a_live_entry_ids_carried_peer_findings_file_is_carried(self):
+        # (c) the #1831 exploit, asserted where it lands: the bound reviewer. #3533 carries the
+        # peer path (first contact halts on the planted allowlist that would hold it, #3532), so
+        # the reviewer can write it, as in release N.
         _root, run, allow, settings = self._target()
         peer = os.path.join(run, "findings-OtherGroup-ARC.json")
         mine = os.path.join(run, "findings-Core-SEC.json")
@@ -415,7 +410,7 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
             self.assertEqual(json.load(fh)["entries"],
                              {"review-Core-SEC": sorted([mine, peer]),
                               "review-OtherGroup-ARC": [peer]})
-        self.assertEqual(["review-Core-SEC"], [r["entry_id"] for r in self._shadows(run)])
+        self._assert_no_shadow_log(run)
 
     def test_a_findings_file_from_another_run_folder_is_dropped(self):
         # (d) right shape, wrong run: a previous round's grant is not in flight.
@@ -443,7 +438,7 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
         self.assertIn("review-Core-SEC", printed)
         self.assertIn("2", printed)
 
-    def test_a_group_name_that_is_a_suffix_of_another_has_its_claim_shadowed(self):
+    def test_a_group_name_that_is_a_suffix_of_another_has_its_claim_carried(self):
         # C1 (fix round 1). Group names are target-authored and may contain
         # hyphens (`groups_schema._GROUP_NAME_RE`), so a "does the id END WITH
         # this cell" test matches the WRONG cell whenever one group's name ends
@@ -460,7 +455,7 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
                        settings_path=settings, allowlist_path=allow)
         env = {wg.ENV_ENTRY_ID: "review-X-Core-SEC"}
         payload = {"tool_name": "Write", "agent_type": "panopticon-domain-panel"}
-        # #3533 release N: carried and recorded, as for any in-run path not its entry's own.
+        # #3533: carried, as for any in-run path not its entry's own.
         for path in (victim, attacker):
             self.assertEqual((True, ""), wg.adjudicate(
                 dict(payload, tool_input={"file_path": path}), allow, env=env))
@@ -468,7 +463,7 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
             self.assertEqual(json.load(fh)["entries"],
                              {"review-Core-SEC": [victim],
                               "review-X-Core-SEC": sorted([attacker, victim])})
-        self.assertEqual(["review-X-Core-SEC"], [r["entry_id"] for r in self._shadows(run)])
+        self._assert_no_shadow_log(run)
 
     def test_a_group_named_tool_keeps_its_verify_cells_grant(self):
         # NI-1 (fix round 2): `verify-tool-<queue id>` and
@@ -575,12 +570,12 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
         final = self._install(run, allow, settings)
         self.assertEqual({"review-Core-SEC": [os.path.join(run, "findings-Core-SEC.json")]},
                          final["entries"])
-        self.assertEqual([], self._shadows(run))
+        self._assert_no_shadow_log(run)
 
     def test_a_carried_grant_on_the_guards_own_state_is_dropped_and_never_writable(self):
         # #3545 round 1: in a headless run the allowlist, the read scope, the settings file and the
         # hook records live in the run folder. Carried, a grant on the allowlist is a self-grant the
-        # hook re-reads on every call, so it is dropped in the shadow window too, and announced.
+        # hook re-reads on every call, so it is always dropped, and announced.
         import scripts.runners.base as runners_base
         _root, run, allow, settings = self._target()
         stem = os.path.splitext(runners_base.SCOPE_FILE)[0]
@@ -599,7 +594,7 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
                              json.load(fh)["entries"])
         self.assertIn(wg._DROP_GUARD_STATE, err.getvalue())
         self.assertIn("%d carried allowlist path(s)" % len(planted), err.getvalue())
-        self.assertEqual([], self._shadows(run))
+        self._assert_no_shadow_log(run)
         allowed, _reason = wg.adjudicate(
             {"tool_name": "Write", "agent_type": "panopticon-domain-panel",
              "tool_input": {"file_path": os.path.join(run, runners_base.ALLOWLIST_FILE)}},
@@ -615,14 +610,16 @@ class TestCarriedGrantConfinedToTheRunFolder(unittest.TestCase):
         entry_dir = scope_bindings.EntryScopes(os.path.join(run, runners_base.SCOPE_FILE)).directory
         self.assertLessEqual(
             {runners_base.SETTINGS_FILE, runners_base.ALLOWLIST_FILE, runners_base.SCOPE_FILE,
-             os.path.basename(entry_dir), guard_rules.DENIALS_FILE, guard_rules.SHADOW_FILE},
+             os.path.basename(entry_dir), guard_rules.DENIALS_FILE},
             set(runners_base.GUARD_STATE))
 
-    def test_an_entrys_own_in_run_artifact_is_carried_without_a_shadow_line(self):
+    def test_an_entrys_own_in_run_artifact_is_carried(self):
         _root, run, allow, settings = self._target()
         self._plant(allow, self._every_family(run))
-        self._install(run, allow, settings)
-        self.assertEqual([], self._shadows(run))
+        final = self._install(run, allow, settings)
+        for eid, paths in self._every_family(run).items():
+            self.assertEqual(paths, final["entries"][eid], eid)
+        self._assert_no_shadow_log(run)
 
     def test_the_no_anchor_drop_is_announced_too(self):
         # N1: the `if not roots: return {}` path discarded every carried grant
