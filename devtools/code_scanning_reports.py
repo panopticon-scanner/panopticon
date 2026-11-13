@@ -23,7 +23,7 @@ import jsonschema
 # gate uses (`security_gate --exclude` -> `ingest_tools` ->
 # `groups_schema.matched_glob`), so one `--exclude` line means one scope on
 # both.
-from scripts import groups_schema
+from scripts import groups_schema, semgrep_targets
 
 # Where run_tools mounts the reviewed tree inside the tools image
 # (`scanner_config.TARGET_MOUNT`, pinned equal by test): scanners write locations
@@ -67,8 +67,8 @@ SARIF_NOTICE_PATH = SARIF_REFERENCE_DIR / "SARIF-2.1.0-NOTICES.md"
 # SCAN, not any finding, so a run carrying them in
 # exactly this shape is still a reviewed context. Any other key, or any
 # reviewed key in another shape, keeps the whole run actionable as before.
-MAX_SIZE_SKIPPED_LISTED = 100
-MAX_DOCKERFILE_UNANALYZED_LISTED = 100
+MAX_SIZE_SKIPPED_LISTED = semgrep_targets.MAX_LISTED
+MAX_DOCKERFILE_UNANALYZED_LISTED = semgrep_targets.MAX_LISTED
 
 
 def _is_count(value: Any) -> bool:

@@ -174,10 +174,11 @@ RUN cargo build \
 # image builder, which has a network. Restore runs no Build target, and
 # tests/test_dockerfile.py pins that this line stays a restore.
 #
-# Deliberately NOT tolerated with `|| echo ... skipped` the way AspGoat's build
-# is: a skipped restore produces an image whose containment lane then fails on
-# applicability, reporting a decorative probe instead of a broken image -- the
-# exact defect this line exists to remove. A failed restore fails the build.
+# Deliberately NOT tolerated with the conditional "build skipped" fallback used
+# by AspGoat above: a skipped restore produces an image whose containment lane
+# then fails on applicability, reporting a decorative probe instead of a broken
+# image -- the exact defect this line exists to remove. A failed restore fails
+# the build.
 COPY tests/fixtures/hostile-csproj /opt/panopticon-fixtures/hostile-csproj
 RUN dotnet restore /opt/panopticon-fixtures/hostile-csproj/evil.csproj
 
@@ -193,8 +194,8 @@ RUN dotnet restore /opt/panopticon-fixtures/hostile-csproj/evil.csproj
 # this line becomes the same chown.
 #
 # `mkdir -p` first, because the directory is a side effect of a restore that is
-# allowed to fail: AspGoat's is wrapped `|| echo "AspGoat build skipped"` BY
-# DESIGN (a flaky public feed must not fail the image), and evil.csproj declares
+# allowed to fail: AspGoat's restore/build has a conditional fallback BY DESIGN
+# (a flaky public feed must not fail the image), and evil.csproj declares
 # no `PackageReference` at all, so neither restore is a dependable creator of
 # the folder. Without the `mkdir`, a NuGet hiccup during the AspGoat restore
 # would stop failing one C# probe loudly in `integration` and start failing the

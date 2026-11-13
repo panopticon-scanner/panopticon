@@ -8,6 +8,7 @@ import sys
 import pytest
 
 from devtools import code_scanning_reports as reports
+from scripts import semgrep_targets
 
 
 ANTHROPIC = "opt.semgrep-rules.ai.generic.detect-generic-ai-anthprop"
@@ -938,6 +939,61 @@ def test_real_run_tools_semgrep_stamps_keep_the_run_inventory_eligible(tmp_path)
     assert security["runs"][0]["results"] == []
     assert security["runs"][0]["properties"] == properties
     assert _inventory_count(output) == 1
+
+
+def test_real_dockerfile_coverage_producer_shape_is_reviewed(tmp_path):
+    assert (reports.MAX_SIZE_SKIPPED_LISTED ==
+            reports.MAX_DOCKERFILE_UNANALYZED_LISTED ==
+            semgrep_targets.MAX_LISTED)
+    names = ["Dockerfile.%03d" % i
+             for i in range(semgrep_targets.MAX_LISTED + 2)]
+    for name in names:
+        (tmp_path / name).write_text("FROM busybox\n", encoding="utf-8")
+    command = [
+        "semgrep", "scan", "--config", semgrep_targets.DOCKERFILE_RULES_CONFIG,
+        semgrep_targets.SCAN_UNKNOWN_EXTENSIONS, "/src/%s" % names[0], "/src",
+    ]
+    coverage = semgrep_targets.dockerfile_coverage(tmp_path, command)
+    assert coverage["count"] == semgrep_targets.MAX_LISTED + 2
+    assert coverage["analyzed"] == 1
+    assert coverage["unanalyzed"] == semgrep_targets.MAX_LISTED + 1
+    assert len(coverage["files"]) == semgrep_targets.MAX_LISTED
+    properties = {
+        **SCAN_STAMPS,
+        "panopticon_dockerfile_coverage": coverage,
+    }
+    document = _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC)],
+                      run_properties=properties)
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    security = json.loads((output / "security" / "semgrep.sarif").read_text())
+    assert security["runs"][0]["results"] == []
+    assert _inventory_count(output) == 1
+
+
+def _assert_dockerfile_coverage_is_actionable(tmp_path, coverage):
+    properties = {**SCAN_STAMPS, "panopticon_dockerfile_coverage": coverage}
+    document = _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC)],
+                      run_properties=properties)
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == document
+    assert _inventory_count(output) == 0
+
+
+def test_dockerfile_coverage_files_are_bounded_by_unanalyzed(tmp_path):
+    _assert_dockerfile_coverage_is_actionable(
+        tmp_path, {**DOCKERFILE_COVERAGE, "files": ["Dockerfile.prod"]})
+
+
+def test_dockerfile_coverage_file_names_must_be_strings(tmp_path):
+    _assert_dockerfile_coverage_is_actionable(tmp_path, {
+        "count": 1, "analyzed": 0, "unanalyzed": 1,
+        "files": [7], "complete": True,
+    })
+
+
+def test_dockerfile_coverage_complete_must_be_a_bool(tmp_path):
+    _assert_dockerfile_coverage_is_actionable(
+        tmp_path, {**DOCKERFILE_COVERAGE, "complete": 1})
 
 
 @pytest.mark.parametrize("coverage", [
