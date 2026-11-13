@@ -61,11 +61,12 @@ SCOPE_NAMES_SHOWN = 12
 
 # #3593: a dependency scanner can report an advisory against the reviewed
 # Cargo workspace's OWN package. In Cargo.lock, workspace and local path
-# packages are the entries with no `source`; an exact package/version match is
-# therefore a controller-checkable fact, not the tool advisor's usual question
-# of whether a third-party dependency is actually used. Ingest is the sole
-# writer. The exact value keeps malformed/near-miss tool evidence on the normal
-# advisor path.
+# packages are the entries with no `source`; ingest then requires the exact
+# name/version in one confined, bounded, in-tree Cargo.toml whose package is
+# publishable. That combined match is a controller-checkable fact, not the tool
+# advisor's usual question of whether a third-party dependency is actually
+# used. Ingest is the sole writer. The exact value keeps malformed/near-miss
+# tool evidence on the normal advisor path.
 FIRST_PARTY_PACKAGE_ORIGIN = "first_party"
 
 
@@ -187,7 +188,8 @@ def is_first_party_advisory(finding):
     Tool sourcing is part of the predicate: an agent-authored finding cannot
     self-assert the marker and acquire either the queue exemption or confirmed
     evidence. `agent_finding` strips `source`, and ingest writes the marker only
-    after an exact sourceless Cargo.lock package/version match (#3593).
+    after an exact sourceless Cargo.lock identity and in-tree publishable
+    Cargo.toml package/version match (#3593).
     """
     return (is_tool_sourced(finding)
             and _tool_evidence(finding).get("package_origin")
@@ -375,8 +377,8 @@ def derive_evidence(finding, verdict=None):
         return {
             "status": "tool_confirmed",
             "verified_by": origin,
-            "reasoning": ("Advisory database matched this project's own Cargo "
-                          "package and version."),
+            "reasoning": ("Advisory database matched the exact name and version "
+                          "of this project's in-tree publishable Cargo member."),
             "citation_quality": quality,
         }
 
@@ -450,9 +452,10 @@ def build_verify_queue(findings, max_verify=None):
     Entries hold REFERENCES to the original finding dicts (verdict application
     must mutate the real objects); tool-sourced and reinforced findings queue
     too, as claims like any other (P2, #446). The sole exception is #3593's
-    ingest-proved first-party Cargo advisory: its claim is that THIS project
-    version matches the advisory, not that a third-party dependency is used,
-    and `derive_evidence` confirms that deterministic match without an advisor.
+    ingest-proved first-party Cargo advisory: a sourceless lock identity also
+    matched one in-tree publishable member manifest, so its claim is that THIS
+    project version matches the advisory, not that a third-party dependency is
+    used. `derive_evidence` confirms that deterministic match without an advisor.
     P2 (#443/#438): the sort key and queue_id are pure functions of finding
     CONTENT — no input index anywhere, including in the collision-suffix
     assignment (see `_queue_tiebreak`) — so both passes of a run compute the

@@ -4,13 +4,15 @@
 
 - **First-party Cargo advisories no longer depend on a third-party-usage verdict (#3593).**
   Tool ingest now matches an advisory's exact package and version against its
-  Cargo.lock entry. When every matching entry is sourceless (a workspace or
-  local path package), the finding is reframed as an advisory against this
+  Cargo.lock entry. When every matching entry is sourceless and exactly one
+  confined in-tree member manifest has the same name/version without
+  `publish = false`, the finding is reframed as an advisory against this
   project's own version, retained as `tool_confirmed`, and omitted from the
   tool-advisor queue; remediation calls for fixing and releasing the project
-  instead of upgrading a dependency. Registry, ambiguous, unreadable, and
-  malformed-lock matches keep the existing advisor path. The shared ingest and
-  queue predicates cover OSV Scanner, cargo-audit, and Trivy SARIF findings.
+  instead of upgrading a dependency. Registry, ambiguous, outside-tree,
+  unpublishable, unreadable, and malformed matches keep the existing advisor
+  path. The shared ingest and queue predicates cover OSV Scanner, cargo-audit,
+  and Trivy SARIF findings without changing Trivy's cross-run identity.
 
 - **agy keeps the operator's HOME and isolates its configuration with `--gemini_dir` (#3613).**
   agy's 2026-11-13 self-update moved its consumer sign-in into the macOS login Keychain, which an
