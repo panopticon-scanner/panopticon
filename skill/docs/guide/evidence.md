@@ -4,7 +4,11 @@ Findings carry two independent axes: **severity** (impact if true — rewritten 
 disclosed caps below) and **evidence.status** (how hard the claim was verified):
 - `tool_reported` — a static-analysis tool emitted it (or a tool+agent same-locus merge did); no
   advisor has checked it. NOT gate-eligible.
-- `tool_confirmed` — a tool reported it AND an advisor independently confirmed it. Gate-eligible.
+- `tool_confirmed` — a tool reported it and the claim was independently confirmed. Normally that
+  is an advisor verdict. A first-party Cargo advisory is the bounded exception (#3593): ingest
+  confirms an exact package/version match against a sourceless workspace/path entry in Cargo.lock,
+  so the claim is that this project's own version is affected, not that a third-party dependency is
+  used. Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
   Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
   by one advisor: the adversarial backup round is summoned only for primary-CONFIRMED findings in
@@ -29,8 +33,8 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
 
 Grades and the CI gate count `tool_confirmed`/`advisor_confirmed` findings, plus
 `backup_scope_limited` (a primary CONFIRMED stands, #1638) — i.e. only claims an advisor verified,
-whatever their source. Run a verify phase (or pass `--gate-unverified`) or the gate has nothing to
-fail on.
+plus #3593's exact first-party Cargo advisory match. Run a verify phase (or pass
+`--gate-unverified`) or, absent that deterministic exception, the gate has nothing to fail on.
 
 **Two severity caps (#3231).** The active report caps two kinds of claim at MEDIUM, because nothing
 confirms the HIGH they arrived with. Each capped finding says so in `severity_cap`
@@ -61,8 +65,10 @@ header's "N verified" counts those same two, the collapsed "Unverified findings"
 (`corroborated`, `backup_scope_limited`; `rejected` never reaches the report's findings) are listed
 with the findings.
 
-Every finding queues for verification, tool claims included, so `--max-verify N` now caps a queue
-holding the whole finding set: each tool finding costs one advisor dispatch, and an unverified tool
-HIGH competes with an agent HIGH for the same capped budget. Size N with that in mind — anything cut
-stays `unverified` or `tool_reported` and cannot gate. Citations (CWE/OWASP/CVE/EPSS) are audit
-metadata — they annotate findings but never decide truth.
+Every finding that needs an advisor queues for verification, tool claims included, so
+`--max-verify N` caps that combined set: each ordinary tool finding costs one advisor dispatch, and
+an unverified tool HIGH competes with an agent HIGH for the same capped budget. The exception is an
+ingest-confirmed first-party Cargo advisory (#3593), which is already `tool_confirmed` and spends no
+advisor slot. Size N with that in mind — anything cut stays `unverified` or `tool_reported` and
+cannot gate. Citations (CWE/OWASP/CVE/EPSS) are audit metadata — they annotate findings but never
+decide truth.

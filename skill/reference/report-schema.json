@@ -1878,6 +1878,13 @@
               "package_name": {
                 "type": "string"
               },
+              "package_origin": {
+                "type": "string",
+                "enum": [
+                  "first_party"
+                ],
+                "description": "Controller-derived during tool ingest (#3593): the advisory's exact package/version matches only sourceless workspace/path entries in the cited Cargo.lock. Such a finding describes this project's own affected version and does not enter the third-party-usage advisor queue."
+              },
               "vulnerable_versions": {
                 "type": "string"
               },
