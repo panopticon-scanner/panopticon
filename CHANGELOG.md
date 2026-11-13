@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **First contact checks the session root's hook registration (#3541).** Session mode registers
+  both guards in the session root's `.claude/settings.local.json`. A hook entry there that a guard
+  claims but that is not exactly the entry arming writes now halts the run before anything is
+  armed (H6), whatever the session root is, the review root included. Contact reads the file and
+  never rewrites it: the message says to remove panopticon's entries and re-run. The owner's own
+  entries, an absent file and a file with no guard entries pass as before. A file that cannot be
+  read as a settings object halts as unassessable (H5).
+
 - **Semgrep covers Dockerfile variants and discloses any remainder (#3579).**
   `Dockerfile.*`, `*.Dockerfile`, `*.dockerfile`, and `Containerfile*` files are
   passed as explicit targets under Semgrep 1.183.0's

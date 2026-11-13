@@ -449,7 +449,10 @@ on Claude hooks, and always uses the return-persist path.
   malformed allowlist/scope file denies guarded access with a loud reason instead of silently
   allowing it. A planted scope file or allowlist halts the run at first contact, before any guard
   reads it (#3532); `install` keeps a concurrent fan-out's rows and lets ours win on a shared
-  id (the read-scope row stamp of #3436 was removed in #3533).
+  id (the read-scope row stamp of #3436 was removed in #3533). First contact also reads the session
+  root's `.claude/settings.local.json` (#3541): a guard hook entry there other than the one arming
+  writes halts the run (H6), with nothing rewritten; remove panopticon's entries from its
+  `hooks.PreToolUse` and re-run. The owner's own entries never halt it.
 - **The loop dispatches one agent per entry** through the runner: `enforced` →
   `--agent entry["agent"]` (a registered `panopticon-*` shell, tools+model host-enforced) plus one
   `--allowedTools=Edit(//<absolute out_file>)` token, the Write permission for that entry's own file
