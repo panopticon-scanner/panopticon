@@ -66,11 +66,12 @@ def _rewrite_setup_manifest(review_root, manifest):
     return manifest
 
 
-def _record_setup_owned_output(review_root, relpath):
+def _record_setup_owned_output(review_root, relpath, baseline):
     """Anchor one root write in this setup run's stamped manifest (#3602)."""
     manifest = load_setup_manifest(review_root)
     if (isinstance(manifest, dict)
-            and run_manifest.record_setup_owned(manifest, review_root, relpath)):
+            and run_manifest.record_setup_owned(
+                manifest, review_root, relpath, baseline)):
         _rewrite_setup_manifest(review_root, manifest)
 
 def _sha256_of(path):
@@ -279,7 +280,8 @@ def scan_execute(review_root, manifest):
     host = manifest.get("host", "claude")
     prov = setup_config.provision(review_root)
     if prov["gitignore_setup_owned"]:
-        _record_setup_owned_output(review_root, ".gitignore")
+        _record_setup_owned_output(
+            review_root, ".gitignore", prov["gitignore_setup_baseline"])
     if prov["stale_config_json"]:
         # #1681: the retired JSON config is never read again. Say so once, here,
         # rather than leaving an operator editing a file nothing consults.
@@ -487,9 +489,13 @@ def _scan_fallback(review_root, manifest, host):
     + readiness gate, then a fallback-complete marker so both setup phases'
     done-predicates are satisfied -> run_engine completes without a checkpoint
     and without entering ingest."""
+    config_relpath = repo_config.CONFIG_NAMES[0]
+    config_clean = setup_config._git_path_clean(review_root, config_relpath)
+    config_baseline = (run_manifest.git_path_baseline(review_root, config_relpath)
+                       if config_clean else None)
     path, created, names = setup_config.seed_flat_manifest(review_root)
-    if created:
-        _record_setup_owned_output(review_root, repo_config.CONFIG_NAMES[0])
+    if created and config_clean and config_baseline is not None:
+        _record_setup_owned_output(review_root, config_relpath, config_baseline)
     # The seed first, then the measurement -- this path's own order, which
     # `ingest_execute` now mirrors. Same helpers as the normal path (#1603):
     # what this records and what it prints are what they were.
@@ -561,8 +567,8 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
     # wrote. Carry forward only receipt entries whose machine stamp and current
     # bytes still verify; otherwise reset would turn unchanged setup outputs
     # back into user dirt merely by deleting their provenance record.
-    preserved_setup_owned = (run_manifest._verified_setup_owned(review_root)
-                             if getattr(args, "reset", False) else ())
+    preserved_setup_owned = (run_manifest.verified_setup_owned(review_root)
+                             if getattr(args, "reset", False) else {})
     if getattr(args, "reset", False):
         _clear_setup_artifacts(review_root)               # Task 3
     _drop_stale_fallback_marker(review_root)
@@ -584,8 +590,9 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
                                       or overrides["max_per_group"]),
                     "max_groups": getattr(args, "max_groups", None) or overrides["max_groups"],
                     "first_contact": first or {}}
-        for relpath in preserved_setup_owned:
-            run_manifest.record_setup_owned(manifest, review_root, relpath)
+        for relpath, identity in preserved_setup_owned.items():
+            run_manifest.record_setup_owned(
+                manifest, review_root, relpath, identity["baseline"])
         runio._write_json(_setup_manifest_path(review_root), first_contact.bind(review_root, manifest))
     # #1737: read off THIS invocation's argv, every time, and never off the
     # stored manifest. `setup-manifest.json` sits at a `.panopticon` path a

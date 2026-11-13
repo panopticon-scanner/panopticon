@@ -23,6 +23,7 @@ from scripts import config_schema  # #1681 Plan 2: the settings trust classes
 from scripts import groups_schema  # #2229: the committed-config schema owner
 from scripts import safe_git  # #2006: the target-facing git probe
 from scripts import plan_contract  # #3409: the artifact directory's name
+from scripts import run_manifest  # #3602: pre-write HEAD baseline receipt
 from scripts.phases import runio
 
 
@@ -287,11 +288,15 @@ def provision(repo):
     if refusal:
         raise ValueError("; ".join(refusal))
     gitignore_clean = _git_path_clean(repo, ".gitignore")
+    gitignore_baseline = (run_manifest.git_path_baseline(repo, ".gitignore")
+                          if gitignore_clean else None)
     added = _ensure_gitignore(repo)
     return {"gitignore_added": added,
             # Consumed by phases.setup immediately: only this combination says
             # the post-write identity belongs wholly to setup (#3602).
-            "gitignore_setup_owned": bool(added and gitignore_clean),
+            "gitignore_setup_owned": bool(added and gitignore_clean
+                                            and gitignore_baseline is not None),
+            "gitignore_setup_baseline": gitignore_baseline,
             "legacy_present": repo_config.legacy_present(repo),
             "stale_config_json": repo_config.stale_config_json(repo)}
 

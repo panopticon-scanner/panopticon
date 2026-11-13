@@ -18,6 +18,7 @@ import scripts.driver as driver
 import scripts.hosts as hosts
 import scripts.phases.setup as setup
 import scripts.run_manifest as run_manifest
+import scripts.run_stamp as run_stamp
 
 from tests._test_helpers import write_host_evidence
 from tests.tools.git_repo import make_git_repo
@@ -291,6 +292,31 @@ class TestSetupOwnedWorktreeChanges(Workspace):
         self._run_setup(repo)
         self.assertIs(self._manifest(repo)["target_dirty"], False)
 
+    def test_receipt_records_absent_and_tracked_head_baselines(self):
+        manifest_path = run_manifest.manifest_path(self.repo, "setup")
+        with open(manifest_path, encoding="utf-8") as fh:
+            receipt = json.load(fh)[run_manifest.SETUP_OWNED_WORKTREE]
+        self.assertEqual(
+            {path: identity["baseline"]
+             for path, identity in receipt["paths"].items()},
+            {".gitignore": "absent", "panopticon.yml": "absent"},
+        )
+
+        repo = self._new_repo(
+            {"src/app.py": "value = 1\n", ".gitignore": "build/\n"}
+        )
+        expected = subprocess.run(
+            ["git", "-C", repo, "rev-parse", "HEAD:.gitignore"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=30,
+        ).stdout.strip()
+        self._run_setup(repo)
+        with open(run_manifest.manifest_path(repo, "setup"), encoding="utf-8") as fh:
+            receipt = json.load(fh)[run_manifest.SETUP_OWNED_WORKTREE]
+        self.assertEqual(receipt["paths"][".gitignore"]["baseline"], expected)
+
     def test_a_preexisting_gitignore_edit_is_not_claimed_by_setup(self):
         repo = self._new_repo(
             {"src/app.py": "value = 1\n", ".gitignore": "build/\n"}
@@ -300,6 +326,48 @@ class TestSetupOwnedWorktreeChanges(Workspace):
         self._run_setup(repo)
         self.assertIs(self._manifest(repo)["target_dirty"], True)
 
+    def test_a_deleted_authored_config_reseed_is_not_claimed_by_setup(self):
+        # Review A: the fallback seed returns the path to ` M`, but setup did
+        # not own the deletion that preceded it. The pre-write clean check is
+        # therefore load-bearing for the config just as for .gitignore.
+        repo = self._new_repo({
+            "src/app.py": "value = 1\n",
+            "panopticon.yml": (
+                "version: 1\n"
+                "groups:\n"
+                "  Authored:\n"
+                "    match: [\"src/**\"]\n"
+            ),
+        })
+        os.remove(os.path.join(repo, "panopticon.yml"))
+        self._run_setup(repo)
+        self.assertIs(self._manifest(repo)["target_dirty"], True)
+
+    def test_a_new_head_cannot_reuse_the_old_setup_receipt(self):
+        # Review B: the receipt's bytes can reappear after HEAD changes. Its
+        # pre-setup HEAD baseline must still differ, so ` M` remains dirt.
+        config = os.path.join(self.repo, "panopticon.yml")
+        with open(config, "rb") as fh:
+            setup_bytes = fh.read()
+        with open(config, "ab") as fh:
+            fh.write(b"# committed operator edit\n")
+        subprocess.run(
+            ["git", "-C", self.repo, "add", "--", "panopticon.yml"],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        subprocess.run(
+            ["git", "-C", self.repo, "-c", "commit.gpgsign=false", "commit",
+             "-qm", "commit operator config"],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        with open(config, "wb") as fh:
+            fh.write(setup_bytes)
+        self.assertIs(self._manifest()["target_dirty"], True)
+
     def test_an_edited_receipt_field_is_not_a_machine_stamp(self):
         config = os.path.join(self.repo, "panopticon.yml")
         with open(config, "a", encoding="utf-8") as fh:
@@ -308,7 +376,9 @@ class TestSetupOwnedWorktreeChanges(Workspace):
         with open(manifest_path, encoding="utf-8") as fh:
             setup_manifest = json.load(fh)
         receipt = setup_manifest[run_manifest.SETUP_OWNED_WORKTREE]
-        receipt["paths"]["panopticon.yml"] = run_manifest._setup_output_identity(config)
+        receipt["paths"]["panopticon.yml"].update(
+            run_manifest._setup_output_identity(config)
+        )
         receipt["run_id"] = run_manifest._receipt_run_id(receipt["paths"])
         # The target can rewrite this unsigned outer-manifest field, but it
         # cannot recompute the nested receipt's machine-keyed stamp.
@@ -329,9 +399,83 @@ class TestSetupOwnedWorktreeChanges(Workspace):
         )
         self.assertIs(self._manifest()["target_dirty"], True)
 
+    def test_receipt_path_identity_is_bound_to_its_run_id(self):
+        # Editing paths while retaining the original run_id and stamp must
+        # fail: run_stamp signs that derived id, so _receipt_run_id is the only
+        # binding from the signed value back to the path identities.
+        config = os.path.join(self.repo, "panopticon.yml")
+        with open(config, "a", encoding="utf-8") as fh:
+            fh.write("# user edit\n")
+        manifest_path = run_manifest.manifest_path(self.repo, "setup")
+        with open(manifest_path, encoding="utf-8") as fh:
+            setup_manifest = json.load(fh)
+        receipt = setup_manifest[run_manifest.SETUP_OWNED_WORKTREE]
+        original_run_id, original_stamp = receipt["run_id"], receipt["stamp"]
+        receipt["paths"]["panopticon.yml"].update(
+            run_manifest._setup_output_identity(config)
+        )
+        self.assertEqual((receipt["run_id"], receipt["stamp"]),
+                         (original_run_id, original_stamp))
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            json.dump(setup_manifest, fh)
+        subprocess.run(
+            ["git", "-C", self.repo, "add", ".gitignore"],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        subprocess.run(
+            ["git", "-C", self.repo, "-c", "commit.gpgsign=false", "commit",
+             "-qm", "commit setup ignore"],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        self.assertIs(self._manifest()["target_dirty"], True)
+
+    def test_receipt_from_a_different_setup_run_id_is_refused(self):
+        manifest_path = run_manifest.manifest_path(self.repo, "setup")
+        with open(manifest_path, encoding="utf-8") as fh:
+            setup_manifest = json.load(fh)
+        setup_manifest["run_id"] = run_manifest.new_run_id()
+        setup_manifest["stamp"] = run_stamp.sign(setup_manifest)
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            json.dump(setup_manifest, fh)
+        self.assertIs(self._manifest()["target_dirty"], True)
+
+    def test_a_separate_review_root_cannot_lend_its_receipt_to_the_target(self):
+        review_root = self._new_repo({"src/app.py": "value = 1\n"})
+        self._run_setup(review_root)
+        manifest = run_manifest.build_manifest(
+            target=self.repo,
+            review_root=review_root,
+            host="claude",
+            security_mode="standard",
+        )
+        self.assertIs(manifest["target_dirty"], True)
+
     def test_setup_reset_preserves_ownership_of_unchanged_outputs(self):
         self._run_setup(self.repo, reset=True)
         self.assertIs(self._manifest()["target_dirty"], False)
+
+
+class TestSetupOwnedPorcelain(unittest.TestCase):
+    def test_only_exact_unstaged_setup_shapes_are_clean(self):
+        owned = {".gitignore", "panopticon.yml"}
+        for output, dirty in (
+            ("", False),
+            ("?? panopticon.yml\0", False),
+            (" M .gitignore\0", False),
+            ("M  panopticon.yml\0", True),
+            ("?? unrelated\0", True),
+            ("R  panopticon.yml\0old-name\0", True),
+            ("C  panopticon.yml\0old-name\0", True),
+            ("bad\0", True),
+            ("?? panopticon.yml", True),
+            ("?? panopticon.yml\0 M .gitignore", True),
+        ):
+            with self.subTest(output=output):
+                self.assertIs(run_manifest._status_dirty(output, owned), dirty)
 
 
 class TestMalformedInput(Workspace):

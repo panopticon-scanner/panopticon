@@ -5,11 +5,13 @@
 - **Setup-owned root writes no longer make repeat-run comparison refuse every run (#3602).**
   A fresh setup records a machine-stamped, content-and-mode-bound receipt for
   the `.gitignore` append and fallback `panopticon.yml` seed, but only when the
-  path was clean before setup wrote it. Run provenance excludes those exact
-  unstaged changes from `target_dirty`; edits, mode changes, staging, renamed
-  paths, pre-existing dirt, forged receipt fields, and every unrelated change
-  still fail closed. `driver setup --reset` preserves only receipts whose
-  stamp and current file identity still verify.
+  path was clean before setup wrote it. Each path also binds its pre-write HEAD
+  blob OID (or absence), so run provenance excludes those exact unstaged
+  changes from `target_dirty` only while HEAD still matches that baseline.
+  Edits, mode changes, staging, renamed paths, pre-existing dirt, a later HEAD,
+  forged receipt fields, and every unrelated change still fail closed.
+  `driver setup --reset` preserves only receipts whose stamp and current file
+  identity still verify, retaining the original baseline unchanged.
 
 - **Unknown Semgrep execution notifications fail closed (#3610).** Semgrep's
   `Missing plugin` descriptor is now the sole explicit notification allowlist
