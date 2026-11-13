@@ -32,6 +32,22 @@ DOCKERFILE = REPO_ROOT / "Dockerfile.fixtures"
 MANIFEST = REPO_ROOT / "tests" / "fixtures" / "manifest.json"
 DEFAULT_IMAGE = tools_image.FIXTURES_IMAGE
 
+# ARC-2930403871 / #3596: the fixtures image now defaults to this user, but the
+# local harness states the posture independently and proves the uid before it
+# runs either its presence probe or pytest. A Dockerfile default alone is too
+# quiet: dropping a launch flag would otherwise leave no command-line evidence
+# of which privilege the harness meant to exercise.
+SCAN_USER = "scanner"
+SCAN_UID = "1000"
+SCAN_HOME = "/home/scanner"
+_SCAN_USER_ASSERTION = (
+    'if [ "$(id -u)" = "$EXPECTED_UID" ]; then '
+    'printf "fixture harness runs as %s:%s, uid %s, HOME=%s\\n" '
+    '"$(id -un)" "$(id -gn)" "$(id -u)" "$HOME"; '
+    'else printf "fixture harness would run as uid %s, not scanner uid %s\\n" '
+    '"$(id -u)" "$EXPECTED_UID" >&2; exit 1; fi'
+)
+
 # Hard bounds so a wedged docker daemon, a stalled image build (e.g. a network
 # fetch stuck inside Dockerfile.fixtures), or a hung scanner cannot block the
 # fixture-test pipeline indefinitely (#1113, #1114).
@@ -78,6 +94,15 @@ def run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess:
 
 def _docker_bin() -> str:
     return shutil.which("docker") or "docker"
+
+
+def _scan_user_flags() -> list[str]:
+    """Docker flags that state the fixture harness's production user."""
+    return [
+        "--user", SCAN_USER,
+        "-e", "HOME=" + SCAN_HOME,
+        "-e", "EXPECTED_UID=" + SCAN_UID,
+    ]
 
 
 def _container_name() -> str:
@@ -142,6 +167,7 @@ def build_image(tag: str) -> None:
     validate_image_reference(tag)
     run([
         _docker_bin(), "build",
+        "--build-arg", "TOOLS_IMAGE=" + tools_image.LOCAL_NAME + ":latest",
         "-f", str(DOCKERFILE),
         "-t", tag,
         str(REPO_ROOT),
@@ -186,6 +212,7 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
     # "$@", so a path is data — a shell metacharacter in it can do nothing.
     # ($0 is set to "sh" so the paths start at $1 and "$@" covers them all.)
     test_script = (
+        _SCAN_USER_ASSERTION + "; "
         'for p in "$@"; do '
         'if [ -d "$p" ]; then printf "PRESENT:%s\n" "$p"; else printf "MISSING:%s\n" "$p"; fi; '
         'done'
@@ -197,6 +224,7 @@ def check_fixtures(tag: str, fixtures: list[dict]) -> tuple[list[str], list[str]
     cmd = [_docker_bin(), "run", "--rm",
            *run_tools.resource_limit_flags(),
            *scanner_config.privilege_drop_flags(),
+           *_scan_user_flags(),
            "--name", name,
            "--network", "none",
            tag, "sh", "-c", test_script, "sh", *paths]
@@ -267,6 +295,7 @@ def run_tests(tag: str, test: str | None = None) -> int:
         # #1767 (ARC-3859414366). Each flag set comes from the module that owns it.
         *run_tools.resource_limit_flags(),
         *scanner_config.privilege_drop_flags(),
+        *_scan_user_flags(),
         "--name", name,
         # #calibration-6: scans run with NO NETWORK, so the fixture suite must
         # too -- otherwise it certifies scanners in an environment that does not
@@ -288,7 +317,7 @@ def run_tests(tag: str, test: str | None = None) -> int:
         # stale code"); the fixture runner did not.
         "-v", f"{repo}/skill/scripts:/opt/panopticon/scripts:ro",
         "-v", f"{repo}/tests:/opt/panopticon/tests:ro",
-        tag,
+        tag, "sh", "-c", _SCAN_USER_ASSERTION + '; exec "$@"', "sh",
         *pytest_args,
     ]
     try:

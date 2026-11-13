@@ -134,7 +134,10 @@ jobs:
         run: hadolint Dockerfile.fixtures
 
       - name: Build Dockerfile.fixtures
-        run: docker build -f Dockerfile.fixtures .
+        # #3596: Dockerfile.fixtures takes its base from TOOLS_IMAGE (default: a
+        # pinned digest). Name the tools image this job just built, so the PR
+        # tests its own tools rather than the pinned default.
+        run: docker build -f Dockerfile.fixtures --build-arg TOOLS_IMAGE=panopticon-tools:latest .
 
       - name: Report disk headroom after the fixtures image
         run: |

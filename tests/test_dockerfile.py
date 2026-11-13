@@ -846,6 +846,28 @@ class TestLayerOrder(unittest.TestCase):
 
 
 class TestDockerfileFixtures(unittest.TestCase):
+    def test_tools_base_has_a_pinned_default_and_an_explicit_override_seam(self):
+        text = _read_dockerfile_fixtures()
+        match = re.search(
+            r"^ARG TOOLS_IMAGE=(ghcr\.io/[^\s]+@sha256:[0-9a-f]{64})$",
+            text, re.MULTILINE)
+        self.assertIsNotNone(match)
+        self.assertIn("FROM ${TOOLS_IMAGE}", text)
+
+    def test_runtime_defaults_to_the_scan_user(self):
+        text = _read_dockerfile_fixtures()
+        users = [line.strip() for line in text.splitlines()
+                 if line.strip().startswith("USER ")]
+        self.assertTrue(users, "Dockerfile.fixtures declares no runtime user")
+        self.assertEqual(users[-1], "USER scanner")
+        self.assertNotIn("hadolint ignore=DL3002", text)
+
+    def test_build_steps_use_workdir_instead_of_shell_cd(self):
+        offenders = [(line, instruction) for line, instruction in
+                     _logical_lines(_read_dockerfile_fixtures())
+                     if re.match(r"RUN\s+cd(?:\s|$)", instruction)]
+        self.assertEqual(offenders, [])
+
     def test_bundles_fixture_clone_refs_and_rust_build(self):
         text = _read_dockerfile_fixtures()
         for marker in [

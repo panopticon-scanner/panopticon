@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The fixtures image and local harness run as the production scan user (#3596).**
+  `Dockerfile.fixtures` now returns from its build-only root layers to `USER scanner`.
+  Both local harness launches still state `--user scanner`, set scanner's HOME, and
+  loudly prove uid 1000 before the presence probe or adapter tests run; argv tests
+  include a dropped-user mutant. Build steps use `WORKDIR` instead of `RUN cd`.
+  Standalone builds use a digest-pinned tools image. The local harness and CI lanes
+  explicitly override it with their just-built or authenticated current local image,
+  preserving the PR and daily integration semantics without a mutable Dockerfile default.
+
 - **First contact checks the session root's hook registration (#3541).** Session mode registers
   both guards in the session root's `.claude/settings.local.json`. A hook entry there that a guard
   claims but that is not exactly the entry arming writes now halts the run before anything is

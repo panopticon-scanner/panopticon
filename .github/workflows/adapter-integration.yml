@@ -100,7 +100,8 @@ jobs:
       # fixtures (SHA-pinned in Dockerfile.fixtures) and pytest (hash-pinned in
       # requirements-fixtures.txt).
       - name: Build the fixtures image
-        run: docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
+        # #3596: build on the tools image pulled above, not the pinned default.
+        run: docker build -f Dockerfile.fixtures --build-arg TOOLS_IMAGE=panopticon-tools:latest -t panopticon-fixtures:latest .
 
       # #2150 (ARC-A3A): every `docker run` in this file carries the privilege drop
       # every panopticon container gets -- `--cap-drop=ALL` and
@@ -245,7 +246,8 @@ jobs:
       # (a goat clone, a maven compile) must not decide the other's answer --
       # and the cost is one extra fixtures build a day.
       - name: Build the fixtures image
-        run: docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
+        # #3596: build on the tools image pulled above, not the pinned default.
+        run: docker build -f Dockerfile.fixtures --build-arg TOOLS_IMAGE=panopticon-tools:latest -t panopticon-fixtures:latest .
 
       # The posture, asserted rather than assumed (ARC-2930403871). `--user` is
       # the intent; `id -u` inside the container is the proof, and it runs

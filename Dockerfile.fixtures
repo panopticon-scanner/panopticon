@@ -1,23 +1,26 @@
 # panopticon-fixtures: vulnerable-by-design applications for scanner validation.
 # Build:  docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
 # Rebuild: docker build --no-cache -f Dockerfile.fixtures -t panopticon-fixtures:$(date +%Y-%m-%d) .
-# DL3006/DL3007: base image is the freshly-built local `panopticon-tools:latest`
-# produced by the docker-build-pr workflow; a static tag is intentional here.
+# Standalone builds have a reproducible default. The local harness and CI lanes
+# override TOOLS_IMAGE with their just-built or authenticated-and-pulled local
+# `panopticon-tools:latest`; that deliberate handoff keeps PRs and daily probes
+# on the exact current tools image while the Dockerfile itself remains pinned.
+ARG TOOLS_IMAGE=ghcr.io/panopticon-scanner/panopticon-tools@sha256:fc0e76371ba923d4371264d42fbb7903cb2a2a244aab27fab9cdade881ab0a18
 # hadolint ignore=DL3006,DL3007
-FROM panopticon-tools:latest
+FROM ${TOOLS_IMAGE}
 
-# DL3002: root here is a BUILD-time decision. The layers below install a JDK,
+# Root here is a BUILD-time decision. The layers below install a JDK,
 # clone three goat fixtures and run bundler, maven, cargo and dotnet against
 # them, all as this USER. It says nothing about who should RUN the image, and
 # this image is no longer local-only: `.github/workflows/adapter-integration.yml`
 # builds and runs it daily, and that is the ONLY gate where the adapters meet
 # real tools and real fixtures.
 #
-# The RUNTIME user is the caller's, and CI states it (ARC-2930403871, #1771):
-# both jobs there pass `--user scanner`, so the probes run as the user every
-# production scan runs as (the tools image's `useradd -m -u 1000 scanner` and
-# its closing `USER scanner`), and each asserts `id -u` inside the
-# container before running a probe. Without that, the harness proved the
+# The RUNTIME user defaults to scanner below, and every caller states it too
+# (ARC-2930403871, #3596): CI and the local harness pass `--user scanner`, so
+# the probes run as the user every production scan runs as (the tools image's
+# `useradd -m -u 1000 scanner`), and each asserts `id -u` inside the container
+# before running a probe. Without that, the harness proved the
 # adapters at a privilege production never has, and a root-only regression --
 # the #1877 class, a tool refusing its input under the real uid -- passed the
 # one gate that could catch it.
@@ -34,17 +37,10 @@ FROM panopticon-tools:latest
 # dotnet rewrites its sentinel under whatever HOME it is given -- and opening
 # /root in an image that runs a hostile MSBuild target is the wrong direction.
 #
-# A runtime `USER scanner` at the end of this file is therefore no longer
-# blocked by a cache. It is still not here because it is the wrong half of the
-# remaining work, not because the remaining work is unwanted: the local harness
-# (`skill/scripts/run_fixture_tests.py`) also runs this image with no `--user`,
-# and it SHOULD run as the scan user -- that is the point of ARC-2930403871, and
-# it is tracked on #1771. What it needs is the loud version of this posture, the
-# flag plus the same `id -u` assertion the CI lanes carry, rather than a baked
-# default that would change the uid with nothing on the command line to say so.
-# The other half of the argument stands on its own: nothing in this file can
-# prove /root/.m2 and /root/.dotnet unread without running the image.
-# hadolint ignore=DL3002
+# The final `USER scanner` is paired with the loud posture in every harness:
+# an explicit flag plus the same `id -u` assertion the CI lanes carry. The
+# other half of the argument stands on its own: nothing in this file can prove
+# /root/.m2 and /root/.dotnet unread without running the image.
 USER root
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -92,8 +88,8 @@ RUN git init -q AspGoat \
     && git -C AspGoat checkout -q FETCH_HEAD                            # Soham7-dev/AspGoat @ main 2026-08-23
 
 # Prepare fixture dependencies when possible; static-analysis tests tolerate missing deps.
-# hadolint ignore=DL3003
-RUN cd /opt/panopticon-fixtures/railsgoat && (bundle install || echo "railsgoat bundle install skipped")
+WORKDIR /opt/panopticon-fixtures/railsgoat
+RUN bundle install || echo "railsgoat bundle install skipped"
 # `compile` leaves the dependency jars in ~/.m2, OUTSIDE the project tree, and
 # produces no packaged artifact -- so dependency-check scanning the source tree
 # saw exactly ONE dependency (the maven wrapper) and reported zero
@@ -107,9 +103,8 @@ RUN cd /opt/panopticon-fixtures/railsgoat && (bundle install || echo "railsgoat 
 # builds, and it is well above what the test needs: it asserts that CVEs are
 # found and parsed, not how many.
 ARG WEBGOAT_JAR_CAP=45
-# hadolint ignore=DL3003
-RUN cd /opt/panopticon-fixtures/WebGoat \
-    && (./mvnw clean compile -DskipTests || mvn clean compile -DskipTests || echo "WebGoat compile skipped") \
+WORKDIR /opt/panopticon-fixtures/WebGoat
+RUN (./mvnw clean compile -DskipTests || mvn clean compile -DskipTests || echo "WebGoat compile skipped") \
     && (./mvnw dependency:copy-dependencies -DskipTests || mvn dependency:copy-dependencies -DskipTests || echo "WebGoat dependency copy skipped") \
     && if [ -d target/dependency ]; then \
          find target/dependency -name '*.jar' | sort | tail -n +$((WEBGOAT_JAR_CAP + 1)) | xargs -r rm -f; \
@@ -131,19 +126,18 @@ RUN cd /opt/panopticon-fixtures/WebGoat \
 # direction. The ENV lives in the fixtures image only -- the tools image
 # production scans with is `FROM`-parent to this and does not carry it.
 ENV NUGET_PACKAGES=/opt/nuget-packages
-# hadolint ignore=DL3003
-RUN cd /opt/panopticon-fixtures/AspGoat && (dotnet restore && dotnet build --no-restore || echo "AspGoat build skipped")
+WORKDIR /opt/panopticon-fixtures/AspGoat
+RUN dotnet restore && dotnet build --no-restore || echo "AspGoat build skipped"
 
 # Copy the hand-rolled Rust fixture from the repo.
 # The fixture must include a committed Cargo.lock so cargo-audit has a dependency graph to audit.
 COPY tests/fixtures/vulnerable-rust /opt/panopticon-fixtures/vulnerable-rust
-# hadolint ignore=DL3003
-RUN cd /opt/panopticon-fixtures/vulnerable-rust && cargo build
-# ...and give `scanner` back the parts of its CARGO_HOME this build dirtied
+WORKDIR /opt/panopticon-fixtures/vulnerable-rust
+# Build, then give `scanner` back the parts of its CARGO_HOME this build dirties
 # (ARC-2930403871). `CARGO_HOME` is inherited from the base image as
 # /home/scanner/.cargo (its `ENV CARGO_HOME=/home/scanner/.cargo`), which the
 # base creates and chowns FOR scanner (`mkdir -p /home/scanner/.cargo` then
-# `chown scanner:scanner`), so the build above filled production's own writable
+# `chown scanner:scanner`), so the build below fills production's own writable
 # cargo home with root-owned files: the downloaded crate cache and index under
 # `registry/`, the `git/` checkouts if a dependency is a git one, and the
 # `.package-cache` lock cargo takes while it works. Those, by name, and NOT the
@@ -159,7 +153,8 @@ RUN cd /opt/panopticon-fixtures/vulnerable-rust && cargo build
 # dependency is fetched from git, and naming an absent path would fail the build
 # for the one cache shape that is allowed not to appear. A chown that FAILS
 # still fails the build -- it is inside the `if`, not guarded with `|| true`.
-RUN for d in registry git .package-cache .global-cache; do \
+RUN cargo build \
+    && for d in registry git .package-cache .global-cache; do \
       if [ -e "/home/scanner/.cargo/$d" ]; then \
         chown -R scanner:scanner "/home/scanner/.cargo/$d"; \
       fi; \
@@ -226,8 +221,8 @@ ENV PYTHONPATH=/opt/panopticon
 ENV FIXTURE_ROOT=/opt/panopticon-fixtures
 WORKDIR /opt/panopticon
 
-# Build-time root, as the USER block at the top explains; the runtime user is
-# the caller's. This CMD is the local harness. CI overrides both the user and
-# the command (`--user scanner`, `--entrypoint sh ... pytest tests/tools/`), so
-# "for local test use only" is no longer true of this image and is not claimed.
+# Build-time root, as the USER block at the top explains. Runtime defaults to
+# the production scan user; both CI and the local harness also pass
+# `--user scanner` and prove uid 1000 before they run their real command.
+USER scanner
 CMD ["python", "skill/scripts/run_fixture_tests.py"]
