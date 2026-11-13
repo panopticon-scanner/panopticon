@@ -1012,7 +1012,8 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   certification (#3603). An unlocated syntax notice, or a syntax notice accompanied by a timeout,
   size skip, unavailable capability, Dockerfile gap, or unknown/malformed coverage fact, still
   fails closed; a mixed capture names both the parse limitation and the certifying gap. Semgrep's
-  other notifications, such as `Missing plugin`, are not coverage gaps here.
+  `Missing plugin` notification is explicitly not a coverage gap here; other notification IDs are
+  not classified by this rule (#3610).
   **Files over Semgrep's size limit are listed by the host (#3193).** The argv also passes
   `--max-target-bytes=1000000`, Semgrep's own default. Semgrep skips every regular file larger than
   that, of any kind, binary included, and its SARIF says nothing about it. So when the capture lands,
