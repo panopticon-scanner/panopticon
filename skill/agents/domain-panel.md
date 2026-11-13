@@ -55,11 +55,14 @@ surface, or secret disclosure enabling full compromise.
   through the public API stays CRITICAL.
 - **Down-override to HIGH** with a reason, EVEN IF the code defaults to
   CRITICAL, when exploitation needs chaining with another issue, needs input
-  only an operator or administrator controls, or needs a non-default
-  configuration — or when the blast radius is bounded (no code execution,
-  limited data).
+  only the deployer or operator controls (configuration, environment, command
+  line, deployment files) — not an in-app administrator or any other logged-in
+  role — or needs a non-default configuration; or when the blast radius is
+  bounded (no code execution, and limited data: not whole-database or
+  credential exfiltration).
 - **A defect that is not security-exploitable at all** (a logic or reliability
-  bug) is rated on its actual impact, usually MEDIUM or lower.
+  bug) is rated on its actual impact: down to the code's permitted floor, or
+  below it with a controlled `severity_modifier`.
 - **Rate the defect, not the target's intent.** A demo, sample or deliberately
   vulnerable app gets no severity discount.
 

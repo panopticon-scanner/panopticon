@@ -285,9 +285,17 @@ class TestSeverityBar(unittest.TestCase):
         self.assertIn("authentication alone does not lower severity", low)
         self.assertIn("untrusted input reaching the public api is the threat model", low)
         self.assertIn("rate the defect, not the target's intent", low)
-        # the down-override survives for bounded / non-exploitable defects
+        # the down-override survives for chaining, deploy-time operator input,
+        # non-default configuration, bounded and non-exploitable defects
+        self.assertIn("chaining with another issue", low)
+        self.assertIn("only the deployer or operator controls", low)
+        self.assertIn("not an in-app administrator or any other logged-in role", low)
+        self.assertIn("non-default configuration", low)
         self.assertIn("blast radius is bounded", low)
+        self.assertIn("not whole-database or credential exfiltration", low)
         self.assertIn("not security-exploitable", low)
+        # an in-app admin is a logged-in user: no "administrator" escape hatch
+        self.assertNotIn("operator or administrator", low)
 
 
 class TestTestInventoryFraming(unittest.TestCase):
