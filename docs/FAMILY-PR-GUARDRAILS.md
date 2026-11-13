@@ -385,19 +385,21 @@ is still owed.
 `agy-usage-envelope`, all in `probes/agy.py`. `skill/scripts/runners/agy.py`
 sets `CLI = "agy"`, `ENVELOPE_FLAGS = ("-p", "--output-format")`,
 `OUTPUT_SCHEMA_FLAG = ("--json-schema",)` (inline JSON) and
-`default_concurrency = 4`. Its `prepare` builds an isolated per-run home
-(`runners/agy_home.py`) that symlinks only
-`~/.gemini/antigravity-cli/antigravity-oauth-token` and the registered shells
-at `~/.gemini/config/agents`, writes an isolated
-`<run_home>/.gemini/antigravity-cli/settings.json`
-(`{"agentMode": "accept-edits", "allowNonWorkspaceAccess": true}`) and
-`<run_home>/.gemini/config/hooks.json`, and seeds a minimal Git ceiling
-`<run_home>/workspace/.git/{HEAD,objects,refs}` so `agy` stops its ancestor
-walk at `<run_home>/workspace` (`cwd` on every launch and effective-loader
-probe). Setting `agentMode: "accept-edits"` allows `write_file` to execute
+`default_concurrency = 4`. Its `prepare` builds a per-run directory
+(`runners/agy_home.py`, #3613) whose `gemini/` is passed as `--gemini_dir` on
+every agy launch, replacing `~/.gemini`: it links only the registered shells at
+`~/.gemini/config/agents`, writes `<run>/gemini/antigravity-cli/settings.json`
+(`{"agentMode": "accept-edits", "allowNonWorkspaceAccess": true}`),
+`<run>/gemini/config/hooks.json` and an empty `mcp_config.json`, and seeds a
+minimal Git ceiling `<run>/workspace/.git/{HEAD,objects,refs}` so `agy` stops
+its ancestor walk at `<run>/workspace` (`cwd` on every launch and
+effective-loader probe). The child keeps the operator's HOME, so agy reads its
+own Keychain sign-in; a fail-closed preflight proves the flag took effect and
+signs in with one minimal turn before any entry. Setting `agentMode:
+"accept-edits"` allows `write_file` to execute
 non-interactively in headless `-p` mode once the guard hook allows an entry's
 declared `out_file`, and setting `allowNonWorkspaceAccess: true` turns off
-`agy`'s own workspace sandbox so the child in `<run_home>/workspace` can reach
+`agy`'s own workspace sandbox so the child in `<run>/workspace` can reach
 `review_root` -- making the wildcard `PreToolUse` hook (`"matcher": "*"`)
 invoking `skill/scripts/agy_guard_hook.py` the only read/write boundary. That
 hook enforces a strict tool-name allowlist (`read_file`, `grep_search`,

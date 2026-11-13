@@ -416,7 +416,9 @@ def probe_shadow_shells(host, review_root):
                 "host %r discovers no project-scoped agents" % host)
     hits, unreadable = [], []
     dirs = [(rel, os.path.join(review_root, rel)) for rel in row.project_scope_dirs]
-    if host in ("agy", "gemini"):
+    # #3613: not agy -- every agy launch passes --gemini_dir, which replaces
+    # ~/.gemini (agents included); its preflight proves `agy agents` lists only ours.
+    if host == "gemini":
         dirs.append(("~/.gemini/agents",
                      os.path.join(os.path.expanduser("~"), ".gemini", "agents")))
     for relative, directory in dirs:

@@ -12,6 +12,21 @@
   malformed-lock matches keep the existing advisor path. The shared ingest and
   queue predicates cover OSV Scanner, cargo-audit, and Trivy SARIF findings.
 
+- **agy keeps the operator's HOME and isolates its configuration with `--gemini_dir` (#3613).**
+  agy's 2026-11-13 self-update moved its consumer sign-in into the macOS login Keychain, which an
+  isolated HOME cannot reach (#3605). Every agy launch now keeps the operator's HOME, so agy reads
+  its own sign-in and panopticon never touches the Keychain, and every launch that loads
+  configuration starts `agy --gemini_dir <run>/gemini`: a per-run directory holding only our guard
+  hook, the emitted shells, an empty MCP list and two settings, in place of `~/.gemini`. Before
+  any entry, a fail-closed preflight checks that `agy agents` lists exactly the run's shells and
+  that agy's log recorded the hook load, then runs one minimal real turn (default model, no agent
+  shell); auth trouble raises `AgyAuthUnreachable`, anything else `AgyPreflightRefused`, and
+  nothing falls back. The token file link is retired. The routes are now `signin` (the default)
+  and `key`, and the key route runs only when `PANOPTICON_AGY_AUTH=key` names it. Off that route
+  no agy child holds `GEMINI_API_KEY`, so an expired sign-in cannot fall back to it, and a failed
+  sign-in with a key set says how to choose the key route and does not. For agy, the shadow-shell
+  scan no longer reads `~/.gemini/agents`, which `--gemini_dir` replaces.
+
 - **Setup-owned root writes no longer make repeat-run comparison refuse every run (#3602).**
   A fresh setup records a machine-stamped, content-and-mode-bound receipt for
   the `.gitignore` append and fallback `panopticon.yml` seed, but only when the
