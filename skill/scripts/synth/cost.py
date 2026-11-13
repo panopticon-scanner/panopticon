@@ -23,6 +23,7 @@ class CostInputs:
     driver_cost: dict | None = None
     run_usage: dict | None = None
     ledger_models: tuple = ()
+    ledger_substitutions: tuple = ()     # #3582: entries that ran on a fallback rung
 
     @classmethod
     def load(cls, run_dir, verdicts_dir, tools_produced):
@@ -31,7 +32,8 @@ class CostInputs:
         artifact -- reading them flat left driver_cost None on every 5.1 run."""
         return cls(driver_cost=driver_cost_counts(run_dir, verdicts_dir, tools_produced),
                    run_usage=load_run_usage(run_dir),
-                   ledger_models=load_ledger_models(run_dir))
+                   ledger_models=load_ledger_models(run_dir),
+                   ledger_substitutions=load_ledger_substitutions(run_dir))
 
 
 def load_run_usage(run_dir):
@@ -89,34 +91,72 @@ def _model_name(value):
     return tool_base.inert_text(value, limit=_MODEL_NAME_MAX) or None
 
 
-def load_ledger_models(run_dir):
-    """The distinct (role, model) pairs the run's ledger measured, first seen first (#3368).
-
-    Only what a host REPORTED for a launch. Never a plan entry's `model`: that is what the run
-    requested, and it is None on a host with no model policy. A session-mode run has no ledger
-    rows, so this is empty there. A line that cannot be read is skipped, as `Ledger.lines` does.
-    """
+def _ledger_rows(run_dir):
+    """The run's ledger rows that parse as objects; nothing when there is no ledger. A line
+    that cannot be read is skipped, as `Ledger.lines` does."""
     if not run_dir:
-        return ()
+        return []
     path = os.path.join(run_dir, runners_base.LEDGER_FILE)
     try:
         raw = safe_write.read_regular_bytes(path, artifacts_mod.MAX_JSON_BYTES)
     except FileNotFoundError:
-        return ()
+        return []
     except (OSError, ValueError) as exc:
         print("synthesize: artifact %r could not be read (%s); ignoring" % (path, exc),
               file=sys.stderr)
-        return ()
-    pairs = {}
+        return []
+    rows = []
     for line in raw.decode("utf-8", "replace").split("\n"):
         try:
             row = json.loads(tolerant_json.depth_checked(line))
         except (ValueError, RecursionError):
             continue
-        model = _model_name(row.get("model")) if isinstance(row, dict) else None
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def load_ledger_models(run_dir):
+    """The distinct (role, model) pairs the run's ledger measured, first seen first (#3368).
+
+    Only what a host REPORTED for a launch. Never a plan entry's `model`: that is what the run
+    requested, and it is None on a host with no model policy. A session-mode run has no ledger
+    rows, so this is empty there.
+    """
+    pairs = {}
+    for row in _ledger_rows(run_dir):
+        model = _model_name(row.get("model"))
         if model:
             pairs[(_role_of_entry(row.get("entry_id")), model)] = True
     return tuple(pairs)
+
+
+_SUBSTITUTION_TEXT = ("requested", "bound", "route", "reason")
+
+
+def load_ledger_substitutions(run_dir):
+    """Every ledger row whose entry ran on a fallback rung, as `meta.model_substitutions`
+    publishes it (#3582): entry, role, requested, bound, route, rung, reason. The ledger sits
+    in the reviewed tree, so every string is made inert and a malformed record is skipped."""
+    out, seen = [], set()
+    for row in _ledger_rows(run_dir):
+        sub = row.get("model_substitution")
+        entry = _model_name(row.get("entry_id"))
+        if not isinstance(sub, dict) or not entry or entry in seen:
+            continue
+        fields = {k: _model_name(sub.get(k)) for k in _SUBSTITUTION_TEXT}
+        rung = sub.get("rung")
+        if not all(fields.values()) or not isinstance(rung, int) or isinstance(rung, bool) \
+                or rung < 1:
+            continue
+        seen.add(entry)
+        out.append(dict(entry=entry, role=_role_of_entry(entry), rung=rung, **fields))
+    return tuple(out)
+
+
+def model_substitutions(cost):
+    """`meta.model_substitutions` (#3582): never silent about a fallback."""
+    return [dict(sub) for sub in cost.ledger_substitutions]
 
 
 def models_used(cost):

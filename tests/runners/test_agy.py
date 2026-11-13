@@ -1,4 +1,5 @@
 import dataclasses
+import io
 import json
 import os
 import subprocess
@@ -8,6 +9,7 @@ from unittest import mock
 
 import scripts.dispatch as dispatch
 import scripts.hosts as hosts
+import scripts.model_resolver as model_resolver
 import scripts.redact as redact
 import scripts.runners.agy as agy_runner
 import scripts.runners.agy_home as agy_home
@@ -896,28 +898,48 @@ class TestTheKeyRoute(unittest.TestCase):
 
     def test_the_key_route_binding(self):
         listed = agy_runner.listed_models(KEY_ROUTE_MODELS)
+        ladder = ("gemini-4-argon-high",)
         for model, effort, explicit, bound in (
                 ("gemini-3.8-flash-medium", None, False, "gemini-3.8-flash-medium"),
                 ("gemini-4-argon", "high", False, "gemini-4-argon-high"),
-                ("gemini-4-carbon", "high", False, "gemini-4-argon-high"),
-                ("gemini-4-carbon", "low", False, "gemini-4-argon-high"),
                 ("gemini-3.1-pro", "low", True, "gemini-3.1-pro-low")):
             with self.subTest(model=model, effort=effort, explicit=explicit):
-                self.assertEqual(bound, agy_runner.key_route_model(model, effort, listed,
-                                                                    explicit=explicit))
-        for model, effort, explicit, why in (
-                ("gemini-4-carbon", "high", True, "never substituted"),
-                ("gemini-3.1-pro", "medium", False, "lists no model 'gemini-3.1-pro-medium'"),
-                (None, None, False, "needs a model")):
-            with self.subTest(model=model, effort=effort, explicit=explicit):
+                # A listed model runs as asked, ladder or not, and records nothing.
+                self.assertEqual((bound, None), agy_runner.key_route_model(
+                    model, effort, listed, explicit=explicit, ladder=ladder))
+        for effort in ("high", "low"):
+            with self.subTest(fallback=effort):
+                self.assertEqual(
+                    ("gemini-4-argon-high",
+                     {"requested": "gemini-4-carbon-%s" % effort, "bound": "gemini-4-argon-high",
+                      "route": "key", "rung": 1, "reason": "not listed on route key"}),
+                    agy_runner.key_route_model("gemini-4-carbon", effort, listed, ladder=ladder))
+        # The first LISTED rung wins; an unlisted rung is skipped and the rung number says so.
+        self.assertEqual(("gemini-3.8-flash-medium", 2), (lambda r: (r[0], r[1]["rung"]))(
+            agy_runner.key_route_model("gemini-4-carbon", "high", listed,
+                                       ladder=("gemini-9-unlisted", "gemini-3.8-flash-medium"))))
+        for model, effort, explicit, lad, why in (
+                ("gemini-4-carbon", "high", True, ladder, "never substituted"),
+                ("gemini-4-carbon", "high", False, (), "no fallback ladder applies"),
+                ("gemini-3.1-pro", "medium", False, (), "lists no model 'gemini-3.1-pro-medium'"),
+                (None, None, False, ladder, "needs a model")):
+            with self.subTest(model=model, effort=effort, explicit=explicit, ladder=lad):
                 with self.assertRaisesRegex(ValueError, why):
-                    agy_runner.key_route_model(model, effort, listed, explicit=explicit)
-        # A substitute the route does not list is not used either.
-        with self.assertRaisesRegex(ValueError, "lists no model"):
+                    agy_runner.key_route_model(model, effort, listed, explicit=explicit,
+                                               ladder=lad)
+        # A rung the route does not list is not used either.
+        with self.assertRaisesRegex(ValueError, r"nor any fallback \(gemini-4-argon-high\)"):
             agy_runner.key_route_model("gemini-4-carbon", "high",
-                                       frozenset({"gemini-3.8-flash-medium"}))
-        self.assertEqual({("key", "gemini-4-carbon"): "gemini-4-argon-high"},
-                         agy_runner.ROUTE_SUBSTITUTES)
+                                       frozenset({"gemini-3.8-flash-medium"}), ladder=ladder)
+
+    def test_the_preflight_default_is_the_carbon_roles_first_key_rung(self):
+        # #3582: #3576's hard-coded choice is now the profile ladder; the preflight's
+        # key-route default must stay the rung the Carbon roles would bind.
+        for role in ("domain_panel", "domain_advisor"):
+            with self.subTest(role=role):
+                self.assertEqual(agy_runner.KEY_ROUTE_DEFAULT,
+                                 model_resolver.registration_config("agy", role)
+                                 ["fallbacks"]["key"][0])
 
     def _key_runner(self, d, seen, models_rc=0, models_out=KEY_ROUTE_MODELS, turns=None):
         def fake(cmd, **kw):
@@ -962,17 +984,55 @@ class TestTheKeyRoute(unittest.TestCase):
                 with self.assertRaisesRegex(agy_home.AgyAuthUnreachable, why):
                     self._key_runner(d, [], models_rc=rc, models_out=out)
 
+    LADDER = {"key": ["gemini-4-argon-high"]}
+
     def test_a_carbon_entry_runs_argon_high_with_no_effort_flag(self):
         seen = []
         with tempfile.TemporaryDirectory() as d:
             r = self._key_runner(d, seen)
-            res = r.run_entry(_entry(True, model="gemini-4-carbon", effort="high"), self._env())
+            with mock.patch("sys.stderr", new_callable=io.StringIO) as err:
+                res = r.run_entry(_entry(True, model="gemini-4-carbon", effort="high",
+                                         fallbacks=self.LADDER), self._env())
         self.assertTrue(res.ok)
         cmd = seen[-1][0]
         self.assertEqual("gemini-4-argon-high", cmd[cmd.index("--model") + 1])
         self.assertNotIn("--effort", cmd)
         self.assertEqual("gemini-4-argon-high", res.bound_model)
+        self.assertEqual({"requested": "gemini-4-carbon-high", "bound": "gemini-4-argon-high",
+                          "route": "key", "rung": 1, "reason": "not listed on route key"},
+                         res.model_substitution)
+        self.assertIn("agy: entry review-app-SEC: gemini-4-carbon-high not listed on route key; "
+                      "bound fallback gemini-4-argon-high (rung 1)", err.getvalue())
         self.assertEqual(FAKE_KEY, seen[-1][1]["env"]["GEMINI_API_KEY"])
+
+    def test_a_carbon_entry_with_no_ladder_is_refused_before_launch(self):
+        # A strict run's entries carry no ladder: refuse-on-unlisted, as before #3582.
+        seen = []
+        with tempfile.TemporaryDirectory() as d:
+            r = self._key_runner(d, seen)
+            res = r.run_entry(_entry(True, model="gemini-4-carbon", effort="high"), self._env())
+        self.assertFalse(res.ok)
+        self.assertIn("no fallback ladder applies", res.error)
+        self.assertEqual(1, len(seen))                          # only `agy models`
+
+    def test_a_quota_failure_on_a_fallback_tries_no_other_rung(self):
+        # #3582: quota is never a fallback trigger -- the entry fails typed, once.
+        seen = []
+        quota = json.dumps({"status": "ERROR", "error": "RESOURCE_EXHAUSTED: quota exceeded"})
+        with tempfile.TemporaryDirectory() as d:
+            r = self._key_runner(d, seen)
+            r.runner = _answers_preflight(lambda cmd, **kw: (
+                seen.append((list(cmd), kw)),
+                subprocess.CompletedProcess(cmd, 1, stdout=quota, stderr=""))[1])
+            res = r.run_entry(_entry(True, model="gemini-4-carbon", effort="high",
+                                     fallbacks={"key": ["gemini-4-argon-high",
+                                                        "gemini-3.8-flash-medium"]}),
+                              self._env())
+        self.assertFalse(res.ok)
+        self.assertEqual(outage.HOST_FAILURE, res.failure_class)
+        launches = [c for c, _kw in seen if "-p" in c]
+        self.assertEqual(1, len(launches))
+        self.assertEqual("gemini-4-argon-high", launches[0][launches[0].index("--model") + 1])
 
     def test_a_listed_default_runs_as_is(self):
         seen = []
@@ -1037,7 +1097,8 @@ class TestTheKeyRoute(unittest.TestCase):
         seen = []
         with tempfile.TemporaryDirectory() as d:
             r = self._key_runner(d, seen)
-            entry = _entry(False, model="gemini-4-carbon", effort="high")
+            entry = _entry(False, model="gemini-4-carbon", effort="high",
+                           fallbacks=self.LADDER)
             res = r.run_entry(entry, self._env())
             led = ledger.Ledger(os.path.join(d, "ledger"))
             led.record(entry, "review", res, "headless", "agy",
@@ -1048,6 +1109,9 @@ class TestTheKeyRoute(unittest.TestCase):
         self.assertEqual(("gemini-4-carbon", "high", "gemini-4-argon-high"),
                          (row["requested_model"], row["requested_effort"], row["bound_model"]))
         self.assertIsNone(row["model"])
+        self.assertEqual({"requested": "gemini-4-carbon-high", "bound": "gemini-4-argon-high",
+                          "route": "key", "rung": 1, "reason": "not listed on route key"},
+                         row["model_substitution"])
 
 
 class TestRunEntry(unittest.TestCase):

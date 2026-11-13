@@ -244,14 +244,59 @@ self-update and is not read.
 no `--effort`: the level is part of the model name, as in `gemini-4-argon-high`. A run on that route
 lists its models once with `agy models` and refuses to start if that fails or lists nothing. Each
 entry is launched as `--model <model>-<effort>` (or `<model>` with no effort), and only when that
-name is listed. A profile default the route does not list is bound through one table,
-`runners/agy.ROUTE_SUBSTITUTES`; today that is the Carbon domain roles, which become
-`gemini-4-argon-high`. The ledger row records `requested_model`, `requested_effort` and `bound_model`,
-so it says Argon when Argon is what ran. A model the operator named with `PANOPTICON_MODEL_<ROLE>` is
+name is listed. A profile default the route does not list is bound through the role's fallback
+ladder (below); today that is the Carbon domain roles, which become `gemini-4-argon-high`. The
+ledger row records `requested_model`, `requested_effort`, `bound_model` and `model_substitution`, so
+it says Argon when Argon is what ran. A model the operator named with `PANOPTICON_MODEL_<ROLE>` is
 never substituted: if the route does not list it, the entry is refused as a host failure. On the key
 route `agy-model-bound` binds the same names and skips the `/effort` read-back. It is **unverified
 on the API-key route** until a live run proves it. ADC/Vertex auth
 (https://antigravity.google/docs/enterprise/) is out of scope and unverified.
+
+### Access and fallbacks (#3582)
+
+Which models a run may use depends on how the operator signs in and what their plan includes. A
+role in `skill/reference/model-profiles.yml` may carry `fallbacks`: an ordered ladder per route,
+tried only when that route's **live** model list lacks the requested model. The requested model is
+always rung 0, and the first listed rung is bound. If nothing on the ladder is listed, the entry is
+refused, as it is with no ladder.
+
+- **Only routes with a measured list.** Today that is agy's API-key route (`agy models`). A ladder
+  for any other route or host (agy sign-in, claude, codex, kimi, gemini) is refused when the policy
+  is resolved: `route <r> has no measured model list`. Codex's bundled catalogue
+  (`codex debug models --bundled`) is not what an account can use, so it does not count.
+- **Never silent.** Every substitution (requested, bound, route, rung, reason) is recorded on:
+  - the ledger row;
+  - the run manifest (`model_substitutions`);
+  - the report (`meta.model_substitutions` and a "Model fallbacks" summary line);
+  - the `agy-model-bound` proof, which names each fallback and proves the bound model.
+
+  A run on a fallback is never labelled with the requested model.
+- **Strict mode.** `PANOPTICON_MODEL_STRICT=1` turns every ladder off (refuse-on-unlisted);
+  `=0` keeps them on. When it is unset, CI runs (`CI` or `GITHUB_ACTIONS` set) are strict. Set
+  `PANOPTICON_MODEL_STRICT=1` for calibration and comparison runs, so a measurement never mixes
+  models. The manifest records the effective state as `model_strict`, so a pair can be checked
+  afterwards.
+- **Quota is not a fallback trigger.** Ladders resolve at bind time, before launch. Running out of
+  quota mid-run stays a typed host failure; the next run resolves again.
+
+| agy model | Free/Plus | Pro | Ultra | Enterprise | API-key route (`agy models`) |
+|---|---|---|---|---|---|
+| Gemini 4 Carbon | no | no | yes | yes | not listed |
+| Gemini 4 Argon | no | yes (paid or eligible trial) | yes | yes | listed (`-low`/`-medium`/`-high`) |
+| Gemini 3.8 Flash | yes | yes | yes | yes | listed |
+| Gemini 3.7 / 3.6 Flash, 3.1 Pro | no | no | no | yes | listed |
+
+Sources:
+- Plan columns: the Antigravity models page, https://antigravity.google/docs/models/, checked
+  2026-11-12.
+- API-key column: the owner's `agy models` capture on that route, 2026-11-12. Google documents no
+  per-plan list for this route.
+
+agy never switches models on its own: its documented quota behaviour is "AI Credit Overages" (wait
+for the refresh, or spend credits). The shipped ladder is the Carbon domain roles' `key:
+[gemini-4-argon-high]`, the owner's choice (#3576). A sign-in-route ladder waits on a captured `agy
+models` list for that route.
 
 Every agy
 child, entry or probe, is ended as soon as its stderr shows the print-mode fallback after silent auth

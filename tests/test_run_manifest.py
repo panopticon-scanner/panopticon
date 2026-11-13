@@ -53,6 +53,24 @@ class TestRunManifest(unittest.TestCase):
         self.assertEqual(set(m["flags"]), set(rm._FLAG_KEYS))
         self.assertEqual(m["flags"]["fail_on"], "high")
 
+    def test_the_manifest_records_the_strict_state_and_no_fallbacks_yet(self):
+        # #3582: so a calibration pair can be checked after the fact.
+        self.assertIs(False, rm.build_manifest(**self._params())[rm.MODEL_STRICT])
+        m = rm.build_manifest(**self._params(), model_strict=True)
+        self.assertIs(True, m["model_strict"])
+        self.assertEqual([], m["model_substitutions"])
+
+    def test_a_fallback_is_recorded_once_per_entry_on_disk(self):
+        sub = {"requested": "gemini-4-carbon-high", "bound": "gemini-4-argon-high",
+               "route": "key", "rung": 1, "reason": "not listed on route key"}
+        self.assertIsNone(rm.record_model_substitution(self.root, None, "review-g-SEC", sub))
+        rm.write_manifest(self.root, rm.build_manifest(**self._params()))
+        rm.record_model_substitution(self.root, None, "review-g-SEC", sub)
+        rm.record_model_substitution(self.root, None, "review-g-SEC", dict(sub, rung=2))
+        rm.record_model_substitution(self.root, None, "review-g-COD", sub)
+        self.assertEqual([dict(sub, entry="review-g-SEC"), dict(sub, entry="review-g-COD")],
+                         rm.load_manifest(self.root)["model_substitutions"])
+
     def test_worktree_defaults_none_and_is_stored(self):
         self.assertIsNone(rm.build_manifest(**self._params())["worktree"])
         m = rm.build_manifest(**self._params(), worktree="/tmp/pr-wt")

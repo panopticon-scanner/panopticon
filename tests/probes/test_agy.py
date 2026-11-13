@@ -272,12 +272,23 @@ class TestTheModelProbeOnTheKeyRoute(unittest.TestCase):
         (state, _by, detail), seen = self._run()
         self.assertEqual(hosts.PROVEN, state, detail)
         self.assertIn("on the API-key route", detail)
-        self.assertIn("gemini-4-argon-high", detail)
-        self.assertNotIn("gemini-4-carbon", detail)
+        self.assertIn("(gemini-3.8-flash-medium, gemini-4-argon-high) on the API-key route", detail)
+        # #3582: the proof names each fallback, then proves the bound model, never Carbon.
+        for role in ("domain_advisor", "domain_panel"):
+            self.assertIn("%s: requested gemini-4-carbon-high -> bound gemini-4-argon-high "
+                          "(fallback rung 1: not listed on route key)" % role, detail)
+        self.assertFalse(any(c[c.index("--model") + 1].startswith("gemini-4-carbon")
+                             for c in seen if "--model" in c))
         self.assertEqual(["models"], seen[0][3:])
         self.assertEqual("--gemini_dir", seen[0][1])
         self.assertFalse(any("--effort" in c for c in seen))
         self.assertFalse(any(c[-1] == "/effort" for c in seen))
+
+    def test_a_strict_run_refutes_carbon_on_the_key_route(self):
+        (state, _by, detail), _seen = self._run(extra_env={"PANOPTICON_MODEL_STRICT": "1"})
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("domain_panel: agy key route lists no model 'gemini-4-carbon-high'", detail)
+        self.assertIn("no fallback ladder applies", detail)
 
     def test_an_explicit_unlisted_override_refutes(self):
         (state, _by, detail), _seen = self._run(extra_env={

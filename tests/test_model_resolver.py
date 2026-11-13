@@ -94,10 +94,64 @@ class TestModelResolver(unittest.TestCase):
             self.assertEqual(cfg["tier"], "pro")
         self.assertIsNone(mr.resolve_model("agy", "setup_scan")["model"])
 
+    def test_strict_switch_reads_the_env_and_defaults_on_under_ci(self):
+        # #3582: strict turns every ladder off; unset, CI is strict.
+        for env, strict in (({}, False), ({"CI": "true"}, True), ({"GITHUB_ACTIONS": "true"}, True),
+                            ({"CI": "false"}, False), ({"CI": "0"}, False),
+                            ({"PANOPTICON_MODEL_STRICT": "1"}, True),
+                            ({"PANOPTICON_MODEL_STRICT": "0", "CI": "true"}, False),
+                            ({"PANOPTICON_MODEL_STRICT": "yes"}, True)):
+            with self.subTest(env=env):
+                self.assertIs(strict, mr.strict_models(env))
+        with self.assertRaisesRegex(ValueError, "neither on .1. nor off .0."):
+            mr.strict_models({"PANOPTICON_MODEL_STRICT": "maybe"})
+
+    def test_strict_runs_and_operator_named_models_carry_no_ladder(self):
+        for env in ({"PANOPTICON_MODEL_STRICT": "1"},
+                    {"PANOPTICON_MODEL_STRICT": "", "CI": "true"}):
+            with self.subTest(env=env), mock.patch.dict(os.environ, env):
+                self.assertEqual({"model": "gemini-4-carbon", "effort": "high"},
+                                 mr.entry_policy("agy", "domain_panel"))
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_DOMAIN_PANEL":
+                                          '{"model": "gemini-4-carbon", "effort": "high", '
+                                          '"fallbacks": {"key": ["gemini-4-argon-high"]}}'}):
+            self.assertNotIn("fallbacks", mr.entry_policy("agy", "domain_panel"))
+
+    def test_fallback_ladders_are_validated_and_never_ignored(self):
+        self.assertEqual([], mr.profile_problems())
+        self.assertEqual({"key": ["gemini-4-argon-high"]},
+                         mr.registration_config("agy", "domain_panel")["fallbacks"])
+        self.assertEqual(mr._AGY_FALLBACK["domain_panel"]["fallbacks"],
+                         mr.registration_config("agy", "domain_panel")["fallbacks"])
+        for host, cfg, why in (
+                ("agy", {"fallbacks": {"signin": ["gemini-4-argon"]}},
+                 "route signin has no measured model list"),
+                ("codex", {"fallbacks": {"key": ["gpt-6.1"]}},
+                 "route key has no measured model list on codex .routes with one: none."),
+                ("claude", {"fallbacks": {"api": ["claude-sonnet-5-5"]}}, "on claude"),
+                ("kimi", {"fallbacks": {"key": ["k3"]}}, "on kimi"),
+                ("gemini", {"fallbacks": {"key": ["gemini-3.8-flash"]}}, "on gemini"),
+                ("agy", {"fallbacks": ["gemini-4-argon-high"]}, "not a route-to-ladder"),
+                ("agy", {"fallbacks": {}}, "not a route-to-ladder"),
+                ("agy", {"fallbacks": {"key": []}}, "not a non-empty list"),
+                ("agy", {"fallbacks": {"key": ["Gemini 4"]}}, "not a non-empty list"),
+                ("agy", {"fallbacks": {"key": ["a-1", "a-1"]}}, "repeats a model")):
+            with self.subTest(host=host, cfg=cfg):
+                self.assertRegex(mr.fallbacks_problem(host, cfg), why)
+        self.assertIsNone(mr.fallbacks_problem("agy", {"model": "x"}))
+        with mock.patch.dict(mr._AGY_FALLBACK, {"advisor": {
+                "model": "gemini-3.8-flash-medium", "fallbacks": {"signin": ["x"]}}}), \
+                mock.patch.object(mr, "_PROFILES", {"hosts": {}}):
+            with self.assertRaisesRegex(ValueError, "model policy for agy advisor names fallbacks"):
+                mr.entry_policy("agy", "advisor")
+            self.assertEqual(1, len(mr.profile_problems()))
+
     def test_agy_entry_policy_carries_effort_only_where_set(self):
         # #3564: the entry gets `effort` beside `model` on agy, as codex gets its effort.
         for role in ("domain_panel", "domain_advisor"):
-            self.assertEqual({"model": "gemini-4-carbon", "effort": "high"},
+            # #3582: the suite runs with fallbacks on (conftest), so the ladder rides along.
+            self.assertEqual({"model": "gemini-4-carbon", "effort": "high",
+                              "fallbacks": {"key": ["gemini-4-argon-high"]}},
                              mr.entry_policy("agy", role))
         for role in ("scout", "advisor"):
             self.assertEqual({"model": "gemini-3.8-flash-medium"}, mr.entry_policy("agy", role))

@@ -102,8 +102,10 @@ _AGY_FALLBACK: dict[str, dict[str, Any]] = {
     "scout": {"model": "gemini-3.8-flash-medium", "tier": "flash"},
     "advisor": {"model": "gemini-3.8-flash-medium", "tier": "flash"},
     # #3564: Carbon takes its effort as `--effort`, never as a `-high` slug.
-    "domain_panel": {"model": "gemini-4-carbon", "effort": "high", "tier": "pro"},
-    "domain_advisor": {"model": "gemini-4-carbon", "effort": "high", "tier": "pro"},
+    "domain_panel": {"model": "gemini-4-carbon", "effort": "high", "tier": "pro",
+                     "fallbacks": {"key": ["gemini-4-argon-high"]}},
+    "domain_advisor": {"model": "gemini-4-carbon", "effort": "high", "tier": "pro",
+                       "fallbacks": {"key": ["gemini-4-argon-high"]}},
     "setup_scan": {"model": None},
 }
 # Google Gemini lineup: `gemini-4-carbon` is the flagship reasoning model and
@@ -116,6 +118,75 @@ _GEMINI_FALLBACK: dict[str, dict[str, Any]] = {
     "domain_advisor": {"model": "gemini-4-carbon"},
     "setup_scan": {"model": None},
 }
+
+
+# #3582: documented model fallbacks, per role and per route, never silent.
+# A role's `fallbacks` maps a route to an ordered ladder of model names, tried
+# after the requested model against that route's LIVE model list at bind time.
+# Only routes whose list a runner actually reads may carry one: agy's API-key
+# route (`agy models`, #3576). Anywhere else a ladder would be a promise
+# nothing checks, so it is refused, never ignored.
+LADDER_ROUTES = {"agy": ("key",)}
+STRICT_ENV = "PANOPTICON_MODEL_STRICT"
+_CI_ENVS = ("CI", "GITHUB_ACTIONS")
+_LADDER_RUNG = re.compile(r"[a-z0-9][a-z0-9.\-]*")
+
+
+def strict_models(env=None):
+    """Whether fallbacks are off for this run (#3582): `PANOPTICON_MODEL_STRICT=1`
+    turns every ladder off and `=0` keeps them on; unset, CI runs are strict so a
+    measurement never mixes models silently."""
+    env = os.environ if env is None else env
+    raw = (env.get(STRICT_ENV) or "").strip().lower()
+    if raw in ("1", "true", "yes", "on"):
+        return True
+    if raw in ("0", "false", "no", "off"):
+        return False
+    if raw:
+        raise ValueError("%s=%r is neither on (1) nor off (0) (#3582)" % (STRICT_ENV, raw))
+    return any((env.get(name) or "").strip().lower() not in ("", "0", "false")
+               for name in _CI_ENVS)
+
+
+def fallbacks_problem(host, cfg):
+    """Why `cfg`'s `fallbacks` block cannot be honoured, or None (#3582)."""
+    ladders = cfg.get("fallbacks") if isinstance(cfg, dict) else None
+    if ladders is None:
+        return None
+    routes = LADDER_ROUTES.get(host, ())
+    if not isinstance(ladders, dict) or not ladders:
+        return "has a fallbacks block that is not a route-to-ladder mapping (#3582)"
+    for route, ladder in ladders.items():
+        if route not in routes:
+            return ("names fallbacks for route %r, but route %s has no measured model "
+                    "list on %s (routes with one: %s) (#3582)"
+                    % (route, route, host, ", ".join(routes) or "none"))
+        if (not isinstance(ladder, list) or not ladder
+                or not all(isinstance(r, str) and _LADDER_RUNG.fullmatch(r) for r in ladder)):
+            return ("has fallbacks for route %r that are not a non-empty list of model "
+                    "names (#3582)" % route)
+        if len(set(ladder)) != len(ladder):
+            return "repeats a model in its fallbacks for route %r (#3582)" % route
+    return None
+
+
+def profile_problems():
+    """Every role whose profile or hard-coded `fallbacks` cannot be honoured."""
+    problems = []
+    for host in hosts.known_hosts():
+        table = ((_profiles().get("hosts") or {}).get(host) or {})
+        for role in sorted(set(table) | set(_hardcoded_tables().get(host, {}))):
+            for source, cfg in (("profile", table.get(role)),
+                                ("hard-coded", _hardcoded_tables().get(host, {}).get(role))):
+                problem = fallbacks_problem(host, cfg) if isinstance(cfg, dict) else None
+                if problem:
+                    problems.append("%s %s (%s) %s" % (host, role, source, problem))
+    return problems
+
+
+def _hardcoded_tables():
+    return {"kimi": _KIMI_FALLBACK, "claude": _CLAUDE_FALLBACK, "codex": _CODEX_FALLBACK,
+            "agy": _AGY_FALLBACK, "gemini": _GEMINI_FALLBACK}
 
 
 def _require_registered_host(host):
@@ -341,11 +412,19 @@ def entry_policy(host, role):
         problem = effort_key_problem(host, cfg)
         if problem:
             raise ValueError("model policy for %s %s %s" % (host, role, problem))
+    problem = fallbacks_problem(host, cfg)
+    if problem:
+        raise ValueError("model policy for %s %s %s" % (host, role, problem))
     extra = {"codex": ("model_reasoning_effort",), "agy": ("effort",)}.get(host, ())
     policy = {"model": cfg.get("model"), **{key: cfg[key] for key in extra if cfg.get(key)}}
     if host == "agy" and _env_override(role):
         # #3576: the agy runner never substitutes a model the operator named.
         policy["model_override"] = True
+    ladders = cfg.get("fallbacks")
+    if ladders and not policy.get("model_override") and not strict_models():
+        # #3582: the ladder is bound with the model, at one moment; strict runs and
+        # operator-named models carry none, so nothing downstream can fall back.
+        policy["fallbacks"] = {route: list(ladders[route]) for route in sorted(ladders)}
     return policy
 
 

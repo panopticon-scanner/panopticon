@@ -90,6 +90,26 @@ class TestHeadlessLoop(_HeadlessLoopCase):
             self.assertEqual(row["finished_at"], row["ts"])
             self.assertLessEqual(row["started_at"], row["ts"])
 
+    def test_a_fallback_entry_is_recorded_on_the_run_manifest(self):
+        # #3582: the substitution a runner reports goes on the run's own record, once.
+        import scripts.run_manifest as run_manifest
+        sub = {"requested": "gemini-4-carbon-high", "bound": "gemini-4-argon-high",
+               "route": "key", "rung": 1, "reason": "not listed on route key"}
+
+        class FallbackCell(FakeRunner):
+            def run_entry(self, entry, env):
+                result = super().run_entry(entry, env)
+                if entry["id"] == "review-app-SEC":
+                    result.model_substitution = dict(sub)
+                return result
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        runner = FallbackCell()
+        self._run(d, floor, runner)
+        manifest = run_manifest.load_manifest(d)
+        self.assertEqual([dict(sub, entry="review-app-SEC")], manifest["model_substitutions"])
+        rows = {r["entry_id"]: r for r in ledger_mod.Ledger(runner.run_dir).lines()}
+        self.assertIn("review-app-ACC", rows)
+
     def test_the_review_root_is_resolved_once_for_the_whole_loop(self):
         # #1616 item 6: once per `driver loop` INVOCATION, counted at the
         # bottom (`runio.resolve_review_root`) rather than at the seam, because

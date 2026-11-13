@@ -558,6 +558,15 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                      "groups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n"
                      "settings:\n  max_per_group: %d\n" % max_per_group)
 
+    def test_a_fresh_manifest_records_whether_model_fallbacks_are_off(self):
+        # #3582: the effective strict state, decided once at run start.
+        for env, strict in (({"PANOPTICON_MODEL_STRICT": "1"}, True),
+                            ({"PANOPTICON_MODEL_STRICT": "0"}, False)):
+            with self.subTest(env=env), mock.patch.dict(os.environ, env):
+                d = self._repo()
+                driver.run(self._args(d))
+                self.assertIs(strict, run_manifest.load_manifest(d)["model_strict"])
+
     def test_changing_a_settings_knob_between_resumes_is_flag_drift(self):
         # #1681 Plan 1: the grain knobs resolve CLI > `settings:` and the
         # manifest pins the EFFECTIVE value, so editing the committed config

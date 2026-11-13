@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Documented model fallbacks: a per-role ladder per route, never silent (#3582).** A role in
+  `model-profiles.yml` may name `fallbacks: {<route>: [...]}`, tried in order only when the
+  route's live model list lacks the requested model. Today only agy's API-key route has such a
+  list, and #3576's Carbon -> `gemini-4-argon-high` choice is now that ladder's first rung. A
+  ladder anywhere else is refused, not ignored. Every substitution is recorded on the ledger row,
+  in the run manifest (`model_substitutions`, beside the effective `model_strict`), in
+  `meta.model_substitutions` with a "Model fallbacks" summary line, and in the `agy-model-bound`
+  proof. `PANOPTICON_MODEL_STRICT=1` turns ladders off, and CI is strict by default. An
+  operator-named model never falls back, and quota never triggers a fallback. The
+  host-capabilities guide gains a dated "Access and fallbacks" table.
 - **agy's preflight no longer refuses a signed-in run (#3620).** Since #3613 every sign-in run
   refused with `AgyAuthUnreachable`: the preflight read agy's run log for "You are not logged
   into Antigravity", but `agy agents` writes that line there without signing in and the turn

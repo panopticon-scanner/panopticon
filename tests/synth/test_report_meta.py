@@ -160,6 +160,70 @@ class ModelsFromTheLedgerTest(_Case):
         self.assertEqual((), cost_mod.load_ledger_models(None))
 
 
+class ModelFallbacksTest(_Case):
+    """#3582: a dispatch that ran on a fallback rung is said in meta and in the summary, from
+    the ledger row the real `Ledger` wrote -- never silent, never labelled as requested."""
+    SUB = {"requested": "gemini-4-carbon-high", "bound": "gemini-4-argon-high", "route": "key",
+           "rung": 1, "reason": "not listed on route key"}
+
+    def _agy_ledger(self, *rows):
+        ledger = ledger_mod.Ledger(self.dir)
+        for entry_id, sub in rows:
+            result = runners_base.RunResult(
+                entry_id=entry_id, ok=True, text="", usage={}, cost_usd=None, model=None,
+                session_id=None, denials=[], error=None)
+            result.bound_model = sub["bound"] if sub else None
+            result.model_substitution = dict(sub) if sub else None
+            ledger.record({"id": entry_id, "model": "gemini-4-carbon", "effort": "high"},
+                          "review", result, "headless", "agy")
+
+    def _with_subs(self):
+        loaded = cost_mod.CostInputs.load(self.dir, self.dir, 0)
+        return self._report([], loaded)
+
+    def test_a_fallback_is_in_meta_and_the_summary_and_matches_the_schema(self):
+        import jsonschema
+        import scripts.synth.render as render
+        self._agy_ledger(("review-g-SEC", self.SUB), ("review-g-COD", self.SUB),
+                         ("scout-g", None))
+        report = self._with_subs()
+        self.assertEqual([dict(self.SUB, entry="review-g-SEC", role="domain_panel"),
+                          dict(self.SUB, entry="review-g-COD", role="domain_panel")],
+                         report["meta"]["model_substitutions"])
+        self.assertEqual([], report["meta"]["models_used"])      # agy reports none: no label
+        schema_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "skill", "reference", "report-schema.json")
+        with open(schema_path, encoding="utf-8") as fh:
+            meta = json.load(fh)["properties"]["meta"]["properties"]["model_substitutions"]
+        jsonschema.validate(report["meta"]["model_substitutions"], meta)
+        self.assertIn("**Model fallbacks:** 2 dispatch(es) ran on a fallback, not the requested "
+                      "model (gemini-4-carbon-high -> gemini-4-argon-high (not listed on route "
+                      "key))", render.render_summary(report))
+
+    def test_no_fallback_leaves_no_key_and_no_line(self):
+        import scripts.synth.render as render
+        self._agy_ledger(("review-g-SEC", None))
+        report = self._with_subs()
+        self.assertNotIn("model_substitutions", report["meta"])
+        self.assertNotIn("Model fallbacks", render.render_summary(report))
+
+    def test_malformed_or_repeated_records_are_skipped_and_text_made_inert(self):
+        rows = [{"entry_id": "review-g-SEC", "model_substitution": dict(self.SUB, rung=0)},
+                {"entry_id": "review-g-SEC", "model_substitution": dict(self.SUB, rung=True)},
+                {"entry_id": "review-g-SEC", "model_substitution": dict(self.SUB, bound=None)},
+                {"entry_id": "review-g-SEC", "model_substitution": "x"},
+                {"entry_id": "review-g-SEC", "model_substitution": dict(
+                    self.SUB, reason="not listed\u0000 \x1b[31mred")},
+                {"entry_id": "review-g-SEC", "model_substitution": dict(self.SUB)}]
+        with open(os.path.join(self.dir, runners_base.LEDGER_FILE), "w", encoding="utf-8") as fh:
+            fh.write("\n".join(json.dumps(r) for r in rows) + "\n")
+        subs = cost_mod.load_ledger_substitutions(self.dir)
+        self.assertEqual(1, len(subs))                        # first good one per entry
+        self.assertNotIn("\x1b", subs[0]["reason"])
+        self.assertNotIn("\x00", subs[0]["reason"])
+        self.assertEqual((), cost_mod.load_ledger_substitutions(None))
+
+
 class SessionModeTest(_Case):
     """No ledger rows. What was REQUESTED is on the plan, and must not be what the report says ran."""
 

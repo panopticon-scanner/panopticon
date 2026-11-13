@@ -377,7 +377,8 @@ def _manifest_for_run(args, review_root, worktree, base, scope, pr_base, first, 
                                         resolution=resolution),
             config=resolution,
             worktree=worktree,
-            scope=scope, pr=args.pr, pr_base=pr_base)
+            scope=scope, pr=args.pr, pr_base=pr_base,
+            model_strict=model_resolver.strict_models())
         manifest["first_contact"] = first or {}
         run_manifest.write_manifest(review_root, first_contact.bind(review_root, manifest))
     else:

@@ -226,7 +226,9 @@ def build_report(inp):
     # tree, the run's own artifacts -- meets its first encoder at a writer, and
     # every writer writes THIS. A report holding none comes back itself.
     return inert.surrogate_free(assemble(inp.run, resolved, reconciled, graded, cost,
-                                         models_used=cost_mod.models_used(inp.cost)))
+                                         models_used=cost_mod.models_used(inp.cost),
+                                         model_substitutions=cost_mod.model_substitutions(
+                                             inp.cost)))
 
 
 def _host_capabilities_verbatim(host_capabilities):
@@ -319,7 +321,7 @@ def _fill_category(finding, bundle):
         finding[evidence_mod.CATEGORY_SOURCE] = "catalog"
 
 
-def assemble(run, resolved, reconciled, graded, cost, models_used=()):
+def assemble(run, resolved, reconciled, graded, cost, models_used=(), model_substitutions=()):
     """Lay the computed sections out as the CodeReviewReport envelope. Key
     order is part of the artifact (write_report dumps insertion order)."""
     for f in resolved.findings:
@@ -360,6 +362,10 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=()):
             "security_mode": run.security_mode,
             "gate_security_mode": run.gate_security_mode,
             "models_used": list(models_used),
+            # #3582: present only when an entry ran on a fallback rung -- the run is
+            # never labelled with a model it did not run.
+            **({"model_substitutions": list(model_substitutions)}
+               if model_substitutions else {}),
             "coverage": reconciled.coverage,
             # #1637 P08 ruling 5: a run whose tool scan skipped still produces
             # a full-looking report, and until now nothing in it said that the
