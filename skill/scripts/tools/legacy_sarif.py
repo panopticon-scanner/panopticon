@@ -127,6 +127,15 @@ _SEMGREP_SYNTAX_RULE = re.compile(
     r"\n When parsing a snippet [^\r\n]* for metavariable-pattern in rule "
     r"['`]([^'`\r\n]+)['`]")
 _SEMGREP_SYNTAX_IDS = frozenset({"Syntax error", "Other syntax error"})
+_SEMGREP_HANDLED_NOTIFICATION_IDS = _SEMGREP_SYNTAX_IDS | {"Timeout"}
+# #3610: Semgrep v1.183.0 emits MissingPlugin when a rule needs a proprietary
+# language parser.  It says nothing about a selected target file, so it is the
+# sole reviewed notification that does not qualify file coverage.  Everything
+# else, including a future descriptor id, fails closed below.
+_SEMGREP_IGNORED_NOTIFICATION_IDS = frozenset({"Missing plugin"})
+_SEMGREP_NOTIFICATION_AT_LINE = re.compile(r"\A([^\r\n]+):[0-9]+:\r?\n")
+_SEMGREP_NOTIFICATION_WHEN_RUNNING = re.compile(
+    r"\A\S+ on ([^\r\n]+):\r?\n")
 _SEMGREP_DISCLOSED_FILES = 100
 _SEMGREP_DISCLOSED_RULES = 100
 
@@ -204,8 +213,9 @@ def _syntax_errors(sarif):
     unlocated = 0
     for note in _notifications(sarif):
         descriptor = note.get("descriptor") if isinstance(note, dict) else None
-        if (not isinstance(descriptor, dict)
-                or descriptor.get("id") not in _SEMGREP_SYNTAX_IDS):
+        notification_id = descriptor.get("id") if isinstance(descriptor, dict) else None
+        if (not isinstance(notification_id, str)
+                or notification_id not in _SEMGREP_SYNTAX_IDS):
             continue
         message = note.get("message")
         text = message.get("text") if isinstance(message, dict) else None
@@ -226,10 +236,82 @@ def _syntax_errors(sarif):
     return per_file, per_file_rules, all_applicable, unlocated
 
 
+def _notification_path(note, notification_id):
+    """A non-special notification's path, without publishing its prose.
+
+    Semgrep v1.183.0's SARIF writer drops `cli_error.path`.  Its pinned
+    `Cli_json_output.error_message` instead renders a located error as either
+    `<id> at line <path>:<line>:` or `<id> when running <rule> on <path>:`.
+    Prefer a standard SARIF location if a future writer retains one, then read
+    only those two anchored forms.  A newline-bearing id/path cannot match.
+    """
+    try:
+        path = note["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+    except (KeyError, IndexError, TypeError, AttributeError):
+        path = None
+    if isinstance(path, str) and (path := _sarif_path(path)):
+        return path
+
+    message = note.get("message") if isinstance(note, dict) else None
+    text = message.get("text") if isinstance(message, dict) else None
+    if not isinstance(text, str) or not notification_id or any(
+            char in notification_id for char in "\r\n"):
+        return ""
+    prefix = notification_id + " at line "
+    if text.startswith(prefix):
+        match = _SEMGREP_NOTIFICATION_AT_LINE.match(text[len(prefix):])
+        return _sarif_path(match.group(1)) if match else ""
+    prefix = notification_id + " when running "
+    if text.startswith(prefix):
+        match = _SEMGREP_NOTIFICATION_WHEN_RUNNING.match(text[len(prefix):])
+        return _sarif_path(match.group(1)) if match else ""
+    return ""
+
+
+def _scanner_notifications(sarif):
+    """#3610: (per-file counts/ids, unlocated) for every other note.
+
+    Timeout and syntax descriptors have richer readers above.  Missing plugin
+    is the explicit reviewed allowlist.  Every other id, plus an unreadable
+    note/descriptor, is a coverage gap: located when the standard or pinned
+    Semgrep location shape is readable, otherwise unlocated.
+    """
+    per_file: dict[str, int] = {}
+    per_file_ids: dict[str, set[str]] = {}
+    unlocated = 0
+    for note in _notifications(sarif):
+        descriptor = note.get("descriptor") if isinstance(note, dict) else None
+        notification_id = descriptor.get("id") if isinstance(descriptor, dict) else None
+        if (isinstance(notification_id, str)
+                and notification_id in _SEMGREP_HANDLED_NOTIFICATION_IDS):
+            continue
+        if (isinstance(notification_id, str)
+                and notification_id in _SEMGREP_IGNORED_NOTIFICATION_IDS):
+            continue
+        if not isinstance(notification_id, str) or not notification_id:
+            unlocated += 1
+            continue
+        path = _notification_path(note, notification_id)
+        if path:
+            per_file[path] = per_file.get(path, 0) + 1
+            per_file_ids.setdefault(path, set()).add(notification_id)
+        else:
+            unlocated += 1
+    return per_file, per_file_ids, unlocated
+
+
 def _published_rules(rules):
     """A bounded, inert rule-id list plus the count that did not fit."""
     ordered = sorted(rules)
     published = [inert_text(rule, limit=239) for rule in
+                 ordered[:_SEMGREP_DISCLOSED_RULES]]
+    return published, max(0, len(ordered) - len(published))
+
+
+def _published_notification_ids(notification_ids):
+    """A bounded, inert descriptor-id list plus the count that did not fit."""
+    ordered = sorted(notification_ids)
+    published = [inert_text(notification_id, limit=239) for notification_id in
                  ordered[:_SEMGREP_DISCLOSED_RULES]]
     return published, max(0, len(ordered) - len(published))
 
@@ -242,6 +324,13 @@ def _disclose_semgrep_rows(rows, omitted):
             detail.append("%d rule timeout(s)" % row["rule_timeouts"])
         if row.get("syntax_errors"):
             detail.append("%d syntax error(s)" % row["syntax_errors"])
+        if row.get("scanner_notifications"):
+            detail.append("%d scanner notification(s)" % row["scanner_notifications"])
+        if row.get("notification_ids"):
+            detail.append("notifications: %s" % ", ".join(row["notification_ids"]))
+        if row.get("notification_ids_omitted"):
+            detail.append("%d additional notification id(s) omitted"
+                          % row["notification_ids_omitted"])
         if row.get("reason") == "size_skipped" or row.get("size_skipped"):
             detail.append("over the size limit")
         if (row.get("reason") == "dockerfile_rules_skipped"
@@ -312,21 +401,24 @@ def semgrep_file_coverage(sarif):
     #2957: a file with SEMGREP_TIMEOUT_THRESHOLD or more rule timeouts was
     abandoned (no rule's findings from it survive); fewer means those rules'
     findings are missing. #3229: either syntax-error descriptor means the
-    named file/rule was not fully parsed. #3193: a file over the size limit was
-    never read. A size listing that is absent, malformed or cut short is one
-    unlocated gap."""
+    named file/rule was not fully parsed. #3610: every other non-allowlisted
+    notification is a located scanner-notification row or an unlocated gap.
+    #3193: a file over the size limit was never read. A size listing that is
+    absent, malformed or cut short is one unlocated gap."""
     per_file, timeout_rules, timeouts_unlocated, located = _timeouts(sarif)
     syntax, syntax_rules, syntax_all, syntax_unlocated = _syntax_errors(sarif)
+    notifications, notification_ids, notifications_unlocated = _scanner_notifications(sarif)
     sized, size_count, limit, state = _size_listing(sarif)
     dockerfiles, docker_count, docker_analyzed, docker_unanalyzed, docker_state = (
         _dockerfile_listing(sarif))
-    unlocated = (timeouts_unlocated + syntax_unlocated + (state != "listed")
-                 + (docker_state != "listed"))
-    if (not per_file and not syntax and not unlocated and not size_count
+    unlocated = (timeouts_unlocated + syntax_unlocated + notifications_unlocated
+                 + (state != "listed") + (docker_state != "listed"))
+    if (not per_file and not syntax and not notifications and not unlocated and not size_count
             and not docker_unanalyzed):
         return None
     timeouts = sum(per_file.values()) + timeouts_unlocated
     syntax_count = sum(syntax.values()) + syntax_unlocated
+    notification_count = sum(notifications.values()) + notifications_unlocated
     if timeouts:
         print("semgrep: partial file coverage: %d rule timeout(s) on %d file(s), %d "
               "without an identifiable file; usable findings retained"
@@ -335,6 +427,11 @@ def semgrep_file_coverage(sarif):
         print("semgrep: partial file coverage: %d syntax error(s) on %d file(s), %d "
               "without an identifiable file; usable findings retained"
               % (syntax_count, len(syntax), syntax_unlocated), file=sys.stderr)
+    if notification_count:
+        print("semgrep: partial file coverage: %d scanner notification(s) on %d file(s), "
+              "%d without an identifiable file; usable findings retained"
+              % (notification_count, len(notifications), notifications_unlocated),
+              file=sys.stderr)
     if size_count or state != "listed":
         print("semgrep: partial file coverage: %d file(s) over the size limit not "
               "scanned (listing %s)" % (size_count, state), file=sys.stderr)
@@ -343,9 +440,12 @@ def semgrep_file_coverage(sarif):
               "no Dockerfile rule analysis (listing %s)"
               % (docker_unanalyzed, docker_state), file=sys.stderr)
     facts_by_path: dict[str, dict[str, object]] = {}
-    for path in set(per_file) | set(syntax):
+    for path in set(per_file) | set(syntax) | set(notifications):
         timed_out, failed_parse = per_file.get(path, 0), syntax.get(path, 0)
-        reason = ("rule_timeout_and_syntax_error" if timed_out and failed_parse
+        notified = notifications.get(path, 0)
+        reason = ("multiple_gaps" if notified and (timed_out or failed_parse)
+                  else "scanner_notification" if notified
+                  else "rule_timeout_and_syntax_error" if timed_out and failed_parse
                   else "syntax_error" if failed_parse
                   else "timeout_abandoned" if timed_out >= SEMGREP_TIMEOUT_THRESHOLD
                   else "rule_timeout")
@@ -354,9 +454,15 @@ def semgrep_file_coverage(sarif):
             facts["rule_timeouts"] = timed_out
         if failed_parse:
             facts["syntax_errors"] = failed_parse
-        rules, rules_omitted = _published_rules(
-            timeout_rules.get(path, set()) | syntax_rules.get(path, set()))
-        facts.update({"rules": rules, "rules_omitted": rules_omitted})
+        if notified:
+            facts["scanner_notifications"] = notified
+            ids, ids_omitted = _published_notification_ids(notification_ids.get(path, set()))
+            facts.update({"notification_ids": ids,
+                          "notification_ids_omitted": ids_omitted})
+        if timed_out or failed_parse:
+            rules, rules_omitted = _published_rules(
+                timeout_rules.get(path, set()) | syntax_rules.get(path, set()))
+            facts.update({"rules": rules, "rules_omitted": rules_omitted})
         if path in syntax_all:
             facts["rule_scope"] = "all_applicable"
         facts_by_path[path] = facts
@@ -392,6 +498,18 @@ def semgrep_file_coverage(sarif):
         "size_skipped": size_count, "size_limit": limit,
         "size_listing": state, "unlocated_records": unlocated,
     }
+    if notification_count:
+        facts.update({
+            "scanner_notifications": notification_count,
+            "scanner_notification_files": len(notifications),
+            "scanner_notifications_unlocated": notifications_unlocated,
+        })
+    if syntax_count:
+        # #3603: distinguish the exact number of LOCATED parser-gap files from
+        # the number of diagnostics.  The synthesizer may disclose those names
+        # without treating a parser limitation as missing scanner execution;
+        # an unlocated diagnostic still fails closed through `unlocated_records`.
+        facts["syntax_error_files"] = len(syntax)
     if docker_count or docker_state != "listed":
         facts.update({"dockerfile_variants": docker_count,
                       "dockerfile_analyzed": docker_analyzed,
@@ -468,7 +586,8 @@ class LegacySarifAdapter:
 
     def parse_with_file_coverage(self, raw: bytes, group: str) -> tuple[list[dict], dict | None]:
         """The findings, plus Semgrep's file gaps (#2957 timeouts, #3193 size
-        skips, #3229 syntax errors); None for other tools and gapless Semgrep."""
+        skips, #3229 syntax errors, #3610 notifications); None for other tools
+        and gapless Semgrep."""
         sarif = surrogate_free(json.loads(depth_checked(raw)))    # #2951, #2959: as `parse_json_bytes`
         # #1839: the INGEST decides whether an inline suppression comment in
         # the scanned tree's own source stands, because the pinned scanners

@@ -222,15 +222,212 @@ def _asset_size_skips(facts):
     return 0
 
 
+_SEMGREP_SYNTAX_FACT_KEYS = frozenset({
+    "status", "parsed_files", "unparsed_files", "unavailable_files", "files",
+    "files_omitted", "capabilities_unavailable", "rule_timeouts", "syntax_errors",
+    "syntax_error_files", "size_skipped", "size_limit", "size_listing",
+    "unlocated_records", "dockerfile_variants", "dockerfile_analyzed",
+    "dockerfile_unanalyzed", "dockerfile_listing",
+})
+_SEMGREP_SYNTAX_ROW_KEYS = frozenset({
+    "file", "reason", "syntax_errors", "rules", "rules_omitted", "rule_scope",
+})
+_SEMGREP_DOCKER_KEYS = frozenset({
+    "dockerfile_variants", "dockerfile_analyzed", "dockerfile_unanalyzed",
+    "dockerfile_listing",
+})
+
+
+def _nonnegative_integer(value):
+    return type(value) is int and value >= 0
+
+
+def _semgrep_syntax_disclosure(facts):
+    """Return the bounded located-parser-gap disclosure, if it is exact.
+
+    This is deliberately narrower than "some syntax_errors": old, malformed,
+    or wholly unlocated captures make no located-file claim.  Published names
+    are already bounded and made inert by the Semgrep adapter; the exact count
+    also accounts for syntax rows hidden by the existing file cap.
+    """
+    if not isinstance(facts, dict):
+        return None
+    count = facts.get("syntax_error_files")
+    syntax_errors = facts.get("syntax_errors")
+    rows = facts.get("files")
+    if not (type(count) is int and count > 0
+            and type(syntax_errors) is int and syntax_errors >= count
+            and isinstance(rows, list)):
+        return None
+    names = []
+    for row in rows:
+        if not (isinstance(row, dict)
+                and type(row.get("syntax_errors")) is int
+                and row["syntax_errors"] > 0):
+            continue
+        path = row.get("file")
+        if not isinstance(path, str) or not path:
+            return None
+        names.append(path)
+    if len(names) != len(set(names)) or len(names) > count:
+        return None
+    return {"count": count, "files": names, "files_omitted": count - len(names)}
+
+
+def semgrep_syntax_disclosures(tools_file_partial):
+    """Located Semgrep parser gaps to name independently of certification."""
+    if not isinstance(tools_file_partial, dict):
+        return {}
+    disclosure = _semgrep_syntax_disclosure(tools_file_partial.get("semgrep"))
+    return {"semgrep": disclosure} if disclosure else {}
+
+
+def _semgrep_notification_disclosure(facts):
+    """Return bounded located scanner-notification details when self-consistent.
+
+    The adapter has already made paths and descriptor ids inert and bounded;
+    this validator keeps a malformed historical/report shape from reaching the
+    summary note.  The generic partial-coverage note still fails closed when a
+    detailed disclosure cannot be proved.
+    """
+    if not isinstance(facts, dict):
+        return None
+    count = facts.get("scanner_notifications")
+    file_count = facts.get("scanner_notification_files")
+    unlocated = facts.get("scanner_notifications_unlocated")
+    rows = facts.get("files")
+    if not (type(count) is int and count > 0
+            and type(file_count) is int and file_count >= 0
+            and type(unlocated) is int and unlocated >= 0
+            and unlocated <= count and isinstance(rows, list)):
+        return None
+    files = []
+    published_notifications = 0
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict) or "scanner_notifications" not in row:
+            continue
+        path = row.get("file")
+        row_count = row.get("scanner_notifications")
+        ids = row.get("notification_ids")
+        ids_omitted = row.get("notification_ids_omitted")
+        if not (isinstance(path, str) and path and path not in seen
+                and type(row_count) is int and row_count > 0
+                and isinstance(ids, list) and ids
+                and all(isinstance(value, str) and value for value in ids)
+                and type(ids_omitted) is int and ids_omitted >= 0
+                and len(ids) + ids_omitted <= row_count):
+            return None
+        seen.add(path)
+        published_notifications += row_count
+        files.append({"file": path, "ids": ids, "ids_omitted": ids_omitted})
+    files_omitted = file_count - len(files)
+    if (files_omitted < 0
+            or count < published_notifications + unlocated + files_omitted
+            or (not files_omitted
+                and count != published_notifications + unlocated)):
+        return None
+    return {"count": count, "files": files, "files_omitted": files_omitted,
+            "unlocated": unlocated}
+
+
+def semgrep_notification_disclosures(tools_file_partial):
+    """Semgrep scanner failures safe to name in the coverage note (#3610)."""
+    if not isinstance(tools_file_partial, dict):
+        return {}
+    disclosure = _semgrep_notification_disclosure(tools_file_partial.get("semgrep"))
+    return {"semgrep": disclosure} if disclosure else {}
+
+
+def _only_located_semgrep_syntax_errors(facts, disclosure):
+    """Whether parser notices are the WHOLE, exactly accounted file gap.
+
+    Unknown fields, incomplete listings, unlocated records and every other
+    scanner gap all fail closed.  This strict recognizer is what lets #3603
+    change the disposition of located syntax notices without weakening any
+    timeout, crash, size, capability, or Dockerfile coverage control.
+    """
+    if not (isinstance(facts, dict) and isinstance(disclosure, dict)
+            and set(facts) <= _SEMGREP_SYNTAX_FACT_KEYS
+            and facts.get("status") == "partial"
+            and _nonnegative_integer(facts.get("parsed_files"))
+            and _nonnegative_integer(facts.get("unavailable_files"))
+            and facts["unavailable_files"] == 0
+            and facts.get("capabilities_unavailable") == []
+            and _nonnegative_integer(facts.get("rule_timeouts"))
+            and facts["rule_timeouts"] == 0
+            and _nonnegative_integer(facts.get("size_skipped"))
+            and facts["size_skipped"] == 0
+            and _nonnegative_integer(facts.get("size_limit"))
+            and facts.get("size_listing") == "listed"
+            and _nonnegative_integer(facts.get("unlocated_records"))
+            and facts["unlocated_records"] == 0):
+        return False
+
+    count = disclosure["count"]
+    rows = facts.get("files")
+    omitted = facts.get("files_omitted")
+    if not (facts.get("syntax_error_files") == count
+            and type(facts.get("unparsed_files")) is int
+            and facts.get("unparsed_files") == count
+            and isinstance(rows, list)
+            and _nonnegative_integer(omitted)
+            and omitted == count - len(rows)
+            and disclosure["files_omitted"] == omitted
+            and disclosure["files"] == [row.get("file") for row in rows
+                                         if isinstance(row, dict)]):
+        return False
+
+    syntax_errors = 0
+    for row in rows:
+        if not (isinstance(row, dict)
+                and set(row) <= _SEMGREP_SYNTAX_ROW_KEYS
+                and row.get("reason") == "syntax_error"
+                and isinstance(row.get("file"), str) and row["file"]
+                and type(row.get("syntax_errors")) is int
+                and row["syntax_errors"] > 0
+                and isinstance(row.get("rules"), list)
+                and all(isinstance(rule, str) and rule for rule in row["rules"])
+                and _nonnegative_integer(row.get("rules_omitted"))
+                and ("rule_scope" not in row
+                     or row["rule_scope"] == "all_applicable")):
+            return False
+        syntax_errors += row["syntax_errors"]
+    if (facts.get("syntax_errors") < syntax_errors + omitted
+            or (not omitted and facts.get("syntax_errors") != syntax_errors)):
+        return False
+
+    docker_keys = set(facts) & _SEMGREP_DOCKER_KEYS
+    if docker_keys:
+        if not (docker_keys == _SEMGREP_DOCKER_KEYS
+                and all(_nonnegative_integer(facts.get(key)) for key in (
+                    "dockerfile_variants", "dockerfile_analyzed",
+                    "dockerfile_unanalyzed"))
+                and facts["dockerfile_variants"] == facts["dockerfile_analyzed"]
+                + facts["dockerfile_unanalyzed"]
+                and facts["dockerfile_unanalyzed"] == 0
+                and facts.get("dockerfile_listing") == "listed"):
+            return False
+    return True
+
+
 def certifying_file_gaps(tools_file_partial):
-    """#3283: (the scanner file gaps that still sink certification, the count of
-    asset files whose only gap was semgrep's size limit). An image semgrep would
-    never lint is no review gap; a size-skipped `.json` or `.go` still is -- a
-    target can pad a security-relevant JSON past the limit, not a PNG."""
+    """The scanner file gaps that still sink certification, plus asset skips.
+
+    #3283 exempts an asset whose only gap was Semgrep's size limit. #3603 also
+    exempts fully located, exactly accounted Semgrep syntax notices: they say
+    that Semgrep could not parse named files, not that scanner execution was
+    missing. Both remain disclosed. Every mixed or malformed shape still
+    counts, including a size-skipped `.json` or `.go` and an unlocated parser
+    notice.
+    """
     if not isinstance(tools_file_partial, dict):
         return tools_file_partial, 0
     counted, assets = {}, 0
     for tool, facts in tools_file_partial.items():
+        syntax = _semgrep_syntax_disclosure(facts) if tool == "semgrep" else None
+        if syntax and _only_located_semgrep_syntax_errors(facts, syntax):
+            continue
         skipped = _asset_size_skips(facts)
         assets += skipped
         if not skipped:

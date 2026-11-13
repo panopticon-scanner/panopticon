@@ -12,6 +12,18 @@
   template, a strict guard, Claude's unenforced deny list, kimi's disabled set or Codex's
   features ever grant one.
 
+- **Unknown Semgrep execution notifications fail closed (#3610).** Semgrep's
+  `Missing plugin` descriptor is now the sole explicit notification allowlist
+  entry; `Timeout`, `Syntax error`, and `Other syntax error` keep their richer
+  existing readers, and every other descriptor becomes partial file coverage.
+  A source-shaped or standard-SARIF location produces a bounded
+  `scanner_notification` file row whose inert descriptor id is named in the
+  coverage note. An unreadable location or malformed descriptor increments
+  `unlocated_records`, so it cannot certify. Diagnostic prose is never
+  published. A file that also carries another coverage gap uses the
+  `multiple_gaps` reason. Tests pin the complete descriptor-id set and both
+  location-text forms from Semgrep v1.183.0 source.
+
 - **The domain-panel severity bar no longer caps CRITICAL on authentication or library use (#3604).**
   The 5.4 small-corpus sweep found 41 CRITICAL-to-HIGH down-overrides, 37 of them wrong against
   the answer keys or on inspection: authenticated template/code execution, a library's default-on script lookup,
@@ -23,6 +35,13 @@
   A non-exploitable defect is rated on its impact, down to the code's floor or below it with a
   controlled modifier. "When torn, choose HIGH" is unchanged. A template test pins every dropped
   and kept clause.
+
+- **Located Semgrep parse notices are disclosure-only (#3603).** `Syntax error`
+  and `Other syntax error` notifications now add the exact number of affected
+  files and their bounded names to `coverage_note` without withholding coverage
+  certification. Unlocated notices and any accompanying timeout, size,
+  capability, or Dockerfile gap still fail closed; mixed captures disclose both
+  the parse limitation and the certification gap.
 
 - **Code-scanning stamp validation follows its producer (#3599).** The size-skip
   and Dockerfile-coverage listing bounds now share `semgrep_targets.MAX_LISTED`
