@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Setup-owned root writes no longer make repeat-run comparison refuse every run (#3602).**
+  A fresh setup records a machine-stamped, content-and-mode-bound receipt for
+  the `.gitignore` append and fallback `panopticon.yml` seed, but only when the
+  path was clean before setup wrote it. Each path also binds its pre-write HEAD
+  blob OID (or absence), so run provenance excludes those exact unstaged
+  changes from `target_dirty` only while HEAD still matches that baseline.
+  Edits, mode changes, staging, renamed paths, pre-existing dirt, a later HEAD,
+  forged receipt fields, and every unrelated change still fail closed.
+  `driver setup --reset` preserves only receipts whose stamp and current file
+  identity still verify, retaining the original baseline unchanged.
+
 - **Native Semgrep parse gaps receive targeted SEC review (#3611).** Located
   syntax failures in Markdown, HTML, configuration, and other non-native files
   remain warning-only. Native files are classified with setup's extension map;
