@@ -7,10 +7,13 @@
   Every host's read and write tools (claude, kimi, agy, gemini, and the Codex read broker) now
   refuse a path under `Library/Keychains/` or naming a `.keychain`/`.keychain-db` file, matched
   case-insensitively on the resolved path, so a granted directory, an exact grant and a symlink
-  all deny. The Codex broker also leaves those paths out of its listings and searches. No host
-  child can run a shell, so there is no `security` call to refuse; pins now fail if a role
-  template, a strict guard, Claude's unenforced deny list, kimi's disabled set or Codex's
-  features ever grant one.
+  all deny. The Codex broker also leaves those paths out of its listings and searches. A target
+  repository's files named `*.keychain`/`*.keychain-db`, and any `Library/Keychains` path, are
+  therefore unreadable to reviewers even from an exact grant. One gap remains (#3616): a host's
+  own recursive search over an ancestor of a Keychain directory, such as `Grep` over a granted
+  home directory, still walks into it; the item secrets stay encrypted. No host child can run a
+  shell, so there is no `security` call to refuse; pins now fail if a role template, a strict
+  guard, Claude's unenforced deny list, kimi's disabled set or Codex's features ever grant one.
 
 - **Unknown Semgrep execution notifications fail closed (#3610).** Semgrep's
   `Missing plugin` descriptor is now the sole explicit notification allowlist
