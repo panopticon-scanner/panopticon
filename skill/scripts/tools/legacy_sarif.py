@@ -392,6 +392,12 @@ def semgrep_file_coverage(sarif):
         "size_skipped": size_count, "size_limit": limit,
         "size_listing": state, "unlocated_records": unlocated,
     }
+    if syntax_count:
+        # #3603: distinguish the exact number of LOCATED parser-gap files from
+        # the number of diagnostics.  The synthesizer may disclose those names
+        # without treating a parser limitation as missing scanner execution;
+        # an unlocated diagnostic still fails closed through `unlocated_records`.
+        facts["syntax_error_files"] = len(syntax)
     if docker_count or docker_state != "listed":
         facts.update({"dockerfile_variants": docker_count,
                       "dockerfile_analyzed": docker_analyzed,

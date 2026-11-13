@@ -737,13 +737,35 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
             "rule_scope": "all_applicable",
         })
         self.assertEqual((facts["syntax_errors"], facts["rule_timeouts"],
-                          facts["unlocated_records"]), (2, 0, 0))
+                          facts["syntax_error_files"], facts["unlocated_records"]),
+                         (2, 0, 2, 0))
         self.assertTrue(findings)
         self.assertIn("app/views/sessions/new.html.erb", diagnostic)
         self.assertIn("ruby.rails.security.brakeman.check-reverse-tabnabbing", diagnostic)
         self.assertIn("config/database.yml", diagnostic)
         self.assertIn("all applicable rules", diagnostic)
-        self.assertFalse(self._report(findings, disposition)["summary"]["coverage_certified"])
+        summary = self._report(findings, disposition)["summary"]
+        # #3603: the two named parser limitations are disclosed but no longer
+        # masquerade as missing Semgrep execution.
+        self.assertTrue(summary["coverage_certified"])
+        self.assertIn("2 file(s) semgrep could not parse", summary["coverage_note"])
+        self.assertIn("app/views/sessions/new.html.erb", summary["coverage_note"])
+        self.assertIn("config/database.yml", summary["coverage_note"])
+
+    def test_syntax_error_plus_timeout_discloses_both_and_decertifies(self):
+        notes = [
+            {"descriptor": {"id": "Other syntax error"},
+             "message": {"text":
+                         "Other syntax error at line /src/templates/page.html:1:\n parser failed"}},
+            _timeout_note("Timeout when running synthetic.rule on /src/scripts/slow.py:\n "),
+        ]
+        findings, disposition, _diagnostic = self._ingest(
+            _semgrep_capture(notes, paths=("templates/page.html", "scripts/slow.py")))
+        summary = self._report(findings, disposition)["summary"]
+        self.assertFalse(summary["coverage_certified"])
+        self.assertIn("partial scanner file coverage: semgrep", summary["coverage_note"])
+        self.assertIn("1 file(s) semgrep could not parse", summary["coverage_note"])
+        self.assertIn("templates/page.html", summary["coverage_note"])
 
     def test_an_unreadable_syntax_notification_fails_closed_without_leaking_text(self):
         private = "PRIVATE-SYNTAX-DIAGNOSTIC"
@@ -752,9 +774,10 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
                  {"descriptor": {"id": "Other syntax error"}, "message": None}]
         findings, disposition, diagnostic = self._ingest(_semgrep_capture(notes))
         facts = disposition["file_coverage"]
-        self.assertEqual((facts["syntax_errors"], facts["unparsed_files"],
+        self.assertEqual((facts["syntax_errors"], facts["syntax_error_files"],
+                          facts["unparsed_files"],
                           facts["unlocated_records"], facts["files"]),
-                         (2, 0, 2, []))
+                         (2, 0, 0, 2, []))
         self.assertNotIn(private, diagnostic + json.dumps(disposition))
         self.assertFalse(self._report(findings, disposition)["summary"]["coverage_certified"])
 

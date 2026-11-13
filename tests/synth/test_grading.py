@@ -84,6 +84,134 @@ class TestCertify(unittest.TestCase):
         facts.update(overrides)
         return {"semgrep": facts}
 
+    @staticmethod
+    def _syntax_only(*names):
+        return {"semgrep": {
+            "status": "partial", "parsed_files": 2,
+            "unparsed_files": len(names), "unavailable_files": 0,
+            "files": [{"file": name, "reason": "syntax_error",
+                       "syntax_errors": 1, "rules": [], "rules_omitted": 0,
+                       "rule_scope": "all_applicable"} for name in names],
+            "files_omitted": 0, "capabilities_unavailable": [],
+            "rule_timeouts": 0, "syntax_errors": len(names),
+            "syntax_error_files": len(names), "size_skipped": 0,
+            "size_limit": 1_000_000, "size_listing": "listed",
+            "unlocated_records": 0,
+        }}
+
+    def test_located_semgrep_syntax_errors_disclose_without_decertifying(self):
+        # #3603: located parser limitations are disclosed, not execution gaps.
+        r = grading_mod.certify(
+            "A", [], "high", set(), [],
+            tools_file_partial=self._syntax_only(
+                "templates/page.html", "generated/reference.html"))
+        self.assertEqual((r["gate"], r["coverage_certified"]), ("PASS", True))
+        self.assertIn("2 file(s) semgrep could not parse", r["coverage_note"])
+        self.assertIn("templates/page.html", r["coverage_note"])
+        self.assertIn("generated/reference.html", r["coverage_note"])
+        self.assertNotIn("partial scanner file coverage", r["coverage_note"])
+
+    def test_semgrep_syntax_disclosure_obeys_the_existing_file_cap(self):
+        partial = self._syntax_only("templates/page.html")
+        partial["semgrep"].update({
+            "unparsed_files": 2, "files_omitted": 1,
+            "syntax_errors": 2, "syntax_error_files": 2,
+        })
+        r = grading_mod.certify("A", [], "high", set(), [],
+                                tools_file_partial=partial)
+        self.assertTrue(r["coverage_certified"])
+        self.assertIn("2 file(s) semgrep could not parse: templates/page.html",
+                      r["coverage_note"])
+        self.assertIn("1 additional file(s) omitted", r["coverage_note"])
+
+    def test_multiple_notices_and_analyzed_dockerfiles_remain_parse_only(self):
+        partial = self._syntax_only("templates/page.html")
+        facts = partial["semgrep"]
+        facts["syntax_errors"] = 2
+        facts["files"][0]["syntax_errors"] = 2
+        facts.update({
+            "dockerfile_variants": 2, "dockerfile_analyzed": 2,
+            "dockerfile_unanalyzed": 0, "dockerfile_listing": "listed",
+        })
+        r = grading_mod.certify("A", [], "high", set(), [],
+                                tools_file_partial=partial)
+        self.assertTrue(r["coverage_certified"])
+        self.assertIn("1 file(s) semgrep could not parse: templates/page.html",
+                      r["coverage_note"])
+
+    def test_every_nonexact_located_semgrep_syntax_shape_fails_closed(self):
+        # #3603 changes one cell only. Every adjacent missing-execution fact,
+        # malformed count, and unknown future gap continues to fail closed.
+        cases = {
+            "wrong status": {"status": "complete"},
+            "boolean parsed count": {"parsed_files": True},
+            "unavailable file": {"unavailable_files": 1},
+            "boolean unavailable count": {"unavailable_files": False},
+            "capability unavailable": {"capabilities_unavailable": ["parser"]},
+            "rule timeout": {"rule_timeouts": 1},
+            "boolean timeout count": {"rule_timeouts": False},
+            "size skip": {"size_skipped": 1},
+            "boolean size count": {"size_skipped": False},
+            "invalid size limit": {"size_limit": None},
+            "incomplete size listing": {"size_listing": "incomplete"},
+            "unlocated record": {"unlocated_records": 1},
+            "boolean unlocated count": {"unlocated_records": False},
+            "wrong unparsed count": {"unparsed_files": 2},
+            "boolean unparsed count": {"unparsed_files": True},
+            "wrong omitted count": {"files_omitted": 1},
+            "wrong syntax-file count": {"syntax_error_files": 2},
+            "no syntax diagnostics": {"syntax_errors": 0},
+            "diagnostic count does not match rows": {"syntax_errors": 2},
+            "unknown gap": {"future_scanner_gap": 1},
+            "Dockerfile gap": {
+                "dockerfile_variants": 1, "dockerfile_analyzed": 0,
+                "dockerfile_unanalyzed": 1, "dockerfile_listing": "listed",
+            },
+            "Dockerfile count mismatch": {
+                "dockerfile_variants": 2, "dockerfile_analyzed": 1,
+                "dockerfile_unanalyzed": 0, "dockerfile_listing": "listed",
+            },
+            "incomplete Dockerfile facts": {"dockerfile_variants": 1},
+        }
+        for label, overrides in cases.items():
+            with self.subTest(case=label):
+                partial = self._syntax_only("templates/page.html")
+                partial["semgrep"].update(overrides)
+                r = grading_mod.certify("A", [], "high", set(), [],
+                                        tools_file_partial=partial)
+                self.assertFalse(r["coverage_certified"])
+                self.assertIn("partial scanner file coverage: semgrep",
+                              r["coverage_note"])
+
+    def test_malformed_or_mixed_semgrep_syntax_rows_fail_closed(self):
+        base = self._syntax_only("templates/page.html")["semgrep"]["files"][0]
+        cases = {
+            "timeout and syntax": dict(base, reason="rule_timeout_and_syntax_error",
+                                       rule_timeouts=1),
+            "size and syntax": dict(base, reason="multiple_gaps", size_skipped=True),
+            "zero syntax count": dict(base, syntax_errors=0),
+            "missing rules": {key: value for key, value in base.items() if key != "rules"},
+            "bad omitted rules": dict(base, rules_omitted=-1),
+            "unknown row gap": dict(base, future_scanner_gap=True),
+            "invalid rule scope": dict(base, rule_scope=None),
+        }
+        for label, row in cases.items():
+            with self.subTest(case=label):
+                partial = self._syntax_only("templates/page.html")
+                partial["semgrep"]["files"] = [row]
+                r = grading_mod.certify("A", [], "high", set(), [],
+                                        tools_file_partial=partial)
+                self.assertFalse(r["coverage_certified"])
+                self.assertIn("partial scanner file coverage: semgrep",
+                              r["coverage_note"])
+
+    def test_another_tool_cannot_claim_semgreps_syntax_disposition(self):
+        facts = self._syntax_only("templates/page.html")["semgrep"]
+        r = grading_mod.certify("A", [], "high", set(), [],
+                                tools_file_partial={"other": facts})
+        self.assertFalse(r["coverage_certified"])
+        self.assertEqual("partial scanner file coverage: other", r["coverage_note"])
+
     def test_an_asset_only_size_skip_certifies_with_the_count_disclosed(self):
         for names in (("a.png",), ("docs/a.GIF", "x/y.woff2", "z.pdf")):
             with self.subTest(names=names):

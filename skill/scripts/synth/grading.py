@@ -163,6 +163,7 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     argument would have two channels doing one job.
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
+    syntax_disclosures = coverage_model.semgrep_syntax_disclosures(tools_file_partial)
     tools_file_partial, asset_skips = coverage_model.certifying_file_gaps(tools_file_partial)
     high_value_incomplete = set(panels_incomplete) & findings_mod.HIGH_VALUE_PANELS
     gate_relevant_gap = (bool(high_value_incomplete) or bool(tools_absent)
@@ -251,6 +252,13 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         if dockerfile_unanalyzed:
             gap += ("; %d Dockerfile-like file(s) received no Dockerfile rule analysis"
                     % dockerfile_unanalyzed)
+        note = "%s; %s" % (note, gap) if note else gap
+    for tool, disclosure in sorted(syntax_disclosures.items()):
+        gap = "%d file(s) %s could not parse" % (disclosure["count"], tool)
+        if disclosure["files"]:
+            gap += ": %s" % ", ".join(disclosure["files"])
+        if disclosure["files_omitted"]:
+            gap += "; %d additional file(s) omitted" % disclosure["files_omitted"]
         note = "%s; %s" % (note, gap) if note else gap
     note = coverage_model.with_asset_skip_note(note, asset_skips)     # #3283: disclosed, not counted
     # #3548: config disclosures that move nothing (a scout-only exclude, `exclude_paths:`).
