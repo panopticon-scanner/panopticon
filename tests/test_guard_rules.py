@@ -17,11 +17,15 @@ import unittest
 from unittest import mock
 
 import scripts.agy_guard_hook as ag
+import scripts.codex_host as codex_host
 import scripts.codex_read_tools as codex_read_tools
+import scripts.dispatch as dispatch
 import scripts.gemini_guard_hook as gg
 import scripts.guard_rules as guard_rules
 import scripts.kimi_guard_hook as kg
 import scripts.read_guard_hook as rg
+import scripts.runners.claude as runners_claude
+import scripts.runners.kimi_home as kimi_home
 import scripts.write_guard_hook as wg
 
 SCRIPTS = os.path.dirname(os.path.realpath(guard_rules.__file__))
@@ -67,7 +71,7 @@ class TestTheVendoredBytes(unittest.TestCase):
         self.assertEqual(len(set(stanzas.values())), 1,
                          "the loader stanza has drifted between %s" % ", ".join(HOOKS))
         shared, broker = _source("guard_rules.py"), _source("codex_read_tools.py")
-        for name in ("SCOPE_KEYS", "_under", "_in_dir_grant"):
+        for name in ("SCOPE_KEYS", "_under", "_names_keychain", "_in_dir_grant"):
             with self.subTest(broker_copy=name):
                 self.assertEqual(_definition(broker, name), _definition(shared, name),
                                  "codex_read_tools.%s has drifted from guard_rules'" % name)
@@ -341,3 +345,196 @@ class TestADecoyNeverAnswersForOurRules(_HookLaunch):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNoGrantCoversTheKeychain(unittest.TestCase):
+    """#3607: every host's read and write tools refuse a macOS Keychain path,
+    even inside a granted directory or named by a grant exactly, and through a
+    symlink. The tree is a fixture in a temp dir, never the real Keychain, and
+    the control row proves the same grants allow an ordinary file."""
+
+    ENV = {"PANOPTICON_ENTRY_ID": "e1"}
+
+    def setUp(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, True)
+        self.home = os.path.realpath(d)
+        self.kdir = os.path.join(self.home, "Library", "Keychains")
+        os.makedirs(self.kdir)
+        self.kfile = os.path.join(self.kdir, "login.keychain-db")
+        self.loose = os.path.join(self.home, "old.keychain")
+        self.ok = os.path.join(self.home, "notes.txt")
+        for path in (self.kfile, self.loose, self.ok):
+            with open(path, "w", encoding="utf-8") as fh:
+                fh.write("needle\n")
+        self.link = os.path.join(self.home, "innocent.txt")
+        os.symlink(self.kfile, self.link)
+        self.linkdir = os.path.join(self.home, "lnk")
+        os.symlink(self.kdir, self.linkdir)
+        self.folded = os.path.join(self.home, "library", "KEYCHAINS", "login.keychain-db")
+        self.out_ok = os.path.join(self.home, "out.json")
+        self.out_via_link = os.path.join(self.linkdir, "out.json")
+        self.out_declared = os.path.join(self.kdir, "out.json")
+        self.scope = os.path.join(self.home, "read-scope.json")
+        with open(self.scope, "w", encoding="utf-8") as fh:
+            json.dump({"e1": {"files": [self.kfile, self.loose, self.ok],
+                              "dirs": [self.home], "reads": []}}, fh)
+        grants = [self.out_ok, self.out_via_link, self.out_declared]
+        self.allowlist = os.path.join(self.home, "write-allowlist.json")
+        with open(self.allowlist, "w", encoding="utf-8") as fh:
+            json.dump({"version": 2, "entries": {"e1": grants}, "paths": grants}, fh)
+
+    def _reads(self, path):
+        """(host, call) for a file read of `path` in every host's read tool."""
+        env = dict(self.ENV)
+        return (
+            ("claude", lambda: rg.adjudicate(
+                {"tool_name": "Read", "tool_input": {"file_path": path}}, self.scope, env)),
+            ("kimi", lambda: kg.adjudicate(
+                {"tool_name": "Read", "tool_input": {"path": path}}, "read", self.scope, env)),
+            ("agy", lambda: ag.adjudicate(
+                {"toolCall": {"name": "read_file", "arguments": {"Path": path}}},
+                self.scope, self.allowlist, env=env)),
+            ("gemini", lambda: gg.adjudicate(
+                {"tool_name": "read_file", "tool_input": {"file_path": path}},
+                self.scope, self.allowlist, env=env)),
+        )
+
+    def _dir_reads(self, path):
+        """(host, call) for a directory search of `path` in every host's grep tool."""
+        env = dict(self.ENV)
+        return (
+            ("claude", lambda: rg.adjudicate(
+                {"tool_name": "Grep", "tool_input": {"path": path, "pattern": "x"}},
+                self.scope, env)),
+            ("kimi", lambda: kg.adjudicate(
+                {"tool_name": "Grep", "tool_input": {"path": path, "pattern": "x"}},
+                "read", self.scope, env)),
+            ("agy", lambda: ag.adjudicate(
+                {"toolCall": {"name": "grep_search",
+                              "arguments": {"SearchPath": path, "Query": "x"}}},
+                self.scope, self.allowlist, env=env)),
+            ("gemini", lambda: gg.adjudicate(
+                {"tool_name": "grep_search", "tool_input": {"dir_path": path, "pattern": "x"}},
+                self.scope, self.allowlist, env=env)),
+        )
+
+    def _writes(self, path):
+        """(host, call) for a write of `path` in every host's write tool."""
+        env = dict(self.ENV)
+        return (
+            ("claude", lambda: wg.adjudicate(
+                {"tool_name": "Write", "tool_input": {"file_path": path, "content": "{}"}},
+                self.allowlist, env)),
+            ("kimi", lambda: kg.adjudicate(
+                {"tool_name": "Write", "tool_input": {"path": path, "content": "{}"}},
+                "write", self.allowlist, env)),
+            ("agy", lambda: ag.adjudicate(
+                {"toolCall": {"name": "write_file", "arguments": {"Path": path}}},
+                self.scope, self.allowlist, env=env)),
+            ("gemini", lambda: gg.adjudicate(
+                {"tool_name": "write_file", "tool_input": {"file_path": path, "content": "{}"}},
+                self.scope, self.allowlist, env=env)),
+        )
+
+    def test_the_predicate_reads_components_folded(self):
+        for path in ("/Users/u/Library/Keychains/login.keychain-db",
+                     "/Users/u/library/KEYCHAINS/x", "/Library/Keychains/System.keychain",
+                     "/Users/u/Library/Keychains", "/tmp/old.keychain", "/tmp/A.KEYCHAIN-DB"):
+            with self.subTest(path=path):
+                self.assertTrue(guard_rules._names_keychain(path))
+        for path in ("/repo/Library/KeychainsX/a", "/repo/keychains/a", "/repo/Keychains/Library",
+                     "/repo/a.keychain.txt", "/repo/my-keychain-db", "/repo/Library/a"):
+            with self.subTest(path=path):
+                self.assertFalse(guard_rules._names_keychain(path))
+
+    def test_the_control_file_is_readable_and_writable_in_every_host(self):
+        for host, call in self._reads(self.ok) + self._dir_reads(self.home) + self._writes(self.out_ok):
+            with self.subTest(host=host):
+                self.assertEqual((True, ""), call())
+
+    def test_every_host_refuses_a_keychain_read(self):
+        for path in (self.kfile, self.loose, self.link, self.folded):
+            for host, call in self._reads(path):
+                with self.subTest(host=host, path=os.path.relpath(path, self.home)):
+                    self.assertFalse(call()[0])
+
+    def test_every_host_refuses_a_search_of_the_keychain_directory(self):
+        for path in (self.kdir, self.linkdir):
+            for host, call in self._dir_reads(path):
+                with self.subTest(host=host, path=os.path.relpath(path, self.home)):
+                    self.assertFalse(call()[0])
+
+    def test_every_host_refuses_a_keychain_write_even_when_granted(self):
+        for path in (self.out_declared, self.out_via_link):
+            for host, call in self._writes(path):
+                with self.subTest(host=host, path=os.path.relpath(path, self.home)):
+                    allow, reason = call()
+                    self.assertFalse(allow)
+                    self.assertIn("Keychain", reason)
+
+    def test_the_codex_broker_refuses_reads_and_never_lists_the_keychain(self):
+        reader = codex_read_tools.Reader(
+            {"files": [self.kfile, self.ok], "dirs": [self.home], "reads": []}, self.home)
+        for path in (self.kfile, self.loose, self.folded):
+            with self.subTest(path=os.path.relpath(path, self.home)), \
+                    self.assertRaises(ValueError):
+                reader._read_file({"path": path})
+        listed = reader._list_files({"path": self.home}, "*")["content"][0]["text"]
+        self.assertIn("notes.txt", listed)
+        self.assertNotIn("keychain", listed.casefold())
+        found = reader._search({"path": self.home}, "needle")["content"][0]["text"]
+        self.assertIn("notes.txt", found)
+        self.assertNotIn("keychain", found.casefold())
+
+
+SHELL_TOOLS = ("run_command", "run_shell_command", "Bash", "BashOutput", "KillShell",
+               "PowerShell", "Shell", "shell", "shell_tool", "unified_exec")
+SHELL_GRANT = ("%s: a host child gained a shell. The guards hold no shell reader (#3607 ruled "
+               "one unneeded while every host denies shells), so a shell grant needs review: "
+               "add the Keychain/`security` refusal with it")
+
+
+class TestNoHostChildGetsAShell(unittest.TestCase):
+    """#3607: the Keychain rule above covers file tools only, because no host's
+    child can run a shell. These pins make a future shell grant fail here
+    instead of landing quietly."""
+
+    def test_the_strict_guards_deny_every_shell_tool_name(self):
+        env = {"PANOPTICON_ENTRY_ID": "e1"}
+        for name in SHELL_TOOLS:
+            for hook, call in (
+                    ("agy", lambda: ag.adjudicate(
+                        {"toolCall": {"name": name, "arguments": {"CommandLine": "true"}}},
+                        "/nowhere", "/nowhere", env=env)),
+                    ("gemini", lambda: gg.adjudicate(
+                        {"tool_name": name, "tool_input": {"command": "true"}},
+                        "/nowhere", "/nowhere", env=env))):
+                with self.subTest(hook=hook, tool=name):
+                    allow, reason = call()
+                    self.assertFalse(allow, SHELL_GRANT % hook)
+                    self.assertIn("allowlist", reason, SHELL_GRANT % hook)
+
+    def test_no_role_template_grants_a_shell(self):
+        # The union is what Claude's unenforced `--tools` list and every host's
+        # registered shell grant are rendered from.
+        granted = set(dispatch.allowed_tool_union()) & set(SHELL_TOOLS)
+        self.assertEqual(set(), granted, SHELL_GRANT % "dispatch.allowed_tool_union")
+
+    def test_claude_unenforced_launches_deny_the_shell_tools(self):
+        denied = set(runners_claude.UNENFORCED_DENIED_TOOLS)
+        for name in ("Bash", "BashOutput", "KillShell", "PowerShell"):
+            with self.subTest(tool=name):
+                self.assertIn(name, denied, SHELL_GRANT % "claude")
+
+    def test_kimi_turns_its_shell_off(self):
+        self.assertIn("Bash", kimi_home.disabled_tools(), SHELL_GRANT % "kimi")
+        for vocabulary in kimi_home.TOOL_VOCABULARY.values():
+            with self.subTest(vocabulary=sorted(vocabulary)[:3]):
+                self.assertIn("Bash", kimi_home.disabled_tools(vocabulary), SHELL_GRANT % "kimi")
+
+    def test_codex_keeps_its_shell_features_off(self):
+        features = codex_host.safety_config()["features"]
+        for name in ("shell_tool", "unified_exec", "shell_snapshot"):
+            with self.subTest(feature=name):
+                self.assertIs(False, features.get(name), SHELL_GRANT % "codex")

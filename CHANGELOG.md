@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **No guard grant covers the macOS Keychain (#3607).** The #3605 research showed an isolated
+  run home only hides the login keychain: any same-user process can name it by absolute path.
+  Every host's read and write tools (claude, kimi, agy, gemini, and the Codex read broker) now
+  refuse a path under `Library/Keychains/` or naming a `.keychain`/`.keychain-db` file, matched
+  case-insensitively on the resolved path, so a granted directory, an exact grant and a symlink
+  all deny. The Codex broker also leaves those paths out of its listings and searches. No host
+  child can run a shell, so there is no `security` call to refuse; pins now fail if a role
+  template, a strict guard, Claude's unenforced deny list, kimi's disabled set or Codex's
+  features ever grant one.
+
 - **The domain-panel severity bar no longer caps CRITICAL on authentication or library use (#3604).**
   The 5.4 small-corpus sweep found 41 CRITICAL-to-HIGH down-overrides, 37 of them wrong against
   the answer keys or on inspection: authenticated template/code execution, a library's default-on script lookup,

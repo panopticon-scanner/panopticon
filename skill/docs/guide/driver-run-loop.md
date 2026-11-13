@@ -402,7 +402,12 @@ on Claude hooks, and always uses the return-persist path.
   iteration. Nothing advances on a runner's claim; the engine's done predicates are the only way
   forward. - **The loop arms both guards** for exactly the pending entries, and only the loop does:
   `write_guard_hook.install` confines each agent's Write to its declared `out_file`;
-  `read_guard_hook.install` confines its Read/Grep/Glob to its entry's `scope`. Write confinement is
+  `read_guard_hook.install` confines its Read/Grep/Glob to its entry's `scope`. **No grant covers
+  the macOS Keychain** (#3607): panopticon never needs it from a child, so every host's read and
+  write tools refuse a path under `Library/Keychains/` or naming a `.keychain`/`.keychain-db` file,
+  inside a granted directory, named exactly or reached through a symlink. No host child has a
+  shell (pinned in `tests/test_guard_rules.py`), so there is no `security` call to refuse. Write
+  confinement is
   **per entry, not per batch** (#1571): the allowlist is a version-2 document keyed by entry id —
   `{"version": 2, "entries": {"<entry id>": ["<path>", …]}, "paths": […]}` — and a writer is **bound
   to the entry** it was dispatched for (`PANOPTICON_ENTRY_ID` in headless mode; the

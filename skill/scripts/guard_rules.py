@@ -79,11 +79,21 @@ def _resolve_path(raw):
         return None
 
 
+def _names_keychain(path):
+    """True when `path` lies under a `Library/Keychains` directory or names a
+    `.keychain`/`.keychain-db` file (#3607): no grant covers the macOS Keychain.
+    Folded, because APFS opens `library/KEYCHAINS` as the same directory."""
+    parts = [part.casefold() for part in path.split(os.sep)]
+    return (any(a == "library" and b == "keychains" for a, b in zip(parts, parts[1:]))
+            or any(part.endswith((".keychain", ".keychain-db")) for part in parts))
+
+
 def _in_dir_grant(target, directory):
     """`_under`, except that a directory grant never covers its own `.git`
     store (#3271 G-a): first contact does not count `<root>/.git`, so no grant
-    may read it. A path COMPONENT, never a prefix: `.github/` still reads."""
-    if not _under(target, directory):
+    may read it. A path COMPONENT, never a prefix: `.github/` still reads.
+    Nor does it cover a Keychain path (#3607)."""
+    if not _under(target, directory) or _names_keychain(target):
         return False
     rest = target[len(directory.rstrip(os.sep)):].lstrip(os.sep)
     first = rest.split(os.sep, 1)[0]
@@ -103,9 +113,11 @@ def _names_git_store(pattern):
 
 
 def _readable(target, scope):
-    # Byte-exact by design: folding a GRANT would widen it.
-    return (target in scope["files"] or target in scope["reads"]
-            or any(_in_dir_grant(target, d) for d in scope["dirs"]))
+    # Byte-exact by design: folding a GRANT would widen it. A Keychain path is
+    # refused even when a grant names it exactly (#3607).
+    return not _names_keychain(target) and (
+        target in scope["files"] or target in scope["reads"]
+        or any(_in_dir_grant(target, d) for d in scope["dirs"]))
 
 
 # #1917: Glob's SECOND argument. `path` says where the expansion starts and is
@@ -346,6 +358,9 @@ ESCAPED_ARTIFACT_TREE = ("findings output resolves outside the review artifact t
 # of its own, so a fan-out aborting on one bad path out of two hundred would
 # otherwise say only that a `..` exists somewhere in it.
 PARENT_COMPONENT = "findings output cannot contain '..': %s"
+# #3607: declared or resolved, a write into the macOS Keychain is refused before
+# the anchor rules run -- they say nothing about a path with no `.panopticon`.
+KEYCHAIN_COMPONENT = "findings output cannot be a macOS Keychain path: %s"
 
 
 def _components(path):
@@ -406,6 +421,13 @@ def _escaped_component(path):
     """
     if os.pardir in str(path).split(os.sep):
         return PARENT_COMPONENT % (path,)
+    try:
+        keychain = (_names_keychain(os.path.abspath(path))
+                    or _names_keychain(os.path.realpath(path)))
+    except (ValueError, OSError, TypeError):
+        return UNMEASURABLE_COMPONENT % (path, "unresolvable")
+    if keychain:
+        return KEYCHAIN_COMPONENT % (path,)
     root, components = _components(path)
     if root is None:
         return ""
