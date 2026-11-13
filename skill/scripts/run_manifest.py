@@ -23,15 +23,18 @@ an anti-drift key. The first two:
    lost value costs one repeated disclosure, never a re-run phase.
 """
 import datetime
+import hashlib
 import json
 import os
 import subprocess
 import re
+import stat
 import sys
 import uuid
 
 from scripts import hosts
 from scripts import plan_contract
+from scripts import repo_config
 # #1735: the no-follow artifact open. It lives in a leaf module rather than in
 # `phases/runio`, where it was written, precisely so THIS module can reach it:
 # `phases/*` imports `run_manifest`, and layout rule 3 keeps that arrow
@@ -40,10 +43,20 @@ from scripts import safe_write
 # #2006: the target-facing git probe. A leaf module like `safe_write` above, so
 # this import crosses no layout boundary.
 from scripts import safe_git
+from scripts import run_stamp
 
 MANIFEST_NAME = "run-manifest.json"
 SETUP_MANIFEST_NAME = "setup-manifest.json"
 SCHEMA_VERSION = 1
+# #3602: a setup run records the exact root-file bytes it alone added to a
+# previously clean path.  The value is a nested, machine-stamped record (see
+# `_receipt_paths`) rather than an unsigned manifest field: the setup
+# manifest's ordinary stamp binds its identity, not arbitrary later fields.
+SETUP_OWNED_WORKTREE = "setup_owned_worktree"
+_SETUP_OWNABLE_PATHS = frozenset((".gitignore", repo_config.CONFIG_NAMES[0]))
+_SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+_GIT_OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
+_ABSENT_BASELINE = "absent"
 
 
 def _now_iso():
@@ -119,7 +132,8 @@ def new_run_id():
     return uuid.uuid4().hex
 
 
-def _target_provenance(target, runner=subprocess.run, suppressed=None):
+def _target_provenance(target, runner=subprocess.run, suppressed=None,
+                       setup_owned=None):
     """(commit, dirty) for the tree being scanned, or (None, None) if not git.
 
     `suppressed` (#2013) is the probe's disclosure list, appended to in place:
@@ -144,7 +158,7 @@ def _target_provenance(target, runner=subprocess.run, suppressed=None):
     moved under it. This is provenance, not an anti-drift flag.
     """
     drivers = [] if suppressed is None else suppressed
-    commit, dirty = _provenance_probes(target, runner, drivers)
+    commit, dirty = _provenance_probes(target, runner, drivers, setup_owned)
     if drivers:
         # Keys only, and `%r` per key for the same reason the refusal used it:
         # a config subsection is repository-authored and may carry control
@@ -157,7 +171,7 @@ def _target_provenance(target, runner=subprocess.run, suppressed=None):
     return commit, dirty
 
 
-def _provenance_probes(target, runner, suppressed):
+def _provenance_probes(target, runner, suppressed, setup_owned=None):
     """The two probes behind `_target_provenance`, without its disclosure."""
     # #2006: `target` is the reviewed tree, so both calls go through
     # `safe_git.probe` -- a trusted git resolved outside the target's outermost
@@ -181,12 +195,24 @@ def _provenance_probes(target, runner, suppressed):
                                 suppressed=suppressed)
         if status.returncode != 0:
             return commit, None
-        # NUL-framed, like `_worktree_dirty` (#1989): any non-empty record is
-        # dirt. Dirtiness is recorded, never enforced, so a REFUSED status
-        # leaves it unknown (None) and keeps the commit we did establish --
-        # a fact obtained by running the target's own command would be worse
-        # than no fact at all.
-        return commit, any(record.strip() for record in status.stdout.split("\0"))
+        # NUL-framed, like `_worktree_dirty` (#1989). #3602's two exclusions
+        # are not path-only: build_manifest passes them only after the current
+        # bytes and mode match a machine-stamped setup receipt. The receipt's
+        # pre-write HEAD baseline must also still match the exact commit this
+        # manifest records. Otherwise a later commit followed by restoring
+        # setup's bytes could launder an ` M` row (review B).
+        eligible = set()
+        if isinstance(setup_owned, dict) and commit:
+            for path, identity in setup_owned.items():
+                if (isinstance(identity, dict)
+                        and git_path_baseline(target, path, commit=commit,
+                                              runner=runner)
+                        == identity.get("baseline")):
+                    eligible.add(path)
+        # Even for an eligible path only the unstaged shapes setup can create
+        # are ignored; staging, renaming, copying, or any second path remains
+        # user-authored dirt.
+        return commit, _status_dirty(status.stdout or "", eligible)
     except safe_git.RepositoryRefused as exc:
         # #2006 fix round 1: provenance is RECORDED, never enforced, so a
         # refused tree must not abort the run -- but it must not be silent
@@ -202,6 +228,188 @@ def _provenance_probes(target, runner, suppressed):
         return commit, None
 
 
+def _status_dirty(output, setup_owned=()):
+    """Whether porcelain-v1 ``-z`` output has non-setup dirt (#3602).
+
+    ``??`` is a root file setup created and `` M`` is its append to a clean,
+    tracked ``.gitignore``. Every index change and every two-path record stays
+    dirty even when its destination happens to have setup's recorded bytes.
+    Malformed or unterminated output fails closed as dirty.
+    """
+    records = output.split("\0")
+    i = 0
+    while i < len(records) - 1:
+        record = records[i]
+        i += 1
+        if len(record) < 4 or record[2] != " ":
+            return True
+        xy = record[:2]
+        path = record[3:]
+        if "R" in xy or "C" in xy:
+            if i >= len(records) - 1:
+                return True
+            i += 1                         # consume the second path
+            return True                    # setup never renames or copies
+        if not (xy in ("??", " M") and path in setup_owned):
+            return True
+    return bool(records[-1])
+
+
+def _setup_output_identity(path):
+    """The bounded bytes+mode identity of one setup-owned root file."""
+    flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        fd = os.open(path, flags)
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                return None
+            with os.fdopen(fd, "rb") as stream:
+                fd = -1
+                raw = stream.read(safe_write.MANIFEST_MAX_BYTES + 1)
+        finally:
+            if fd >= 0:
+                os.close(fd)
+    except OSError:
+        return None
+    if len(raw) > safe_write.MANIFEST_MAX_BYTES:
+        return None
+    return {"sha256": hashlib.sha256(raw).hexdigest(),
+            "mode": stat.S_IMODE(info.st_mode)}
+
+
+def git_path_baseline(repo, relpath, *, commit=None, runner=subprocess.run):
+    """The HEAD/commit blob OID for ``relpath``, or ``absent`` (#3602).
+
+    Setup calls this only after its path-specific clean-status probe and before
+    writing. Provenance passes the already-recorded commit, so the later check
+    cannot drift if HEAD moves between Git calls. A failed path lookup counts
+    as absent only after the commit's tree independently verifies; every other
+    shape fails closed as ``None`` and therefore earns no receipt/exclusion.
+    """
+    if relpath not in _SETUP_OWNABLE_PATHS:
+        return None
+    ref = commit
+    if ref is None:
+        try:
+            head = safe_git.probe(repo, ["rev-parse", "--verify", "HEAD"],
+                                  runner=runner)
+        except (subprocess.SubprocessError, OSError):
+            return None
+        if head.returncode != 0:
+            # A path-specific clean status can be true in an unborn checkout;
+            # it has no HEAD tree, so the path's baseline is necessarily absent.
+            return _ABSENT_BASELINE
+        ref = (head.stdout or "").strip()
+        if not _GIT_OID.fullmatch(ref):
+            return None
+    elif not isinstance(ref, str) or not _GIT_OID.fullmatch(ref):
+        return None
+    try:
+        result = safe_git.probe(
+            repo, ["rev-parse", "--verify", "%s:%s" % (ref, relpath)],
+            runner=runner,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    if result.returncode == 0:
+        oid = (result.stdout or "").strip()
+        return oid if _GIT_OID.fullmatch(oid) else None
+    try:
+        tree = safe_git.probe(
+            repo, ["rev-parse", "--verify", "%s^{tree}" % ref], runner=runner
+        )
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return _ABSENT_BASELINE if tree.returncode == 0 else None
+
+
+def _receipt_run_id(paths):
+    encoded = json.dumps(paths, sort_keys=True, separators=(",", ":")).encode("ascii")
+    return "setup-owned-worktree:" + hashlib.sha256(encoded).hexdigest()
+
+
+def _receipt_paths(receipt, review_root, setup_run_id):
+    """Validated paths from one nested setup-owned receipt, else ``{}``."""
+    if not isinstance(receipt, dict):
+        return {}
+    paths = receipt.get("paths")
+    if not isinstance(paths, dict) or set(paths) - _SETUP_OWNABLE_PATHS:
+        return {}
+    for path, identity in paths.items():
+        if (not isinstance(identity, dict)
+                or set(identity) != {"sha256", "mode", "baseline"}
+                or not isinstance(identity.get("sha256"), str)
+                or not _SHA256.fullmatch(identity["sha256"])
+                or type(identity.get("mode")) is not int
+                or not 0 <= identity["mode"] <= 0o7777
+                or not (identity.get("baseline") == _ABSENT_BASELINE
+                        or (isinstance(identity.get("baseline"), str)
+                            and _GIT_OID.fullmatch(identity["baseline"])))):
+            return {}
+    if (receipt.get("run_id") != _receipt_run_id(paths)
+            or receipt.get("review_root") != os.path.abspath(review_root)
+            or receipt.get("owner") != setup_run_id):
+        return {}
+    try:
+        return dict(paths) if run_stamp.verifies(receipt) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def record_setup_owned(manifest, review_root, relpath, baseline):
+    """Bind setup's current bytes and pre-write Git baseline to its manifest.
+
+    Returns True when the regular file could be recorded. Existing entries
+    survive only through their own valid nested stamp; an edited receipt never
+    becomes trusted merely because setup later records its second output.
+    """
+    if relpath not in _SETUP_OWNABLE_PATHS or not isinstance(manifest, dict):
+        raise ValueError("not a setup-owned root path: %r" % relpath)
+    identity = _setup_output_identity(os.path.join(review_root, relpath))
+    setup_run_id = manifest.get("run_id")
+    if (identity is None or not isinstance(setup_run_id, str)
+            or not (baseline == _ABSENT_BASELINE
+                    or (isinstance(baseline, str) and _GIT_OID.fullmatch(baseline)))):
+        return False
+    identity["baseline"] = baseline
+    paths = _receipt_paths(manifest.get(SETUP_OWNED_WORKTREE),
+                           review_root, setup_run_id)
+    paths[relpath] = identity
+    receipt = {"run_id": _receipt_run_id(paths),
+               "review_root": os.path.abspath(review_root),
+               "owner": setup_run_id,
+               "paths": paths}
+    receipt["stamp"] = run_stamp.sign(receipt)
+    manifest[SETUP_OWNED_WORKTREE] = receipt
+    return True
+
+
+def verified_setup_owned(review_root):
+    """Signed setup-owned identities whose current bytes and mode still match."""
+    root = os.path.abspath(review_root)
+    try:
+        owner = safe_write.read_manifest_json(
+            os.path.join(root, plan_contract.ARTIFACT_DIR, "owner.json"))
+        manifest = safe_write.read_manifest_json(manifest_path(root, "setup"))
+        if (not run_stamp.verifies(owner) or not run_stamp.verifies(manifest)
+                or owner.get("review_root") != root
+                or manifest.get("review_root") != root
+                or manifest.get("owner") != owner.get("run_id")):
+            return {}
+    except (OSError, ValueError):
+        return {}
+    paths = _receipt_paths(manifest.get(SETUP_OWNED_WORKTREE),
+                           root, manifest.get("run_id"))
+    verified = {}
+    for path, identity in paths.items():
+        current = _setup_output_identity(os.path.join(root, path))
+        if current == {"sha256": identity["sha256"], "mode": identity["mode"]}:
+            verified[path] = dict(identity)
+    return dict(sorted(verified.items()))
+
+
 def build_manifest(*, target, review_root, host, security_mode, base=None,
                    flags=None, config=None, run_id=None, worktree=None,
                    scope=None, pr=None, pr_base=None, created=None):
@@ -211,7 +419,16 @@ def build_manifest(*, target, review_root, host, security_mode, base=None,
     validate_host(host)
     flags = flags or {}
     _suppressed: list = []
-    _commit, _dirty = _target_provenance(os.path.abspath(target), suppressed=_suppressed)
+    target_path = os.path.abspath(target)
+    review_path = os.path.abspath(review_root)
+    # The receipt describes root-relative files in the scanned tree. A PR
+    # worktree (or any other distinct review_root) must never lend its receipt
+    # to the operator checkout named by target.
+    _owned = (verified_setup_owned(review_path)
+              if os.path.realpath(target_path) == os.path.realpath(review_path)
+              else {})
+    _commit, _dirty = _target_provenance(
+        target_path, suppressed=_suppressed, setup_owned=_owned)
     return {
         "schema_version": SCHEMA_VERSION,
         "run_id": run_id or new_run_id(),
