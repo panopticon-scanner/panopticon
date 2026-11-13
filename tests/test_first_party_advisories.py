@@ -85,7 +85,7 @@ def _trivy_document(name=WORKSPACE_NAME, version=WORKSPACE_VERSION):
 
 
 class TestCargoFirstPartyAdvisoryIngest(unittest.TestCase):
-    def _ingest(self, filename, document, lock_text=None):
+    def _ingest(self, filename, document, lock_text=None, *, name_root=True):
         root = tempfile.TemporaryDirectory()
         self.addCleanup(root.cleanup)
         if lock_text is None:
@@ -97,7 +97,8 @@ class TestCargoFirstPartyAdvisoryIngest(unittest.TestCase):
         os.mkdir(tools)
         with open(os.path.join(tools, filename), "w", encoding="utf-8") as fh:
             json.dump(document, fh)
-        return ingest_tools.ingest_dir(tools, "g1", target_root=root.name)
+        return ingest_tools.ingest_dir(
+            tools, "g1", target_root=root.name if name_root else None)
 
     def test_osv_workspace_package_is_reframed_but_registry_dependency_is_not(self):
         findings = self._ingest("osv-scanner.json", _osv_document())
@@ -127,6 +128,12 @@ class TestCargoFirstPartyAdvisoryIngest(unittest.TestCase):
             "trivy.sarif", _trivy_document(REGISTRY_NAME, REGISTRY_VERSION))[0]
         self.assertFalse(evidence.is_first_party_advisory(finding))
         self.assertNotIn("package_origin", finding["tool_evidence"])
+
+    def test_rootless_ci_ingest_keeps_the_existing_gate_path(self):
+        findings = self._ingest(
+            "osv-scanner.json", _osv_document(), name_root=False)
+        self.assertEqual(len(findings), 2)
+        self.assertFalse(any(evidence.is_first_party_advisory(f) for f in findings))
 
     def test_driver_dispatches_only_the_registry_advisory(self):
         root = tempfile.TemporaryDirectory()

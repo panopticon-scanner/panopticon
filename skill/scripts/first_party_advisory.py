@@ -105,6 +105,12 @@ def mark(findings, target_root, cache: OriginCache):
     external sources), a malformed lockfile, or a registry package changes
     nothing: those findings still queue for the ordinary tool advisor.
     """
+    try:
+        target_root = os.fspath(target_root)
+    except TypeError:
+        return
+    if not target_root:
+        return
     for finding in findings:
         tool = evidence.tool_name(finding)
         if tool not in ADVISORY_ADAPTERS and tool != "trivy":
