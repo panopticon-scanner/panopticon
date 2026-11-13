@@ -9,6 +9,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
     import runpy
@@ -19,6 +20,7 @@ from scripts import language_detection
 from scripts.tools import ADAPTERS, ONLINE_ONLY, withhold_target_builds
 from scripts.tools import egress
 from scripts.tools.base import SECURITY_FLAG
+from scripts.tools.exec import read_capped_report
 from scripts import claim_scope, plan_contract
 from scripts import procgroup
 from scripts import scanner_config, semgrep_targets
@@ -349,6 +351,68 @@ def _popen_runner(cmd, stdout=None, stderr=None, timeout=None, env=None):
     return subprocess.Popen(cmd, stdout=stdout, stderr=stderr, env=env)
 
 
+def _capture_semgrep(target, cmd, docker_prefix, out_path, runner,
+                     docker_context):
+    """Run Semgrep's full tree pass and, when needed, a Dockerfile-only pass.
+
+    Unknown-extension forcing applies only to explicitly named files. Feeding
+    those files to the full config makes every configured language parser try
+    them, so the repair is a second invocation whose config contains only the
+    Dockerfile rules. A failed or malformed second pass retains the useful
+    primary capture with an uncovered-variant stamp; it never upgrades partial
+    coverage to complete.
+    """
+    try:
+        os.remove(out_path)
+    except OSError:
+        pass
+    dockerfile_cmd = semgrep_targets.with_dockerfile_targets(
+        "semgrep", cmd, target)
+    with tempfile.TemporaryDirectory(prefix="pano-semgrep-") as scratch:
+        primary_path = os.path.join(scratch, "primary.sarif")
+        primary = tool_capture._capture_run(
+            "tool", "semgrep", docker_prefix + cmd, primary_path, runner,
+            docker_context=docker_context,
+            stamp=semgrep_targets.stamper("semgrep", target, cmd))
+        if primary is None:
+            return None
+        primary_payload = read_capped_report(
+            primary, cap=tool_capture.capture_file_limit())
+        if primary_payload is None:
+            return None
+
+        final_payload = primary_payload
+        if dockerfile_cmd != cmd:
+            dockerfile_path = os.path.join(scratch, "dockerfile.sarif")
+            dockerfile = tool_capture._capture_run(
+                "tool", "semgrep", docker_prefix + dockerfile_cmd,
+                dockerfile_path, runner, docker_context=docker_context)
+            if dockerfile is not None:
+                dockerfile_payload = read_capped_report(
+                    dockerfile, cap=tool_capture.capture_file_limit())
+                merged = (semgrep_targets.merge_sarif(
+                    primary_payload, dockerfile_payload)
+                    if dockerfile_payload is not None else None)
+                if merged is not None:
+                    stamped = semgrep_targets.stamper(
+                        "semgrep", target, dockerfile_cmd)(merged)
+                    if len(stamped) <= tool_capture.MAX_TOOL_OUTPUT_BYTES:
+                        final_payload = stamped
+                    else:
+                        print("semgrep Dockerfile-pass merge exceeded the output "
+                              "limit; retaining primary capture with partial "
+                              "coverage", file=sys.stderr)
+                else:
+                    print("semgrep Dockerfile-pass output could not be merged; "
+                          "retaining primary capture with partial coverage",
+                          file=sys.stderr)
+            else:
+                print("semgrep Dockerfile-only pass failed; retaining primary "
+                      "capture with partial coverage", file=sys.stderr)
+
+        return tool_capture.publish_capture("semgrep", out_path, final_payload)
+
+
 class _DockerRunner:
     """Bind one runner seam to the trusted Docker child environment."""
 
@@ -457,8 +521,12 @@ def run_tools(target, tools, out_dir, image=tools_image.LOCAL_NAME,
     tools_manifest._IGNORE_FILE_POSTURE.clear()
     tools_manifest._SCANNER_SCOPE_POSTURE.clear()
     try:
+        # A tree with Dockerfile-like variants gives Semgrep one additional,
+        # separately supervised pass. Budget its worst case into an online
+        # scan's sidecar lifetime so the proxy cannot expire under a later tool.
+        max_tool_runs = total + int("semgrep" in tools)
         with egress.session(docker_bin, tools, docker_runner, run_id=run_id,
-                            max_seconds=tool_capture.TOOL_TIMEOUT * total
+                            max_seconds=tool_capture.TOOL_TIMEOUT * max_tool_runs
                             + egress.SIDECAR_SLACK) as online_egress:
             written = _run_selected(target, tools, out_dir, image, docker_runner,
                                     progress, total, venv_dirs, docker_context,
@@ -521,24 +589,37 @@ def _run_selected(target, tools, out_dir, image, runner, progress, total,
                     progress.note("[%d/%d] %s skipped: scanner-owned config "
                                   "could not be staged" % (index, total, tool))
                     continue
-                docker = ([docker_bin, "run", "--rm"] + list(scanner_labels)
-                          + resource_limit_flags()
-                          + scanner_config.privilege_drop_flags()
-                          + _working_dir_flags(tool)
-                          + config_mount
-                          + ["--network", "none",
-                             "-v", "%s:%s:ro" % (
-                                 os.path.abspath(target), scanner_config.TARGET_MOUNT),
-                             image] + cmd)
+                docker_prefix = ([docker_bin, "run", "--rm"]
+                                 + list(scanner_labels)
+                                 + resource_limit_flags()
+                                 + scanner_config.privilege_drop_flags()
+                                 + _working_dir_flags(tool)
+                                 + config_mount
+                                 + ["--network", "none",
+                                    "-v", "%s:%s:ro" % (
+                                        os.path.abspath(target),
+                                        scanner_config.TARGET_MOUNT),
+                                    image])
+                docker = docker_prefix + cmd
                 tools_manifest._NETWORK_POSTURE[tool] = egress.NO_NETWORK
                 scanner_config._record_suppression_posture(
                     tool, scanner_config._suppression_flag_on(tool, cmd),
                     security_mode)
                 scanner_config._record_scanner_config(tool, cmd)
                 with progress.tool(tool, index, total) as step:
-                    done = step.finish(tool_capture._capture_run(  # #3193: stamp the size skips
-                        "tool", tool, docker, out_path, runner, docker_context=docker_context,
-                        stamp=semgrep_targets.stamper(tool, target, cmd)))
+                    if tool == "semgrep":
+                        # #3579: the ordinary full-rules tree scan stays intact;
+                        # forced Dockerfile-like names run separately against
+                        # only the Dockerfile rules, then merge fail-closed.
+                        done = _capture_semgrep(
+                            target, cmd, docker_prefix, out_path, runner,
+                            docker_context)
+                    else:
+                        done = tool_capture._capture_run(
+                            "tool", tool, docker, out_path, runner,
+                            docker_context=docker_context,
+                            stamp=semgrep_targets.stamper(tool, target, cmd))
+                    done = step.finish(done)
             if done:
                 written.append(done)
             continue

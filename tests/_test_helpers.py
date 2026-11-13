@@ -198,11 +198,13 @@ def prepared_kimi(directory, runner=None, *, include_coding_alias=True):
 
 
 def semgrep_size_stamped(run):
-    """#3193: a Semgrep SARIF run as this version's capture lands it, stamped with
-    the host's size listing (here: nothing over the limit, the walk complete). A
-    run WITHOUT the stamp reads as partial coverage, by ruling."""
+    """A Semgrep SARIF run as this version's capture lands it, with both host
+    target-coverage stamps complete and empty. Missing stamps read as partial."""
     run.setdefault("properties", {})["panopticon_size_skipped"] = {
         "limit": 1000000, "count": 0, "files": [], "complete": True}
+    run["properties"]["panopticon_dockerfile_coverage"] = {
+        "count": 0, "analyzed": 0, "unanalyzed": 0,
+        "files": [], "complete": True}
     return run
 
 

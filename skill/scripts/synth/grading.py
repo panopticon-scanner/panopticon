@@ -242,6 +242,15 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         # Valid scanner captures retain their findings and delta eligibility.
         # File gaps qualify coverage, independently of the finding-based gate.
         gap = "partial scanner file coverage: %s" % ", ".join(sorted(tools_file_partial))
+        dockerfile_unanalyzed = sum(
+            facts["dockerfile_unanalyzed"]
+            for facts in tools_file_partial.values()
+            if isinstance(facts, dict)
+            and type(facts.get("dockerfile_unanalyzed")) is int
+            and facts["dockerfile_unanalyzed"] > 0)
+        if dockerfile_unanalyzed:
+            gap += ("; %d Dockerfile-like file(s) received no Dockerfile rule analysis"
+                    % dockerfile_unanalyzed)
         note = "%s; %s" % (note, gap) if note else gap
     note = coverage_model.with_asset_skip_note(note, asset_skips)     # #3283: disclosed, not counted
     # #3548: config disclosures that move nothing (a scout-only exclude, `exclude_paths:`).

@@ -49,6 +49,17 @@ TOOL_TIMEOUT = 900
 
 MAX_TOOL_OUTPUT_BYTES = 50 * 1024 * 1024
 
+# The scanner's RAW stream is capped above. A landed capture can be slightly
+# larger after the controller appends its truncation marker and bounded host
+# stamps (at most 100 disclosed paths per Semgrep listing, with JSON escaping).
+# Multi-pass dispatchers may reread and republish that already-supervised file,
+# so give those controller additions a separate, still-hard memory envelope.
+CAPTURE_POSTPROCESS_ALLOWANCE = 8 * 1024 * 1024
+
+
+def capture_file_limit():
+    return MAX_TOOL_OUTPUT_BYTES + CAPTURE_POSTPROCESS_ALLOWANCE
+
 # A cleanup diagnostic reaches stderr and the tools manifest. Bound and redact
 # it once before either sink so the human line and structured fact cannot
 # disagree about what was safe to publish. One scanner launches once per run;
@@ -132,6 +143,29 @@ def _write_completed(label, tool, res, out_path, stamp=None):
               "missing (fail-closed, #1051)" % (label, tool), file=sys.stderr)
         return None
     return _atomic_write(out_path, _redact_capture(tool, stamp(out_bytes) if stamp else out_bytes))
+
+
+def publish_capture(tool, out_path, payload):
+    """Publish a controller-composed capture through the ordinary safeguards.
+
+    Multi-pass scanners assemble their final document after each supervised
+    child capture has landed. Re-impose the output ceiling and, critically,
+    keep redaction immediately adjacent to the atomic final write so merging
+    or host-side stamps cannot reopen the raw-capture disclosure path.
+    """
+    try:
+        os.remove(out_path)
+    except OSError:
+        pass
+    if len(payload) > capture_file_limit():
+        print("tool %s merged output exceeded %d byte limit; skipping" % (
+            tool, capture_file_limit()), file=sys.stderr)
+        return None
+    if not payload.strip():
+        print("tool %s produced no merged output; recording as missing" % tool,
+              file=sys.stderr)
+        return None
+    return _atomic_write(out_path, _redact_capture(tool, payload))
 
 
 # #1335: semgrep's SARIF carries NO scanned-files signal -- `invocations` is

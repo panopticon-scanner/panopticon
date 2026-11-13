@@ -19,6 +19,25 @@
   entries, an absent file and a file with no guard entries pass as before. A file that cannot be
   read as a settings object halts as unassessable (H5).
 
+- **Semgrep covers Dockerfile variants and discloses any remainder (#3579).**
+  `Dockerfile.*`, `*.Dockerfile`, `*.dockerfile`, and `Containerfile*` files are
+  passed as explicit targets under Semgrep 1.183.0's
+  `--scan-unknown-extensions` in a Dockerfile-rules-only pass, while the ordinary
+  full-rules `/src` tree scan remains intact. Findings keep the repository path
+  and line, and only identical hits across the two passes are folded into one
+  upload-compatible SARIF run. A strictly validated capture stamp counts variants
+  that did and did not receive Dockerfile-rule analysis without making AI inventory
+  notes actionable in code scanning; an
+  uncovered, missing, malformed, incomplete, oversized, argv-bounded, or failed
+  second-pass remainder is partial file coverage and its count reaches
+  `coverage_note`. Re-ingesting an older capture without this stamp intentionally
+  reads as partial. Template-named variants such as `Dockerfile.j2`, `.tmpl`, and
+  `.in` likewise disclose partial coverage if Semgrep cannot parse them as
+  Dockerfiles. Tolerated fixture dependency-build failures use conditional forms
+  so Dockerfile rules do not misclassify `||` as an unprotected pipeline. Trivy
+  misconfiguration scanning remains a possible follow-up rather than a new scanner
+  surface here.
+
 - **Read-scope rows are no longer stamped (#3533 follow-up).** No guard checked the #3436 row
   stamp after the N+1 removal, so `install()`, the headless per-entry bindings and the agy and
   gemini probes write plain rows. Arming no longer needs the run-stamp key. A leftover `_by` in an

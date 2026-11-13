@@ -1,4 +1,4 @@
-"""The files Semgrep skipped for size, listed on the host (#3193).
+"""Semgrep target gaps and explicit Dockerfile-variant targets (#3193, #3579).
 
 Semgrep skips every regular file over `--max-target-bytes` and says nothing in
 its SARIF, so a payload parked in a 1.1 MB file loses every Semgrep finding in
@@ -25,6 +25,14 @@ certification, under-disclosure hides a payload.
 The listing is stamped on the capture (`STAMP_KEY`) the way #1335 stamps the
 scanned-file count, so it travels with the artifact and a re-ingest reads the
 same facts; `tools.legacy_sarif` turns it into partial file coverage.
+
+Semgrep 1.183.0's ``--scan-unknown-extensions`` applies only to files named
+directly on the command line. Its directory walk does not apply Dockerfile
+rules to names such as ``Dockerfile.prod``. The host therefore keeps the
+ordinary full-rules ``/src`` scan and runs each Dockerfile-like variant as an
+explicit ``/src/...`` target in a second, Dockerfile-rules-only pass. A capture
+stamp records the variants covered by that exact second argv; ingestion can
+never mistake an omitted explicit target for complete Dockerfile-rule coverage.
 """
 from __future__ import annotations
 
@@ -36,10 +44,20 @@ from fnmatch import fnmatchcase
 from scripts.tolerant_json import depth_checked
 
 STAMP_KEY = "panopticon_size_skipped"
+DOCKERFILE_STAMP_KEY = "panopticon_dockerfile_coverage"
+SCAN_UNKNOWN_EXTENSIONS = "--scan-unknown-extensions"
+DOCKERFILE_RULES_CONFIG = "/opt/semgrep-rules/dockerfile"
+SCANNED_FILES_KEY = "panopticon_scanned_files"
 MAX_LISTED = 100
 # A bound on the walk itself. A tree past it is stamped incomplete, which the
 # ingest reads as partial: a listing cut short never reads as "nothing skipped".
 MAX_ENTRIES = 1_000_000
+
+# Keep the scanner argv safely below ordinary exec limits even in a hostile
+# repository. Variants beyond either bound remain in the capture's uncovered
+# count, so an argv ceiling costs certification rather than hiding input.
+MAX_DOCKERFILE_TARGETS = 1_000
+MAX_DOCKERFILE_ARG_BYTES = 64 * 1024
 
 # Glob syntax the differential did not measure. `*` is the only wildcard a
 # measured form uses; `**` is measured only as a trailing `/**`.
@@ -124,7 +142,121 @@ def oversized(root, patterns, limit, max_entries=MAX_ENTRIES):
             "complete": complete}
 
 
-def stamp(payload, listing):
+def _is_dockerfile_variant(name):
+    """Whether ``name`` needs forced Dockerfile-language selection.
+
+    ``Containerfile*`` includes the plain name. The pinned Semgrep does not
+    discover it as Dockerfile input, and forcing it is harmless if a later pin
+    learns the name because merged results are deduplicated.
+    """
+    return (name.startswith("Dockerfile.")
+            or name.endswith(".Dockerfile")
+            or name.endswith(".dockerfile")
+            or name.startswith("Containerfile"))
+
+
+def _dockerfile_variants(root, patterns, max_entries=MAX_ENTRIES):
+    """Return ``([(relative path, size)], complete)`` without following links.
+
+    The traversal and exclusion semantics mirror :func:`oversized`: a target
+    excluded from Semgrep's ordinary tree is not silently re-admitted by the
+    explicit-target repair, and an unreadable or bounded walk is disclosed.
+    """
+    found: list[tuple[str, int]] = []
+    complete, seen = True, 0
+    stack: list[tuple[str, tuple[str, ...]]] = [(root, ())]
+    while stack:
+        directory, rel = stack.pop()
+        try:
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    seen += 1
+                    if seen > max_entries:
+                        complete, stack = False, []
+                        break
+                    path = rel + (entry.name,)
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            if not excluded(path, True, patterns):
+                                stack.append((entry.path, path))
+                        elif (entry.is_file(follow_symlinks=False)
+                              and _is_dockerfile_variant(entry.name)
+                              and not excluded(path, False, patterns)):
+                            found.append(("/".join(path),
+                                          entry.stat(follow_symlinks=False).st_size))
+                    except OSError:
+                        complete = False
+        except OSError:
+            complete = False
+    found.sort()
+    return found, complete
+
+
+def _container_target(rel):
+    return "/src/" + rel
+
+
+def with_dockerfile_targets(tool, cmd, root):
+    """Build a Dockerfile-only Semgrep command for the forced variants.
+
+    The main command stays untouched and scans the ordinary tree with the full
+    ruleset. This second command replaces its config with the vendored
+    Dockerfile subtree and replaces the directory target with explicit variant
+    paths. Using the full config here makes every configured language parser
+    inspect each forced file (#3579's real-image round produced six spurious
+    syntax errors). Every inserted name is rooted under ``/src/``, so a hostile
+    filename cannot become an option.
+    """
+    if tool != "semgrep":
+        return cmd
+    variants, _complete = _dockerfile_variants(root, argv_excludes(cmd))
+    limit = argv_limit(cmd)
+    targets: list[str] = []
+    used = 0
+    for rel, size in variants:
+        target = _container_target(rel)
+        cost = len(os.fsencode(target)) + 1
+        if (size > limit or len(targets) >= MAX_DOCKERFILE_TARGETS
+                or used + cost > MAX_DOCKERFILE_ARG_BYTES):
+            continue
+        targets.append(target)
+        used += cost
+    if not targets:
+        return cmd
+    # One config is the reviewed production shape. If another is ever added,
+    # do not replace just one and accidentally force Dockerfiles through the
+    # remaining cross-language config; skip this pass and disclose the gap.
+    if cmd.count("--config") != 1:
+        return cmd
+    try:
+        at = cmd.index("/src")
+        config_at = cmd.index("--config") + 1
+    except ValueError:
+        return cmd
+    if config_at >= len(cmd):
+        return cmd
+    dockerfile_cmd = list(cmd)
+    dockerfile_cmd[config_at] = DOCKERFILE_RULES_CONFIG
+    return (dockerfile_cmd[:at] + [SCAN_UNKNOWN_EXTENSIONS] + targets
+            + dockerfile_cmd[at + 1:])
+
+
+def dockerfile_coverage(root, cmd, max_entries=MAX_ENTRIES):
+    """Coverage stamp for Dockerfile-like variants under the launched ``cmd``."""
+    variants, complete = _dockerfile_variants(
+        root, argv_excludes(cmd), max_entries=max_entries)
+    direct = set(cmd) if SCAN_UNKNOWN_EXTENSIONS in cmd else set()
+    limit = argv_limit(cmd)
+    analyzed = [rel for rel, size in variants
+                if size <= limit and _container_target(rel) in direct]
+    analyzed_set = set(analyzed)
+    uncovered = [rel for rel, _size in variants if rel not in analyzed_set]
+    return {"count": len(variants), "analyzed": len(analyzed),
+            "unanalyzed": len(uncovered), "files": uncovered[:MAX_LISTED],
+            "complete": complete}
+
+
+def stamp(payload, listing, dockerfile_listing=None):
     """`payload` with `listing` at runs[0].properties[STAMP_KEY]. Output that is
     not a SARIF document with a run object is returned untouched: the ingest
     already reports it, and without the stamp it reads as partial anyway."""
@@ -139,6 +271,174 @@ def stamp(payload, listing):
     if not isinstance(properties, dict):
         properties = run["properties"] = {}
     properties[STAMP_KEY] = listing
+    if dockerfile_listing is not None:
+        properties[DOCKERFILE_STAMP_KEY] = dockerfile_listing
+    return json.dumps(doc).encode("utf-8")
+
+
+def _result_identity(result):
+    """A stable finding identity across the tree and Dockerfile-only passes."""
+    if not isinstance(result, dict):
+        return None
+    try:
+        physical = result["locations"][0]["physicalLocation"]
+        uri = physical["artifactLocation"]["uri"]
+        region = physical.get("region") or {}
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return None
+    message = result.get("message")
+    text = message.get("text") if isinstance(message, dict) else message
+    path = str(uri).removeprefix("file://").removeprefix("/src/").lstrip("/")
+    return (result.get("ruleId"), path, region.get("startLine"),
+            region.get("startColumn"), region.get("endLine"),
+            region.get("endColumn"), text)
+
+
+def _run_list(run, field):
+    """A mutable SARIF run list, creating an absent optional field."""
+    value = run.get(field)
+    if value is None:
+        value = run[field] = []
+    return value if isinstance(value, list) else None
+
+
+def _run_rules(run):
+    """The driver's rule list, or None when the run cannot be merged safely."""
+    try:
+        driver = run["tool"]["driver"]
+    except (KeyError, TypeError):
+        return None
+    if not isinstance(driver, dict):
+        return None
+    rules = driver.get("rules")
+    if rules is None:
+        rules = driver["rules"] = []
+    if (not isinstance(rules, list)
+            or not all(isinstance(rule, dict)
+                       and isinstance(rule.get("id"), str) and rule["id"]
+                       for rule in rules)):
+        return None
+    return rules
+
+
+def _merge_run(target, source, seen):
+    """Fold one Semgrep run into ``target`` without losing its evidence."""
+    target_rules, source_rules = _run_rules(target), _run_rules(source)
+    target_results = _run_list(target, "results")
+    source_results = _run_list(source, "results")
+    target_invocations = _run_list(target, "invocations")
+    source_invocations = _run_list(source, "invocations")
+    if any(value is None for value in (
+            target_rules, source_rules, target_results, source_results,
+            target_invocations, source_invocations)):
+        return False
+
+    # A result may carry a numeric ruleIndex as well as ruleId. Preserve the
+    # primary config's rule order, append genuinely new rule descriptors, and
+    # remap every source index into the combined list.
+    by_id = {rule["id"]: index for index, rule in enumerate(target_rules)}
+    source_indexes = {}
+    for index, rule in enumerate(source_rules):
+        rule_id = rule["id"]
+        mapped = by_id.get(rule_id)
+        if mapped is None:
+            mapped = len(target_rules)
+            target_rules.append(rule)
+            by_id[rule_id] = mapped
+        source_indexes[index] = mapped
+
+    for result in source_results:
+        if not isinstance(result, dict):
+            return False
+        rule_index = result.get("ruleIndex")
+        if rule_index is not None:
+            if type(rule_index) is not int or rule_index not in source_indexes:
+                return False
+            result["ruleIndex"] = source_indexes[rule_index]
+        identity = _result_identity(result)
+        if identity is not None and identity in seen:
+            continue
+        target_results.append(result)
+        if identity is not None:
+            seen.add(identity)
+
+    # Each invocation retains its own executionSuccessful flag and complete
+    # notification list. legacy_sarif already walks every invocation in a run.
+    target_invocations.extend(source_invocations)
+
+    target_properties = target.get("properties")
+    source_properties = source.get("properties")
+    if target_properties is None:
+        target_properties = target["properties"] = {}
+    if source_properties is None:
+        source_properties = {}
+    if not isinstance(target_properties, dict) or not isinstance(source_properties, dict):
+        return False
+    for key, value in source_properties.items():
+        if key == SCANNED_FILES_KEY:
+            continue
+        if key in target_properties and target_properties[key] != value:
+            return False
+        target_properties[key] = value
+    return True
+
+
+def merge_sarif(primary, dockerfile):
+    """Fold two Semgrep SARIF documents into one upload-compatible run.
+
+    GitHub code scanning rejects multiple runs with the same category in one
+    uploaded SARIF file. Rule descriptors are therefore combined (with numeric
+    result indexes remapped), invocations and their notifications are appended,
+    and results are deduplicated by rule, normalized path, region and message.
+    A genuinely different finding is never folded away. The per-pass scanned-
+    file witness is summed when every source run carries one, otherwise removed
+    rather than publishing a lower bound as an exact count.
+    """
+    try:
+        doc = json.loads(depth_checked(primary))
+        extra = json.loads(depth_checked(dockerfile))
+        runs = doc["runs"]
+        extra_runs = extra["runs"]
+        if not (isinstance(doc, dict) and isinstance(extra, dict)
+                and isinstance(runs, list) and runs
+                and isinstance(extra_runs, list) and extra_runs
+                and all(isinstance(run, dict) for run in runs + extra_runs)):
+            return None
+    except (ValueError, KeyError, TypeError):
+        return None
+
+    all_runs = runs + extra_runs
+    counts: list[int] = []
+    counts_complete = True
+    for run in all_runs:
+        properties = run.get("properties")
+        count = properties.get(SCANNED_FILES_KEY) if isinstance(properties, dict) else None
+        if type(count) is not int or count < 0:
+            counts_complete = False
+            break
+        counts.append(count)
+
+    target = runs[0]
+    target_results = _run_list(target, "results")
+    if target_results is None or not all(isinstance(result, dict)
+                                         for result in target_results):
+        return None
+    seen = {_result_identity(result) for result in target_results}
+    seen.discard(None)
+    for source in runs[1:] + extra_runs:
+        if not _merge_run(target, source, seen):
+            return None
+    doc["runs"] = [target]
+
+    first_properties = target.get("properties")
+    if first_properties is None:
+        first_properties = target["properties"] = {}
+    if not isinstance(first_properties, dict):
+        return None
+    if counts_complete:
+        first_properties[SCANNED_FILES_KEY] = sum(counts)
+    else:
+        first_properties.pop(SCANNED_FILES_KEY, None)
     return json.dumps(doc).encode("utf-8")
 
 
@@ -162,4 +462,5 @@ def stamper(tool, root, cmd):
     if tool != "semgrep":
         return None
     patterns, limit = argv_excludes(cmd), argv_limit(cmd)
-    return lambda payload: stamp(payload, oversized(root, patterns, limit))
+    return lambda payload: stamp(
+        payload, oversized(root, patterns, limit), dockerfile_coverage(root, cmd))

@@ -63,10 +63,12 @@ SARIF_SCHEMA_PATH = SARIF_REFERENCE_DIR / "sarif-schema-2.1.0.json"
 SARIF_NOTICE_PATH = SARIF_REFERENCE_DIR / "SARIF-2.1.0-NOTICES.md"
 # Run-level keys Panopticon's own runner stamps on every Semgrep capture
 # (`tool_capture._annotate_scanned_files`, #1335; `semgrep_targets.STAMP_KEY`,
-# #3193). They describe the SCAN, not any finding, so a run carrying them in
-# exactly this shape is still a reviewed context. Any other key, or either
-# key in any other shape, keeps the whole run actionable as before.
+# #3193; `semgrep_targets.DOCKERFILE_STAMP_KEY`, #3579). They describe the
+# SCAN, not any finding, so a run carrying them in
+# exactly this shape is still a reviewed context. Any other key, or any
+# reviewed key in another shape, keeps the whole run actionable as before.
 MAX_SIZE_SKIPPED_LISTED = 100
+MAX_DOCKERFILE_UNANALYZED_LISTED = 100
 
 
 def _is_count(value: Any) -> bool:
@@ -87,9 +89,24 @@ def _reviewed_size_skipped(value: Any) -> bool:
             all(isinstance(name, str) for name in value["files"]))
 
 
+def _reviewed_dockerfile_coverage(value: Any) -> bool:
+    return (isinstance(value, dict) and
+            set(value) == {"count", "analyzed", "unanalyzed", "files", "complete"} and
+            _is_count(value["count"]) and
+            _is_count(value["analyzed"]) and
+            _is_count(value["unanalyzed"]) and
+            value["count"] == value["analyzed"] + value["unanalyzed"] and
+            type(value["complete"]) is bool and
+            isinstance(value["files"], list) and
+            len(value["files"]) <= min(
+                value["unanalyzed"], MAX_DOCKERFILE_UNANALYZED_LISTED) and
+            all(isinstance(name, str) for name in value["files"]))
+
+
 PANOPTICON_RUN_PROPERTIES = {
     "panopticon_scanned_files": _reviewed_scan_files,
     "panopticon_size_skipped": _reviewed_size_skipped,
+    "panopticon_dockerfile_coverage": _reviewed_dockerfile_coverage,
 }
 
 
