@@ -89,7 +89,7 @@ RUN git init -q AspGoat \
 
 # Prepare fixture dependencies when possible; static-analysis tests tolerate missing deps.
 WORKDIR /opt/panopticon-fixtures/railsgoat
-RUN bundle install || echo "railsgoat bundle install skipped"
+RUN if ! bundle install; then echo "railsgoat bundle install skipped"; fi
 # `compile` leaves the dependency jars in ~/.m2, OUTSIDE the project tree, and
 # produces no packaged artifact -- so dependency-check scanning the source tree
 # saw exactly ONE dependency (the maven wrapper) and reported zero
@@ -127,7 +127,7 @@ RUN (./mvnw clean compile -DskipTests || mvn clean compile -DskipTests || echo "
 # production scans with is `FROM`-parent to this and does not carry it.
 ENV NUGET_PACKAGES=/opt/nuget-packages
 WORKDIR /opt/panopticon-fixtures/AspGoat
-RUN dotnet restore && dotnet build --no-restore || echo "AspGoat build skipped"
+RUN if ! { dotnet restore && dotnet build --no-restore; }; then echo "AspGoat build skipped"; fi
 
 # Copy the hand-rolled Rust fixture from the repo.
 # The fixture must include a committed Cargo.lock so cargo-audit has a dependency graph to audit.

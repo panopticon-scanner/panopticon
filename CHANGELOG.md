@@ -33,8 +33,10 @@
   `coverage_note`. Re-ingesting an older capture without this stamp intentionally
   reads as partial. Template-named variants such as `Dockerfile.j2`, `.tmpl`, and
   `.in` likewise disclose partial coverage if Semgrep cannot parse them as
-  Dockerfiles. Trivy misconfiguration scanning remains a possible follow-up rather
-  than a new scanner surface here.
+  Dockerfiles. Tolerated fixture dependency-build failures use conditional forms
+  so Dockerfile rules do not misclassify `||` as an unprotected pipeline. Trivy
+  misconfiguration scanning remains a possible follow-up rather than a new scanner
+  surface here.
 
 - **Read-scope rows are no longer stamped (#3533 follow-up).** No guard checked the #3436 row
   stamp after the N+1 removal, so `install()`, the headless per-entry bindings and the agy and
