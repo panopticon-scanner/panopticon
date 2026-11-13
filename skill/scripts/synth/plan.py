@@ -33,6 +33,10 @@ class PlanInputs:
     stats. Every default is the "not measured" value the omitted build_report
     keyword carried."""
     groups_meta: list = field(default_factory=list)
+    # False only when the groups.json read was absent/rejected. A valid
+    # `groups: []` is True: native parser-gap rows are then known outside the
+    # reviewed universe rather than of unknown membership (#3611 round 2).
+    groups_valid: bool = True
     fan_out: dict | None = None
     scout_requested: list | None = None
     scout_profiles_seen: int = 0
@@ -67,7 +71,8 @@ class PlanInputs:
     @classmethod
     def load(cls, run_dir, files, verdicts_dir, groups_meta, plans, queue, verdicts,
              git_drivers_suppressed=None, plan_owed=False, plan_sha256=None,
-             snapshot_sha256=None, discovery=None, sec_carve_out=None, raw_groups=None):
+             snapshot_sha256=None, discovery=None, sec_carve_out=None, raw_groups=None,
+             groups_valid=True):
         """main()'s plan stage (WS-0 S3): lane discipline (#441), fan-out
         accounting, resume stats, scout requests, coverage files and their
         integrity disclosures. `plans` is the
@@ -114,7 +119,7 @@ class PlanInputs:
             snapshot_sha256=snapshot_sha256, discovery=discovery,
             coverage_files_skipped=coverage_files_skipped,
             groups_meta=groups_meta if raw_groups is None else raw_groups)
-        return cls(groups_meta=groups_meta, fan_out=fan_out,
+        return cls(groups_meta=groups_meta, groups_valid=groups_valid, fan_out=fan_out,
                    scout_requested=sorted(scout_requested),
                    scout_profiles_seen=scout_profiles_seen, out_of_scope=out_of_scope,
                    coverages=coverages, integrity=integrity, resume=resume,
@@ -307,7 +312,7 @@ def derive_tool_policy_mode(panopticon_dir=None, plans=None):
     return "advisory"
 
 
-def load_groups_json(path, raw_groups=None):
+def load_groups_json(path, raw_groups=None, valid_out=None):
     """The run's groups.json as a dict, or {} when there is no file at `path`,
     it cannot be read, or it is not a JSON object -- tolerant by design (never
     abort a run); the two failure modes are announced on stderr.
@@ -321,7 +326,11 @@ def load_groups_json(path, raw_groups=None):
     lone surrogate still in each name (#2962): the one reading `#2964`'s
     `unreadable_name_files` makes. Spelled first, `caf<0xff>.py` reads as the
     carryable `cafU+DCFF.py`, a name no file on disk has. One read serves both.
+    `valid_out`, when a list, receives one boolean distinguishing an explicit,
+    valid (possibly empty) `groups` inventory from missing/rejected inventory.
     """
+    if isinstance(valid_out, list):
+        valid_out[:] = [False]
     if not (path and os.path.lexists(path)):
         return {}
     try:
@@ -339,6 +348,8 @@ def load_groups_json(path, raw_groups=None):
     if fault:
         print("synthesize: could not read %s (%s); ignoring" % (path, fault), file=sys.stderr)
         return {}
+    if isinstance(valid_out, list):
+        valid_out[:] = [isinstance(gj.get("groups"), list)]
     return gj
 
 

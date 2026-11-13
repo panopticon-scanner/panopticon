@@ -507,7 +507,7 @@
                   }
                 },
                 "files_omitted": {"type": "integer", "minimum": 0},
-                "classification_unknown": {"type": "integer", "minimum": 0},
+                "classification_unknown": {"type": "integer", "minimum": 0, "description": "Native parser-gap paths whose language, bounded inventory membership, or reviewed-universe membership could not be established."},
                 "cap": {"type": "integer", "enum": [20]},
                 "over_cap": {"type": "boolean"},
                 "dispatch_valid": {"type": "boolean"},

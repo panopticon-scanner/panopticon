@@ -6,6 +6,8 @@ and synthesis are independent consumers of the same small, strict fact shape.
 """
 from __future__ import annotations
 
+import unicodedata
+
 from scripts import native_language
 
 
@@ -39,6 +41,11 @@ def _repo_path(value):
 def _classification(root, rel):
     """``(known, language)``; language is None for a known non-native file."""
     return native_language.classify(root, rel)
+
+
+def _scope_key(path):
+    """Filesystem-equivalent spelling key for index/tool path comparison."""
+    return unicodedata.normalize("NFC", path.casefold())
 
 
 def producer_facts(root, syntax_paths):
@@ -148,35 +155,40 @@ def targets_by_group(state, groups):
     file_groups = _file_groups(groups)
     wanted = [row["file"] for row in state.get("files") or ()
               if isinstance(row, dict) and _repo_path(row.get("file"))
-              and row["file"] in file_groups]
+              and _groups_for_path(file_groups, row["file"])]
     if len(wanted) > MAX_TARGETED_REVIEW_FILES:
         return {}
-    routed = {}
-    for group in groups or ():
-        if not (isinstance(group, dict) and isinstance(group.get("name"), str)
-                and group["name"] and isinstance(group.get("files"), list)):
-            continue
-        owned = set(path for path in group["files"] if isinstance(path, str))
-        targets = sorted(path for path in wanted if path in owned)
-        if targets:
-            routed[group["name"]] = targets
-    return dict(sorted(routed.items()))
+    routed: dict[str, list[str]] = {}
+    for path in wanted:
+        for group in _groups_for_path(file_groups, path):
+            routed.setdefault(group, []).append(path)
+    return {group: sorted(paths) for group, paths in sorted(routed.items())}
 
 
 def _file_groups(groups):
-    """Every reviewed path -> the matrix groups that own it."""
-    out: dict[str, set[str]] = {}
+    """Exact and casefold+NFC reviewed paths -> their matrix groups."""
+    exact: dict[str, set[str]] = {}
+    normalized: dict[str, set[str]] = {}
     for group in groups or ():
         if not (isinstance(group, dict) and isinstance(group.get("name"), str)
                 and group["name"] and isinstance(group.get("files"), list)):
             continue
         for path in group["files"]:
             if isinstance(path, str):
-                out.setdefault(path, set()).add(group["name"])
-    return out
+                exact.setdefault(path, set()).add(group["name"])
+                normalized.setdefault(_scope_key(path), set()).add(group["name"])
+    return exact, normalized
 
 
-def reconcile(state, groups, plan_entries, attestations):
+def _groups_for_path(file_groups, path):
+    """Owning groups, preferring an exact spelling over equivalence."""
+    if not isinstance(path, str):
+        return set()
+    exact, normalized = file_groups
+    return exact.get(path) or normalized.get(_scope_key(path), set())
+
+
+def reconcile(state, groups, plan_entries, attestations, groups_known=True):
     """Return ``(report block, certification-gap reason)`` for target review.
 
     The plan proves what the controller dispatched; the findings envelope's
@@ -187,15 +199,22 @@ def reconcile(state, groups, plan_entries, attestations):
         return None, None
     groups = [group for group in (groups or ()) if isinstance(group, dict)]
     file_groups = _file_groups(groups)
-    reviewed_rows = [row for row in (state.get("files") or ())
-                     if isinstance(row, dict) and row.get("file") in file_groups]
-    outside_rows = [row for row in (state.get("files") or ())
-                    if isinstance(row, dict) and row.get("file") not in file_groups]
+    rows = [row for row in (state.get("files") or ()) if isinstance(row, dict)]
+    reviewed_rows = ([row for row in rows
+                      if _groups_for_path(file_groups, row.get("file"))]
+                     if groups_known else [])
+    outside_rows = ([row for row in rows
+                     if not _groups_for_path(file_groups, row.get("file"))]
+                    if groups_known else [])
     reviewed_count = len(reviewed_rows)
     inventory_omitted = state.get("files_omitted", 0)
-    classification_unknown = state.get("unknown", 0) + inventory_omitted
+    # Omitted rows are already counted immediately below through
+    # inventory_omitted, so only the published native rows are added here.
+    membership_unknown = len(rows) if not groups_known else 0
+    classification_unknown = (state.get("unknown", 0) + inventory_omitted
+                              + membership_unknown)
     over_cap = reviewed_count > MAX_TARGETED_REVIEW_FILES
-    routed = targets_by_group(state, groups)
+    routed = targets_by_group(state, groups) if groups_known else {}
     sec_cells = {
         (entry.get("group"), "SEC") for entry in (plan_entries or ())
         if isinstance(entry, dict) and entry.get("domain") == "SEC"
@@ -222,7 +241,8 @@ def reconcile(state, groups, plan_entries, attestations):
     uncovered = []
     for row in reviewed_rows[:MAX_TARGETED_REVIEW_FILES]:
         path = row["file"]
-        possible = sorted((group, "SEC") for group in file_groups.get(path, set())
+        possible = sorted((group, "SEC")
+                          for group in _groups_for_path(file_groups, path)
                           if (group, "SEC") in sec_cells)
         dispatched = [list(cell) for cell in possible
                       if path in declared.get(cell, ())]
@@ -264,6 +284,10 @@ def reconcile(state, groups, plan_entries, attestations):
         reasons.append("%d native Semgrep parser-gap path(s) were omitted from the "
                        "bounded classification inventory, so reviewed-universe "
                        "membership is unknown" % inventory_omitted)
+    if membership_unknown:
+        reasons.append("reviewed-universe membership is unknown for %d native "
+                       "Semgrep parser-gap file(s) because groups.json is missing "
+                       "or invalid" % state.get("count", membership_unknown))
     if not dispatch_valid:
         reasons.append("targeted-review dispatch did not match the native parser gaps")
     if not attestations_valid:

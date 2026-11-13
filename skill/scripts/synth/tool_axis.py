@@ -529,7 +529,8 @@ def reconcile(plan, tools, resolved, run=None):
         else:
             targeted_review, native_unparsed_gap = native_unparsed.reconcile(
                 native_state, plan.groups_meta, plan.dispatch_entries,
-                coverage_io.targeted_review_attestations(tools.ingested_paths))
+                coverage_io.targeted_review_attestations(tools.ingested_paths),
+                groups_known=plan.groups_valid)
     coverage = {
         "adapters": tools.dispositions or {},
         "tools_file_partial": {

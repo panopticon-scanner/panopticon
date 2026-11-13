@@ -51,7 +51,8 @@ def build_parser():
     ap = argparse.ArgumentParser(description="panopticon synthesizer")
     ap.add_argument("--target", default="unknown")
     ap.add_argument("--root", metavar="PATH", default=None,
-                    help="Filesystem root for LOC grading (defaults to --target)")
+                    help="Filesystem root for LOC grading (defaults to an existing "
+                         "--target, else the --tools-dir repository ancestor)")
     ap.add_argument("--groups", metavar="PATH")
     ap.add_argument("--security", choices=["standard", "redteam"], default=None,
                     help="Override security mode from groups.json")
@@ -276,16 +277,22 @@ def _resolve_analysis_root(args):
     if args.root is not None:
         return
     target = args.target
-    # The driver always passes a concrete --root. A direct invocation keeps the
-    # documented --target fallback; otherwise use the same `.panopticon`
-    # ancestor ingest has always derived from --tools-dir. Only a bare tools
-    # directory with no target identity falls back to cwd, which is then passed
-    # into ingest too so classification cannot split across two trees.
-    if isinstance(target, str) and target and target != "unknown":
-        chosen = target
-    else:
-        chosen = (ingest_tools._target_root_for(args.tools_dir)
-                  if args.tools_dir else None) or os.getcwd()
+    # The driver always passes a concrete --root. A direct invocation may use
+    # --target only when it names a directory; a display-only basename defers
+    # to the same `.panopticon` ancestor ingest derives from --tools-dir. Two
+    # real but different roots are an error. Only a bare tools directory with
+    # no target identity falls back to cwd, which is then passed into ingest too
+    # so classification cannot split across two trees.
+    target_root = (os.path.abspath(target)
+                   if isinstance(target, str) and target != "unknown"
+                   and os.path.isdir(target) else None)
+    tools_root = (ingest_tools._target_root_for(args.tools_dir)
+                  if args.tools_dir else None)
+    if (target_root is not None and tools_root is not None
+            and os.path.realpath(target_root) != os.path.realpath(tools_root)):
+        raise ValueError("--target directory and --tools-dir name different "
+                         "analysis roots")
+    chosen = target_root or tools_root or os.getcwd()
     args.root = os.path.abspath(chosen)
 
 
@@ -296,7 +303,11 @@ def main(argv=None):
     if args.compare:
         return _compare(args)
 
-    _resolve_analysis_root(args)
+    try:
+        _resolve_analysis_root(args)
+    except ValueError as exc:
+        print("synthesize: %s" % exc, file=sys.stderr)
+        return 2
 
     try:
         plan_contract.artifact_root(os.getcwd())
@@ -333,7 +344,9 @@ def main(argv=None):
     # artifact. `load_groups_json` normalizes them at the read, so its "never
     # abort a run" contract survives the validator for every caller.
     raw_groups: list = []               # #2962: the cell lists unspelled, for one reader
-    gj = plan_mod.load_groups_json(groups_path, raw_groups=raw_groups)
+    groups_valid: list[bool] = []
+    gj = plan_mod.load_groups_json(
+        groups_path, raw_groups=raw_groups, valid_out=groups_valid)
     groups_meta = gj.get("groups", [])
 
     # #17/#16: run-scoped artifacts (tools-manifest, scout-*, coverage-*, dispatch
@@ -459,6 +472,7 @@ def main(argv=None):
                                     # owner ruling says it has to be disclosed.
                                     sec_carve_out=gj.get(
                                         "exclude_paths_sec_carve_out"),
+                                    groups_valid=groups_valid == [True],
                                     # #2962: #2964's check reads the names
                                     # unspelled; every other reader keeps `gj`.
                                     raw_groups=raw_groups)

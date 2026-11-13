@@ -126,6 +126,48 @@ class NativeUnparsedReportTest(unittest.TestCase):
         self.assertEqual(targeted["out_of_scope"]["count"], 1)
         self.assertFalse(targeted["over_cap"])
 
+    def test_missing_or_rejected_groups_inventory_sinks_native_membership(self):
+        self._write("src/broken.js")
+        dispositions = {"semgrep": {
+            "status": "empty", "findings": 0,
+            "file_coverage": self._facts(["src/broken.js"]),
+        }}
+        result = report.build_report(report.ReportInputs(
+            run=report.RunConfig(target=self.root, root=self.root, fail_on="high",
+                                 timestamp="2026-11-13T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan.PlanInputs(groups_meta=[], groups_valid=False),
+            tools=tool_axis.ToolAxis(
+                tools_ran={"semgrep"}, dispositions=dispositions,
+                ingested_paths=[]),
+        ))
+        self.assertFalse(result["summary"]["coverage_certified"])
+        self.assertIn("reviewed-universe membership is unknown",
+                      result["summary"]["coverage_note"])
+        targeted = result["meta"]["coverage"]["targeted_review"]
+        self.assertEqual(targeted["out_of_scope"]["count"], 0)
+
+    def test_valid_empty_groups_inventory_keeps_native_rows_warning_only(self):
+        self._write("src/broken.js")
+        dispositions = {"semgrep": {
+            "status": "empty", "findings": 0,
+            "file_coverage": self._facts(["src/broken.js"]),
+        }}
+        result = report.build_report(report.ReportInputs(
+            run=report.RunConfig(target=self.root, root=self.root, fail_on="high",
+                                 timestamp="2026-11-13T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan.PlanInputs(groups_meta=[]),
+            tools=tool_axis.ToolAxis(
+                tools_ran={"semgrep"}, dispositions=dispositions,
+                ingested_paths=[]),
+        ))
+        self.assertTrue(result["summary"]["coverage_certified"])
+        self.assertEqual(
+            result["meta"]["coverage"]["targeted_review"]["out_of_scope"]["count"],
+            1,
+        )
+
     def test_in_scope_uncovered_gap_still_sinks(self):
         self._write("src/broken.js")
         result = self._report(
@@ -220,3 +262,16 @@ class NativeUnparsedReportTest(unittest.TestCase):
         self.assertIn("src/broken.js", html)
         self.assertIn("testdata/broken.js", html)
         self.assertNotIn("more omitted", html)
+
+    def test_html_escapes_out_of_scope_file_names(self):
+        value = {
+            "files": [], "files_omitted": 0,
+            "out_of_scope": {
+                "files": [{"file": "<b>x.js", "language": "JavaScript"}],
+                "files_omitted": 0,
+            },
+        }
+        html = html_report._render_targeted_review(
+            {"coverage": {"targeted_review": value}})
+        self.assertIn("&lt;b&gt;x.js", html)
+        self.assertNotIn("<code><b>x.js", html)

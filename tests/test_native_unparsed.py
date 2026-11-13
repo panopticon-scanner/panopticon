@@ -210,6 +210,53 @@ class NativeUnparsedFactsTest(unittest.TestCase):
             (21, 20, 1),
         )
 
+    def test_casefold_and_nfc_spelling_variants_remain_in_the_reviewed_universe(self):
+        # Round 2: groups.json carries Git's index spelling while Semgrep names
+        # the on-disk spelling. Case-insensitive and normalization-insensitive
+        # filesystems can therefore report the same file differently.
+        cases = (
+            (["SRC/a.js", "src/evil.js"], "SRC/evil.js"),
+            (["caf\u00e9/a.js", "caf\u00e9/evil.js"],
+             "cafe\u0301/evil.js"),
+        )
+        for group_files, syntax_path in cases:
+            with self.subTest(syntax_path=syntax_path):
+                state = {
+                    "count": 1,
+                    "files": [{"file": syntax_path, "language": "JavaScript"}],
+                    "files_omitted": 0,
+                    "unknown": 0,
+                }
+                groups = [{"name": "Web", "files": group_files}]
+                self.assertEqual(native_unparsed.targets_by_group(state, groups),
+                                 {"Web": [syntax_path]})
+                block, gap = native_unparsed.reconcile(state, groups, [], {})
+                self.assertEqual(block["native_unparsed"], 1)
+                self.assertEqual(block["out_of_scope"]["count"], 0)
+                self.assertIn("not covered", gap)
+
+    def test_inventory_omission_sinks_even_when_listed_rows_are_mostly_outside(self):
+        rows = [
+            {"file": "testdata/f%04d.js" % index, "language": "JavaScript"}
+            for index in range(native_unparsed.MAX_CLASSIFIED_NATIVE_FILES)
+        ]
+        state = {"count": len(rows) + 1, "files": rows,
+                 "files_omitted": 1, "unknown": 0}
+        groups = [{"name": "Web", "files": [rows[0]["file"]]}]
+        block, gap = native_unparsed.reconcile(state, groups, [], {})
+        self.assertEqual(block["classification_unknown"], 1)
+        self.assertIn("omitted from the bounded classification inventory", gap)
+
+    def test_omitted_inventory_is_never_dispatched(self):
+        state = {
+            "count": 2,
+            "files": [{"file": "src/broken.js", "language": "JavaScript"}],
+            "files_omitted": 1,
+            "unknown": 0,
+        }
+        groups = [{"name": "Web", "files": ["src/broken.js"]}]
+        self.assertEqual(native_unparsed.targets_by_group(state, groups), {})
+
     def test_dispatch_or_attestation_mismatch_fails_closed(self):
         self._write("src/broken.js")
         state = native_unparsed.read_facts(

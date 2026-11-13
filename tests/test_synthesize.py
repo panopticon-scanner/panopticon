@@ -118,7 +118,8 @@ class TestToolsDirIntegration(unittest.TestCase):
             os.makedirs(launch)
             with _chdir(launch), contextlib.redirect_stdout(io.StringIO()), \
                     contextlib.redirect_stderr(io.StringIO()):
-                code = syn.main(["--repo", "--groups", groups, "--tools-dir", tools,
+                code = syn.main(["--repo", "--target", "display-only-name",
+                                 "--groups", groups, "--tools-dir", tools,
                                  "--out", out, findings])
             self.assertEqual(code, 0)
             with open(out, encoding="utf-8") as fh:
@@ -129,6 +130,16 @@ class TestToolsDirIntegration(unittest.TestCase):
         self.assertEqual(outside["files"], [
             {"file": "scripts/deploy", "language": "Shell"}
         ])
+
+    def test_direct_run_refuses_disagreeing_target_and_tools_roots(self):
+        with tempfile.TemporaryDirectory() as target, \
+                tempfile.TemporaryDirectory() as other:
+            tools = os.path.join(other, ".panopticon", "tools")
+            os.makedirs(tools)
+            args = syn.build_parser().parse_args(
+                ["--target", target, "--tools-dir", tools])
+            with self.assertRaisesRegex(ValueError, "different analysis roots"):
+                syn._resolve_analysis_root(args)
 
     def _run_with_stale_output(self, manifest):
         with tempfile.TemporaryDirectory() as d:
