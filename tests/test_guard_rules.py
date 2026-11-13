@@ -386,7 +386,10 @@ class TestNoGrantCoversTheKeychain(unittest.TestCase):
         with open(self.scope, "w", encoding="utf-8") as fh:
             json.dump({"e1": {"files": [self.kfile, self.loose, self.ok],
                               "dirs": [self.home], "reads": []}}, fh)
-        grants = [self.out_ok, self.out_via_link, self.out_declared, self.out_alias]
+        # The alias is granted by its RESOLVED path, so only the declared-path
+        # half of the rule stands between it and an allowed write.
+        grants = [self.out_ok, self.out_via_link, self.out_declared,
+                  os.path.join(plain, "out.json")]
         self.allowlist = os.path.join(self.home, "write-allowlist.json")
         with open(self.allowlist, "w", encoding="utf-8") as fh:
             json.dump({"version": 2, "entries": {"e1": grants}, "paths": grants}, fh)
@@ -478,7 +481,7 @@ class TestNoGrantCoversTheKeychain(unittest.TestCase):
                 with self.subTest(host=host, path=os.path.relpath(path, self.home)):
                     allow, reason = call()
                     self.assertFalse(allow)
-                    self.assertIn("Keychain", reason)
+                    self.assertIn("cannot be a macOS Keychain path", reason)
 
     def test_the_codex_broker_refuses_reads_and_never_lists_the_keychain(self):
         reader = codex_read_tools.Reader(
