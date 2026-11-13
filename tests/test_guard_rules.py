@@ -375,11 +375,18 @@ class TestNoGrantCoversTheKeychain(unittest.TestCase):
         self.out_ok = os.path.join(self.home, "out.json")
         self.out_via_link = os.path.join(self.linkdir, "out.json")
         self.out_declared = os.path.join(self.kdir, "out.json")
+        # Declared as a Keychain path, resolving to an ordinary folder: the
+        # declared half of the write rule is what refuses it.
+        plain = os.path.join(self.home, "plain")
+        os.makedirs(os.path.join(self.home, "alias", "Library"))
+        os.makedirs(plain)
+        os.symlink(plain, os.path.join(self.home, "alias", "Library", "Keychains"))
+        self.out_alias = os.path.join(self.home, "alias", "Library", "Keychains", "out.json")
         self.scope = os.path.join(self.home, "read-scope.json")
         with open(self.scope, "w", encoding="utf-8") as fh:
             json.dump({"e1": {"files": [self.kfile, self.loose, self.ok],
                               "dirs": [self.home], "reads": []}}, fh)
-        grants = [self.out_ok, self.out_via_link, self.out_declared]
+        grants = [self.out_ok, self.out_via_link, self.out_declared, self.out_alias]
         self.allowlist = os.path.join(self.home, "write-allowlist.json")
         with open(self.allowlist, "w", encoding="utf-8") as fh:
             json.dump({"version": 2, "entries": {"e1": grants}, "paths": grants}, fh)
@@ -466,7 +473,7 @@ class TestNoGrantCoversTheKeychain(unittest.TestCase):
                     self.assertFalse(call()[0])
 
     def test_every_host_refuses_a_keychain_write_even_when_granted(self):
-        for path in (self.out_declared, self.out_via_link):
+        for path in (self.out_declared, self.out_via_link, self.out_alias):
             for host, call in self._writes(path):
                 with self.subTest(host=host, path=os.path.relpath(path, self.home)):
                     allow, reason = call()
