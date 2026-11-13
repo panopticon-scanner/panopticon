@@ -271,6 +271,24 @@ class TestSeverityBar(unittest.TestCase):
         # the bar names concrete CRITICAL preconditions, not a bare word
         self.assertIn("unauthenticated rce", low)
 
+    def test_severity_bar_does_not_cap_on_auth_or_library_preconditions(self):
+        """#3604: the 5.4 sweep found 41 CRITICAL->HIGH down-overrides, 37 wrong
+        by ground truth -- authenticated SSTI/RCE ("requires auth"), a library's
+        default-on script lookup ("specific precondition") and SQLi in a
+        training app ("training app"). The 7 right ones were bounded or not
+        exploitable at all. The bar keeps that clause and drops the others."""
+        _, body = dispatch.load_template("domain-panel.md")
+        bar = body.split("## Severity bar", 1)[1].split("When genuinely torn", 1)[0]
+        low = " ".join(bar.lower().split())
+        self.assertNotIn("requires authentication", low)
+        self.assertNotIn("a specific precondition", low)
+        self.assertIn("authentication alone does not lower severity", low)
+        self.assertIn("untrusted input reaching the public api is the threat model", low)
+        self.assertIn("rate the defect, not the target's intent", low)
+        # the down-override survives for bounded / non-exploitable defects
+        self.assertIn("blast radius is bounded", low)
+        self.assertIn("not security-exploitable", low)
+
 
 class TestTestInventoryFraming(unittest.TestCase):
     """#1638 P13: run-13's `Ungrouped_1` TST panel wrote a "no automated

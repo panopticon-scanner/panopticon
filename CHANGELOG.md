@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **The domain-panel severity bar no longer caps CRITICAL on authentication or library use (#3604).**
+  The 5.4 small-corpus sweep found 41 CRITICAL-to-HIGH down-overrides, 37 of them wrong by
+  ground truth: authenticated template/code execution, a library's default-on script lookup,
+  and injection in a deliberately vulnerable app. The bar now keeps CRITICAL for code execution
+  whether or not a login is needed. For a library it treats untrusted input reaching the public
+  API as the threat model, and it gives no discount for a target's intent. Down-overrides remain
+  for chaining, operator-only input, non-default configuration and bounded blast radius, which
+  covered all 7 correct cases. A non-exploitable defect is rated on its impact. "When torn, choose
+  HIGH" is unchanged. A template test pins the dropped and kept clauses.
+
 - **Code-scanning stamp validation follows its producer (#3599).** The size-skip
   and Dockerfile-coverage listing bounds now share `semgrep_targets.MAX_LISTED`
   instead of duplicating its value. Producer-fed and targeted controls pin the
