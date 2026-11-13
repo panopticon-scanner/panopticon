@@ -223,10 +223,17 @@ def with_dockerfile_targets(tool, cmd, root):
         used += cost
     if not targets:
         return cmd
+    # One config is the reviewed production shape. If another is ever added,
+    # do not replace just one and accidentally force Dockerfiles through the
+    # remaining cross-language config; skip this pass and disclose the gap.
+    if cmd.count("--config") != 1:
+        return cmd
     try:
         at = cmd.index("/src")
         config_at = cmd.index("--config") + 1
     except ValueError:
+        return cmd
+    if config_at >= len(cmd):
         return cmd
     dockerfile_cmd = list(cmd)
     dockerfile_cmd[config_at] = DOCKERFILE_RULES_CONFIG

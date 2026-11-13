@@ -898,6 +898,13 @@ SCAN_STAMPS = {
     "panopticon_size_skipped": {"limit": 1000000, "count": 1,
                                 "files": [".test_durations"], "complete": True},
 }
+DOCKERFILE_COVERAGE = {
+    "count": 1,
+    "analyzed": 1,
+    "unanalyzed": 0,
+    "files": [],
+    "complete": True,
+}
 
 
 def _inventory_count(output):
@@ -914,6 +921,43 @@ def test_panopticon_scan_stamps_keep_the_run_inventory_eligible(tmp_path):
     assert security["runs"][0]["results"] == []
     assert security["runs"][0]["properties"] == SCAN_STAMPS     # carried, not stripped
     assert _inventory_count(output) == 1
+
+
+def test_real_run_tools_semgrep_stamps_keep_the_run_inventory_eligible(tmp_path):
+    # #3579's live capture has the size stamp, Dockerfile coverage stamp and
+    # summed per-pass scanned-file witness on the same upload-compatible run.
+    properties = {
+        **SCAN_STAMPS,
+        "panopticon_scanned_files": 2,
+        "panopticon_dockerfile_coverage": copy.deepcopy(DOCKERFILE_COVERAGE),
+    }
+    document = _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC)],
+                      run_properties=properties)
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    security = json.loads((output / "security" / "semgrep.sarif").read_text())
+    assert security["runs"][0]["results"] == []
+    assert security["runs"][0]["properties"] == properties
+    assert _inventory_count(output) == 1
+
+
+@pytest.mark.parametrize("coverage", [
+    {**DOCKERFILE_COVERAGE, "cve": "CVE-2026-1234"},
+    {**DOCKERFILE_COVERAGE, "count": 2},
+    {**DOCKERFILE_COVERAGE, "analyzed": True},
+    {**DOCKERFILE_COVERAGE, "unanalyzed": "0"},
+    {**DOCKERFILE_COVERAGE, "files": [7]},
+    {**DOCKERFILE_COVERAGE, "complete": "yes"},
+    {"count": 101, "analyzed": 0, "unanalyzed": 101,
+     "files": ["Dockerfile.%d" % i for i in range(101)], "complete": True},
+])
+def test_other_dockerfile_coverage_shapes_keep_the_run_actionable(
+        tmp_path, coverage):
+    properties = {**SCAN_STAMPS, "panopticon_dockerfile_coverage": coverage}
+    document = _sarif([_rule(ANTHROPIC)], [_result(ANTHROPIC)],
+                      run_properties=properties)
+    _raw, output, _before = _prepare(tmp_path, {"semgrep.sarif": document})
+    assert json.loads((output / "security" / "semgrep.sarif").read_text()) == document
+    assert _inventory_count(output) == 0
 
 
 @pytest.mark.parametrize("properties", [

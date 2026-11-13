@@ -518,6 +518,27 @@ class TestDockerfileVariantCoverage(unittest.TestCase):
         self.assertEqual(run["results"][0]["ruleIndex"], 1)
         self.assertEqual(len(run["invocations"]), 2)
 
+    def test_merge_keeps_same_rule_and_path_hits_on_different_lines(self):
+        primary = _dockerfile_capture(True)
+        extra = _dockerfile_capture(True)
+        extra["runs"][0]["results"][0]["locations"][0]["physicalLocation"][
+            "region"] = {"startLine": 3, "endLine": 3}
+        merged = json.loads(st.merge_sarif(
+            json.dumps(primary).encode(), json.dumps(extra).encode()))
+        results = merged["runs"][0]["results"]
+        self.assertEqual(len(results), 2)
+        self.assertEqual({result["locations"][0]["physicalLocation"]["region"][
+            "startLine"] for result in results}, {2, 3})
+
+    def test_ambiguous_multiple_configs_skip_the_dockerfile_pass(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "Dockerfile.prod"), "w", encoding="utf-8") as fh:
+                fh.write("FROM busybox\n")
+            command = list(TOOL_CMD["semgrep"])
+            command[1:1] = ["--config", "/opt/other-rules"]
+            launched = st.with_dockerfile_targets("semgrep", command, root)
+        self.assertEqual(launched, command)
+
     @unittest.skipIf(sys.platform == "win32", "POSIX symlinks")
     def test_excluded_and_symlinked_variants_are_not_reintroduced(self):
         with tempfile.TemporaryDirectory() as root, tempfile.TemporaryDirectory() as outside:
