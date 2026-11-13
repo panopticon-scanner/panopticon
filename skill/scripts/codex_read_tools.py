@@ -105,11 +105,12 @@ def _path(value, cwd):
     return os.path.abspath(os.path.join(cwd, value))
 
 
-# --- VENDORED from guard_rules.py (#3273 cut 11): `_under`, `_in_dir_grant`
-# and `SCOPE_KEYS` above, byte for byte, pinned in tests/test_guard_rules.py.
+# --- VENDORED from guard_rules.py (#3273 cut 11): `_under`, `_names_keychain`,
+# `_in_dir_grant` and `SCOPE_KEYS` above, byte for byte, pinned in
+# tests/test_guard_rules.py.
 # This broker is launched `sys.executable -I <path>` (codex_host.safety_config),
 # so it cannot import a sibling either; it is an MCP server rather than a hook,
-# and these 24 lines are all it shares -- less than the guard hooks' loader
+# and these 35 lines are all it shares -- less than the guard hooks' loader
 # stanza and the second failure path it would add to the broker's protocol.
 def _under(path, directory):
     """Separator-bounded prefix test: /repo admits /repo/x, never /repo-other.
@@ -121,11 +122,21 @@ def _under(path, directory):
     return path == directory or path.startswith(directory + os.sep)
 
 
+def _names_keychain(path):
+    """True when `path` lies under a `Library/Keychains` directory or names a
+    `.keychain`/`.keychain-db` file (#3607): no grant covers the macOS Keychain.
+    Folded, because APFS opens `library/KEYCHAINS` as the same directory."""
+    parts = [part.casefold() for part in path.split(os.sep)]
+    return (any(a == "library" and b == "keychains" for a, b in zip(parts, parts[1:]))
+            or any(part.endswith((".keychain", ".keychain-db")) for part in parts))
+
+
 def _in_dir_grant(target, directory):
     """`_under`, except that a directory grant never covers its own `.git`
     store (#3271 G-a): first contact does not count `<root>/.git`, so no grant
-    may read it. A path COMPONENT, never a prefix: `.github/` still reads."""
-    if not _under(target, directory):
+    may read it. A path COMPONENT, never a prefix: `.github/` still reads.
+    Nor does it cover a Keychain path (#3607)."""
+    if not _under(target, directory) or _names_keychain(target):
         return False
     rest = target[len(directory.rstrip(os.sep)):].lstrip(os.sep)
     first = rest.split(os.sep, 1)[0]
@@ -211,7 +222,7 @@ class Reader:
         about directory grants."""
         under = any(_in_dir_grant(path, d) for d in self.scope["dirs"])
         exact = not directory and (path in self.scope["files"] or path in self.scope["reads"])
-        if not (under or exact):
+        if _names_keychain(path) or not (under or exact):      # #3607
             raise ValueError("Denied: %s is outside this entry's read scope" % path)
 
     def _files(self, directories):
@@ -240,6 +251,8 @@ class Reader:
                         truncated = True
                         break
                     path = os.path.join(directory, entry.name)
+                    if _names_keychain(path):      # #3607: never listed, never searched
+                        continue
                     if entry.is_dir(follow_symlinks=False):
                         if not _excluded_dir(entry.name):
                             children.append(path)
