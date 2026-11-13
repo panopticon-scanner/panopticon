@@ -217,10 +217,12 @@ exactly the run's shells, with no `[project]` one, and agy's own log under the r
 undocumented flag took effect, and a change in either refuses with `AgyPreflightRefused`. Then one
 minimal real turn (`-p "Reply with the single word OK."`, the default model, no effort and no agent
 shell, so agy runs its default agent and any tool call meets the guard hook) must return a success
-envelope. An interactive-auth line, a stopped child, or `You are not logged into Antigravity` on its
-output or in any of the run's agy logs raises `AgyAuthUnreachable`; any other failure, a timeout of
-`agy agents` or `agy models` included, raises `AgyPreflightRefused`. A refused run leaves no run
-directory behind.
+envelope. An interactive-auth line, a stopped child, or `You are not logged into Antigravity` on
+the turn's own output raises `AgyAuthUnreachable`; any other failure, a timeout of `agy agents` or
+`agy models` included, raises `AgyPreflightRefused`. agy's run log is never read for that line:
+`agy agents` writes it there without signing in, and the turn reuses the same log file (#3620).
+Every refusal ends `[preflight step: ...]`, naming the check that refused. A refused run leaves no
+run directory behind.
 
 agy signs in one of two ways, chosen by `agy_home.auth_route()` (#3576, #3613).
 

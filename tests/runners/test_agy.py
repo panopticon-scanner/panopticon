@@ -589,6 +589,75 @@ class TestThePreflightFailsClosed(unittest.TestCase):
                 self._assert_refused(_answers_preflight(turn=turn),
                                      agy_runner.AgyPreflightRefused, text)
 
+    # #3620: each AgyAuthUnreachable / AgyPreflightRefused ends with the step that refused,
+    # so the next owner capture says where it stopped.
+    def test_each_turn_and_agents_path_names_its_step(self):
+        log = self.LOG
+
+        def stopped(cmd, **kw):
+            raise children.HostStopped(cmd, output="", stderr=log)
+
+        def timeout(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, 1)
+
+        def reply(rc, out, err):
+            return lambda cmd, **kw: subprocess.CompletedProcess(cmd, rc, stdout=out, stderr=err)
+        bad = json.dumps({"status": "ERROR", "error": "x"})
+        wrapped = _answers_preflight()
+
+        def on_agents(behaviour):
+            return lambda cmd, **kw: (behaviour(cmd, **kw) if _args(cmd) == ["agents"]
+                                      else wrapped(cmd, **kw))
+        unreachable, refused = agy_home.AgyAuthUnreachable, agy_runner.AgyPreflightRefused
+        for runner, exc, step in (
+                (on_agents(stopped), unreachable, "agents: interactive auth"),
+                (on_agents(timeout), refused, "agents: timeout"),
+                (_answers_preflight(agents_rc=3), refused, "agents: shells"),
+                (_answers_preflight(hook_log=False), refused, "agents: hook-load proof"),
+                (_answers_preflight(turn=stopped), unreachable, "turn: interactive auth (stopped)"),
+                (_answers_preflight(turn=timeout), refused, "turn: timeout"),
+                (_answers_preflight(turn=reply(1, "", log)), unreachable,
+                 "turn: interactive auth on stderr"),
+                (_answers_preflight(turn=reply(0, agy_runner.NOT_SIGNED_IN, "")), unreachable,
+                 "turn: not-logged-in on stdout"),
+                (_answers_preflight(turn=reply(0, "", agy_runner.NOT_SIGNED_IN)), unreachable,
+                 "turn: not-logged-in on stderr"),
+                (_answers_preflight(turn=reply(0, bad, "")), refused, "turn: envelope")):
+            with self.subTest(step=step):
+                caught = self._assert_refused(runner, exc, "")
+                self.assertTrue(str(caught).endswith("[preflight step: %s]" % step), str(caught))
+
+    def test_each_models_path_names_its_step(self):
+        key = {"GEMINI_API_KEY": FAKE_KEY, "PANOPTICON_AGY_AUTH": "key"}
+
+        def models(behaviour):
+            return _answers_preflight(lambda cmd, **kw: behaviour(cmd, **kw))
+
+        def stopped(cmd, **kw):
+            raise children.HostStopped(cmd, output="", stderr=self.LOG)
+
+        def timeout(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, 1)
+        for runner, exc, step in (
+                (models(stopped), agy_home.AgyAuthUnreachable, "models: interactive auth"),
+                (models(timeout), agy_runner.AgyPreflightRefused, "models: timeout"),
+                (models(lambda cmd, **kw: subprocess.CompletedProcess(cmd, 1, stdout="",
+                                                                      stderr="")),
+                 agy_home.AgyAuthUnreachable, "models: listing"),
+                (models(lambda cmd, **kw: subprocess.CompletedProcess(
+                    cmd, 0, stdout="gemini-3.8-flash-medium Flash\n", stderr="")),
+                 agy_runner.AgyPreflightRefused, "turn: key-route default")):
+            with self.subTest(step=step):
+                caught = self._assert_refused(runner, exc, "", env=key)
+                self.assertTrue(str(caught).endswith("[preflight step: %s]" % step), str(caught))
+
+    def test_the_auth_message_still_classifies_as_an_outage(self):
+        import scripts.runners.outage as outage_mod
+        msg = str(agy_home.unreachable({}, "turn: not-logged-in on stderr"))
+        self.assertTrue(msg.startswith(agy_home.AUTH_UNREACHABLE))
+        self.assertEqual(outage_mod.classify_failure(msg),
+                         outage_mod.classify_failure(agy_home.AUTH_UNREACHABLE))
+
 
 class TestTheSigninRouteNeverHoldsTheKey(unittest.TestCase):
     """#3617 review N1-N4: R2 enforced in the child environment, the key-route hint
@@ -663,18 +732,40 @@ class TestTheSigninRouteNeverHoldsTheKey(unittest.TestCase):
                     self.assertEqual(hinted, "runs only when you choose it" in str(caught.exception))
                     self.assertNotIn(FAKE_KEY, str(caught.exception))
 
-    def test_a_sign_in_lost_only_in_agys_log_is_auth_unreachable(self):
-        # #3605 P1: "not logged into Antigravity" can appear in agy's log alone.
+    def _agents_log_says_not_signed_in(self, turn):
+        """#3620: the owner's measured sequence -- `agy agents` exits 0 and writes BOTH the
+        hook-load line and the not-logged-in line into one cli-*.log, which the turn reuses."""
+        wrapped = _answers_preflight(turn=turn)
+
+        def fake(cmd, **kw):
+            proc = wrapped(cmd, **kw)
+            if _args(cmd) == ["agents"]:
+                log = os.path.join(cmd[2], "antigravity-cli", "log", "cli-20261113_000000.log")
+                with open(log, "a", encoding="utf-8") as fh:
+                    fh.write("E1113 errorreport.go:273] error getting token source: %s.\n"
+                             % agy_runner.NOT_SIGNED_IN)
+            return proc
+        return fake
+
+    def test_a_signed_in_turn_passes_though_agents_logged_not_signed_in(self):
+        # #3620 regression: the run log is never read for auth, so this run is NOT refused.
         def turn(cmd, **kw):
-            log = os.path.join(cmd[2], "antigravity-cli", "log", "cli-20261113_000001.log")
-            with open(log, "w", encoding="utf-8") as fh:
-                fh.write("E1113 errorreport.go:273] error getting token source: %s.\n"
-                         % agy_runner.NOT_SIGNED_IN)
+            log_dir = os.path.join(cmd[2], "antigravity-cli", "log")
+            self.assertEqual(["cli-20261113_000000.log"], os.listdir(log_dir))   # one log
+            return subprocess.CompletedProcess(cmd, 0, stdout=ENVELOPE, stderr="")
+        r = self._prepare(self._agents_log_says_not_signed_in(turn),
+                          {"GEMINI_API_KEY": FAKE_KEY})
+        self.assertEqual("signin", r.auth_route)
+
+    def test_a_failed_turn_after_that_log_still_names_the_key_route(self):
+        # N2 as intended: the hint comes with every failed sign-in turn, not from the log.
+        def turn(cmd, **kw):
             return subprocess.CompletedProcess(
                 cmd, 0, stdout=json.dumps({"status": "ERROR", "error": "no session"}), stderr="")
-        with self.assertRaises(agy_home.AgyAuthUnreachable) as caught:
-            self._prepare(_answers_preflight(turn=turn), {"GEMINI_API_KEY": FAKE_KEY})
+        with self.assertRaises(agy_runner.AgyPreflightRefused) as caught:
+            self._prepare(self._agents_log_says_not_signed_in(turn), {"GEMINI_API_KEY": FAKE_KEY})
         self.assertIn("runs only when you choose it", str(caught.exception))
+        self.assertTrue(str(caught.exception).endswith("[preflight step: turn: envelope]"))
 
     def test_agents_and_models_timeouts_refuse(self):
         def agents_timeout(cmd, **kw):

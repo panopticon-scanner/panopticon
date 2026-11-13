@@ -377,17 +377,20 @@ class Runner(base.HostRunner):
                 capture_output=True, text=True, timeout=MODELS_TIMEOUT,
                 stop_on=INTERACTIVE_AUTH)
         except children.HostStopped as exc:
-            raise agy_home.AgyAuthUnreachable() from exc
+            raise agy_home.AgyAuthUnreachable(
+                agy_home.AUTH_UNREACHABLE + agy_home.STEP_TAG % "models: interactive auth") from exc
         except subprocess.TimeoutExpired as exc:
             raise AgyPreflightRefused(
-                "`agy models` timed out after %ss (#3613)" % MODELS_TIMEOUT) from exc
+                "`agy models` timed out after %ss (#3613)%s"
+                % (MODELS_TIMEOUT, agy_home.STEP_TAG % "models: timeout")) from exc
         names = listed_models(getattr(proc, "stdout", ""))
         if getattr(proc, "returncode", 1) != 0 or not names:
             raise agy_home.AgyAuthUnreachable(
                 "`agy models` on the API-key route %s, so no entry can be bound to a "
-                "listed model (#3576)"
+                "listed model (#3576)%s"
                 % ("exited %s" % getattr(proc, "returncode", 1)
-                   if getattr(proc, "returncode", 1) != 0 else "listed no models"))
+                   if getattr(proc, "returncode", 1) != 0 else "listed no models",
+                   agy_home.STEP_TAG % "models: listing"))
         return names
 
     def prepare(self, run_dir, review_root=None, *, registration_dir=None):
@@ -431,55 +434,64 @@ class Runner(base.HostRunner):
                           capture_output=True, text=True, timeout=MODELS_TIMEOUT,
                           stop_on=INTERACTIVE_AUTH)
         except children.HostStopped as exc:
-            raise agy_home.unreachable(parent) from exc
+            raise agy_home.unreachable(parent, "agents: interactive auth") from exc
         except subprocess.TimeoutExpired as exc:
             raise AgyPreflightRefused(
-                "`agy agents` timed out after %ss (#3613)" % MODELS_TIMEOUT) from exc
+                "`agy agents` timed out after %ss (#3613)%s"
+                % (MODELS_TIMEOUT, agy_home.STEP_TAG % "agents: timeout")) from exc
         out = getattr(proc, "stdout", "") or ""
         expected = agy_home.expected_agents(self.agy_home)
         listed = agy_home.listed_agents(out)
         if getattr(proc, "returncode", 1) != 0 or "[project]" in out or listed != expected:
             raise AgyPreflightRefused(
                 "`agy %s <run>/gemini agents` %s; expected exactly %s, listed %s. "
-                "--gemini_dir is undocumented and may have changed (#3613)"
+                "--gemini_dir is undocumented and may have changed (#3613)%s"
                 % (agy_home.GEMINI_DIR_FLAG,
                    "exited %s" % getattr(proc, "returncode", 1)
                    if getattr(proc, "returncode", 1) != 0 else "did not isolate the shells",
-                   sorted(expected), sorted(listed)[:20]))
+                   sorted(expected), sorted(listed)[:20], agy_home.STEP_TAG % "agents: shells"))
         proven, why = agy_home.hook_load_proven(self.agy_home)
         if not proven:
-            raise AgyPreflightRefused(why)
+            raise AgyPreflightRefused(why + agy_home.STEP_TAG % "agents: hook-load proof")
         argv = ["--output-format", "json", "--disable-slash-commands"]
         if self.auth_route == "key":
             if KEY_ROUTE_DEFAULT not in self.key_models:
                 raise AgyPreflightRefused(
                     "`agy models` on the API-key route does not list %s, the route's "
-                    "default (#3576, #3613)" % KEY_ROUTE_DEFAULT)
+                    "default (#3576, #3613)%s"
+                    % (KEY_ROUTE_DEFAULT, agy_home.STEP_TAG % "turn: key-route default"))
             argv += ["--model", KEY_ROUTE_DEFAULT]
         try:
             proc = launch(self._agy(*argv, "-p", PREFLIGHT_PROMPT), cwd=self.workspace_dir,
                           env=env, capture_output=True, text=True, timeout=PREFLIGHT_TIMEOUT,
                           stop_on=INTERACTIVE_AUTH)
         except children.HostStopped as exc:
-            raise agy_home.unreachable(parent) from exc
+            raise agy_home.unreachable(parent, "turn: interactive auth (stopped)") from exc
         except subprocess.TimeoutExpired as exc:
             raise AgyPreflightRefused(
-                "agy's preflight turn timed out after %ss (#3613)%s"
-                % (PREFLIGHT_TIMEOUT, self._key_hint(parent))) from exc
+                "agy's preflight turn timed out after %ss (#3613)%s%s"
+                % (PREFLIGHT_TIMEOUT, self._key_hint(parent),
+                   agy_home.STEP_TAG % "turn: timeout")) from exc
         stdout, stderr = getattr(proc, "stdout", "") or "", getattr(proc, "stderr", "") or ""
-        if (reached_interactive_auth(stderr) or NOT_SIGNED_IN in stdout + stderr
-                or agy_home.run_log_says(self.agy_home, NOT_SIGNED_IN)):
-            raise agy_home.unreachable(parent)
+        # #3620: auth is judged from THIS turn's own output, never from agy's run log --
+        # `agy agents` writes the not-logged-in line there without signing in, and the
+        # turn reuses that same log file, so a log scan refused every signed-in run.
+        for step, seen in (("turn: interactive auth on stderr", reached_interactive_auth(stderr)),
+                           ("turn: not-logged-in on stdout", NOT_SIGNED_IN in stdout),
+                           ("turn: not-logged-in on stderr", NOT_SIGNED_IN in stderr)):
+            if seen:
+                raise agy_home.unreachable(parent, step)
         result = parse_envelope(stdout, getattr(proc, "returncode", 1), stderr,
                                 entry_id="agy-preflight")
         if not result.ok:
-            raise AgyPreflightRefused("agy's preflight turn failed: %s (#3613)%s"
+            raise AgyPreflightRefused("agy's preflight turn failed: %s (#3613)%s%s"
                                       % (redact.redact(str(result.error))[:400],
-                                         self._key_hint(parent)))
+                                         self._key_hint(parent),
+                                         agy_home.STEP_TAG % "turn: envelope"))
 
     def _key_hint(self, parent):
         """R2: on the sign-in route with a key set, every failed turn names the key
-        route -- agy may report a lost sign-in only in its log (#3605 P1)."""
+        route, however the turn failed (#3617 review N2)."""
         if self.auth_route == "key" or not (parent.get(agy_home.KEY_ENV) or "").strip():
             return ""
         return agy_home.KEY_NOT_CHOSEN
