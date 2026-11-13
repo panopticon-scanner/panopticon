@@ -133,12 +133,11 @@ RUN dotnet restore && dotnet build --no-restore || echo "AspGoat build skipped"
 # The fixture must include a committed Cargo.lock so cargo-audit has a dependency graph to audit.
 COPY tests/fixtures/vulnerable-rust /opt/panopticon-fixtures/vulnerable-rust
 WORKDIR /opt/panopticon-fixtures/vulnerable-rust
-RUN cargo build
-# ...and give `scanner` back the parts of its CARGO_HOME this build dirtied
+# Build, then give `scanner` back the parts of its CARGO_HOME this build dirties
 # (ARC-2930403871). `CARGO_HOME` is inherited from the base image as
 # /home/scanner/.cargo (its `ENV CARGO_HOME=/home/scanner/.cargo`), which the
 # base creates and chowns FOR scanner (`mkdir -p /home/scanner/.cargo` then
-# `chown scanner:scanner`), so the build above filled production's own writable
+# `chown scanner:scanner`), so the build below fills production's own writable
 # cargo home with root-owned files: the downloaded crate cache and index under
 # `registry/`, the `git/` checkouts if a dependency is a git one, and the
 # `.package-cache` lock cargo takes while it works. Those, by name, and NOT the
@@ -154,7 +153,8 @@ RUN cargo build
 # dependency is fetched from git, and naming an absent path would fail the build
 # for the one cache shape that is allowed not to appear. A chown that FAILS
 # still fails the build -- it is inside the `if`, not guarded with `|| true`.
-RUN for d in registry git .package-cache .global-cache; do \
+RUN cargo build \
+    && for d in registry git .package-cache .global-cache; do \
       if [ -e "/home/scanner/.cargo/$d" ]; then \
         chown -R scanner:scanner "/home/scanner/.cargo/$d"; \
       fi; \
