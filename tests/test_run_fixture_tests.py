@@ -311,6 +311,8 @@ class TestDockerTimeouts(unittest.TestCase):
         self.assertEqual(cmd[1], "build")
         self.assertEqual(cmd[cmd.index("-f") + 1], str(dockerfile))
         self.assertEqual(cmd[cmd.index("-t") + 1], "mytag")
+        self.assertEqual(cmd[cmd.index("--build-arg") + 1],
+                         "TOOLS_IMAGE=panopticon-tools:latest")
         self.assertIn(str(repo_root), cmd)
 
     def test_probe_timeout_is_unavailable_not_crash(self):

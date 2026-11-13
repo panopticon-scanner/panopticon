@@ -167,6 +167,7 @@ def build_image(tag: str) -> None:
     validate_image_reference(tag)
     run([
         _docker_bin(), "build",
+        "--build-arg", "TOOLS_IMAGE=" + tools_image.LOCAL_NAME + ":latest",
         "-f", str(DOCKERFILE),
         "-t", tag,
         str(REPO_ROOT),

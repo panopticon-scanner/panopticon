@@ -846,6 +846,14 @@ class TestLayerOrder(unittest.TestCase):
 
 
 class TestDockerfileFixtures(unittest.TestCase):
+    def test_tools_base_has_a_pinned_default_and_an_explicit_override_seam(self):
+        text = _read_dockerfile_fixtures()
+        match = re.search(
+            r"^ARG TOOLS_IMAGE=(ghcr\.io/[^\s]+@sha256:[0-9a-f]{64})$",
+            text, re.MULTILINE)
+        self.assertIsNotNone(match)
+        self.assertIn("FROM ${TOOLS_IMAGE}", text)
+
     def test_runtime_defaults_to_the_scan_user(self):
         text = _read_dockerfile_fixtures()
         users = [line.strip() for line in text.splitlines()

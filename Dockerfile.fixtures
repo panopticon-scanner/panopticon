@@ -1,14 +1,13 @@
 # panopticon-fixtures: vulnerable-by-design applications for scanner validation.
 # Build:  docker build -f Dockerfile.fixtures -t panopticon-fixtures:latest .
 # Rebuild: docker build --no-cache -f Dockerfile.fixtures -t panopticon-fixtures:$(date +%Y-%m-%d) .
-# DL3006/DL3007: base image is the freshly-built local `panopticon-tools:latest`
-# produced by the docker-build-pr workflow; a static tag is intentional here.
-# The adapter lanes likewise retag the authenticated current GHCR tools image
-# to this local build input. A literal version or digest would stop those lanes
-# exercising the current tools image, so the two registry-pin rules do not fit
-# this deliberately local handoff (#3596).
+# Standalone builds have a reproducible default. The local harness and CI lanes
+# override TOOLS_IMAGE with their just-built or authenticated-and-pulled local
+# `panopticon-tools:latest`; that deliberate handoff keeps PRs and daily probes
+# on the exact current tools image while the Dockerfile itself remains pinned.
+ARG TOOLS_IMAGE=ghcr.io/panopticon-scanner/panopticon-tools@sha256:fc0e76371ba923d4371264d42fbb7903cb2a2a244aab27fab9cdade881ab0a18
 # hadolint ignore=DL3006,DL3007
-FROM panopticon-tools:latest  # nosemgrep: opt.semgrep-rules.dockerfile.audit.dockerfile-source-not-pinned, opt.semgrep-rules.dockerfile.best-practice.avoid-latest-version
+FROM ${TOOLS_IMAGE}
 
 # Root here is a BUILD-time decision. The layers below install a JDK,
 # clone three goat fixtures and run bundler, maven, cargo and dotnet against

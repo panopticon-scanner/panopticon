@@ -7,9 +7,9 @@
   Both local harness launches still state `--user scanner`, set scanner's HOME, and
   loudly prove uid 1000 before the presence probe or adapter tests run; argv tests
   include a dropped-user mutant. Build steps use `WORKDIR` instead of `RUN cd`.
-  The base remains the deliberately current local `panopticon-tools:latest` handoff
-  used by the daily adapter lanes, with rule-specific registry-pin annotations rather
-  than freezing those lanes on an older tools image.
+  Standalone builds use a digest-pinned tools image. The local harness and CI lanes
+  explicitly override it with their just-built or authenticated current local image,
+  preserving the PR and daily integration semantics without a mutable Dockerfile default.
 
 - **First contact checks the session root's hook registration (#3541).** Session mode registers
   both guards in the session root's `.claude/settings.local.json`. A hook entry there that a guard
