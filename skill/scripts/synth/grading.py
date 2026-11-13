@@ -164,6 +164,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
     syntax_disclosures = coverage_model.semgrep_syntax_disclosures(tools_file_partial)
+    notification_disclosures = coverage_model.semgrep_notification_disclosures(
+        tools_file_partial)
     tools_file_partial, asset_skips = coverage_model.certifying_file_gaps(tools_file_partial)
     high_value_incomplete = set(panels_incomplete) & findings_mod.HIGH_VALUE_PANELS
     gate_relevant_gap = (bool(high_value_incomplete) or bool(tools_absent)
@@ -252,6 +254,22 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         if dockerfile_unanalyzed:
             gap += ("; %d Dockerfile-like file(s) received no Dockerfile rule analysis"
                     % dockerfile_unanalyzed)
+        note = "%s; %s" % (note, gap) if note else gap
+    for tool, disclosure in sorted(notification_disclosures.items()):
+        gap = "%d %s scanner notification(s)" % (disclosure["count"], tool)
+        if disclosure["files"]:
+            named = []
+            for row in disclosure["files"]:
+                detail = "%s (%s" % (row["file"], ", ".join(row["ids"]))
+                if row["ids_omitted"]:
+                    detail += "; %d additional id(s) omitted" % row["ids_omitted"]
+                named.append(detail + ")")
+            gap += ": %s" % ", ".join(named)
+        if disclosure["files_omitted"]:
+            gap += "; %d additional file(s) omitted" % disclosure["files_omitted"]
+        if disclosure["unlocated"]:
+            gap += ("; %d notification(s) without an identifiable file"
+                    % disclosure["unlocated"])
         note = "%s; %s" % (note, gap) if note else gap
     for tool, disclosure in sorted(syntax_disclosures.items()):
         gap = "%d file(s) %s could not parse" % (disclosure["count"], tool)
