@@ -334,6 +334,86 @@ class TestCargoFirstPartyAdvisoryIngest(unittest.TestCase):
             root.name, "osv-scanner.json", _osv_document())[0]
         self.assertTrue(evidence.is_first_party_advisory(finding))
 
+    def test_private_registry_only_manifest_stays_on_the_advisor_path(self):
+        manifest = (
+            '[package]\nname = "workspace-app"\nversion = "1.2.3"\n'
+            'publish = ["custom-registry"]\n'
+        )
+        finding = self._ingest(
+            "osv-scanner.json", _osv_document(), manifest_text=manifest)[0]
+        self.assertNotIn("package_origin", finding["tool_evidence"])
+
+    def test_crates_io_publish_list_is_classified(self):
+        manifest = (
+            '[package]\nname = "workspace-app"\nversion = "1.2.3"\n'
+            'publish = ["custom-registry", "crates-io"]\n'
+        )
+        finding = self._ingest(
+            "osv-scanner.json", _osv_document(), manifest_text=manifest)[0]
+        self.assertTrue(evidence.is_first_party_advisory(finding))
+
+    def test_empty_publish_list_stays_on_the_advisor_path(self):
+        manifest = (
+            '[package]\nname = "workspace-app"\nversion = "1.2.3"\n'
+            'publish = []\n'
+        )
+        finding = self._ingest(
+            "osv-scanner.json", _osv_document(), manifest_text=manifest)[0]
+        self.assertNotIn("package_origin", finding["tool_evidence"])
+
+    def test_unparseable_sibling_invalidates_the_whole_manifest_set(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        _write_lock(root.name)
+        _write_manifest(root.name, '[workspace]\nmembers = ["good", "bad"]\n')
+        good = os.path.join(root.name, "good")
+        bad = os.path.join(root.name, "bad")
+        os.mkdir(good)
+        os.mkdir(bad)
+        _write_manifest(good)
+        _write_manifest(bad, "[package\n")
+        finding = _ingest_document(
+            root.name, "osv-scanner.json", _osv_document())[0]
+        self.assertNotIn("package_origin", finding["tool_evidence"])
+
+    def test_outside_path_on_sibling_invalidates_the_whole_manifest_set(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        _write_lock(root.name)
+        _write_manifest(root.name, '[workspace]\nmembers = ["good", "bad"]\n')
+        good = os.path.join(root.name, "good")
+        bad = os.path.join(root.name, "bad")
+        os.mkdir(good)
+        os.mkdir(bad)
+        _write_manifest(good)
+        _write_manifest(bad, (
+            '[package]\nname = "sibling"\nversion = "0.1.0"\n'
+            '[dependencies.outside]\npath = "../../outside"\n'
+        ))
+        finding = _ingest_document(
+            root.name, "osv-scanner.json", _osv_document())[0]
+        self.assertNotIn("package_origin", finding["tool_evidence"])
+
+    def test_escaping_workspace_member_invalidates_the_whole_manifest_set(self):
+        parent = tempfile.TemporaryDirectory()
+        self.addCleanup(parent.cleanup)
+        root = os.path.join(parent.name, "target")
+        outside = os.path.join(parent.name, "outside")
+        os.mkdir(root)
+        os.mkdir(outside)
+        _write_lock(root)
+        _write_manifest(root, (
+            '[workspace]\nmembers = ["good", "../outside"]\n'
+        ))
+        os.mkdir(os.path.join(root, "good"))
+        _write_manifest(os.path.join(root, "good"))
+        _write_manifest(outside, (
+            '[package]\nname = "sibling"\nversion = "0.1.0"\n'
+        ))
+        finding = _ingest_document(
+            root, "osv-scanner.json", _osv_document())[0]
+        self.assertNotIn("package_origin", finding["tool_evidence"])
+
     def test_publish_false_manifest_stays_on_the_advisor_path(self):
         manifest = (
             '[package]\nname = "workspace-app"\nversion = "1.2.3"\n'

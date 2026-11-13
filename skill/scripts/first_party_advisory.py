@@ -228,9 +228,9 @@ def _manifest_package(package, workspace_package):
         publishable = False
     elif publish is True:
         publishable = True
-    elif isinstance(publish, list) and publish \
+    elif isinstance(publish, list) \
             and all(isinstance(registry, str) and registry for registry in publish):
-        publishable = True
+        publishable = "crates-io" in publish
     else:
         return None
     return (name, version), publishable

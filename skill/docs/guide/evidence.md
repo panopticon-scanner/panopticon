@@ -7,8 +7,9 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
 - `tool_confirmed` — a tool reported it and the claim was independently confirmed. Normally that
   is an advisor verdict. A first-party Cargo advisory is the bounded exception (#3593): ingest
   confirms an exact package/version match against both a sourceless workspace/path entry in
-  Cargo.lock and one confined, in-tree, publishable member manifest. The claim is therefore that
-  this project's own version is affected, not that a third-party dependency is used. Gate-eligible.
+  Cargo.lock and one confined, in-tree member manifest publishable to crates.io (`publish` absent
+  or true, or a registry list containing `crates-io`). The claim is therefore that this project's
+  own version is affected, not that a third-party dependency is used. Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
   Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
   by one advisor: the adversarial backup round is summoned only for primary-CONFIRMED findings in

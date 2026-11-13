@@ -13,8 +13,9 @@
 - **First-party Cargo advisories no longer depend on a third-party-usage verdict (#3593).**
   Tool ingest now matches an advisory's exact package and version against its
   Cargo.lock entry. When every matching entry is sourceless and exactly one
-  confined in-tree member manifest has the same name/version without
-  `publish = false`, the finding is reframed as an advisory against this
+  confined in-tree member manifest has the same name/version and is publishable
+  to crates.io (`publish` absent or true, or a list containing `crates-io`),
+  the finding is reframed as an advisory against this
   project's own version, retained as `tool_confirmed`, and omitted from the
   tool-advisor queue; remediation calls for fixing and releasing the project
   instead of upgrading a dependency. Registry, ambiguous, outside-tree,
