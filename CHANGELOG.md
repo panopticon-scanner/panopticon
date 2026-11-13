@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Unknown Semgrep execution notifications fail closed (#3610).** Semgrep's
+  `Missing plugin` descriptor is now the sole explicit notification allowlist
+  entry; `Timeout`, `Syntax error`, and `Other syntax error` keep their richer
+  existing readers, and every other descriptor becomes partial file coverage.
+  A source-shaped or standard-SARIF location produces a bounded
+  `scanner_notification` file row whose inert descriptor id is named in the
+  coverage note. An unreadable location or malformed descriptor increments
+  `unlocated_records`, so it cannot certify. Diagnostic prose is never
+  published. Tests pin the complete descriptor-id set and both location-text
+  forms from Semgrep v1.183.0 source.
+
 - **The domain-panel severity bar no longer caps CRITICAL on authentication or library use (#3604).**
   The 5.4 small-corpus sweep found 41 CRITICAL-to-HIGH down-overrides, 37 of them wrong against
   the answer keys or on inspection: authenticated template/code execution, a library's default-on script lookup,

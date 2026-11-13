@@ -282,6 +282,63 @@ def semgrep_syntax_disclosures(tools_file_partial):
     return {"semgrep": disclosure} if disclosure else {}
 
 
+def _semgrep_notification_disclosure(facts):
+    """Return bounded located scanner-notification details when self-consistent.
+
+    The adapter has already made paths and descriptor ids inert and bounded;
+    this validator keeps a malformed historical/report shape from reaching the
+    summary note.  The generic partial-coverage note still fails closed when a
+    detailed disclosure cannot be proved.
+    """
+    if not isinstance(facts, dict):
+        return None
+    count = facts.get("scanner_notifications")
+    file_count = facts.get("scanner_notification_files")
+    unlocated = facts.get("scanner_notifications_unlocated")
+    rows = facts.get("files")
+    if not (type(count) is int and count > 0
+            and type(file_count) is int and file_count >= 0
+            and type(unlocated) is int and unlocated >= 0
+            and unlocated <= count and isinstance(rows, list)):
+        return None
+    files = []
+    published_notifications = 0
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict) or "scanner_notifications" not in row:
+            continue
+        path = row.get("file")
+        row_count = row.get("scanner_notifications")
+        ids = row.get("notification_ids")
+        ids_omitted = row.get("notification_ids_omitted")
+        if not (isinstance(path, str) and path and path not in seen
+                and type(row_count) is int and row_count > 0
+                and isinstance(ids, list) and ids
+                and all(isinstance(value, str) and value for value in ids)
+                and type(ids_omitted) is int and ids_omitted >= 0
+                and len(ids) + ids_omitted <= row_count):
+            return None
+        seen.add(path)
+        published_notifications += row_count
+        files.append({"file": path, "ids": ids, "ids_omitted": ids_omitted})
+    files_omitted = file_count - len(files)
+    if (files_omitted < 0
+            or count < published_notifications + unlocated + files_omitted
+            or (not files_omitted
+                and count != published_notifications + unlocated)):
+        return None
+    return {"count": count, "files": files, "files_omitted": files_omitted,
+            "unlocated": unlocated}
+
+
+def semgrep_notification_disclosures(tools_file_partial):
+    """Semgrep scanner failures safe to name in the coverage note (#3610)."""
+    if not isinstance(tools_file_partial, dict):
+        return {}
+    disclosure = _semgrep_notification_disclosure(tools_file_partial.get("semgrep"))
+    return {"semgrep": disclosure} if disclosure else {}
+
+
 def _only_located_semgrep_syntax_errors(facts, disclosure):
     """Whether parser notices are the WHOLE, exactly accounted file gap.
 

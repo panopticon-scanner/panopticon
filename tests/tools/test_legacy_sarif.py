@@ -624,9 +624,47 @@ _MISSING_PLUGIN = {"descriptor": {"id": "Missing plugin"}, "level": "note", "mes
     " Missing Semgrep extension needed for parsing Elixir target. Try adding `--pro-languages` to "
     "your command.")}}
 
+# #3610: every descriptor id Semgrep v1.183.0 can write, read from commit
+# 4fe07d805dd2a4b64fed486e95136923f08648d0 at
+# cli/src/semgrep/semgrep_interfaces/semgrep_output_v1.atd and its
+# src/osemgrep/core/Error.ml string projection.  Timeout and the two syntax
+# ids have dedicated readers; Missing plugin is the one reviewed allowlist
+# entry.  Every remaining id must fail closed even before Semgrep adds another.
+_SEMGREP_1_183_NOTIFICATION_IDS = frozenset({
+    "AST builder error",
+    "Dependency resolution error",
+    "Fatal error",
+    "Fixpoint timeout",
+    "Incompatible rule",
+    "Internal matching error",
+    "Invalid YAML",
+    "InvalidRuleSchemaError",
+    "Lexical error",
+    "Missing plugin",
+    "OOM during interfile analysis",
+    "Other syntax error",
+    "Out of memory",
+    "Pattern parse error",
+    "Rule parse error",
+    "Semgrep match found",
+    "SemgrepError",
+    "SemgrepWarning",
+    "Stack overflow",
+    "Syntax error",
+    "Timeout",
+    "Timeout during interfile analysis",
+    "Too many matches",
+    "UnknownLanguageError",
+})
+
 
 def _timeout_note(text):
     return {"descriptor": {"id": "Timeout"}, "level": "warning", "message": {"text": text}}
+
+
+def _notification_note(notification_id, text):
+    return {"descriptor": {"id": notification_id}, "level": "warning",
+            "message": {"text": text}}
 
 
 def _real_timeouts():
@@ -825,6 +863,112 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
         self.assertEqual(diagnostic, "")
         self.assertEqual(self._report(findings, disposition)["meta"]["coverage"]["tools_file_partial"], {})
 
+    def test_stack_overflow_is_a_named_scanner_notification_gap(self):
+        # Semgrep's v1.183.0 Cli_json_output.error_message renders a located
+        # StackOverflow this way; Sarif_output then drops cli_error.path and
+        # carries only this message plus the descriptor id.
+        private = "PRIVATE-STACK-DIAGNOSTIC"
+        note = _notification_note(
+            "Stack overflow", "Stack overflow at line /src/nested/deep.py:1:\n " + private)
+        findings, disposition, diagnostic = self._ingest(
+            _semgrep_capture([note], paths=("nested/deep.py",)))
+        facts = disposition["file_coverage"]
+        self.assertEqual(only(facts["files"]), {
+            "file": "nested/deep.py", "reason": "scanner_notification",
+            "scanner_notifications": 1,
+            "notification_ids": ["Stack overflow"], "notification_ids_omitted": 0,
+        })
+        self.assertEqual((facts["scanner_notifications"], facts["unlocated_records"]), (1, 0))
+        self.assertIn("nested/deep.py", diagnostic)
+        self.assertIn("Stack overflow", diagnostic)
+        self.assertNotIn(private, diagnostic + json.dumps(disposition))
+        summary = self._report(findings, disposition)["summary"]
+        self.assertFalse(summary["coverage_certified"])
+        self.assertIn("nested/deep.py", summary["coverage_note"])
+        self.assertIn("Stack overflow", summary["coverage_note"])
+        self.assertNotIn(private, summary["coverage_note"])
+
+    def test_out_of_memory_when_running_uses_the_other_pinned_location_shape(self):
+        private = "PRIVATE-OOM-DIAGNOSTIC"
+        note = _notification_note(
+            "Out of memory", "Out of memory when running synthetic.rule on /src/memory.py:\n "
+            + private)
+        _, disposition, diagnostic = self._ingest(
+            _semgrep_capture([note], paths=("memory.py",)))
+        row = only(disposition["file_coverage"]["files"])
+        self.assertEqual((row["file"], row["notification_ids"]),
+                         ("memory.py", ["Out of memory"]))
+        self.assertNotIn(private, diagnostic + json.dumps(disposition))
+
+    def test_standard_sarif_notification_location_wins_over_private_prose(self):
+        private = "PRIVATE-FUTURE-DIAGNOSTIC"
+        note = _notification_note("Future scanner failure", private)
+        note["locations"] = [{"physicalLocation": {
+            "artifactLocation": {"uri": "/src/future.py"}}}]
+        _, disposition, diagnostic = self._ingest(
+            _semgrep_capture([note], paths=("future.py",)))
+        row = only(disposition["file_coverage"]["files"])
+        self.assertEqual((row["file"], row["notification_ids"]),
+                         ("future.py", ["Future scanner failure"]))
+        self.assertNotIn(private, diagnostic + json.dumps(disposition))
+
+    def test_notification_id_disclosure_is_bounded_and_inert(self):
+        raw_id = "Future\x1b[2J" + "x" * 300
+        note = _notification_note(raw_id, raw_id + " at line /src/a.py:1:\n private")
+        _, disposition, diagnostic = self._ingest(_semgrep_capture([note], paths=("a.py",)))
+        published = only(only(disposition["file_coverage"]["files"])["notification_ids"])
+        self.assertLessEqual(len(published), 240)
+        self.assertIn(r"\x1b", published)
+        self.assertNotIn("\x1b", published + diagnostic)
+
+    def test_notification_id_disclosure_is_capped_with_an_omitted_count(self):
+        notes = [_notification_note(
+            "Future scanner failure %03d" % i,
+            "Future scanner failure %03d at line /src/a.py:1:\n private" % i)
+                 for i in range(legacy._SEMGREP_DISCLOSED_RULES + 1)]
+        _, disposition, diagnostic = self._ingest(_semgrep_capture(notes, paths=("a.py",)))
+        row = only(disposition["file_coverage"]["files"])
+        self.assertEqual((row["scanner_notifications"], len(row["notification_ids"]),
+                          row["notification_ids_omitted"]), (101, 100, 1))
+        self.assertIn("1 additional notification id(s) omitted", diagnostic)
+
+    def test_every_other_v1_183_descriptor_fails_closed_when_unlocated(self):
+        dedicated = {"Timeout", "Syntax error", "Other syntax error", "Missing plugin"}
+        notification_ids = sorted(_SEMGREP_1_183_NOTIFICATION_IDS - dedicated)
+        notes = [_notification_note(notification_id, "PRIVATE-SCANNER-DIAGNOSTIC")
+                 for notification_id in notification_ids]
+        findings, disposition, diagnostic = self._ingest(_semgrep_capture(notes))
+        facts = disposition["file_coverage"]
+        self.assertEqual((facts["scanner_notifications"], facts["unlocated_records"],
+                          facts["files"]),
+                         (len(notification_ids), len(notification_ids), []))
+        self.assertNotIn("PRIVATE-SCANNER-DIAGNOSTIC", diagnostic + json.dumps(disposition))
+        self.assertFalse(self._report(findings, disposition)["summary"]["coverage_certified"])
+
+    def test_a_future_notification_without_a_location_fails_closed(self):
+        private = "PRIVATE-FUTURE-DIAGNOSTIC"
+        note = _notification_note("Future scanner failure", private)
+        findings, disposition, diagnostic = self._ingest(_semgrep_capture([note]))
+        facts = disposition["file_coverage"]
+        self.assertEqual((facts["scanner_notifications"], facts["unlocated_records"],
+                          facts["unparsed_files"], facts["files"]),
+                         (1, 1, 0, []))
+        self.assertNotIn(private, diagnostic + json.dumps(disposition))
+        summary = self._report(findings, disposition)["summary"]
+        self.assertFalse(summary["coverage_certified"])
+        self.assertIn("1 semgrep scanner notification(s)", summary["coverage_note"])
+        self.assertIn("without an identifiable file", summary["coverage_note"])
+        self.assertNotIn(private, summary["coverage_note"])
+
+    def test_malformed_notification_descriptors_are_unlocated_gaps(self):
+        notes = [None, "notification", {}, {"descriptor": None},
+                 {"descriptor": {}}, {"descriptor": {"id": 7}}]
+        findings, disposition, _diagnostic = self._ingest(_semgrep_capture(notes))
+        facts = disposition["file_coverage"]
+        self.assertEqual((facts["scanner_notifications"], facts["unlocated_records"],
+                          facts["files"]), (len(notes), len(notes), []))
+        self.assertFalse(self._report(findings, disposition)["summary"]["coverage_certified"])
+
     def test_a_timeout_whose_file_cannot_be_read_is_partial_and_unlocated(self):
         private = "PRIVATE-SCANNER-TEXT"
         notes = [_timeout_note("Timeout when running r on /src/a\nb.py:\n "),   # a newline in the path
@@ -835,7 +979,10 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
         findings, disposition, diagnostic = self._ingest(_semgrep_capture(notes))
         facts = disposition["file_coverage"]
         self.assertEqual((facts["status"], facts["unparsed_files"], facts["files"]), ("partial", 0, []))
-        self.assertEqual((facts["unlocated_records"], facts["rule_timeouts"]), (5, 5))
+        # #3610: the three malformed note/descriptor records now fail closed
+        # alongside the five well-identified but unlocatable Timeout notes.
+        self.assertEqual((facts["unlocated_records"], facts["rule_timeouts"],
+                          facts["scanner_notifications"]), (8, 5, 3))
         self.assertEqual(len(findings), 1)
         self.assertNotIn(private, diagnostic + json.dumps(disposition))
         self.assertFalse(self._report(findings, disposition)["summary"]["coverage_certified"])

@@ -99,6 +99,24 @@ class TestCertify(unittest.TestCase):
             "unlocated_records": 0,
         }}
 
+    @staticmethod
+    def _scanner_notifications(*names, unlocated=0):
+        rows = [{"file": name, "reason": "scanner_notification",
+                 "scanner_notifications": 1,
+                 "notification_ids": ["Stack overflow"],
+                 "notification_ids_omitted": 0} for name in names]
+        return {"semgrep": {
+            "status": "partial", "parsed_files": 2,
+            "unparsed_files": len(names), "unavailable_files": 0,
+            "files": rows, "files_omitted": 0, "capabilities_unavailable": [],
+            "rule_timeouts": 0, "syntax_errors": 0, "size_skipped": 0,
+            "size_limit": 1_000_000, "size_listing": "listed",
+            "unlocated_records": unlocated,
+            "scanner_notifications": len(names) + unlocated,
+            "scanner_notification_files": len(names),
+            "scanner_notifications_unlocated": unlocated,
+        }}
+
     def test_located_semgrep_syntax_errors_disclose_without_decertifying(self):
         # #3603: located parser limitations are disclosed, not execution gaps.
         r = grading_mod.certify(
@@ -123,6 +141,60 @@ class TestCertify(unittest.TestCase):
         self.assertIn("2 file(s) semgrep could not parse: templates/page.html",
                       r["coverage_note"])
         self.assertIn("1 additional file(s) omitted", r["coverage_note"])
+
+    def test_semgrep_scanner_notifications_name_the_file_and_descriptor(self):
+        partial = self._scanner_notifications("nested/deep.py", unlocated=1)
+        r = grading_mod.certify("A", [], "high", set(), [],
+                                tools_file_partial=partial)
+        self.assertFalse(r["coverage_certified"])
+        self.assertIn("nested/deep.py (Stack overflow)", r["coverage_note"])
+        self.assertIn("1 notification(s) without an identifiable file",
+                      r["coverage_note"])
+
+    def test_semgrep_scanner_notification_note_discloses_both_omission_caps(self):
+        partial = self._scanner_notifications("a.py")
+        facts = partial["semgrep"]
+        facts.update({"scanner_notifications": 3, "scanner_notification_files": 2,
+                      "unparsed_files": 2, "files_omitted": 1})
+        facts["files"][0].update({
+            "scanner_notifications": 2,
+            "notification_ids": ["Stack overflow"],
+            "notification_ids_omitted": 1,
+        })
+        r = grading_mod.certify("A", [], "high", set(), [],
+                                tools_file_partial=partial)
+        self.assertFalse(r["coverage_certified"])
+        self.assertIn("1 additional id(s) omitted", r["coverage_note"])
+        self.assertIn("1 additional file(s) omitted", r["coverage_note"])
+
+    def test_malformed_scanner_notification_disclosures_fall_back_to_generic(self):
+        cases = {
+            "boolean total": {"scanner_notifications": True},
+            "missing file count": {"scanner_notification_files": None},
+            "too many unlocated": {"scanner_notifications_unlocated": 2},
+            "non-list rows": {"files": None},
+            "boolean row count": {"row": {"scanner_notifications": True}},
+            "empty id list": {"row": {"notification_ids": []}},
+            "boolean id omission": {"row": {"notification_ids_omitted": False}},
+            "too many ids": {"row": {"notification_ids": ["a", "b"]}},
+            "too few files": {"scanner_notification_files": 0},
+            "too few notifications": {"scanner_notifications": 0},
+            "too many notifications": {"scanner_notifications": 2},
+        }
+        for label, changes in cases.items():
+            with self.subTest(case=label):
+                partial = self._scanner_notifications("a.py")
+                facts = partial["semgrep"]
+                row_changes = changes.get("row")
+                facts.update({key: value for key, value in changes.items()
+                              if key != "row"})
+                if row_changes:
+                    facts["files"][0].update(row_changes)
+                r = grading_mod.certify("A", [], "high", set(), [],
+                                        tools_file_partial=partial)
+                self.assertFalse(r["coverage_certified"])
+                self.assertEqual("partial scanner file coverage: semgrep",
+                                 r["coverage_note"])
 
     def test_multiple_notices_and_analyzed_dockerfiles_remain_parse_only(self):
         partial = self._syntax_only("templates/page.html")
