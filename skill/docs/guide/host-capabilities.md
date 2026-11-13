@@ -171,8 +171,8 @@ entry tier resolves to an alias in the installed config's `[models]` table), and
 (`wire_path` + `parse_wire` end to end on a synthetic session written at the per-run home's own
 layout — the channel the runner reads, not the operator's `~/.kimi-code/sessions`).
 
-Agy claims all five (#3493), measured under an isolated per-run home (`runners/agy_home.py`) with
-`cwd` pinned at `<run_home>/workspace`: `agy-shell-surface` (the registered shells in
+Agy claims all five (#3493), measured with the run's own `--gemini_dir` (`runners/agy_home.py`, #3613)
+and `cwd` pinned at `<run>/workspace`: `agy-shell-surface` (the registered shells in
 `~/.gemini/config/agents` verified against the installed CLI's versioned tool vocabulary and loaded
 cleanly via `agy agents` with no `[project]` shadow), `agy-read-guard-armed` and
 `agy-write-guard-armed` (`agy -p "/hooks" --output-format json` confirms the single `"matcher": "*"`
@@ -199,19 +199,39 @@ model, so it changes none of this. If
 a future envelope reports a model that differs from the bound one, the driver says so on stderr
 (#3550).
 
-agy reaches a run home signed in one of two ways, chosen by `agy_home.auth_route()` (#3576).
+**agy keeps the operator's HOME and takes its configuration from `--gemini_dir` (#3613).** Since
+agy's 2026-11-13 self-update its consumer sign-in lives only in the macOS login Keychain, which a
+child finds through its HOME (#3605). So the HOME is the operator's, agy reads its own sign-in, and
+panopticon never touches the Keychain. Every agy argv starts `agy --gemini_dir <run>/gemini`, an
+undocumented flag that replaces `~/.gemini` for hooks, agents, MCP servers and settings. The run's
+directory holds our single `*` guard hook, the emitted shells, an empty MCP list (agy starts every
+listed server, even for `agy agents`) and the two settings above; nothing is copied or linked from
+`~/.gemini`. The child still reads the rest of the operator's HOME as any process does, a global
+gitconfig for one: `--gemini_dir`, the guard hook and #3607's Keychain path rules are the boundary,
+not HOME. Every child runs with `BROWSER=/usr/bin/false`.
 
-- **The consumer sign-in:** the linked `~/.gemini/antigravity-cli/antigravity-oauth-token`.
-- **A Gemini API key:** `GEMINI_API_KEY` in the child's environment, with `modelProvider:
-  "gemini"` written into the run home's settings.json (https://antigravity.google/docs/cli/reference/).
+**The runner's preflight fails closed before any entry launches (#3613).** `agy agents` must list
+exactly the run's shells, with no `[project]` one, and agy's own log under the run must say `loaded
+1 named hooks from 1 hooks.json file(s)` (`agy_home.HOOK_LOAD_PROOF`): together they prove the
+undocumented flag took effect, and a change in either refuses with `AgyPreflightRefused`. Then one
+minimal real turn (`-p "Reply with the single word OK."`, the default model, no effort, no agent and
+so no tools) must return a success envelope. An interactive-auth line, `You are not logged into
+Antigravity` or a stopped child raises `AgyAuthUnreachable`; any other failure raises
+`AgyPreflightRefused`. A refused run leaves no run directory behind.
+
+agy signs in one of two ways, chosen by `agy_home.auth_route()` (#3576, #3613).
+
+- **agy's own sign-in** (`signin`, the default): the consumer plan, read by agy from the Keychain.
+- **A Gemini API key** (`key`): `GEMINI_API_KEY` in the child's environment, with `modelProvider:
+  "gemini"` written into the run's settings.json (https://antigravity.google/docs/cli/reference/).
   The key is never written to disk.
 
-The token wins when both are present: the consumer plan carries Carbon, and a stray key in a shell
-must not move a run to another model and per-token billing. `PANOPTICON_AGY_AUTH=key` or `=token`
-forces a route, and any other value is refused. With neither source, `agy_home.build()` refuses
-before any child launches, with `agy auth not reachable from the isolated HOME` and both routes
-named. agy 1.5.6 keeps its consumer token in the macOS login Keychain, which an isolated HOME cannot
-reach, and an interactive `agy` session that refreshes the token deletes the file.
+The key route runs only when `PANOPTICON_AGY_AUTH=key` names it; any value other than `signin` or
+`key` is refused. A key alone never moves a run off the sign-in: the consumer plan carries Carbon,
+and a stray key in a shell must not move a run to another model and per-token billing. When the
+sign-in's preflight turn fails with a key set, the refusal says how to choose the key route and does
+not take it. The token file runs once linked (`antigravity-oauth-token`) no longer exists after the
+self-update and is not read.
 
 **API-key runs use Argon (High), not Carbon.** The key route offers no Carbon at any effort. It takes
 no `--effort`: the level is part of the model name, as in `gemini-4-argon-high`. A run on that route

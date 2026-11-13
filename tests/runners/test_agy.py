@@ -96,6 +96,38 @@ def _fixture_user_home(root):
     return home, agents_dir
 
 
+def _args(cmd):
+    """An agy argv after its leading `--gemini_dir <dir>` (#3613)."""
+    return list(cmd[3:]) if len(cmd) > 2 and cmd[1] == agy_home.GEMINI_DIR_FLAG else list(cmd[1:])
+
+
+def _answers_preflight(fake=None, *, agents_rc=0, agents_extra=(), hook_log=True, turn=None):
+    """Wrap `fake` so the #3613 preflight is answered as a signed-in agy answers it:
+    `agy agents` lists exactly the run's shells and agy's log under the run records
+    the hook load; the minimal turn returns the documented envelope. Any other
+    launch goes to `fake` (and is refused when there is none)."""
+    def wrapped(cmd, **kw):
+        if _args(cmd) == ["agents"]:
+            gdir = cmd[2]
+            names = sorted(agy_home.expected_agents(os.path.dirname(gdir))) + list(agents_extra)
+            if hook_log:
+                log_dir = os.path.join(gdir, "antigravity-cli", "log")
+                os.makedirs(log_dir, exist_ok=True)
+                with open(os.path.join(log_dir, "cli-20261113_000000.log"), "w",
+                          encoding="utf-8") as fh:
+                    fh.write("I1113 hooks_manager.go:54] %s\n" % agy_home.HOOK_LOAD_PROOF)
+            return subprocess.CompletedProcess(cmd, agents_rc, stdout="\n".join(names) + "\n",
+                                               stderr="")
+        if _args(cmd)[-2:] == ["-p", agy_runner.PREFLIGHT_PROMPT]:
+            if turn is not None:
+                return turn(cmd, **kw)
+            return subprocess.CompletedProcess(cmd, 0, stdout=ENVELOPE, stderr="")
+        if fake is None:
+            raise AssertionError("unexpected agy launch: %r" % (cmd,))
+        return fake(cmd, **kw)
+    return wrapped
+
+
 class TestAgyModelCatalogue(unittest.TestCase):
     def test_known_models_cover_current_catalogue_and_pending_retirements(self):
         current = {
@@ -114,7 +146,9 @@ class TestAgyHomeIsolationAndGitCeiling(unittest.TestCase):
     """Changes 1, 2, and 3: minimal auth link, Git ceiling in <run_home>/workspace,
     and single '*' PreToolUse matcher."""
 
-    def test_build_links_only_oauth_token_and_agents_and_creates_git_ceiling(self):
+    def test_build_writes_only_the_runs_gemini_dir_and_creates_git_ceiling(self):
+        # #3613: nothing is copied or linked from ~/.gemini; the run's gemini dir
+        # holds settings, the shells link, our hook and an empty MCP list.
         with tempfile.TemporaryDirectory() as d:
             user_home, agents_dir = _fixture_user_home(d)
             run_home = agy_home.build(
@@ -122,26 +156,36 @@ class TestAgyHomeIsolationAndGitCeiling(unittest.TestCase):
                 user_home=user_home, registration_dir=agents_dir)
             workspace_dir = agy_home.workspace_dir(run_home)
             self.addCleanup(agy_home.teardown, run_home, "complete")
+            self.assertEqual(["gemini", "workspace"], sorted(os.listdir(run_home)))
+            gdir = agy_home.gemini_dir(run_home)
 
-            cli_dir = os.path.join(run_home, ".gemini", "antigravity-cli")
-            self.assertEqual(sorted(os.listdir(cli_dir)),
-                             ["antigravity-oauth-token", "settings.json"])
-            self.assertTrue(os.path.islink(os.path.join(cli_dir, "antigravity-oauth-token")))
+            cli_dir = os.path.join(gdir, "antigravity-cli")
+            self.assertEqual(["settings.json"], sorted(os.listdir(cli_dir)))
             self.assertFalse(os.path.islink(os.path.join(cli_dir, "settings.json")))
             with open(os.path.join(cli_dir, "settings.json"), encoding="utf-8") as fh:
                 self.assertEqual(
                     {"agentMode": "accept-edits", "allowNonWorkspaceAccess": True},
                     json.load(fh))
 
-            config_dir = os.path.join(run_home, ".gemini", "config")
-            self.assertEqual(sorted(os.listdir(config_dir)), ["agents", "hooks.json"])
-            self.assertTrue(os.path.islink(os.path.join(config_dir, "agents")))
+            config_dir = os.path.join(gdir, "config")
+            self.assertEqual(["agents", "hooks.json", "mcp_config.json"],
+                             sorted(os.listdir(config_dir)))
+            self.assertEqual(os.path.realpath(agents_dir),
+                             os.path.realpath(os.path.join(config_dir, "agents")))
+            with open(os.path.join(config_dir, "mcp_config.json"), encoding="utf-8") as fh:
+                self.assertEqual({"mcpServers": {}}, json.load(fh))
             with open(os.path.join(config_dir, "hooks.json"), encoding="utf-8") as fh:
                 hooks_doc = json.load(fh)
             pre = hooks_doc["panopticon-guard"]["PreToolUse"]
             self.assertEqual(len(pre), 1)
             self.assertEqual(pre[0]["matcher"], "*")
             self.assertEqual(pre[0]["hooks"][0]["timeout"], 30)
+            for root, dirs, files in os.walk(run_home):
+                for name in dirs + files:
+                    target = os.path.realpath(os.path.join(root, name))
+                    if os.path.islink(os.path.join(root, name)):
+                        with self.subTest(link=name):
+                            self.assertEqual(os.path.realpath(agents_dir), target)
 
             git_dir = os.path.join(workspace_dir, ".git")
             self.assertTrue(os.path.isdir(os.path.join(git_dir, "objects")))
@@ -149,10 +193,10 @@ class TestAgyHomeIsolationAndGitCeiling(unittest.TestCase):
             with open(os.path.join(git_dir, "HEAD"), encoding="utf-8") as fh:
                 self.assertEqual("ref: refs/heads/main\n", fh.read())
 
-    def test_prepare_creates_git_ceiling_and_teardown_strips_secrets_on_failure(self):
+    def test_prepare_creates_git_ceiling_and_teardown_strips_the_agents_link_on_failure(self):
         with tempfile.TemporaryDirectory() as d:
             user_home, agents_dir = _fixture_user_home(d)
-            runner = agy_runner.Runner("agy")
+            runner = agy_runner.Runner("agy", runner=_answers_preflight())
             with mock.patch.dict(os.environ, {"HOME": user_home}):
                 runner.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
             run_home = runner.run_home
@@ -160,10 +204,9 @@ class TestAgyHomeIsolationAndGitCeiling(unittest.TestCase):
 
             runner.teardown("failed")
             self.assertTrue(os.path.isdir(run_home))
-            cli_dir = os.path.join(run_home, ".gemini", "antigravity-cli")
-            self.assertFalse(os.path.lexists(os.path.join(cli_dir, "antigravity-oauth-token")))
-            self.assertFalse(os.path.lexists(os.path.join(run_home, ".gemini", "config", "agents")))
-            self.assertTrue(os.path.isfile(os.path.join(run_home, ".gemini", "config", "hooks.json")))
+            self.assertFalse(os.path.lexists(agy_home.agents_dir(run_home)))
+            self.assertTrue(os.path.isfile(os.path.join(
+                agy_home.gemini_dir(run_home), "config", "hooks.json")))
             agy_home.teardown(run_home, "complete")
             self.assertFalse(os.path.exists(run_home))
 
@@ -173,7 +216,7 @@ class TestCommand(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         user_home, agents_dir = _fixture_user_home(self.tmp.name)
-        self.r = agy_runner.Runner("agy")
+        self.r = agy_runner.Runner("agy", runner=_answers_preflight())
         with mock.patch.dict(os.environ, {"HOME": user_home}):
             self.r.prepare(self.tmp.name, os.path.join(self.tmp.name, "run"),
                            registration_dir=agents_dir)
@@ -181,7 +224,7 @@ class TestCommand(unittest.TestCase):
 
     def test_enforced_entry_passes_agent_model_and_disable_slash_commands(self):
         cmd = self.r.command(_entry(True), "gemini-4-argon-high")
-        self.assertEqual(cmd[0], "agy")
+        self.assertEqual(cmd[:3], ["agy", "--gemini_dir", agy_home.gemini_dir(self.r.agy_home)])
         self.assertIn("--output-format", cmd)
         self.assertIn("json", cmd)
         self.assertIn("--disable-slash-commands", cmd)
@@ -200,7 +243,8 @@ class TestCommand(unittest.TestCase):
         # #3564: the exact argv, `--effort` right after `--model`, never a `-high` slug.
         entry = _entry(True, model="gemini-4-carbon", effort="high")
         self.assertEqual(self.r.command(entry, "gemini-4-carbon"), [
-            "agy", "--output-format", "json", "--disable-slash-commands",
+            "agy", "--gemini_dir", agy_home.gemini_dir(self.r.agy_home),
+            "--output-format", "json", "--disable-slash-commands",
             "--agent", "panopticon-domain-panel", "--model", "gemini-4-carbon",
             "--effort", "high", "-p", entry["prompt"]])
 
@@ -376,50 +420,6 @@ class TestAgyAuthFailsClosed(unittest.TestCase):
         return {base.ENV_ENTRY_ID: "review-app-SEC",
                 base.ENV_WRITE_ALLOWLIST: "/w.json", base.ENV_READ_SCOPE: "/s.json"}
 
-    def _home_without_token(self, d, dangling=False):
-        user_home, agents_dir = _fixture_user_home(d)
-        token = os.path.join(user_home, ".gemini", "antigravity-cli",
-                             agy_home.OAUTH_TOKEN_FILE)
-        os.unlink(token)
-        if dangling:
-            os.symlink(os.path.join(d, "gone"), token)
-        return user_home, agents_dir
-
-    def test_build_refuses_when_the_token_is_missing_or_dangling(self):
-        for dangling in (False, True):
-            with self.subTest(dangling=dangling), tempfile.TemporaryDirectory() as d:
-                user_home, agents_dir = self._home_without_token(d, dangling)
-                before = set(agy_home._LIVE_HOMES)
-                with self.assertRaises(agy_home.AgyAuthUnreachable) as caught:
-                    agy_home.build("/s.json", "/w.json", user_home=user_home,
-                                   registration_dir=agents_dir)
-                self.assertEqual(before, agy_home._LIVE_HOMES)   # no home was made
-                message = str(caught.exception)
-                self.assertIn("agy auth not reachable from the isolated HOME", message)
-                self.assertIn("antigravity-oauth-token is missing", message)
-                self.assertIn("#3576", message)
-                self.assertNotIn(user_home, message)
-
-    def test_build_links_a_present_token(self):
-        with tempfile.TemporaryDirectory() as d:
-            user_home, agents_dir = _fixture_user_home(d)
-            home = agy_home.build("/s.json", "/w.json", user_home=user_home,
-                                  registration_dir=agents_dir)
-            self.addCleanup(agy_home.teardown, home, "complete")
-            self.assertTrue(os.path.islink(os.path.join(
-                home, ".gemini", "antigravity-cli", agy_home.OAUTH_TOKEN_FILE)))
-
-    def test_prepare_refuses_before_any_launch(self):
-        seen = {}
-        with tempfile.TemporaryDirectory() as d:
-            user_home, agents_dir = self._home_without_token(d)
-            with mock.patch.dict(os.environ, {"HOME": user_home}):
-                r = agy_runner.Runner("agy", runner=lambda cmd, **kw: seen.setdefault("cmd", cmd))
-                with self.assertRaises(agy_home.AgyAuthUnreachable):
-                    r.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
-        self.assertEqual({}, seen)
-        self.assertIsNone(r.agy_home)
-
     def test_the_stop_pattern_names_the_lines_after_silent_auth_fails(self):
         lines = self.LOG.splitlines()
         self.assertIsNone(agy_runner.INTERACTIVE_AUTH.search(lines[0].encode()))
@@ -430,7 +430,7 @@ class TestAgyAuthFailsClosed(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             user_home, agents_dir = _fixture_user_home(d)
             with mock.patch.dict(os.environ, {"HOME": user_home}):
-                r = agy_runner.Runner("agy", runner=fake)
+                r = agy_runner.Runner("agy", runner=_answers_preflight(fake))
                 r.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
                 self.addCleanup(r.teardown, "complete")
                 return r.run_entry(_entry(True), self._env())
@@ -467,78 +467,197 @@ class TestAgyAuthFailsClosed(unittest.TestCase):
         self.assertTrue(self._run(fake).ok)
 
 
-class TestTheKeyRoute(unittest.TestCase):
-    """#3576 step 2: the Gemini API key as agy's auth, beside the consumer token.
-    Fixture homes and environments only; FAKE_KEY is a sentinel, not a key."""
+class TestThePreflightFailsClosed(unittest.TestCase):
+    """#3613: `prepare()` proves --gemini_dir took effect and that the route signs in,
+    with one minimal real turn, before any entry launches. Every failure is loud,
+    names its cause, leaves no run directory, and never falls back."""
 
-    def _homes(self, d, token=True):
+    LOG = TestAgyAuthFailsClosed.LOG
+
+    def _prepare(self, runner, env=None):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, True))
         user_home, agents_dir = _fixture_user_home(d)
-        if not token:
-            os.unlink(agy_home.token_path(user_home))
-        return user_home, agents_dir
+        with mock.patch.dict(os.environ, dict({"HOME": user_home}, **(env or {}))):
+            r = agy_runner.Runner("agy", runner=runner)
+            self.addCleanup(r.teardown, "complete")
+            r.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
+        return r
+
+    def _assert_refused(self, runner, exc, text, env=None):
+        before = set(agy_home._LIVE_HOMES)
+        with self.assertRaises(exc) as caught:
+            self._prepare(runner, env)
+        self.assertIn(text, str(caught.exception))
+        self.assertEqual(before, agy_home._LIVE_HOMES)          # no run left behind
+        return caught.exception
+
+    def test_a_signed_in_run_passes_with_exactly_two_preflight_launches(self):
+        calls = []
+
+        def turn(cmd, **kw):
+            calls.append(("turn", list(cmd), kw))
+            return subprocess.CompletedProcess(cmd, 0, stdout=ENVELOPE, stderr="")
+        r = self._prepare(_answers_preflight(turn=turn))
+        self.assertEqual("signin", r.auth_route)
+        self.assertEqual(1, len(calls))
+        _tag, cmd, kw = calls[0]
+        # R3: the default model, no effort, no agent, so no tools.
+        self.assertEqual(["agy", "--gemini_dir", agy_home.gemini_dir(r.agy_home),
+                          "--output-format", "json", "--disable-slash-commands",
+                          "-p", agy_runner.PREFLIGHT_PROMPT], cmd)
+        self.assertIs(agy_runner.INTERACTIVE_AUTH, kw["stop_on"])
+        self.assertEqual("/usr/bin/false", kw["env"]["BROWSER"])
+
+    def test_agents_that_are_not_exactly_ours_refuse(self):
+        for kwargs, text in (({"agents_extra": ("panopticon-scout-shadow",)}, "expected exactly"),
+                             ({"agents_extra": ("someone-elses-agent",)}, "expected exactly"),
+                             ({"agents_rc": 3}, "exited 3")):
+            with self.subTest(**{k: str(v) for k, v in kwargs.items()}):
+                self._assert_refused(_answers_preflight(**kwargs),
+                                     agy_runner.AgyPreflightRefused, text)
+
+    def test_a_project_scoped_agent_refuses(self):
+        def agents(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 0, stdout="x [project]\n", stderr="")
+        wrapped = _answers_preflight()
+
+        def fake(cmd, **kw):
+            return agents(cmd, **kw) if _args(cmd) == ["agents"] else wrapped(cmd, **kw)
+        self._assert_refused(fake, agy_runner.AgyPreflightRefused, "did not isolate the shells")
+
+    def test_a_missing_hook_load_line_refuses_with_its_own_message(self):
+        exc = self._assert_refused(_answers_preflight(hook_log=False),
+                                   agy_runner.AgyPreflightRefused, "agy hook-load proof missing")
+        self.assertIn(agy_home.HOOK_LOAD_PROOF, str(exc))
+        self.assertIn("log format may have changed", str(exc))
+
+    def test_the_hook_load_line_is_the_measured_text(self):
+        self.assertEqual("loaded 1 named hooks from 1 hooks.json file(s)", agy_home.HOOK_LOAD_PROOF)
+
+    def test_auth_trouble_in_the_turn_is_agy_auth_unreachable(self):
+        def stopped(cmd, **kw):
+            raise children.HostStopped(cmd, output="", stderr=self.LOG)
+
+        def interactive(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=self.LOG)
+
+        def not_signed_in(cmd, **kw):
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout="", stderr="error getting token source: %s.\n"
+                % agy_runner.NOT_SIGNED_IN)
+        for turn in (stopped, interactive, not_signed_in):
+            with self.subTest(turn=turn.__name__):
+                exc = self._assert_refused(_answers_preflight(turn=turn),
+                                           agy_home.AgyAuthUnreachable, "agy is not authenticated")
+                self.assertNotIn("runs only when you choose it", str(exc))
+
+    def test_a_failed_sign_in_with_a_key_set_names_the_key_route_and_does_not_take_it(self):
+        def interactive(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=self.LOG)
+        seen = []
+
+        def models(cmd, **kw):
+            seen.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout=KEY_ROUTE_MODELS, stderr="")
+        exc = self._assert_refused(_answers_preflight(models, turn=interactive),
+                                   agy_home.AgyAuthUnreachable, "PANOPTICON_AGY_AUTH=key",
+                                   env={"GEMINI_API_KEY": FAKE_KEY})
+        self.assertIn("runs only when you choose it", str(exc))
+        self.assertEqual([], seen)                    # the key route was never tried
+
+    def test_other_turn_failures_refuse_as_preflight(self):
+        def bad_envelope(cmd, **kw):
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"status": "ERROR", "error": "quota exhausted"}),
+                stderr="")
+
+        def timeout(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, agy_runner.PREFLIGHT_TIMEOUT)
+
+        def no_json(cmd, **kw):
+            return subprocess.CompletedProcess(cmd, 2, stdout="", stderr="crashed\n")
+        for turn, text in ((bad_envelope, "quota exhausted"), (timeout, "timed out"),
+                           (no_json, "exited 2")):
+            with self.subTest(turn=turn.__name__):
+                self._assert_refused(_answers_preflight(turn=turn),
+                                     agy_runner.AgyPreflightRefused, text)
+
+
+class TestTheKeyRoute(unittest.TestCase):
+    """#3576 step 2 and #3613: the Gemini API key as agy's auth, beside agy's own
+    sign-in. Fixture homes and environments only; FAKE_KEY is a sentinel, not a key."""
+
+    def _homes(self, d):
+        return _fixture_user_home(d)
 
     def test_the_route_choice(self):
-        with tempfile.TemporaryDirectory() as d:
-            with_token, _ = self._homes(os.path.join(d, "a"))
-            without, _ = self._homes(os.path.join(d, "b"), token=False)
-            key = {"GEMINI_API_KEY": FAKE_KEY}
-            for env, home, route in (
-                    ({}, with_token, "token"),
-                    (key, without, "key"),
-                    (key, with_token, "token"),                 # the token wins when both
-                    (dict(key, PANOPTICON_AGY_AUTH="key"), with_token, "key"),
-                    ({"PANOPTICON_AGY_AUTH": "token"}, with_token, "token"),
-                    ({"GEMINI_API_KEY": "  "}, with_token, "token")):
-                with self.subTest(env=sorted(env), route=route):
-                    self.assertEqual(route, agy_home.auth_route(env, user_home=home))
+        # #3613 (R2): the sign-in is the default and a key alone never chooses the
+        # key route; only PANOPTICON_AGY_AUTH=key does.
+        key = {"GEMINI_API_KEY": FAKE_KEY}
+        for env, route in (
+                ({}, "signin"),
+                (key, "signin"),
+                (dict(key, PANOPTICON_AGY_AUTH="key"), "key"),
+                (dict(key, PANOPTICON_AGY_AUTH="signin"), "signin"),
+                ({"PANOPTICON_AGY_AUTH": " "}, "signin"),
+                ({"GEMINI_API_KEY": "  "}, "signin")):
+            with self.subTest(env=sorted(env), route=route):
+                self.assertEqual(route, agy_home.auth_route(env))
 
     def test_the_route_refusals(self):
-        with tempfile.TemporaryDirectory() as d:
-            with_token, _ = self._homes(os.path.join(d, "a"))
-            without, _ = self._homes(os.path.join(d, "b"), token=False)
-            for env, home, why in (
-                    ({}, without, agy_home.AUTH_UNREACHABLE),
-                    ({"GEMINI_API_KEY": "  "}, without, agy_home.AUTH_UNREACHABLE),
-                    ({"PANOPTICON_AGY_AUTH": "key"}, with_token, "GEMINI_API_KEY is not set"),
-                    ({"PANOPTICON_AGY_AUTH": "token", "GEMINI_API_KEY": FAKE_KEY}, without,
-                     agy_home.AUTH_UNREACHABLE),
-                    ({"PANOPTICON_AGY_AUTH": "secret-sentinel"}, with_token,
-                     "PANOPTICON_AGY_AUTH must be one of token, key")):
-                with self.subTest(why=why[:40]):
-                    with self.assertRaises(agy_home.AgyAuthUnreachable) as caught:
-                        agy_home.auth_route(env, user_home=home)
-                    self.assertIn(why, str(caught.exception))
-                    self.assertNotIn("secret-sentinel", str(caught.exception))
+        for env, why in (
+                ({"PANOPTICON_AGY_AUTH": "key"}, "GEMINI_API_KEY is not set"),
+                ({"PANOPTICON_AGY_AUTH": "key", "GEMINI_API_KEY": "  "},
+                 "GEMINI_API_KEY is not set"),
+                ({"PANOPTICON_AGY_AUTH": "token"}, "PANOPTICON_AGY_AUTH must be one of signin, key"),
+                ({"PANOPTICON_AGY_AUTH": "secret-sentinel"},
+                 "PANOPTICON_AGY_AUTH must be one of signin, key")):
+            with self.subTest(why=why[:40], env=sorted(env)):
+                with self.assertRaises(agy_home.AgyAuthUnreachable) as caught:
+                    agy_home.auth_route(env)
+                self.assertIn(why, str(caught.exception))
+                self.assertNotIn("secret-sentinel", str(caught.exception))
 
-    def test_the_message_names_both_routes(self):
-        for part in ("antigravity-oauth-token is missing", "export GEMINI_API_KEY",
-                     "gemini-4-argon-high in place of Carbon"):
+    def test_the_message_names_both_routes_and_never_the_keychain_item(self):
+        for part in ("Sign in with an interactive `agy` session", "PANOPTICON_AGY_AUTH=key",
+                     "GEMINI_API_KEY", "gemini-4-argon-high in place of Carbon",
+                     "panopticon never reads it", "#3613"):
             self.assertIn(part, agy_home.AUTH_UNREACHABLE)
+        self.assertNotIn("antigravity-oauth-token", agy_home.AUTH_UNREACHABLE)
+
+    def test_a_set_key_that_was_not_chosen_is_named_never_used(self):
+        # #3613 (R2): a failed sign-in with a key in the environment says how to
+        # choose the key route; it does not choose it.
+        with_key = str(agy_home.unreachable({"GEMINI_API_KEY": FAKE_KEY}))
+        without = str(agy_home.unreachable({}))
+        self.assertTrue(with_key.startswith(agy_home.AUTH_UNREACHABLE))
+        self.assertIn("runs only when you choose it", with_key)
+        self.assertEqual(agy_home.AUTH_UNREACHABLE, without)
+        self.assertNotIn(FAKE_KEY, with_key)
 
     def test_a_key_route_home_sets_the_provider_and_never_holds_the_key(self):
         with tempfile.TemporaryDirectory() as d:
-            user_home, agents_dir = self._homes(d, token=False)
+            user_home, agents_dir = self._homes(d)
             with mock.patch.dict(os.environ, {"GEMINI_API_KEY": FAKE_KEY}):
                 home = agy_home.build("/s.json", "/w.json", user_home=user_home,
                                       registration_dir=agents_dir, route="key")
             self.addCleanup(agy_home.teardown, home, "complete")
-            with open(os.path.join(home, ".gemini", "antigravity-cli", "settings.json"),
+            with open(os.path.join(agy_home.gemini_dir(home), "antigravity-cli", "settings.json"),
                       encoding="utf-8") as fh:
                 self.assertEqual("gemini", json.load(fh)["modelProvider"])
-            self.assertFalse(os.path.lexists(os.path.join(
-                home, ".gemini", "antigravity-cli", agy_home.OAUTH_TOKEN_FILE)))
             for root, _dirs, files in os.walk(home):
                 for name in files:
                     with open(os.path.join(root, name), "rb") as fh:
                         self.assertNotIn(FAKE_KEY.encode(), fh.read(), name)
 
-    def test_a_token_route_home_has_no_provider(self):
+    def test_a_signin_route_home_has_no_provider(self):
         with tempfile.TemporaryDirectory() as d:
             user_home, agents_dir = self._homes(d)
             home = agy_home.build("/s.json", "/w.json", user_home=user_home,
-                                  registration_dir=agents_dir, route="token")
+                                  registration_dir=agents_dir, route="signin")
             self.addCleanup(agy_home.teardown, home, "complete")
-            with open(os.path.join(home, ".gemini", "antigravity-cli", "settings.json"),
+            with open(os.path.join(agy_home.gemini_dir(home), "antigravity-cli", "settings.json"),
                       encoding="utf-8") as fh:
                 self.assertNotIn("modelProvider", json.load(fh))
 
@@ -581,17 +700,23 @@ class TestTheKeyRoute(unittest.TestCase):
         self.assertEqual({("key", "gemini-4-carbon"): "gemini-4-argon-high"},
                          agy_runner.ROUTE_SUBSTITUTES)
 
-    def _key_runner(self, d, seen, models_rc=0, models_out=KEY_ROUTE_MODELS):
+    def _key_runner(self, d, seen, models_rc=0, models_out=KEY_ROUTE_MODELS, turns=None):
         def fake(cmd, **kw):
             seen.append((list(cmd), kw))
-            if cmd[1:] == ["models"]:
+            if _args(cmd) == ["models"]:
                 return subprocess.CompletedProcess(cmd, models_rc, stdout=models_out, stderr="")
             return subprocess.CompletedProcess(cmd, 0, stdout=ENVELOPE, stderr="")
-        user_home, agents_dir = self._homes(d, token=False)
-        patch = mock.patch.dict(os.environ, {"HOME": user_home, "GEMINI_API_KEY": FAKE_KEY})
+
+        def turn(cmd, **kw):
+            if turns is not None:
+                turns.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout=ENVELOPE, stderr="")
+        user_home, agents_dir = self._homes(d)
+        patch = mock.patch.dict(os.environ, {"HOME": user_home, "GEMINI_API_KEY": FAKE_KEY,
+                                             "PANOPTICON_AGY_AUTH": "key"})
         patch.start()
         self.addCleanup(patch.stop)
-        r = agy_runner.Runner("agy", runner=fake)
+        r = agy_runner.Runner("agy", runner=_answers_preflight(fake, turn=turn))
         self.addCleanup(r.teardown, "complete")
         r.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
         return r
@@ -606,7 +731,8 @@ class TestTheKeyRoute(unittest.TestCase):
             r = self._key_runner(d, seen)
             self.assertEqual("key", r.auth_route)
             self.assertIn("gemini-4-argon-high", r.key_models)
-        self.assertEqual([["agy", "models"]], [c for c, _kw in seen])
+        self.assertEqual([["models"]], [_args(c) for c, _kw in seen])
+        self.assertEqual("--gemini_dir", seen[0][0][1])
         self.assertIs(agy_runner.INTERACTIVE_AUTH, seen[0][1]["stop_on"])
         self.assertEqual(FAKE_KEY, seen[0][1]["env"]["GEMINI_API_KEY"])
 
@@ -650,7 +776,25 @@ class TestTheKeyRoute(unittest.TestCase):
         self.assertEqual(outage.HOST_FAILURE, res.failure_class)
         self.assertEqual(1, len(seen))                          # only `agy models`
 
-    def test_the_token_route_is_unchanged(self):
+    def test_the_preflight_turn_on_the_key_route_runs_its_default(self):
+        turns = []
+        with tempfile.TemporaryDirectory() as d:
+            self._key_runner(d, [], turns=turns)
+        self.assertEqual(1, len(turns))
+        self.assertEqual(["--output-format", "json", "--disable-slash-commands",
+                          "--model", agy_runner.KEY_ROUTE_DEFAULT,
+                          "-p", agy_runner.PREFLIGHT_PROMPT], _args(turns[0]))
+
+    def test_a_key_route_without_its_default_is_refused_and_leaves_no_run(self):
+        listed = "Available models:\ngemini-3.8-flash-medium\tFlash\n"
+        with tempfile.TemporaryDirectory() as d:
+            before = set(agy_home._LIVE_HOMES)
+            with self.assertRaisesRegex(agy_runner.AgyPreflightRefused,
+                                        "does not list gemini-4-argon-high"):
+                self._key_runner(d, [], models_out=listed)
+            self.assertEqual(before, agy_home._LIVE_HOMES)
+
+    def test_the_signin_route_is_the_default_even_with_a_key_exported(self):
         seen = {}
         with tempfile.TemporaryDirectory() as d:
             user_home, agents_dir = _fixture_user_home(d)
@@ -658,12 +802,12 @@ class TestTheKeyRoute(unittest.TestCase):
                 def fake(cmd, **kw):
                     seen["cmd"] = cmd
                     return subprocess.CompletedProcess(cmd, 0, stdout=ENVELOPE, stderr="")
-                r = agy_runner.Runner("agy", runner=fake)
+                r = agy_runner.Runner("agy", runner=_answers_preflight(fake))
                 r.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
                 self.addCleanup(r.teardown, "complete")
                 res = r.run_entry(_entry(True, model="gemini-4-carbon", effort="high"),
                                   self._env())
-        self.assertEqual("token", r.auth_route)
+        self.assertEqual("signin", r.auth_route)
         cmd = seen["cmd"]
         self.assertEqual(["--model", "gemini-4-carbon", "--effort", "high"],
                          cmd[cmd.index("--model"):cmd.index("--model") + 4])
@@ -697,9 +841,9 @@ class TestRunEntry(unittest.TestCase):
         def fake(cmd, **kw):
             seen["cmd"], seen["kw"] = cmd, kw
             return subprocess.CompletedProcess(cmd, 0, stdout=ENVELOPE, stderr="")
-        return fake
+        return _answers_preflight(fake)
 
-    def test_run_entry_uses_isolated_home_and_workspace_cwd(self):
+    def test_run_entry_keeps_the_operators_home_and_leads_with_gemini_dir(self):
         seen = {}
         with tempfile.TemporaryDirectory() as d:
             user_home, agents_dir = _fixture_user_home(d)
@@ -716,7 +860,12 @@ class TestRunEntry(unittest.TestCase):
         self.assertIsNone(res.model)       # #3550: agy reports no answering model
         self.assertEqual(res.usage["input_tokens"], 100)
         child_env = seen["kw"]["env"]
-        self.assertEqual(child_env["HOME"], r.run_home)
+        # #3613: the operator's HOME, so agy reads its own sign-in; the run's
+        # configuration comes from --gemini_dir, and no child may open a browser.
+        self.assertEqual(user_home, child_env["HOME"])
+        self.assertEqual("/usr/bin/false", child_env["BROWSER"])
+        self.assertEqual(["agy", "--gemini_dir", os.path.join(r.run_home, "gemini")],
+                         seen["cmd"][:3])
         self.assertNotIn("ANTIGRAVITY_CLI", child_env)
         self.assertNotIn("ANTIGRAVITY_CLI_ALIAS", child_env)
         self.assertEqual(child_env[base.ENV_ENTRY_ID], "review-app-SEC")
@@ -786,7 +935,7 @@ class TestRunEntry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             user_home, agents_dir = _fixture_user_home(d)
             with mock.patch.dict(os.environ, {"HOME": user_home}):
-                r = agy_runner.Runner("agy", runner=slow)
+                r = agy_runner.Runner("agy", runner=_answers_preflight(slow))
                 r.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
                 self.addCleanup(r.teardown, "complete")
                 res = r.run_entry(_entry(False), self._env())
@@ -810,7 +959,7 @@ class TestRunEntry(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             user_home, agents_dir = _fixture_user_home(d)
             with mock.patch.dict(os.environ, {"HOME": user_home}):
-                r = agy_runner.Runner("agy", runner=fake)
+                r = agy_runner.Runner("agy", runner=_answers_preflight(fake))
                 r.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
                 self.addCleanup(r.teardown, "complete")
                 res = r.run_entry(_entry(True, model="gemini-4-argon-high"), self._env())

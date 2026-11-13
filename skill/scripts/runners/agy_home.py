@@ -1,34 +1,39 @@
-"""Per-run isolated `HOME` for headless `agy` reviewer launches (#3493).
+"""Per-run configuration directory for headless `agy` reviewer launches
+(#3493, #3613).
 
-`agy` discovers user/global hooks from ``~/.gemini/config/hooks.json``,
-registered agent shells from ``~/.gemini/config/agents/``, MCP servers from
-``~/.gemini/antigravity-cli/mcp/``, and project customizations by walking up
-from `cwd` to the repository root (`.git`). It offers no `--hooks-file` or
-`--setting-sources` CLI flag.
+`agy` discovers user/global hooks, registered agent shells, MCP servers and
+CLI settings under its gemini directory (``~/.gemini`` by default), and project
+customizations by walking up from `cwd` to the repository root (`.git`).
 
-To confine every headless `agy` launch without touching the operator's real
-``~/.gemini/`` tree and without letting the operator's global hooks, MCP
-servers, rules, skills, or `.gemini/agents/` shadow shells leak into the review:
+Since agy's 2026-11-13 self-update its consumer sign-in lives only in the
+macOS login Keychain, which Security.framework finds through the child's
+`HOME` (#3605). So a child keeps the operator's real `HOME` and agy reaches
+its own sign-in; panopticon never touches the Keychain. What is isolated is
+agy's gemini directory: every launch passes `--gemini_dir <run>/gemini`, an
+undocumented flag that REPLACES ``~/.gemini`` for hooks, agents, MCP and
+settings (#3605 P1), so nothing the operator configured there leaks in.
 
-1. `build()` creates a fresh `0700` directory `<run_home>` outside `review_root`
-   (under `/tmp` or `/var/tmp`, space-free).
-2. Inside `<run_home>/.gemini/antigravity-cli/`, ONLY `antigravity-oauth-token`
-   is symlinked from the operator's `~/.gemini/antigravity-cli/` (never `mcp/`,
-   `brain/`, `knowledge/`, `implicit/`, `annotations/`, or the operator's
-   `settings.json`), plus a minimal `settings.json` with
-   `{"agentMode": "accept-edits", "allowNonWorkspaceAccess": true}`. Setting
-   `agentMode: "accept-edits"` allows `write_file` to execute non-interactively
-   in headless `-p` mode once our `PreToolUse` hook allows the entry's declared
-   `out_file`. Setting `allowNonWorkspaceAccess: true` turns off `agy`'s own
-   workspace sandbox so the child (running in `<run_home>/workspace`) can reach
-   `review_root`, making our `PreToolUse` hook (`agy_guard_hook.py`) the only
-   read/write boundary.
-3. Inside `<run_home>/.gemini/config/`, `agents` is symlinked to the emitted
-   `~/.gemini/config/agents` directory, and `hooks.json` registers a single
-   `PreToolUse` hook with `"matcher": "*"` invoking `agy_guard_hook.py`.
-4. Inside `<run_home>/workspace/`, a minimal Git ceiling
-   `.git/{HEAD,objects,refs}` stops `agy`'s ancestor walk at
-   `<run_home>/workspace`.
+1. `build()` creates a fresh `0700` directory `<run>` outside `review_root`
+   (under `/tmp` or `/var/tmp`, space-free). Nothing is copied or linked from
+   ``~/.gemini``.
+2. `<run>/gemini/antigravity-cli/settings.json` holds
+   `{"agentMode": "accept-edits", "allowNonWorkspaceAccess": true}`, plus
+   `modelProvider: "gemini"` on the API-key route. `accept-edits` lets
+   `write_file` run in headless `-p` mode once our `PreToolUse` hook allows the
+   entry's declared `out_file`; `allowNonWorkspaceAccess` turns off agy's own
+   workspace sandbox so the child (in `<run>/workspace`) can reach
+   `review_root`, making our hook (`agy_guard_hook.py`) the read/write
+   boundary, with #3607's Keychain path rules inside it.
+3. `<run>/gemini/config/agents` links the emitted shells, `hooks.json`
+   registers a single `"matcher": "*"` `PreToolUse` hook invoking
+   `agy_guard_hook.py`, and `mcp_config.json` lists no servers: agy launches
+   every listed server at start-up, even for `agy agents`.
+4. `<run>/workspace/.git/{HEAD,objects,refs}` stops agy's ancestor walk at
+   `<run>/workspace`.
+
+The child still reads the rest of the operator's HOME as any process does (a
+global gitconfig, for one); `--gemini_dir`, our hook and #3607's path rules
+are the boundary, not HOME.
 """
 import atexit
 import os
@@ -53,72 +58,80 @@ TOOL_VOCABULARY = {
 
 HOOK_MATCHER = "*"
 HOOK_TIMEOUT_SECONDS = 30
-OAUTH_TOKEN_FILE = "antigravity-oauth-token"
 
-# #3576: the two ways an agy child can be signed in.
-# - "token": the consumer sign-in, `~/.gemini/antigravity-cli/<OAUTH_TOKEN_FILE>`
-#   linked into the run home. agy 1.5.6 keeps its token in the macOS login
-#   Keychain, which an isolated HOME cannot reach; the file is only its fallback,
-#   and an interactive agy session that refreshes the token deletes it.
+# #3576/#3613: the two ways an agy child can be signed in.
+# - "signin": agy's own consumer sign-in, which it keeps in the macOS login
+#   Keychain and reads through the operator's real HOME. panopticon cannot check
+#   it beforehand without touching the Keychain, so the runner's preflight turn
+#   is the check.
 # - "key": a Gemini API key, `GEMINI_API_KEY` in the child's environment, with
-#   `modelProvider: "gemini"` in the run home's settings.json
+#   `modelProvider: "gemini"` in the run's settings.json
 #   (https://antigravity.google/docs/cli/reference/). Never written to disk.
-# The token wins when both are present (owner ruling, 2026-11-12): the consumer
-# plan carries Carbon, the key route does not, and a stray key in a shell must not
-# move a run to another model and per-token billing. AUTH_ENV forces a route.
+# The sign-in is the default (owner rulings, 2026-11-12 and 2026-11-13): the
+# consumer plan carries Carbon, the key route does not, and a stray key in a shell
+# must not move a run to another model and per-token billing. The key route runs
+# only when AUTH_ENV names it; nothing ever switches routes on its own.
 AUTH_ENV = "PANOPTICON_AGY_AUTH"
-AUTH_ROUTES = ("token", "key")
+AUTH_ROUTES = ("signin", "key")
 KEY_ENV = "GEMINI_API_KEY"
 
 AUTH_UNREACHABLE = (
-    "agy auth not reachable from the isolated HOME: agy is not authenticated there. "
-    "There is no consumer sign-in (~/.gemini/antigravity-cli/%s is missing; agy may now "
-    "keep its sign-in only in the macOS Keychain, which a panopticon run home cannot "
-    "reach) and no %s in the environment. Sign in with an interactive `agy` session "
-    "until that file exists, or export %s (API-key runs use gemini-4-argon-high in "
-    "place of Carbon, which that route does not offer), then re-run (#3576)."
-    % (OAUTH_TOKEN_FILE, KEY_ENV, KEY_ENV))
+    "agy is not authenticated: its preflight turn could not sign in. agy keeps its "
+    "sign-in in the macOS Keychain and reads it itself through your HOME; panopticon "
+    "never reads it. Sign in with an interactive `agy` session, or set %s=key with "
+    "%s exported (API-key runs use gemini-4-argon-high in place of Carbon, which that "
+    "route does not offer), then re-run (#3613)." % (AUTH_ENV, KEY_ENV))
+# R2 (#3613): a failed sign-in never moves a run to the key route by itself.
+KEY_NOT_CHOSEN = (" %s is set, but the key route runs only when you choose it: set "
+                  "%s=key to use it." % (KEY_ENV, AUTH_ENV))
 
 
 class AgyAuthUnreachable(RuntimeError):
-    """No agy sign-in would be reachable from the run home (#3576).
+    """No agy sign-in could be proven for the run (#3576, #3613).
 
-    Raised by `build()` before any child launches, so no paid work starts and
-    no child can fall back to a browser sign-in."""
+    Raised before any entry launches, so no paid work starts and no child can
+    fall back to a browser sign-in."""
 
     def __init__(self, message=AUTH_UNREACHABLE):
         super().__init__(message)
 
 
-def token_path(user_home=None):
-    """The consumer sign-in a run home links."""
-    home = os.path.abspath(user_home) if user_home else os.path.expanduser("~")
-    return os.path.join(home, ".gemini", "antigravity-cli", OAUTH_TOKEN_FILE)
+def auth_route(env=None):
+    """"signin" or "key": the sign-in an agy child will use (#3576, #3613).
 
-
-def auth_route(env=None, user_home=None):
-    """"token" or "key": the sign-in an agy child would use (#3576).
-
-    Raises `AgyAuthUnreachable` when the chosen route has nothing to sign in with,
-    or when AUTH_ENV names a route that does not exist. Never echoes the key."""
+    Raises `AgyAuthUnreachable` when AUTH_ENV names a route that does not exist,
+    or names the key route with no key. Never echoes the key."""
     env = os.environ if env is None else env
     forced = (env.get(AUTH_ENV) or "").strip()
     if forced and forced not in AUTH_ROUTES:
         raise AgyAuthUnreachable("%s must be one of %s" % (AUTH_ENV, ", ".join(AUTH_ROUTES)))
-    has_token = os.path.isfile(token_path(user_home))
-    has_key = bool((env.get(KEY_ENV) or "").strip())
-    if forced == "key" or (not forced and not has_token and has_key):
-        if not has_key:
+    if forced == "key":
+        if not (env.get(KEY_ENV) or "").strip():
             raise AgyAuthUnreachable("%s=key but %s is not set (#3576)" % (AUTH_ENV, KEY_ENV))
         return "key"
-    if not has_token:
-        raise AgyAuthUnreachable()
-    return "token"
+    return "signin"
+
+
+def unreachable(env=None):
+    """The sign-in failure, naming the key route when a key is set but not chosen."""
+    env = os.environ if env is None else env
+    has_key = bool((env.get(KEY_ENV) or "").strip())
+    return AgyAuthUnreachable(AUTH_UNREACHABLE + (KEY_NOT_CHOSEN if has_key else ""))
 
 
 SETTINGS_FILE = "settings.json"
 HOOKS_FILE = "hooks.json"
+MCP_FILE = "mcp_config.json"
+GEMINI_DIR = "gemini"
 WORKSPACE_DIR = "workspace"
+GEMINI_DIR_FLAG = "--gemini_dir"
+# #3613: the line agy's own log writes when it loads our hooks.json from the run's
+# gemini directory (agy 1.5.x, #3605 P1). The preflight's proof that --gemini_dir
+# took effect; a format change fails closed with HOOK_LOAD_UNPROVEN.
+HOOK_LOAD_PROOF = "loaded 1 named hooks from 1 hooks.json file(s)"
+HOOK_LOAD_UNPROVEN = ("agy hook-load proof missing: no %r line in %s; agy's log format may "
+                      "have changed, or --gemini_dir (undocumented) no longer moves its "
+                      "configuration (#3613)")
 _HOME_PARENTS = ("/tmp", "/var/tmp")
 
 _LIVE_HOMES: set[str] = set()
@@ -146,7 +159,7 @@ def _interpreter():
 
 
 def hook_command(read_scope_path, write_allowlist_path):
-    """Shell-quoted command string for `<run_home>/.gemini/config/hooks.json`."""
+    """Shell-quoted command string for `<run>/gemini/config/hooks.json`."""
     return guard_rules.hook_command(
         _interpreter(), "-I", _hook_script(),
         os.path.abspath(read_scope_path),
@@ -154,7 +167,7 @@ def hook_command(read_scope_path, write_allowlist_path):
 
 
 def hooks_document(read_scope_path, write_allowlist_path, *, matcher=HOOK_MATCHER):
-    """The `hooks.json` structure written to `<run_home>/.gemini/config/hooks.json`."""
+    """The `hooks.json` structure written to `<run>/gemini/config/hooks.json`."""
     return {
         "panopticon-guard": {
             "PreToolUse": [
@@ -220,68 +233,111 @@ def workspace_dir(home):
     return os.path.join(home, WORKSPACE_DIR)
 
 
+def gemini_dir(home):
+    """The run's `--gemini_dir`: agy's configuration for this run, and nothing else."""
+    return os.path.join(home, GEMINI_DIR)
+
+
+def gemini_dir_argv(home):
+    """`["--gemini_dir", <run>/gemini]`, which leads every agy argv (#3613)."""
+    return [GEMINI_DIR_FLAG, gemini_dir(home)]
+
+
+def agents_dir(home):
+    return os.path.join(gemini_dir(home), "config", "agents")
+
+
+def expected_agents(home):
+    """The shell names the run links: each `<name>.md` in its agents directory."""
+    try:
+        names = os.listdir(agents_dir(home))
+    except OSError:
+        return frozenset()
+    return frozenset(n[:-3] for n in names if n.endswith(".md") and len(n) > 3)
+
+
+def listed_agents(stdout):
+    """The agent names `agy agents` prints, one per line or as `- <name> ...`."""
+    found = set()
+    for line in (stdout or "").splitlines():
+        s = line.strip()
+        if not s or s.startswith(("Available", "Tools:")):
+            continue
+        if s.startswith("- "):
+            s = (s[2:].split() or [""])[0]
+        if s:
+            found.add(s)
+    return frozenset(found)
+
+
+def hook_load_proven(home):
+    """(True, "") when agy's newest log under the run loaded our hooks.json, else
+    (False, why). The log is agy's own; it lives under `<run>/gemini` only when
+    --gemini_dir took effect."""
+    log_dir = os.path.join(gemini_dir(home), "antigravity-cli", "log")
+    try:
+        logs = sorted(n for n in os.listdir(log_dir) if n.startswith("cli-") and n.endswith(".log"))
+    except OSError:
+        logs = []
+    if not logs:
+        return False, HOOK_LOAD_UNPROVEN % (HOOK_LOAD_PROOF, log_dir)
+    newest = os.path.join(log_dir, logs[-1])
+    try:
+        with open(newest, encoding="utf-8", errors="replace") as fh:
+            if any(HOOK_LOAD_PROOF in line for line in fh):
+                return True, ""
+    except OSError:
+        pass
+    return False, HOOK_LOAD_UNPROVEN % (HOOK_LOAD_PROOF, newest)
+
+
 def build(read_scope_path="", write_allowlist_path="", *, user_home=None,
           registration_dir=None, review_root=None, matcher=HOOK_MATCHER, route=None):
-    """Create and populate the isolated per-run `HOME` for `agy`.
+    """Create and populate the per-run directory whose `gemini/` is `--gemini_dir`.
 
-    `route` is `auth_route()`'s answer when the caller already has it."""
-    real_user_home = (os.path.abspath(user_home) if user_home
-                      else os.path.expanduser("~"))
+    `route` is `auth_route()`'s answer when the caller already has it. `user_home`
+    only locates the emitted shells when no `registration_dir` is given."""
     row = hosts.spec("agy")
     reg_dir = (registration_dir
                if registration_dir is not None
                else (row.registration_dir if row else ""))
     if user_home and registration_dir is None:
-        reg_dir = os.path.join(real_user_home, ".gemini", "config", "agents")
-
-    # #3576: refuse before a home exists. A missing or dangling token file used to
-    # be skipped silently, and every child then fell back to a browser sign-in.
+        reg_dir = os.path.join(os.path.abspath(user_home), ".gemini", "config", "agents")
     if route is None:
-        route = auth_route(user_home=real_user_home)
+        route = auth_route()
     if route not in AUTH_ROUTES:
         raise AgyAuthUnreachable("unknown agy auth route (#3576)")
-    src_token = token_path(real_user_home)
 
     _ensure_signal_handler()
     home = _create_home(review_root)
     _LIVE_HOMES.add(home)
     try:
-        cli_dir = os.path.join(home, ".gemini", "antigravity-cli")
-        cfg_dir = os.path.join(home, ".gemini", "config")
+        cli_dir = os.path.join(gemini_dir(home), "antigravity-cli")
+        cfg_dir = os.path.join(gemini_dir(home), "config")
         os.makedirs(cli_dir, mode=0o700, exist_ok=True)
         os.makedirs(cfg_dir, mode=0o700, exist_ok=True)
 
-        # Change 1: symlink ONLY `antigravity-oauth-token` from the user's
-        # `~/.gemini/antigravity-cli/`. Never symlink `mcp/`, `brain/`,
-        # `knowledge/`, `implicit/`, `annotations/`, or user `settings.json`.
         settings = {"agentMode": "accept-edits", "allowNonWorkspaceAccess": True}
-        if route == "token":
-            os.symlink(os.path.abspath(src_token), os.path.join(cli_dir, OAUTH_TOKEN_FILE))
-        else:
-            # The key route: agy reads GEMINI_API_KEY from the child's environment.
-            # The key itself is never written here (#3576).
+        if route == "key":
+            # agy reads GEMINI_API_KEY from the child's environment; the key itself
+            # is never written here (#3576).
             settings["modelProvider"] = "gemini"
-
-        # Minimal isolated CLI settings: allow reaching `review_root` outside
-        # `<run_home>/workspace` and enable `accept-edits` so `write_file`
-        # executes in headless `-p` mode once our `"*"` PreToolUse hook allows
-        # the entry's declared `out_file`.
         guard_rules.atomic_write_json(os.path.join(cli_dir, SETTINGS_FILE), settings, indent=2)
 
-        # Link the registered enforcement shells into `<run_home>/.gemini/config/agents`.
-        dst_agents = os.path.join(cfg_dir, "agents")
+        dst_agents = agents_dir(home)
         if reg_dir and os.path.isdir(reg_dir):
             os.symlink(os.path.abspath(reg_dir), dst_agents)
         else:
             os.makedirs(dst_agents, mode=0o700, exist_ok=True)
 
-        # Write the `"*"` PreToolUse guard hook configuration.
         guard_rules.atomic_write_json(
             os.path.join(cfg_dir, HOOKS_FILE),
             hooks_document(read_scope_path, write_allowlist_path, matcher=matcher),
             indent=2)
+        # No MCP server starts with a review child (#3613).
+        guard_rules.atomic_write_json(os.path.join(cfg_dir, MCP_FILE), {"mcpServers": {}},
+                                      indent=2)
 
-        # Create `<run_home>/workspace/.git` ceiling.
         _init_workspace_ceiling(home)
     except Exception:
         _LIVE_HOMES.discard(home)
@@ -293,9 +349,9 @@ def build(read_scope_path="", write_allowlist_path="", *, user_home=None,
 
 
 def _strip_secrets(path):
-    """Remove the OAuth token and agents links when retaining a failed `<run_home>`."""
-    for rel in (os.path.join(".gemini", "antigravity-cli", OAUTH_TOKEN_FILE),
-                os.path.join(".gemini", "config", "agents")):
+    """Remove the agents link when retaining a failed `<run>`; no credential is
+    ever written there (#3613)."""
+    for rel in (os.path.join(GEMINI_DIR, "config", "agents"),):
         target = os.path.join(path, rel)
         try:
             if os.path.islink(target) or os.path.isfile(target):
@@ -305,7 +361,7 @@ def _strip_secrets(path):
 
 
 def teardown(path, status):
-    """Remove `<run_home>` on completion; strip secrets when retained."""
+    """Remove `<run>` on completion; strip the agents link when retained."""
     if not path:
         return
     _LIVE_HOMES.discard(path)

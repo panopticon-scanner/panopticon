@@ -43,9 +43,9 @@ HOOKS_STDOUT = json.dumps({
 })
 
 
-# #3576: `agy_home.build()` refuses a home with no reachable sign-in, and the probes
-# build homes from HOME. Every test here gets a fixture HOME with a stand-in token,
-# so none reads the real ~/.gemini.
+# #3613: agy children keep the operator's HOME and take their configuration from
+# `--gemini_dir`. Every test here runs under a fixture HOME, so none reads the real
+# ~/.gemini, and no sign-in is staged anywhere: panopticon never stages one.
 _HOME_PATCH = None
 _HOME_DIR = None
 
@@ -53,10 +53,6 @@ _HOME_DIR = None
 def setUpModule():
     global _HOME_PATCH, _HOME_DIR
     _HOME_DIR = tempfile.TemporaryDirectory()
-    cli_dir = os.path.join(_HOME_DIR.name, ".gemini", "antigravity-cli")
-    os.makedirs(cli_dir)
-    with open(os.path.join(cli_dir, agy_home.OAUTH_TOKEN_FILE), "w", encoding="utf-8") as fh:
-        fh.write("oauth-token-fixture")
     _HOME_PATCH = mock.patch.dict(os.environ, {"HOME": _HOME_DIR.name})
     _HOME_PATCH.start()
     for name in ("GEMINI_API_KEY", "PANOPTICON_AGY_AUTH"):        # #3576: chosen per test
@@ -92,11 +88,16 @@ class TestAgyShellSurfaceProbe(unittest.TestCase):
         self.assertEqual(hosts.PROVEN, state, detail)
         self.assertEqual(agy_probes.AGY_SHELL_SURFACE, by)
         self.assertIn("1.5", detail)
-        # Change 2: `agy agents` runs under isolated HOME=<run_home> and cwd=<run_home>/workspace
+        # #3613: `agy agents` keeps the operator's HOME, takes the run's --gemini_dir
+        # as its first argument, and runs in <run>/workspace.
         agents_calls = [(cmd, kw) for cmd, kw in seen if "agents" in cmd]
         self.assertEqual(len(agents_calls), 1)
-        self.assertTrue(agents_calls[0][1]["cwd"].endswith("workspace"))
-        self.assertIn("HOME", agents_calls[0][1]["env"])
+        cmd, kw = agents_calls[0]
+        self.assertTrue(kw["cwd"].endswith("workspace"))
+        self.assertEqual(_HOME_DIR.name, kw["env"]["HOME"])
+        self.assertEqual("/usr/bin/false", kw["env"]["BROWSER"])
+        self.assertEqual("--gemini_dir", cmd[1])
+        self.assertEqual(os.path.join(os.path.dirname(kw["cwd"]), "gemini"), cmd[2])
 
     def test_missing_shells_refute(self):
         runner, _ = self._runner()
@@ -151,8 +152,10 @@ class TestAgyShellSurfaceProbe(unittest.TestCase):
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIn("9.99", detail)
 
-    def test_shadow_shell_in_user_gemini_agents_refutes(self):
-        # Change 2: ~/.gemini/agents is a user-level shadow location for agy.
+    def test_a_real_home_gemini_agents_shell_shadows_gemini_but_not_agy(self):
+        # #3613: every agy launch passes --gemini_dir, which replaces ~/.gemini
+        # (#3605 P1), so ~/.gemini/agents shadows nothing for agy. gemini still
+        # reads it, and still refutes on it.
         with tempfile.TemporaryDirectory() as home, \
                 tempfile.TemporaryDirectory() as target:
             shadow_dir = os.path.join(home, ".gemini", "agents")
@@ -161,10 +164,12 @@ class TestAgyShellSurfaceProbe(unittest.TestCase):
                       encoding="utf-8") as fh:
                 fh.write("---\nname: panopticon-scout\n---\n")
             with mock.patch.dict(os.environ, {"HOME": home}):
-                state, by, detail = probes_common.probe_shadow_shells("agy", target)
-        self.assertEqual(hosts.REFUTED, state)
-        self.assertEqual(probes_common.SHADOW_SHELL_SCAN, by)
-        self.assertIn(".gemini/agents/panopticon-scout.md", detail)
+                agy = probes_common.probe_shadow_shells("agy", target)
+                gemini = probes_common.probe_shadow_shells("gemini", target)
+        self.assertNotEqual(hosts.REFUTED, agy[0], agy[2])
+        self.assertEqual(hosts.REFUTED, gemini[0])
+        self.assertEqual(probes_common.SHADOW_SHELL_SCAN, gemini[1])
+        self.assertIn(".gemini/agents/panopticon-scout.md", gemini[2])
 
 
 class TestTheProbesFailClosedOnAuth(unittest.TestCase):
@@ -199,20 +204,24 @@ class TestTheProbesFailClosedOnAuth(unittest.TestCase):
         self.assertEqual(hosts.UNKNOWN, state)
         self.assertIn(agy_home.AUTH_UNREACHABLE, detail)
 
-    def test_the_guard_probes_are_unknown_without_a_reachable_sign_in(self):
+    def test_no_sign_in_is_staged_and_the_launch_keeps_the_operators_home(self):
+        # #3613 (R1): no token file is linked or required. The guard probes build
+        # the run and launch under the operator's HOME with the run's --gemini_dir;
+        # whether agy is signed in is agy's to answer (the tests above).
         launched = []
+
+        def fake(cmd, **kw):
+            launched.append((list(cmd), kw["env"].get("HOME")))
+            return subprocess.CompletedProcess(cmd, 0, stdout=HOOKS_STDOUT, stderr="")
+
         with tempfile.TemporaryDirectory() as empty, \
                 mock.patch.dict(os.environ, {"HOME": empty}):
-            for probe, probe_id in ((agy_probes.probe_agy_read_guard,
-                                     agy_probes.AGY_READ_GUARD_ARMED),
-                                    (agy_probes.probe_agy_write_guard,
-                                     agy_probes.AGY_WRITE_GUARD_ARMED)):
-                with self.subTest(probe=probe_id):
-                    state, by, detail = probe(
-                        "agy", hooks_runner=lambda cmd, **kw: launched.append(cmd))
-                    self.assertEqual((hosts.UNKNOWN, probe_id), (state, by))
-                    self.assertEqual(agy_home.AUTH_UNREACHABLE, detail)
-        self.assertEqual([], launched)
+            agy_probes.probe_agy_read_guard("agy", hooks_runner=fake)
+        self.assertTrue(launched)
+        for cmd, home in launched:
+            with self.subTest(cmd=cmd[3:5]):
+                self.assertEqual(["agy", "--gemini_dir"], cmd[:2])
+                self.assertEqual(empty, home)
 
 
 class TestTheModelProbeOnTheKeyRoute(unittest.TestCase):
@@ -227,13 +236,15 @@ class TestTheModelProbeOnTheKeyRoute(unittest.TestCase):
 
         def fake(cmd, **kw):
             seen.append(list(cmd))
-            if cmd[1:] == ["models"]:
+            if cmd[3:] == ["models"]:
                 return subprocess.CompletedProcess(cmd, models_rc, stdout=self.LISTED, stderr="")
             slug = cmd[cmd.index("--model") + 1]
             return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(
                 {"command": {"name": "model", "data": {"id": slug}}}), stderr="")
-        with tempfile.TemporaryDirectory() as no_token, tempfile.TemporaryDirectory() as d:
-            env = dict({"HOME": no_token, "GEMINI_API_KEY": self.FAKE_KEY}, **(extra_env or {}))
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as d:
+            # #3613 (R2): the key route runs only when the operator names it.
+            env = dict({"HOME": home, "GEMINI_API_KEY": self.FAKE_KEY,
+                        "PANOPTICON_AGY_AUTH": "key"}, **(extra_env or {}))
             with mock.patch.dict(os.environ, env):
                 _emit_agy_shells(d)
                 result = agy_probes.probe_agy_model_bound("agy", registration_dir=d, runner=fake)
@@ -245,7 +256,8 @@ class TestTheModelProbeOnTheKeyRoute(unittest.TestCase):
         self.assertIn("on the API-key route", detail)
         self.assertIn("gemini-4-argon-high", detail)
         self.assertNotIn("gemini-4-carbon", detail)
-        self.assertEqual(["models"], seen[0][1:])
+        self.assertEqual(["models"], seen[0][3:])
+        self.assertEqual("--gemini_dir", seen[0][1])
         self.assertFalse(any("--effort" in c for c in seen))
         self.assertFalse(any(c[-1] == "/effort" for c in seen))
 
@@ -254,6 +266,13 @@ class TestTheModelProbeOnTheKeyRoute(unittest.TestCase):
             "PANOPTICON_MODEL_DOMAIN_PANEL": '{"model": "gemini-4-carbon", "effort": "high"}'})
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("never substituted", detail)
+
+    def test_a_key_alone_does_not_choose_the_key_route(self):
+        # #3613 (R2): with no PANOPTICON_AGY_AUTH the probe stays on the sign-in
+        # route and never asks for the key route's model list.
+        (_state, _by, detail), seen = self._run(extra_env={"PANOPTICON_AGY_AUTH": ""})
+        self.assertNotIn("on the API-key route", detail)
+        self.assertFalse(any(c[3:] == ["models"] for c in seen))
 
     def test_a_failed_listing_is_unknown(self):
         (state, _by, detail), _seen = self._run(models_rc=2)

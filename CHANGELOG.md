@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **agy keeps the operator's HOME and isolates its configuration with `--gemini_dir` (#3613).**
+  agy's 2026-11-13 self-update moved its consumer sign-in into the macOS login Keychain, which an
+  isolated HOME cannot reach (#3605). Every agy launch now keeps the operator's HOME, so agy
+  reads its own sign-in and panopticon never touches the Keychain, and starts `agy --gemini_dir
+  <run>/gemini`: a per-run directory holding only our guard hook, the emitted shells, an empty
+  MCP list and two settings, in place of `~/.gemini`. Before any entry, a fail-closed preflight
+  checks that `agy agents` lists exactly the run's shells and that agy's log recorded the hook
+  load, then runs one minimal real turn (default model, no tools); auth trouble raises
+  `AgyAuthUnreachable`, anything else `AgyPreflightRefused`, and nothing falls back. The token
+  file link is retired. The routes are now `signin` (the default) and `key`, and the key route
+  runs only when `PANOPTICON_AGY_AUTH=key` names it: a failed sign-in with a key set says how to
+  choose it and does not. For agy, the shadow-shell scan no longer reads `~/.gemini/agents`,
+  which `--gemini_dir` replaces.
+
 - **No guard grant covers the macOS Keychain (#3607).** The #3605 research showed an isolated
   run home only hides the login keychain: any same-user process can name it by absolute path.
   Every host's read and write tools (claude, kimi, agy, gemini, and the Codex read broker) now

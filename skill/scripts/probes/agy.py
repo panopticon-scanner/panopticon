@@ -63,13 +63,17 @@ def _frontmatter_field(path, key):
 
 def _run_agy(argv, home, *, runner=None, extra_env=None, timeout=PROBE_TIMEOUT):
     run = DEFAULT_RUNNER if runner is None else runner
-    env = dict(os.environ, HOME=home, NO_COLOR="1")
+    # #3613: the operator's HOME (agy's own sign-in), the run's --gemini_dir first,
+    # and no browser.
+    env = dict(os.environ, NO_COLOR="1")
+    env[agy_runner.BROWSER_ENV[0]] = agy_runner.BROWSER_ENV[1]
     for marker in ("ANTIGRAVITY_CLI", "ANTIGRAVITY_CLI_ALIAS"):
         env.pop(marker, None)
     if extra_env:
         env.update(extra_env)
     try:
-        proc = run([_BINARY, *argv], env=env, cwd=agy_home.workspace_dir(home),
+        proc = run([_BINARY, *agy_home.gemini_dir_argv(home), *argv], env=env,
+                   cwd=agy_home.workspace_dir(home),
                    capture_output=True, text=True, timeout=timeout,
                    stop_on=agy_runner.INTERACTIVE_AUTH)
     except children.HostStopped as exc:
@@ -235,14 +239,7 @@ def probe_agy_shell_surface(host, registration_dir=None, *, runner=None):
     if "[project]" in out_text:
         return (hosts.REFUTED, AGY_SHELL_SURFACE,
                 "`agy agents` reported a [project] shadow shell instead of [user] scope")
-    discovered = set()
-    for line in out_text.splitlines():
-        s = line.strip()
-        if not s or s.startswith(("Available", "Tools:")):
-            continue
-        if s.startswith("- "):
-            s = s[2:].split()[0]
-        discovered.add(s)
+    discovered = set(agy_home.listed_agents(out_text))
     missing_agents = sorted(set(expected_by_agent) - discovered)
     extra_agents = sorted(a for a in (discovered - set(expected_by_agent))
                           if a.startswith("panopticon-"))

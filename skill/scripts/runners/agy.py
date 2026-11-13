@@ -1,8 +1,10 @@
 """Headless runner for the `agy` (Google Antigravity CLI) host family (#3493).
 
 Launches each review entry in a dedicated `agy -p` subprocess with:
-- `HOME` pointed at the isolated per-run home built by `runners.agy_home`
-- `cwd` pointed at `<agy_home>/workspace` (which carries a `.git` ceiling)
+- the operator's real `HOME`, so agy reaches its own Keychain sign-in (#3613)
+- `--gemini_dir <run>/gemini` leading the argv: agy's configuration for this run
+  only, built by `runners.agy_home`, in place of ``~/.gemini``
+- `cwd` pointed at `<run>/workspace` (which carries a `.git` ceiling)
 - `--disable-slash-commands` to stop `/skill` and slash-command expansion of the `-p` prompt
 - `--agent <shell>` for enforced entries
 - `--model <slug>` for role-resolved model binding
@@ -92,6 +94,19 @@ INTERACTIVE_AUTH = re.compile(
 ROUTE_SUBSTITUTES = {("key", "gemini-4-carbon"): "gemini-4-argon-high"}
 _MODEL_ID = re.compile(r"[a-z0-9][a-z0-9.\-]*")
 MODELS_TIMEOUT = 60
+
+# #3613: the fail-closed preflight `prepare()` runs before any entry launches.
+# The turn is real and minimal: the default model (on the key route, its bound
+# default), no --effort, no agent and so no tools (owner ruling R3, 2026-11-13).
+PREFLIGHT_PROMPT = "Reply with the single word OK."
+PREFLIGHT_TIMEOUT = 180
+KEY_ROUTE_DEFAULT = ROUTE_SUBSTITUTES[("key", "gemini-4-carbon")]
+NOT_SIGNED_IN = "You are not logged into Antigravity"
+BROWSER_ENV = ("BROWSER", "/usr/bin/false")
+
+
+class AgyPreflightRefused(RuntimeError):
+    """The run's agy configuration could not be proven in effect (#3613)."""
 
 
 def listed_models(stdout):
@@ -346,6 +361,10 @@ class Runner(base.HostRunner):
                 if (self.runner == self.launch and DEFAULT_RUNNER is not None)
                 else self.launcher(self.runner, DEFAULT_RUNNER))
 
+    def _agy(self, *args):
+        """An agy argv for this run: `--gemini_dir` always leads (#3613)."""
+        return [self.CLI, *agy_home.gemini_dir_argv(self.agy_home), *args]
+
     def _list_models(self):
         """The models the key route offers, from one `agy models` (#3576).
 
@@ -353,7 +372,7 @@ class Runner(base.HostRunner):
         whose models are unknown."""
         try:
             proc = self._launch_callable()(
-                [self.CLI, "models"], cwd=self.workspace_dir, env=self.launch_env(),
+                self._agy("models"), cwd=self.workspace_dir, env=self.launch_env(),
                 capture_output=True, text=True, timeout=MODELS_TIMEOUT,
                 stop_on=INTERACTIVE_AUTH)
         except children.HostStopped as exc:
@@ -385,8 +404,68 @@ class Runner(base.HostRunner):
         self.run_home = self.agy_home
         self.workspace_dir = agy_home.workspace_dir(self.agy_home)
         self.auth_route = route
-        if route == "key":
-            self.key_models = self._list_models()
+        try:
+            if route == "key":
+                self.key_models = self._list_models()
+            self._preflight()
+        except BaseException:
+            # A refused run leaves no run directory behind (#3613).
+            self.teardown("complete")
+            raise
+
+    def _preflight(self):
+        """Fail closed before any entry launches (#3613).
+
+        1. `--gemini_dir` took effect: `agy agents` lists exactly the shells this
+           run links, and agy's own log under the run loaded our hooks.json.
+        2. One minimal real turn proves the route signs in. Auth trouble raises
+           AgyAuthUnreachable (naming the key route when a key is set but not
+           chosen); anything else raises AgyPreflightRefused. Nothing falls back."""
+        launch, env = self._launch_callable(), self.launch_env()
+        try:
+            proc = launch(self._agy("agents"), cwd=self.workspace_dir, env=env,
+                          capture_output=True, text=True, timeout=MODELS_TIMEOUT,
+                          stop_on=INTERACTIVE_AUTH)
+        except children.HostStopped as exc:
+            raise agy_home.unreachable(env) from exc
+        out = getattr(proc, "stdout", "") or ""
+        expected = agy_home.expected_agents(self.agy_home)
+        listed = agy_home.listed_agents(out)
+        if getattr(proc, "returncode", 1) != 0 or "[project]" in out or listed != expected:
+            raise AgyPreflightRefused(
+                "`agy %s <run>/gemini agents` %s; expected exactly %s, listed %s. "
+                "--gemini_dir is undocumented and may have changed (#3613)"
+                % (agy_home.GEMINI_DIR_FLAG,
+                   "exited %s" % getattr(proc, "returncode", 1)
+                   if getattr(proc, "returncode", 1) != 0 else "did not isolate the shells",
+                   sorted(expected), sorted(listed)[:20]))
+        proven, why = agy_home.hook_load_proven(self.agy_home)
+        if not proven:
+            raise AgyPreflightRefused(why)
+        argv = ["--output-format", "json", "--disable-slash-commands"]
+        if self.auth_route == "key":
+            if KEY_ROUTE_DEFAULT not in self.key_models:
+                raise AgyPreflightRefused(
+                    "`agy models` on the API-key route does not list %s, the route's "
+                    "default (#3576, #3613)" % KEY_ROUTE_DEFAULT)
+            argv += ["--model", KEY_ROUTE_DEFAULT]
+        try:
+            proc = launch(self._agy(*argv, "-p", PREFLIGHT_PROMPT), cwd=self.workspace_dir,
+                          env=env, capture_output=True, text=True, timeout=PREFLIGHT_TIMEOUT,
+                          stop_on=INTERACTIVE_AUTH)
+        except children.HostStopped as exc:
+            raise agy_home.unreachable(env) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise AgyPreflightRefused(
+                "agy's preflight turn timed out after %ss (#3613)" % PREFLIGHT_TIMEOUT) from exc
+        stdout, stderr = getattr(proc, "stdout", "") or "", getattr(proc, "stderr", "") or ""
+        if reached_interactive_auth(stderr) or NOT_SIGNED_IN in stdout + stderr:
+            raise agy_home.unreachable(env)
+        result = parse_envelope(stdout, getattr(proc, "returncode", 1), stderr,
+                                entry_id="agy-preflight")
+        if not result.ok:
+            raise AgyPreflightRefused("agy's preflight turn failed: %s (#3613)"
+                                      % redact.redact(str(result.error))[:400])
 
     def teardown(self, status=None):
         if self.agy_home is not None:
@@ -398,8 +477,9 @@ class Runner(base.HostRunner):
 
     def launch_env(self, overlay=None):
         run_env = super().launch_env(overlay)
-        if self.agy_home:
-            run_env["HOME"] = self.agy_home
+        # #3613: HOME stays the operator's; agy's configuration moves with
+        # --gemini_dir. No child may open a browser.
+        run_env[BROWSER_ENV[0]] = BROWSER_ENV[1]
         run_env["NO_COLOR"] = "1"
         for marker in _NESTED_MARKERS:
             run_env.pop(marker, None)
@@ -410,7 +490,7 @@ class Runner(base.HostRunner):
         if name is None:
             return None
         directory = (self.registration_dir
-                     or (os.path.join(self.agy_home, ".gemini", "config", "agents")
+                     or (agy_home.agents_dir(self.agy_home)
                          if self.agy_home else hosts.spec(self.host).registration_dir))
         root = os.path.realpath(directory)
         real = os.path.realpath(os.path.join(directory, "%s.md" % name))
@@ -432,6 +512,7 @@ class Runner(base.HostRunner):
             raise ValueError("agy entry %r has no prompt" % (entry.get("id"),))
         cmd = [
             self.CLI,
+            *(agy_home.gemini_dir_argv(self.agy_home) if self.agy_home else []),
             "--output-format", "json",
             "--disable-slash-commands",
         ]
