@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Code-scanning stamp validation follows its producer (#3599).** The size-skip
+  and Dockerfile-coverage listing bounds now share `semgrep_targets.MAX_LISTED`
+  instead of duplicating its value. Producer-fed and targeted controls pin the
+  Dockerfile stamp's unanalyzed-file bound, string names, and boolean completeness.
+
 - **The fixtures image and local harness run as the production scan user (#3596).**
   `Dockerfile.fixtures` now returns from its build-only root layers to `USER scanner`.
   Both local harness launches still state `--user scanner`, set scanner's HOME, and
