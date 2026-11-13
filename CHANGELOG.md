@@ -14,6 +14,13 @@
   controlled modifier. "When torn, choose HIGH" is unchanged. A template test pins every dropped
   and kept clause.
 
+- **Located Semgrep parse notices are disclosure-only (#3603).** `Syntax error`
+  and `Other syntax error` notifications now add the exact number of affected
+  files and their bounded names to `coverage_note` without withholding coverage
+  certification. Unlocated notices and any accompanying timeout, size,
+  capability, or Dockerfile gap still fail closed; mixed captures disclose both
+  the parse limitation and the certification gap.
+
 - **Code-scanning stamp validation follows its producer (#3599).** The size-skip
   and Dockerfile-coverage listing bounds now share `semgrep_targets.MAX_LISTED`
   instead of duplicating its value. Producer-fed and targeted controls pin the

@@ -1006,8 +1006,14 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   file cannot be read off the message is counted as unlocated and is still partial. Semgrep's
   `Syntax error` and `Other syntax error` notifications are likewise partial coverage of the named
   file (#3229), either for the named rule or for all applicable rules when the file parser failed;
-  any target with such an unparseable file is not coverage-certified. Semgrep's other
-  notifications, such as `Missing plugin`, are not coverage gaps here.
+  `syntax_error_files` distinguishes the exact number of located files from the number of
+  diagnostics. Those parser limitations remain in `meta.coverage.tools_file_partial`, but their
+  bounded file names are disclosure-only in `summary.coverage_note` and do not withhold
+  certification (#3603). An unlocated syntax notice, or a syntax notice accompanied by a timeout,
+  size skip, unavailable capability, Dockerfile gap, or unknown/malformed coverage fact, still
+  fails closed; a mixed capture names both the parse limitation and the certifying gap. Semgrep's
+  `Missing plugin` notification is explicitly not a coverage gap here; other notification IDs are
+  not classified by this rule (#3610).
   **Files over Semgrep's size limit are listed by the host (#3193).** The argv also passes
   `--max-target-bytes=1000000`, Semgrep's own default. Semgrep skips every regular file larger than
   that, of any kind, binary included, and its SARIF says nothing about it. So when the capture lands,
