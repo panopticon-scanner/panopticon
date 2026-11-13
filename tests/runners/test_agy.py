@@ -517,9 +517,15 @@ class TestThePreflightFailsClosed(unittest.TestCase):
                 self._assert_refused(_answers_preflight(**kwargs),
                                      agy_runner.AgyPreflightRefused, text)
 
-    def test_a_project_scoped_agent_refuses(self):
+    def test_a_project_scoped_agent_refuses_even_under_our_own_name(self):
+        # A project shell that shadows one of ours prints OUR name, tagged [project]:
+        # the listed set still matches, so only the [project] check refuses it.
         def agents(cmd, **kw):
-            return subprocess.CompletedProcess(cmd, 0, stdout="x [project]\n", stderr="")
+            wrapped(cmd, **kw)                       # writes the hook-load log line
+            names = sorted(agy_home.expected_agents(os.path.dirname(cmd[2])))
+            lines = ["Available subagents:"] + ["  - %s [user]" % n for n in names[:-1]]
+            lines.append("  - %s [project]" % names[-1])
+            return subprocess.CompletedProcess(cmd, 0, stdout="\n".join(lines) + "\n", stderr="")
         wrapped = _answers_preflight()
 
         def fake(cmd, **kw):
