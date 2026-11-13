@@ -112,11 +112,16 @@ def auth_route(env=None):
     return "signin"
 
 
-def unreachable(env=None):
-    """The sign-in failure, naming the key route when a key is set but not chosen."""
+STEP_TAG = " [preflight step: %s]"     # #3620: which check refused, for the next capture
+
+
+def unreachable(env=None, step=None):
+    """The sign-in failure, naming the key route when a key is set but not chosen,
+    and the preflight `step` that saw it (#3620)."""
     env = os.environ if env is None else env
     has_key = bool((env.get(KEY_ENV) or "").strip())
-    return AgyAuthUnreachable(AUTH_UNREACHABLE + (KEY_NOT_CHOSEN if has_key else ""))
+    return AgyAuthUnreachable(AUTH_UNREACHABLE + (KEY_NOT_CHOSEN if has_key else "")
+                              + (STEP_TAG % step if step else ""))
 
 
 SETTINGS_FILE = "settings.json"

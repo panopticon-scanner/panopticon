@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **agy's preflight no longer refuses a signed-in run (#3620).** Since #3613 every sign-in run
+  refused with `AgyAuthUnreachable`: the preflight read agy's run log for "You are not logged
+  into Antigravity", but `agy agents` writes that line there without signing in and the turn
+  reuses the same log file. Sign-in is now judged only from the turn's own output, the
+  interactive-auth stop and its envelope; a failed turn with a key set still names the key
+  route. Every preflight refusal now ends `[preflight step: ...]`, naming the check that
+  refused.
 - **agy keeps the operator's HOME and isolates its configuration with `--gemini_dir` (#3613).**
   agy's 2026-11-13 self-update moved its consumer sign-in into the macOS login Keychain, which an
   isolated HOME cannot reach (#3605). Every agy launch now keeps the operator's HOME, so agy reads
