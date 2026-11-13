@@ -430,7 +430,8 @@ class TestOnlineEgress(unittest.TestCase):
                         if _DockerStub.verb(c) == "run -d"][0]
                 self.assertEqual(
                     argv[argv.index("timeout") + 1],
-                    str(tc.TOOL_TIMEOUT * len(tools) + rt_egress.SIDECAR_SLACK))
+                    str(tc.TOOL_TIMEOUT * (len(tools) + int("semgrep" in tools))
+                        + rt_egress.SIDECAR_SLACK))
 
 
 class TestManifestNetworkPosture(unittest.TestCase):
