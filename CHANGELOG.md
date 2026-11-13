@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **agy's preflight no longer refuses a signed-in run (#3620).** Since #3613 every sign-in run
+  refused with `AgyAuthUnreachable`: the preflight read agy's run log for "You are not logged
+  into Antigravity", but `agy agents` writes that line there without signing in and the turn
+  reuses the same log file. Sign-in is now judged only from the turn's own output, the
+  interactive-auth stop and its envelope; a failed turn with a key set still names the key
+  route. Every preflight refusal now ends `[preflight step: ...]`, naming the check that
+  refused.
+
 - **First-party Cargo advisories no longer depend on a third-party-usage verdict (#3593).**
   Tool ingest now matches an advisory's exact package and version against its
   Cargo.lock entry. When every matching entry is sourceless and exactly one
