@@ -1,16 +1,26 @@
 """#3560: `devtools/compare_runs.py`, the repeat-run reproducibility comparison.
 
-Every report here is synthetic and built in the test: no scan runs and no real
-run data is read.
+Every report here is synthetic and built in the test: no review scan runs and
+no real run data is read. #3602's fixture does drive fresh setup before it
+builds the two synthetic report envelopes.
 """
 import io
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from unittest import mock
 
 import compare_runs as cr
+import scripts.driver as driver
+import scripts.hosts as hosts
+import scripts.phases.setup as setup
+import scripts.run_manifest as run_manifest
+
+from tests._test_helpers import write_host_evidence
+from tests.tools.git_repo import make_git_repo
 
 SHA = "0123456789abcdef0123456789abcdef01234567"
 DROP = object()     # a meta value that means: leave the key out
@@ -188,6 +198,140 @@ class TestRefusals(Workspace):
         self.write("split-report_part1.json", {"findings": [agent(90, title="y")]})
         doc = cr.compare([path, other])
         self.assertEqual(2, doc["agreement"]["all"])
+
+
+class TestSetupOwnedWorktreeChanges(Workspace):
+    """#3602: setup's own root writes are not user-authored dirt."""
+
+    def setUp(self):
+        super().setUp()
+        self.repo = self._new_repo({"src/app.py": "value = 1\n"})
+        self._run_setup(self.repo)
+
+    def _new_repo(self, files):
+        return make_git_repo(
+            test_case=self,
+            files=files,
+            branch="main",
+            user_email="t@t",
+            user_name="t",
+        )
+
+    def _run_setup(self, repo, reset=False):
+        write_host_evidence(
+            repo, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN}
+        )
+        argv = ["setup", repo] + (["--reset"] if reset else [])
+        args = driver.build_parser().parse_args(argv)
+        with mock.patch(
+            "scripts.setup_spine.load_bundled_vocabulary",
+            return_value=({"names": []}, False),
+        ):
+            status = setup.run_setup_flow(args)
+        self.assertEqual("complete", status["status"], status)
+
+    def _manifest(self, repo=None):
+        repo = repo or self.repo
+        return run_manifest.build_manifest(
+            target=repo,
+            review_root=repo,
+            host="claude",
+            security_mode="standard",
+        )
+
+    def _post_setup_report(self, repo=None):
+        repo = repo or self.repo
+        manifest = self._manifest(repo)
+        return report(
+            meta={
+                "target": repo,
+                "target_commit": manifest["target_commit"],
+                "target_dirty": manifest["target_dirty"],
+            }
+        )
+
+    def test_two_reviews_after_fresh_setup_compare_without_an_override(self):
+        compared = self.compare(self._post_setup_report(), self._post_setup_report())
+        self.assertTrue(compared["identity"]["commit_verified"])
+
+    def test_an_unrelated_edit_after_setup_is_still_refused(self):
+        clean = self._post_setup_report()
+        with open(os.path.join(self.repo, "src", "app.py"), "w", encoding="utf-8") as fh:
+            fh.write("value = 2\n")
+        message = self.refused(clean, self._post_setup_report())
+        self.assertIn("dirty tree", message)
+
+    def test_editing_either_setup_output_is_still_dirty(self):
+        for relpath in (".gitignore", "panopticon.yml"):
+            with self.subTest(relpath=relpath):
+                repo = self._new_repo({"src/app.py": "value = 1\n"})
+                self._run_setup(repo)
+                with open(os.path.join(repo, relpath), "a", encoding="utf-8") as fh:
+                    fh.write("# user edit\n")
+                self.assertIs(self._manifest(repo)["target_dirty"], True)
+
+    def test_staging_a_setup_output_is_still_dirty(self):
+        subprocess.run(
+            ["git", "-C", self.repo, "add", "--", "panopticon.yml"],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        self.assertIs(self._manifest()["target_dirty"], True)
+
+    def test_changing_a_setup_output_mode_is_still_dirty(self):
+        path = os.path.join(self.repo, "panopticon.yml")
+        os.chmod(path, 0o755)
+        self.assertIs(self._manifest()["target_dirty"], True)
+
+    def test_a_clean_tracked_gitignore_append_is_setup_owned(self):
+        repo = self._new_repo(
+            {"src/app.py": "value = 1\n", ".gitignore": "build/\n"}
+        )
+        self._run_setup(repo)
+        self.assertIs(self._manifest(repo)["target_dirty"], False)
+
+    def test_a_preexisting_gitignore_edit_is_not_claimed_by_setup(self):
+        repo = self._new_repo(
+            {"src/app.py": "value = 1\n", ".gitignore": "build/\n"}
+        )
+        with open(os.path.join(repo, ".gitignore"), "a", encoding="utf-8") as fh:
+            fh.write("owner-edit/\n")
+        self._run_setup(repo)
+        self.assertIs(self._manifest(repo)["target_dirty"], True)
+
+    def test_an_edited_receipt_field_is_not_a_machine_stamp(self):
+        config = os.path.join(self.repo, "panopticon.yml")
+        with open(config, "a", encoding="utf-8") as fh:
+            fh.write("# user edit\n")
+        manifest_path = run_manifest.manifest_path(self.repo, "setup")
+        with open(manifest_path, encoding="utf-8") as fh:
+            setup_manifest = json.load(fh)
+        receipt = setup_manifest[run_manifest.SETUP_OWNED_WORKTREE]
+        receipt["paths"]["panopticon.yml"] = run_manifest._setup_output_identity(config)
+        receipt["run_id"] = run_manifest._receipt_run_id(receipt["paths"])
+        # The target can rewrite this unsigned outer-manifest field, but it
+        # cannot recompute the nested receipt's machine-keyed stamp.
+        with open(manifest_path, "w", encoding="utf-8") as fh:
+            json.dump(setup_manifest, fh)
+        subprocess.run(
+            ["git", "-C", self.repo, "add", ".gitignore"],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        subprocess.run(
+            ["git", "-C", self.repo, "-c", "commit.gpgsign=false", "commit",
+             "-qm", "commit setup ignore"],
+            check=True,
+            capture_output=True,
+            timeout=30,
+        )
+        self.assertIs(self._manifest()["target_dirty"], True)
+
+    def test_setup_reset_preserves_ownership_of_unchanged_outputs(self):
+        self._run_setup(self.repo, reset=True)
+        self.assertIs(self._manifest()["target_dirty"], False)
 
 
 class TestMalformedInput(Workspace):

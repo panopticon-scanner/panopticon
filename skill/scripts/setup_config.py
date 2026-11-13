@@ -222,6 +222,23 @@ def _ensure_gitignore(repo):
     return added
 
 
+def _git_path_clean(repo, path):
+    """Whether ``path`` has no index/worktree status before setup writes it.
+
+    This is the provenance half of #3602: a digest taken after setup cannot
+    distinguish its append from an edit already present before setup. Probe
+    the one path first and fail closed (False) on a non-repository, refusal,
+    failed probe, or any status record.
+    """
+    try:
+        result = safe_git.probe(
+            repo, ["status", "--porcelain", "-z", "--", path], timeout=15
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0 and not (result.stdout or "")
+
+
 def config_refusal(repo):
     """The reasons SETUP must not write against this tree, or [] (#1681 I2).
 
@@ -269,8 +286,12 @@ def provision(repo):
     refusal = config_refusal(repo)
     if refusal:
         raise ValueError("; ".join(refusal))
+    gitignore_clean = _git_path_clean(repo, ".gitignore")
     added = _ensure_gitignore(repo)
     return {"gitignore_added": added,
+            # Consumed by phases.setup immediately: only this combination says
+            # the post-write identity belongs wholly to setup (#3602).
+            "gitignore_setup_owned": bool(added and gitignore_clean),
             "legacy_present": repo_config.legacy_present(repo),
             "stale_config_json": repo_config.stale_config_json(repo)}
 
