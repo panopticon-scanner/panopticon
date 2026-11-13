@@ -21,8 +21,8 @@ no `__file__` identity -- a function that needs to know WHICH hook is asking
 takes the hook's script path as a parameter.
 
 The Codex read broker (`codex_read_tools`) keeps its own byte-identical copy
-of `SCOPE_KEYS`, `_under` and `_in_dir_grant`, pinned in
-tests/test_guard_rules.py: it is an MCP server rather than a hook, those 24
+of `SCOPE_KEYS`, `_under`, `_names_keychain` and `_in_dir_grant`, pinned in
+tests/test_guard_rules.py: it is an MCP server rather than a hook, those 35
 lines are all it shares, and a loader would cost it more lines than that plus
 a second failure path in its protocol.
 """

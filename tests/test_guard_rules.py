@@ -343,9 +343,6 @@ class TestADecoyNeverAnswersForOurRules(_HookLaunch):
                                  "%s imported a planted guard_rules" % hook)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestNoGrantCoversTheKeychain(unittest.TestCase):
     """#3607: every host's read and write tools refuse a macOS Keychain path,
@@ -499,7 +496,7 @@ class TestNoGrantCoversTheKeychain(unittest.TestCase):
 
 
 SHELL_TOOLS = ("run_command", "run_shell_command", "Bash", "BashOutput", "KillShell",
-               "PowerShell", "Shell", "shell", "shell_tool", "unified_exec")
+               "PowerShell", "REPL", "Shell", "shell", "shell_tool", "unified_exec")
 SHELL_GRANT = ("%s: a host child gained a shell. The guards hold no shell reader (#3607 ruled "
                "one unneeded while every host denies shells), so a shell grant needs review: "
                "add the Keychain/`security` refusal with it")
@@ -511,19 +508,27 @@ class TestNoHostChildGetsAShell(unittest.TestCase):
     instead of landing quietly."""
 
     def test_the_strict_guards_deny_every_shell_tool_name(self):
+        # Membership first: a shell name in either tool set is a grant, whatever
+        # a deny reason says. Then the EXACT refusal, per mode: "allowlist" alone
+        # also matches a write tool's "write guard allowlist is unavailable".
         env = {"PANOPTICON_ENTRY_ID": "e1"}
-        for name in SHELL_TOOLS:
-            for hook, call in (
-                    ("agy", lambda: ag.adjudicate(
-                        {"toolCall": {"name": name, "arguments": {"CommandLine": "true"}}},
-                        "/nowhere", "/nowhere", env=env)),
-                    ("gemini", lambda: gg.adjudicate(
-                        {"tool_name": name, "tool_input": {"command": "true"}},
-                        "/nowhere", "/nowhere", env=env))):
+        calls = (
+            ("agy", ag, lambda name, mode: ag.adjudicate(
+                {"toolCall": {"name": name, "arguments": {"CommandLine": "true"}}},
+                "/nowhere", "/nowhere", mode=mode, env=env)),
+            ("gemini", gg, lambda name, mode: gg.adjudicate(
+                {"tool_name": name, "tool_input": {"command": "true"}},
+                "/nowhere", "/nowhere", mode=mode, env=env)))
+        for hook, module, call in calls:
+            for name in SHELL_TOOLS:
                 with self.subTest(hook=hook, tool=name):
-                    allow, reason = call()
-                    self.assertFalse(allow, SHELL_GRANT % hook)
-                    self.assertIn("allowlist", reason, SHELL_GRANT % hook)
+                    for tools in (module.ALLOWED_TOOLS, module.READ_TOOLS, module.WRITE_TOOLS):
+                        self.assertNotIn(name, tools, SHELL_GRANT % hook)
+                    for mode, which in ((None, ""), ("read", "read "), ("write", "write ")):
+                        self.assertEqual(
+                            (False, "%s is denied: tool is not on the reviewer %sallowlist"
+                             % (name, which)),
+                            call(name, mode), SHELL_GRANT % hook)
 
     def test_no_role_template_grants_a_shell(self):
         # The union is what Claude's unenforced `--tools` list and every host's
@@ -533,7 +538,7 @@ class TestNoHostChildGetsAShell(unittest.TestCase):
 
     def test_claude_unenforced_launches_deny_the_shell_tools(self):
         denied = set(runners_claude.UNENFORCED_DENIED_TOOLS)
-        for name in ("Bash", "BashOutput", "KillShell", "PowerShell"):
+        for name in ("Bash", "BashOutput", "KillShell", "PowerShell", "REPL"):
             with self.subTest(tool=name):
                 self.assertIn(name, denied, SHELL_GRANT % "claude")
 
@@ -548,3 +553,7 @@ class TestNoHostChildGetsAShell(unittest.TestCase):
         for name in ("shell_tool", "unified_exec", "shell_snapshot"):
             with self.subTest(feature=name):
                 self.assertIs(False, features.get(name), SHELL_GRANT % "codex")
+
+
+if __name__ == "__main__":
+    unittest.main()
