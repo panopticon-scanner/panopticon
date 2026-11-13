@@ -255,14 +255,11 @@ class TestTheControlsAreLive(unittest.TestCase):
                 tempfile.TemporaryDirectory() as home, \
                 tempfile.TemporaryDirectory() as reg:
             root = os.path.realpath(target)
-            # #3576: a run home needs a reachable sign-in; a stand-in token, never the real one.
-            cli_dir = os.path.join(home, ".gemini", "antigravity-cli")
-            os.makedirs(cli_dir)
-            with open(os.path.join(cli_dir, "antigravity-oauth-token"), "w",
-                      encoding="utf-8") as fh:
-                fh.write("oauth-token-fixture")
+            # #3613: the preflight launches agy and is pinned in tests/runners/test_agy.py;
+            # this test reads the launch argv only.
             runner = agy_runner.Runner("agy")
-            with mock.patch.dict(os.environ, {"HOME": home}):
+            with mock.patch.dict(os.environ, {"HOME": home}), \
+                    mock.patch.object(agy_runner.Runner, "_preflight"):
                 runner.prepare(root, os.path.join(root, "run"), registration_dir=reg)
             try:
                 argv = runner.command({"id": "e", "agent": "panopticon-domain-panel",
@@ -270,6 +267,7 @@ class TestTheControlsAreLive(unittest.TestCase):
                                       "gemini-4-argon-high")
                 self.assertTrue(probes_common.control_is_on(
                     "agy:disable-slash-commands", argv), argv)
+                self.assertEqual(["agy", "--gemini_dir"], argv[:2])
                 self.assertTrue(os.path.isdir(os.path.join(runner.workspace_dir, ".git")))
                 self.assertFalse(
                     os.path.realpath(runner.workspace_dir).startswith(root + os.sep),
