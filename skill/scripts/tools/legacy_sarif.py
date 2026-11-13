@@ -213,8 +213,9 @@ def _syntax_errors(sarif):
     unlocated = 0
     for note in _notifications(sarif):
         descriptor = note.get("descriptor") if isinstance(note, dict) else None
-        if (not isinstance(descriptor, dict)
-                or descriptor.get("id") not in _SEMGREP_SYNTAX_IDS):
+        notification_id = descriptor.get("id") if isinstance(descriptor, dict) else None
+        if (not isinstance(notification_id, str)
+                or notification_id not in _SEMGREP_SYNTAX_IDS):
             continue
         message = note.get("message")
         text = message.get("text") if isinstance(message, dict) else None

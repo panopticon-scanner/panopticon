@@ -962,12 +962,30 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
 
     def test_malformed_notification_descriptors_are_unlocated_gaps(self):
         notes = [None, "notification", {}, {"descriptor": None},
-                 {"descriptor": {}}, {"descriptor": {"id": 7}}]
+                 {"descriptor": {}}, {"descriptor": {"id": 7}},
+                 {"descriptor": {"id": []}}, {"descriptor": {"id": {}}}]
         findings, disposition, _diagnostic = self._ingest(_semgrep_capture(notes))
         facts = disposition["file_coverage"]
         self.assertEqual((facts["scanner_notifications"], facts["unlocated_records"],
                           facts["files"]), (len(notes), len(notes), []))
         self.assertFalse(self._report(findings, disposition)["summary"]["coverage_certified"])
+
+    def test_syntax_error_and_stack_overflow_name_both_files_and_decertify(self):
+        notes = [
+            _notification_note(
+                "Syntax error", "Syntax error at line /src/a.py:1:\n parser failed"),
+            _notification_note(
+                "Stack overflow", "Stack overflow at line /src/b.py:1:\n private"),
+        ]
+        findings, disposition, _diagnostic = self._ingest(
+            _semgrep_capture(notes, paths=("a.py", "b.py")))
+        rows = {row["file"]: row for row in disposition["file_coverage"]["files"]}
+        self.assertEqual((rows["a.py"]["reason"], rows["b.py"]["reason"]),
+                         ("syntax_error", "scanner_notification"))
+        summary = self._report(findings, disposition)["summary"]
+        self.assertFalse(summary["coverage_certified"])
+        self.assertIn("a.py", summary["coverage_note"])
+        self.assertIn("b.py (Stack overflow)", summary["coverage_note"])
 
     def test_a_timeout_whose_file_cannot_be_read_is_partial_and_unlocated(self):
         private = "PRIVATE-SCANNER-TEXT"
