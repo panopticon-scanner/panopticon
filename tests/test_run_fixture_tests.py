@@ -311,6 +311,8 @@ class TestDockerTimeouts(unittest.TestCase):
         self.assertEqual(cmd[1], "build")
         self.assertEqual(cmd[cmd.index("-f") + 1], str(dockerfile))
         self.assertEqual(cmd[cmd.index("-t") + 1], "mytag")
+        self.assertEqual(cmd[cmd.index("--build-arg") + 1],
+                         "TOOLS_IMAGE=panopticon-tools:latest")
         self.assertIn(str(repo_root), cmd)
 
     def test_probe_timeout_is_unavailable_not_crash(self):
@@ -441,8 +443,10 @@ class TestFixtureRunnerMatchesScanConditions(unittest.TestCase):
             self.assertEqual(options[options.index("--network") + 1], "none")
             mounts = [options[i + 1] for i, arg in enumerate(options) if arg == "-v"]
             self.assertIn(root + "/skill/scripts:/opt/panopticon/scripts:ro", mounts)
-            self.assertEqual(command, ["python", "-m", "pytest", "-v",
-                                       "/opt/panopticon/tests/tools"])
+            self.assertEqual(command[:2], ["sh", "-c"])
+            self.assertIn("id -u", command[2])
+            self.assertEqual(command[3:], ["sh", "python", "-m", "pytest", "-v",
+                                           "/opt/panopticon/tests/tools"])
             self.assertEqual(run.call_args.kwargs["timeout"], rft.TEST_TIMEOUT)
 
 
@@ -558,6 +562,46 @@ class TestContainerHardeningComesFromItsOwners(unittest.TestCase):
 
     def _both(self):
         return (("pytest", self._pytest_argv()), ("probe", self._probe_argv()))
+
+    @staticmethod
+    def _scan_user_posture_defects(argv):
+        """Name every missing piece of the loud scan-user launch contract."""
+        defects = []
+        try:
+            user = argv[argv.index("--user") + 1]
+        except (ValueError, IndexError):
+            user = None
+        if user != "scanner":
+            defects.append("missing --user scanner")
+
+        env = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-e"]
+        if "HOME=/home/scanner" not in env:
+            defects.append("missing scanner HOME")
+        if "EXPECTED_UID=1000" not in env:
+            defects.append("missing expected uid")
+
+        scripts = [argv[i + 1] for i, arg in enumerate(argv[:-1]) if arg == "-c"]
+        script = scripts[-1] if scripts else ""
+        if "id -u" not in script or "EXPECTED_UID" not in script:
+            defects.append("missing runtime uid assertion")
+        command_starts = [pos for marker in ('for p in "$@"', 'exec "$@"')
+                          if (pos := script.find(marker)) >= 0]
+        if command_starts and script.find("id -u") > min(command_starts):
+            defects.append("uid assertion runs after the command")
+        return defects
+
+    def test_both_containers_run_as_and_prove_the_scan_user(self):
+        for container, argv in self._both():
+            with self.subTest(container=container):
+                self.assertEqual(self._scan_user_posture_defects(argv), [])
+
+    def test_dropping_the_explicit_user_flag_is_caught(self):
+        for container, argv in self._both():
+            with self.subTest(container=container):
+                user = argv.index("--user")
+                mutant = argv[:user] + argv[user + 2:]
+                self.assertEqual(self._scan_user_posture_defects(mutant),
+                                 ["missing --user scanner"])
 
     def test_both_containers_drop_privileges(self):
         for container, argv in self._both():
