@@ -287,14 +287,105 @@ def _result_identity(result):
             region.get("endColumn"), text)
 
 
-def merge_sarif(primary, dockerfile):
-    """Combine two Semgrep SARIF documents, deduplicating native-name hits.
+def _run_list(run, field):
+    """A mutable SARIF run list, creating an absent optional field."""
+    value = run.get(field)
+    if value is None:
+        value = run[field] = []
+    return value if isinstance(value, list) else None
 
-    Both inputs retain their own run, rule and notification records. Only a
-    result with the same rule, normalized path, region and message is removed;
-    a genuinely different finding is never folded away. The scanned-file
-    witness is summed when every run carries one, otherwise removed rather
-    than publishing a lower bound as an exact count.
+
+def _run_rules(run):
+    """The driver's rule list, or None when the run cannot be merged safely."""
+    try:
+        driver = run["tool"]["driver"]
+    except (KeyError, TypeError):
+        return None
+    if not isinstance(driver, dict):
+        return None
+    rules = driver.get("rules")
+    if rules is None:
+        rules = driver["rules"] = []
+    if (not isinstance(rules, list)
+            or not all(isinstance(rule, dict)
+                       and isinstance(rule.get("id"), str) and rule["id"]
+                       for rule in rules)):
+        return None
+    return rules
+
+
+def _merge_run(target, source, seen):
+    """Fold one Semgrep run into ``target`` without losing its evidence."""
+    target_rules, source_rules = _run_rules(target), _run_rules(source)
+    target_results = _run_list(target, "results")
+    source_results = _run_list(source, "results")
+    target_invocations = _run_list(target, "invocations")
+    source_invocations = _run_list(source, "invocations")
+    if any(value is None for value in (
+            target_rules, source_rules, target_results, source_results,
+            target_invocations, source_invocations)):
+        return False
+
+    # A result may carry a numeric ruleIndex as well as ruleId. Preserve the
+    # primary config's rule order, append genuinely new rule descriptors, and
+    # remap every source index into the combined list.
+    by_id = {rule["id"]: index for index, rule in enumerate(target_rules)}
+    source_indexes = {}
+    for index, rule in enumerate(source_rules):
+        rule_id = rule["id"]
+        mapped = by_id.get(rule_id)
+        if mapped is None:
+            mapped = len(target_rules)
+            target_rules.append(rule)
+            by_id[rule_id] = mapped
+        source_indexes[index] = mapped
+
+    for result in source_results:
+        if not isinstance(result, dict):
+            return False
+        rule_index = result.get("ruleIndex")
+        if rule_index is not None:
+            if type(rule_index) is not int or rule_index not in source_indexes:
+                return False
+            result["ruleIndex"] = source_indexes[rule_index]
+        identity = _result_identity(result)
+        if identity is not None and identity in seen:
+            continue
+        target_results.append(result)
+        if identity is not None:
+            seen.add(identity)
+
+    # Each invocation retains its own executionSuccessful flag and complete
+    # notification list. legacy_sarif already walks every invocation in a run.
+    target_invocations.extend(source_invocations)
+
+    target_properties = target.get("properties")
+    source_properties = source.get("properties")
+    if target_properties is None:
+        target_properties = target["properties"] = {}
+    if source_properties is None:
+        source_properties = {}
+    if not isinstance(target_properties, dict) or not isinstance(source_properties, dict):
+        return False
+    for key, value in source_properties.items():
+        if key == SCANNED_FILES_KEY:
+            continue
+        if key in target_properties and target_properties[key] != value:
+            return False
+        target_properties[key] = value
+    return True
+
+
+def merge_sarif(primary, dockerfile):
+    """Fold two Semgrep SARIF documents into one upload-compatible run.
+
+    GitHub code scanning rejects multiple runs with the same category in one
+    uploaded SARIF file. Rule descriptors are therefore combined (with numeric
+    result indexes remapped), invocations and their notifications are appended,
+    and results are deduplicated by rule, normalized path, region and message.
+    A genuinely different finding is never folded away. The per-pass scanned-
+    file witness is summed when every source run carries one, otherwise removed
+    rather than publishing a lower bound as an exact count.
     """
     try:
         doc = json.loads(depth_checked(primary))
@@ -309,41 +400,38 @@ def merge_sarif(primary, dockerfile):
     except (ValueError, KeyError, TypeError):
         return None
 
-    seen = set()
-    for run in runs:
-        results = run.get("results")
-        for result in results if isinstance(results, list) else ():
-            identity = _result_identity(result)
-            if identity is not None:
-                seen.add(identity)
-    for run in extra_runs:
-        results = run.get("results")
-        if isinstance(results, list):
-            kept = []
-            for result in results:
-                identity = _result_identity(result)
-                if identity is not None and identity in seen:
-                    continue
-                kept.append(result)
-                if identity is not None:
-                    seen.add(identity)
-            run["results"] = kept
-    runs.extend(extra_runs)
-
+    all_runs = runs + extra_runs
     counts: list[int] = []
-    for run in runs:
+    counts_complete = True
+    for run in all_runs:
         properties = run.get("properties")
         count = properties.get(SCANNED_FILES_KEY) if isinstance(properties, dict) else None
         if type(count) is not int or count < 0:
-            counts = []
+            counts_complete = False
             break
         counts.append(count)
-    first_properties = runs[0].setdefault("properties", {})
-    if isinstance(first_properties, dict):
-        if len(counts) == len(runs):
-            first_properties[SCANNED_FILES_KEY] = sum(counts)
-        else:
-            first_properties.pop(SCANNED_FILES_KEY, None)
+
+    target = runs[0]
+    target_results = _run_list(target, "results")
+    if target_results is None or not all(isinstance(result, dict)
+                                         for result in target_results):
+        return None
+    seen = {_result_identity(result) for result in target_results}
+    seen.discard(None)
+    for source in runs[1:] + extra_runs:
+        if not _merge_run(target, source, seen):
+            return None
+    doc["runs"] = [target]
+
+    first_properties = target.get("properties")
+    if first_properties is None:
+        first_properties = target["properties"] = {}
+    if not isinstance(first_properties, dict):
+        return None
+    if counts_complete:
+        first_properties[SCANNED_FILES_KEY] = sum(counts)
+    else:
+        first_properties.pop(SCANNED_FILES_KEY, None)
     return json.dumps(doc).encode("utf-8")
 
 

@@ -429,6 +429,8 @@ class TestDockerfileVariantCoverage(unittest.TestCase):
         self.assertNotIn("/src", seen[1])
         self.assertEqual(seen[1][seen[1].index("--config") + 1],
                          st.DOCKERFILE_RULES_CONFIG)
+        self.assertEqual(len(capture["runs"]), 1,
+                         "GitHub code scanning accepts one SARIF run per category")
         self.assertEqual(len(findings), 1)
         self.assertEqual(findings[0]["location"], {
             "file": "Dockerfile.prod", "line_start": 2})
@@ -494,8 +496,27 @@ class TestDockerfileVariantCoverage(unittest.TestCase):
         extra["runs"][0]["properties"] = {"panopticon_scanned_files": 1}
         merged = json.loads(st.merge_sarif(
             json.dumps(primary).encode(), json.dumps(extra).encode()))
+        self.assertEqual(len(merged["runs"]), 1)
         self.assertEqual(sum(len(run["results"]) for run in merged["runs"]), 1)
         self.assertEqual(merged["runs"][0]["properties"]["panopticon_scanned_files"], 3)
+        self.assertEqual(len(merged["runs"][0]["invocations"]), 2)
+
+    def test_merge_keeps_an_extra_rule_and_remaps_its_result_index(self):
+        primary = _dockerfile_capture(False)
+        extra = _dockerfile_capture(True)
+        extra["runs"][0]["tool"]["driver"]["rules"] = [{
+            "id": "dockerfile.extra", "defaultConfiguration": {"level": "warning"}}]
+        extra["runs"][0]["results"][0]["ruleId"] = "dockerfile.extra"
+        extra["runs"][0]["results"][0]["ruleIndex"] = 0
+        merged = json.loads(st.merge_sarif(
+            json.dumps(primary).encode(), json.dumps(extra).encode()))
+        run = merged["runs"][0]
+        self.assertEqual([rule["id"] for rule in run["tool"]["driver"]["rules"]], [
+            "dockerfile.security.last-user-is-root.last-user-is-root",
+            "dockerfile.extra",
+        ])
+        self.assertEqual(run["results"][0]["ruleIndex"], 1)
+        self.assertEqual(len(run["invocations"]), 2)
 
     @unittest.skipIf(sys.platform == "win32", "POSIX symlinks")
     def test_excluded_and_symlinked_variants_are_not_reintroduced(self):
