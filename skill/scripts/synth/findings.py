@@ -247,9 +247,10 @@ def normalize_finding(f):
 # Fields that confer trust and must NEVER come from an agent-authored payload
 # (SEC-102, found by our own self-scan). P2 did NOT weaken this guard; it
 # sharpened it. The original rationale is obsolete in all three clauses --
-# `source` no longer confers tool_confirmed evidence (that needs an advisor
-# verdict now), there is no verify-queue exclusion left to buy, and it no
-# longer confers gate eligibility -- but what replaced them is worse:
+# `source` alone no longer confers tool_confirmed evidence (normally that needs
+# an advisor verdict; #3593's first-party Cargo exception also needs a separate
+# controller-derived package_origin marker), and it no longer confers gate
+# eligibility -- but what replaced those old rules is worse:
 #
 #   `source`: finding_fingerprint keys a TOOL-sourced finding on
 #     tool_rule_id(), which falls back to provenance.confirmation_reasoning --
@@ -587,7 +588,8 @@ def aggregate_tool_findings(findings):
     tool+agent corroboration in `verified_by`, and the triage_priority 0 that
     puts it at the head of the verify queue. (Pre-P2 it also cost the finding
     automatic `tool_confirmed` evidence; unverified tool claims are
-    `tool_reported` now, and only an advisor verdict promotes them.)
+    `tool_reported` now, and only an advisor verdict promotes them, except for
+    #3593's exact first-party Cargo advisory match.)
     """
     agent_loci = {
         (evidence_mod.norm_path((f.get("location") or {}).get("file")),

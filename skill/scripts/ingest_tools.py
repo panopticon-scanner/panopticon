@@ -11,7 +11,7 @@ import os
 import sys
 
 from scripts import evidence as evidence_mod
-from scripts import groups_schema, plan_contract
+from scripts import first_party_advisory, groups_schema, plan_contract
 from scripts.tools import ADAPTERS
 from scripts.tools.base import ingest_policy_cv, strip_ansi, target_root_cv
 from scripts.tools.sarif_utils import (
@@ -798,6 +798,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     dispositions = {}
     root = target_root or _target_root_for(tools_dir)
     venv_cache: dict[str, bool] = {}   # per-run memo of the pyvenv.cfg lookups
+    cargo_lock_cache: first_party_advisory.OriginCache = {}
     gl_excluded = 0   # dropped by an explicit exclude_glob (operator policy)
     suppressed: dict[str, int] = {}   # {reason: count} controlled body drops
     for path in _output_files(tools_dir, allowed_outputs=allowed_outputs,
@@ -878,6 +879,13 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         finally:
             target_root_cv.reset(token)
             ingest_policy_cv.reset(policy_token)
+        # #3593: before any finding can enter either synthesize pass, distinguish
+        # an advisory against a sourceless Cargo workspace/path package whose
+        # exact identity also has one in-tree publishable manifest from an
+        # ordinary registry dependency. Both the driver's recomputed tool queue
+        # and synthesis ingest through this one point, so the marker and the
+        # resulting queue exemption cannot drift between them.
+        first_party_advisory.mark(parsed, root, cargo_lock_cache)
         raw_count = len(parsed)
         scanned = _scanned_files(raw)
         # #1741: filter BEFORE capping. `_cap_findings` used to run first, so a

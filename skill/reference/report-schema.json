@@ -1878,6 +1878,30 @@
               "package_name": {
                 "type": "string"
               },
+              "advisory_package": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "version": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "version"
+                ],
+                "additionalProperties": false,
+                "description": "The package identity parsed from Trivy's inert SARIF message only after #3593's first-party Cargo classification. Kept separate from package_name because the generic Trivy adapter did not emit an artifact identity, and adding one during classification would change the finding fingerprint and reconcile key across runs."
+              },
+              "package_origin": {
+                "type": "string",
+                "enum": [
+                  "first_party"
+                ],
+                "description": "Controller-derived during tool ingest (#3593): the advisory's exact package/version matches only sourceless workspace/path entries in the cited Cargo.lock and exactly one confined, in-tree member manifest with the same identity that is publishable to crates.io (publish absent or true, or a registry list containing crates-io). Such a finding describes this project's own affected version and does not enter the third-party-usage advisor queue."
+              },
               "vulnerable_versions": {
                 "type": "string"
               },
