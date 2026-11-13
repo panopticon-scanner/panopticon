@@ -33,5 +33,28 @@ class TestArtifactRoot(unittest.TestCase):
             self.assertIn("symlink", str(cm.exception))
 
 
+class TestTargetedReviewPlanContract(unittest.TestCase):
+    def _entry(self, **changes):
+        return dict({"group": "Web", "domain": "SEC",
+                     "out_file": "/r/findings-Web-SEC.json"}, **changes)
+
+    def test_accepts_a_sorted_unique_sec_target_list(self):
+        self.assertEqual(pc.driver_plan_issues([
+            self._entry(targeted_review=["src/a.js", "src/b.js"])]), [])
+
+    def test_rejects_target_lists_on_other_domains_or_with_bad_paths(self):
+        cases = [
+            self._entry(domain="COD", out_file="/r/findings-Web-COD.json",
+                        targeted_review=["src/a.js"]),
+            self._entry(targeted_review=["../a.js"]),
+            self._entry(targeted_review=["src/b.js", "src/a.js"]),
+            self._entry(targeted_review=["src/a.js", "src/a.js"]),
+            self._entry(targeted_review=[]),
+        ]
+        for entry in cases:
+            with self.subTest(entry=entry):
+                self.assertTrue(pc.driver_plan_issues([entry]))
+
+
 if __name__ == "__main__":
     unittest.main()

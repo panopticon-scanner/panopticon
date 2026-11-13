@@ -170,6 +170,29 @@ def present_cells(paths):
     return out
 
 
+def targeted_review_attestations(paths):
+    """Strict targeted-review echoes keyed by valid stamped review cell."""
+    out = {}
+    for path in paths or ():
+        cell = findings_contract.cell_of(path)
+        if not cell:
+            continue
+        try:
+            data = artifacts_mod.read_json(path)
+        except (OSError, ValueError):
+            continue
+        if not findings_contract.is_acceptable(data):
+            continue
+        meta = data.get("_panopticon")
+        if not (isinstance(meta, dict) and meta.get("group") == cell[0]
+                and meta.get("domain") == cell[1]):
+            continue
+        attestation = findings_contract.targeted_review_paths(data)
+        if attestation is not None:
+            out[(cell[0], cell[1])] = attestation
+    return out
+
+
 def audit_floor_cells(coverages, present):
     """Certifiable-coverage check (matrix Sec5.1): every FLOOR (domain, group)
     cell must have produced a findings file. `coverages` = the per-group

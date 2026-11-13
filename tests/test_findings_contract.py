@@ -79,6 +79,17 @@ class PayloadDefectsTest(unittest.TestCase):
         self.assertTrue(fc.is_acceptable({"findings": [{"t": 1}]}))
         self.assertFalse(fc.is_acceptable({"findings": [None]}))
 
+    def test_targeted_review_attestation_is_a_strict_relative_path_list(self):
+        self.assertEqual(fc.payload_defects(
+            {"findings": [], "targeted_review": ["src/broken.js"]}), [])
+        for value in ("src/broken.js", ["/src/broken.js"], ["../broken.js"],
+                      ["src/broken.js", "src/broken.js"], [7]):
+            with self.subTest(value=value):
+                defects = fc.payload_defects(
+                    {"findings": [], "targeted_review": value})
+                self.assertEqual(len(defects), 1)
+                self.assertIn("targeted_review", defects[0]["reason"])
+
 
 class OneCellIdentityParserTest(unittest.TestCase):
     """ARC-3899903550 (#1765): every reader of the cell-file name must give the

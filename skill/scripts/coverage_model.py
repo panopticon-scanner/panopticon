@@ -41,6 +41,7 @@ import re
 # `discovery` module object here and reads `discovery.is_test_file` only at
 # call time, so neither order can see a half-initialised module.
 from scripts import discovery
+from scripts import native_unparsed
 
 # #5.0-11: the universal-tier domains ride a GLOBAL floor — every group reviews
 # code/database/test/architecture regardless of its committed vertical floor.
@@ -228,7 +229,7 @@ _SEMGREP_SYNTAX_FACT_KEYS = frozenset({
     "syntax_error_files", "size_skipped", "size_limit", "size_listing",
     "unlocated_records", "dockerfile_variants", "dockerfile_analyzed",
     "dockerfile_unanalyzed", "dockerfile_listing",
-})
+}) | native_unparsed.FACT_KEYS
 _SEMGREP_SYNTAX_ROW_KEYS = frozenset({
     "file", "reason", "syntax_errors", "rules", "rules_omitted", "rule_scope",
 })
@@ -349,6 +350,7 @@ def _only_located_semgrep_syntax_errors(facts, disclosure):
     """
     if not (isinstance(facts, dict) and isinstance(disclosure, dict)
             and set(facts) <= _SEMGREP_SYNTAX_FACT_KEYS
+            and native_unparsed.fact_shape_valid(facts)
             and facts.get("status") == "partial"
             and _nonnegative_integer(facts.get("parsed_files"))
             and _nonnegative_integer(facts.get("unavailable_files"))
@@ -414,12 +416,12 @@ def _only_located_semgrep_syntax_errors(facts, disclosure):
 def certifying_file_gaps(tools_file_partial):
     """The scanner file gaps that still sink certification, plus asset skips.
 
-    #3283 exempts an asset whose only gap was Semgrep's size limit. #3603 also
-    exempts fully located, exactly accounted Semgrep syntax notices: they say
-    that Semgrep could not parse named files, not that scanner execution was
-    missing. Both remain disclosed. Every mixed or malformed shape still
-    counts, including a size-skipped `.json` or `.go` and an unlocated parser
-    notice.
+    #3283 exempts an asset whose only gap was Semgrep's size limit. #3603 made
+    fully located, exactly accounted Semgrep syntax notices disclosure-only;
+    #3611 narrows that exemption for native-language files at synthesis, where
+    exact SEC review is required. Both kinds remain disclosed. Every mixed or
+    malformed shape still counts here, including a size-skipped `.json` or
+    `.go` and an unlocated parser notice.
     """
     if not isinstance(tools_file_partial, dict):
         return tools_file_partial, 0

@@ -639,6 +639,10 @@ groups:
       - skill/scripts/setup_preflight.py
       - skill/scripts/setup_config.py
       - skill/scripts/setup_spine.py
+      # #3611: setup and targeted review share this native-language map.
+      - skill/scripts/native_language.py
+      # #3611: strict coverage producer/dispatch/attestation reconciliation.
+      - skill/scripts/native_unparsed.py
       - skill/scripts/setup_proposal.py
       - skill/data/**
       - skill/reference/scope-profile-schema.json
@@ -652,6 +656,7 @@ groups:
       - tests/test_config_schema.py
       - tests/setup_helpers.py
       - tests/test_setup_catalog.py
+      - tests/test_native_unparsed.py
       - tests/test_setup_flow.py
       - tests/test_setup_ingest.py
       - tests/test_setup_proposal.py

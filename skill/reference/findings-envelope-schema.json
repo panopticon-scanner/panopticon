@@ -29,6 +29,17 @@
       "type": "integer",
       "enum": [1],
       "description": "Format/schema version of the findings envelope (P1 contract). Exactly 1; absent reads as 1 (#2104)."
+    },
+    "targeted_review": {
+      "type": "array",
+      "uniqueItems": true,
+      "description": "Repository-relative native-language files the SEC reviewer manually reviewed because Semgrep could not analyse them (#3611). The controller requires an exact echo of its dispatch list.",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 4096,
+        "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*(?:/$|//))[^\\\\\\u0000]+$"
+      }
     }
   },
   "definitions": {

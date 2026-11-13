@@ -17,6 +17,25 @@
   sign-in with a key set says how to choose the key route and does not. For agy, the shadow-shell
   scan no longer reads `~/.gemini/agents`, which `--gemini_dir` replaces.
 
+- **Native Semgrep parse gaps receive targeted SEC review (#3611).** Located
+  syntax failures in Markdown, HTML, configuration, and other non-native files
+  remain warning-only. Native files are classified with setup's extension map;
+  extensionless and unmapped-extension files use a bounded shebang read. Only
+  gaps inside this run's reviewed universe count toward the 20-file cap and
+  are routed to each covering group's effective SEC cell, whose findings
+  envelope must echo the exact manual-review list. Tool and Git-index path
+  spellings are matched under casefold plus NFC, so filesystem spelling
+  variants cannot escape review. Out-of-delta and pruned fixture files are
+  listed separately as warning-only and consume no cap. A missing or rejected
+  groups inventory makes membership unknown and withholds certification. The
+  producer publishes at most 1,000 native gaps; any remainder likewise sinks,
+  whatever the reviewed universe. The report names every target plus its
+  dispatched and completed cells. A missing/invalid in-scope cell, malformed
+  producer facts, or more than 20 in-scope native gaps withholds certification;
+  over-cap runs do not spend reviewer capacity.
+  Rule/config notifications outside `/src` are unlocated scanner gaps, never
+  repository targets.
+
 - **No guard grant covers the macOS Keychain (#3607).** The #3605 research showed an isolated
   run home only hides the login keychain: any same-user process can name it by absolute path.
   Every host's read and write tools (claude, kimi, agy, gemini, and the Codex read broker) now

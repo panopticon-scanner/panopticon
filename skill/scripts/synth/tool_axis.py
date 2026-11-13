@@ -23,6 +23,7 @@ import sys
 import scripts.app_trace as app_trace
 import scripts.groups_schema as groups_schema
 import scripts.ingest_tools as ingest_tools
+import scripts.native_unparsed as native_unparsed
 import scripts.tools_image as tools_image
 import scripts.tools_manifest as tools_manifest
 from scripts.tools import EXECUTES_TARGET_BUILD
@@ -203,6 +204,8 @@ class Reconciled:
     tools_manifest_invalid: str | None = None
     # #3269 SCA: measured dependency surface with no dedicated adapter output.
     dependency_audit_gap: bool = False
+    # #3611: why native parser-gap targeted review cannot certify, or None.
+    native_unparsed_gap: str | None = None
     # #1701/#3269 G4: source-scope drops this run's gate counts anyway (redteam
     # only; `[]` in every other mode). Beside `coverage` like the two blocks
     # above and for the same reason: `meta.coverage` is what the report SAYS,
@@ -508,6 +511,26 @@ def reconcile(plan, tools, resolved, run=None):
                 and cov["group"] and isinstance(cov.get("effective"), list)
                 for domain in cov["effective"]
                 if isinstance(domain, str) and domain in groups_schema.DOMAINS})]
+    semgrep_disposition = ((tools.dispositions or {}).get("semgrep")
+                           if isinstance(tools.dispositions, dict) else None)
+    semgrep_facts = (semgrep_disposition.get("file_coverage")
+                     if isinstance(semgrep_disposition, dict) else None)
+    targeted_review = None
+    native_unparsed_gap = None
+    if (isinstance(semgrep_facts, dict)
+            and type(semgrep_facts.get("syntax_error_files")) is int
+            and semgrep_facts["syntax_error_files"] > 0):
+        root = ((run.root if run is not None else None)
+                or (run.target if run is not None else None))
+        native_state = native_unparsed.read_facts(root, semgrep_facts)
+        if native_state is None:
+            native_unparsed_gap = (
+                "native Semgrep parser-gap classification facts are missing or invalid")
+        else:
+            targeted_review, native_unparsed_gap = native_unparsed.reconcile(
+                native_state, plan.groups_meta, plan.dispatch_entries,
+                coverage_io.targeted_review_attestations(tools.ingested_paths),
+                groups_known=plan.groups_valid)
     coverage = {
         "adapters": tools.dispositions or {},
         "tools_file_partial": {
@@ -595,6 +618,12 @@ def reconcile(plan, tools, resolved, run=None):
         # that was never given one. Both keys, one loader record.
         "delta_artifact": resolved.delta_artifact,
     }
+    if targeted_review is not None and (
+            targeted_review["native_unparsed"]
+            or targeted_review["classification_unknown"]
+            or targeted_review.get("out_of_scope", {}).get("count")
+            or native_unparsed_gap):
+        coverage["targeted_review"] = targeted_review
     if cleanup_failures:
         # A timeout already appears in `missing` and keeps its existing gate
         # outcome. This is the separate operator fact: best-effort cleanup could
@@ -637,4 +666,5 @@ def reconcile(plan, tools, resolved, run=None):
                       tools_apps=app_trace.repair(manifest_dict.get("apps")),
                       tools_manifest_invalid=tools.manifest_invalid,
                       dependency_audit_gap=dependency_audit_gap,
+                      native_unparsed_gap=native_unparsed_gap,
                       gated_suppressed=gated, coverages=list(plan.coverages or []))
