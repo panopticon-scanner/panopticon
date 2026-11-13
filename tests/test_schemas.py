@@ -137,6 +137,20 @@ class TestSchemas(unittest.TestCase):
         schema = _load("findings-envelope-schema.json")
         validate(instance=self._domain_panel_envelope(), schema=schema)
 
+    def test_targeted_review_schema_uses_canonical_repo_paths(self):
+        # N5: the JSON schema handed to the reviewer must reject every segment
+        # spelling the runtime's native_language.repo_path rejects.
+        _require_jsonschema(self)
+        schema = _load("findings-envelope-schema.json")
+        valid = self._domain_panel_envelope()
+        valid["targeted_review"] = ["src/broken.js"]
+        validate(instance=valid, schema=schema)
+        for path in ("a/..", "a/.", "a/", "./a", "../a"):
+            with self.subTest(path=path), self.assertRaises(ValidationError):
+                invalid = self._domain_panel_envelope()
+                invalid["targeted_review"] = [path]
+                validate(instance=invalid, schema=schema)
+
     def test_findings_envelope_rejects_domain_panel_without_required(self):
         _require_jsonschema(self)
         # #1099: domain_panel findings must carry domain/code/source_role.

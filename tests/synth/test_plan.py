@@ -617,6 +617,27 @@ class PlanLoadersTest(unittest.TestCase):
                 self.assertEqual(plan_mod.load_groups_json(short), {})
             self.assertIn("could not read", err.getvalue())
 
+    def test_groups_validity_distinguishes_missing_from_valid_empty(self):
+        valid = []
+        self.assertEqual(plan_mod.load_groups_json(None, valid_out=valid), {})
+        self.assertEqual(valid, [False])
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "groups.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"groups": []}, fh)
+            self.assertEqual(
+                plan_mod.load_groups_json(path, valid_out=valid), {"groups": []})
+            self.assertEqual(valid, [True])
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({}, fh)
+            self.assertEqual(plan_mod.load_groups_json(path, valid_out=valid), {})
+            self.assertEqual(valid, [False])
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"groups": "bad"}, fh)
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(plan_mod.load_groups_json(path, valid_out=valid), {})
+            self.assertEqual(valid, [False])
+
 
 class TestTheGroupsShapeGate(unittest.TestCase):
     """#3273 cut 16, ruling K: `load_groups_json` is a fail-closed shape gate at

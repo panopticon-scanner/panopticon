@@ -210,6 +210,46 @@ def _code_span(text):
     return ticks + text + ticks
 
 
+def _targeted_review_line(value):
+    """One bounded human line for #3611's file-to-cell accounting."""
+    if not isinstance(value, dict) or not isinstance(value.get("files"), list):
+        return None
+    rows = []
+    for row in value["files"]:
+        if not isinstance(row, dict) or not isinstance(row.get("file"), str):
+            continue
+        raw_cells = row.get("covered_by")
+        cells: list = raw_cells if isinstance(raw_cells, list) else []
+        covered = ", ".join("%s/%s" % tuple(cell) for cell in cells
+                            if isinstance(cell, list) and len(cell) == 2)
+        rows.append("%s (%s; %s)" % (
+            _code_span(json.dumps(row["file"], ensure_ascii=False)),
+            row.get("language") or "unknown",
+            covered or ("not dispatched: over cap" if value.get("over_cap")
+                        else "UNCOVERED")))
+    omitted = value.get("files_omitted")
+    if type(omitted) is int and omitted > 0:
+        rows.append("%d more omitted" % omitted)
+    sections = (["**Targeted manual security review:** " + "; ".join(rows)]
+                if rows else [])
+    outside = value.get("out_of_scope")
+    outside_rows = outside.get("files") if isinstance(outside, dict) else None
+    warnings = []
+    for row in outside_rows if isinstance(outside_rows, list) else ():
+        if not isinstance(row, dict) or not isinstance(row.get("file"), str):
+            continue
+        warnings.append("%s (%s)" % (
+            _code_span(json.dumps(row["file"], ensure_ascii=False)),
+            row.get("language") or "unknown"))
+    outside_omitted = outside.get("files_omitted") if isinstance(outside, dict) else None
+    if type(outside_omitted) is int and outside_omitted > 0:
+        warnings.append("%d more omitted" % outside_omitted)
+    if warnings:
+        sections.append("**Semgrep parser gaps outside this run's reviewed universe "
+                        "(warning only):** " + "; ".join(warnings))
+    return " — ".join(sections) or None
+
+
 def _excluded_tools_line(value):
     """Show a measured tool-policy exclusion without inventing legacy data."""
     if not isinstance(value, dict):
@@ -353,6 +393,9 @@ def render_summary(report):
         # so the reason is not in a NOT CERTIFIED line; say it beside the grade.
         lines.insert(3, "**Grade provisional:** %s" % s["coverage_note"])
     _cov = report["meta"].get("coverage") or {}
+    targeted = _targeted_review_line(_cov.get("targeted_review"))
+    if targeted:
+        lines.insert(3, targeted)
     excluded = _excluded_tools_line(_cov.get("tools_excluded"))
     if excluded:
         lines.insert(3, excluded)

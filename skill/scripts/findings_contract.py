@@ -32,6 +32,7 @@ import os
 # The domain roster `cell_of` validates a name's trailing token against. The
 # edge adds no cycle -- `groups_schema` imports nothing from this tree.
 from scripts import groups_schema
+from scripts import native_language
 
 
 # #2104: the one format version agent records are written in. ABSENT reads as
@@ -87,9 +88,31 @@ def payload_defects(data):
     if not isinstance(findings, list):
         return [{"index": None,
                  "reason": "findings is %s, not a list" % type(findings).__name__}]
-    return [{"index": i,
-             "reason": "finding %d is %s, not an object" % (i, type(f).__name__)}
-            for i, f in enumerate(findings) if not isinstance(f, dict)]
+    defects = [{"index": i,
+                "reason": "finding %d is %s, not an object" % (i, type(f).__name__)}
+               for i, f in enumerate(findings) if not isinstance(f, dict)]
+    if "targeted_review" in data and targeted_review_paths(data) is None:
+        defects.append({"index": None,
+                        "reason": "targeted_review is not a unique list of "
+                                  "repository-relative paths"})
+    return defects
+
+
+def targeted_review_paths(data):
+    """The strict reviewer attestation, ``()`` when omitted, else ``None``.
+
+    A target path is controller-selected but reviewer-echoed.  Treat it like
+    every other agent boundary: no scalar/list coercion, traversal, duplicate,
+    or non-string survives to coverage reconciliation.
+    """
+    if not isinstance(data, dict) or "targeted_review" not in data:
+        return ()
+    value = data["targeted_review"]
+    if (not isinstance(value, list)
+            or not all(native_language.repo_path(path) for path in value)
+            or len(value) != len(set(value))):
+        return None
+    return tuple(value)
 
 
 def is_acceptable(data):

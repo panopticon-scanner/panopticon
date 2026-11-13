@@ -23,7 +23,7 @@ from . import runio
 _PROMPT_INDEX_MAX = 16 * 1024 * 1024
 
 
-def _driver_plan_entries(review_root, manifest):
+def _driver_plan_entries(review_root, manifest, targeted_by_group=None):
     """The declared review cells as a matrix domain-cell dispatch plan
     (#5.0-16). Computed DETERMINISTICALLY from groups.json (each discovered
     group) x its effective domains -- the SAME two sources review_execute
@@ -39,10 +39,15 @@ def _driver_plan_entries(review_root, manifest):
     entries = []
     for group, _files in coverage._discovered_groups(review_root):
         for domain in coverage._effective_domains(review_root, group):
-            entries.append({
+            entry = {
                 "group": group, "domain": domain, "enforced": enforced,
                 "out_file": os.path.abspath(
-                    runio._pano(review_root, "findings-%s-%s.json" % (group, domain)))})
+                    runio._pano(review_root, "findings-%s-%s.json" % (group, domain)))}
+            targets = ((targeted_by_group or {}).get(group, ())
+                       if domain == "SEC" else ())
+            if targets:
+                entry["targeted_review"] = list(targets)
+            entries.append(entry)
     return entries
 
 

@@ -49,7 +49,8 @@ class TestUntrustedContentPreamble(unittest.TestCase):
             "domain": "SEC", "group": "g1", "file_list": "a.py",
             "security_mode": "standard", "tests": "t.py", "menu": "m",
             "tst_guidance": "",
-            "criteria": "c", "tool_hits": "", "security_checklist": "", "run_id": "R",
+            "criteria": "c", "tool_hits": "", "targeted_review": "",
+            "security_checklist": "", "run_id": "R",
             "out_file": ".panopticon/f.json"})
         self.assertIn("UNTRUSTED DATA", panel)
         advisor = dispatch.render_prompt("advisor.md", {"claim_json": "{}"})
@@ -208,7 +209,7 @@ class TestDomainPanelRenders(unittest.TestCase):
                    "tests": "- t.py", "security_mode": "standard",
                    "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
                    "criteria": "SEC-A1A os-command-injection — Qualifies when …",
-                   "tool_hits": "", "security_checklist": "",
+                   "tool_hits": "", "targeted_review": "", "security_checklist": "",
                    "tst_guidance": "",
                    "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
@@ -229,7 +230,7 @@ class TestDomainPanelRenders(unittest.TestCase):
                    "tests": "- t.py", "security_mode": "standard",
                    "menu": "SEC-A1A os-command-injection (HIGH)", "run_id": "R",
                    "criteria": "SEC-A1A — CRITERIA-SENTINEL — met only when …",
-                   "tool_hits": "", "security_checklist": "",
+                   "tool_hits": "", "targeted_review": "", "security_checklist": "",
                    "tst_guidance": "",
                    "out_file": "/abs/findings-Auth-SEC.json"}
         out = dispatch.render_prompt("domain-panel.md", mapping, "claude")
@@ -327,7 +328,8 @@ class TestTestInventoryFraming(unittest.TestCase):
             "domain": domain, "group": "Auth", "file_list": "- a.py",
             "tests": "- (no tests)", "security_mode": "standard",
             "menu": "%s-A1A x (HIGH)" % domain, "run_id": "R",
-            "criteria": "c", "tool_hits": "", "security_checklist": "",
+            "criteria": "c", "tool_hits": "", "targeted_review": "",
+            "security_checklist": "",
             "tst_guidance": inventory.render_tst_guidance(domain, note),
             "out_file": "/abs/findings-Auth-%s.json" % domain}, "claude")
 

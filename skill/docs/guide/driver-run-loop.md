@@ -1017,7 +1017,28 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `syntax_error_files` distinguishes the exact number of located files from the number of
   diagnostics. Those parser limitations remain in `meta.coverage.tools_file_partial`, but their
   bounded file names are disclosure-only in `summary.coverage_note` and do not withhold
-  certification (#3603). An unlocated syntax notice, or a syntax notice accompanied by a timeout,
+  certification by themselves (#3603). The native-language refinement (#3611) uses the same
+  extension map as the setup spine; an extensionless file or one with an unmapped extension is
+  classified by a bounded shebang read (that probe can promote, never demote, an extension).
+  A parser gap in Markdown, HTML, config, or another non-native file stays warning-only. A native
+  parser gap inside this run's reviewed universe (the `groups.json` file lists, including SEC
+  carve-out groups) is identified across casefold-plus-NFC spelling differences between Git's
+  index path and Semgrep's on-disk path. It is added only to its covering effective SEC cell when
+  that in-universe set is at or below the absolute run cap of 20. The cell receives an explicit
+  manual-security-review instruction and its findings envelope must echo the exact
+  `targeted_review` path list.
+  `meta.coverage.targeted_review` names each target, its language, where it was dispatched, and
+  which valid completed SEC cell covered it. A native gap outside the reviewed universe -- an
+  untouched file in a delta run or a pruned fixture-corpus file -- is warning-only, consumes none
+  of the cap, and appears in the separately capped `targeted_review.out_of_scope` list. No SEC cell,
+  a failed or malformed cell, or an incorrect attestation leaves an in-universe file uncovered and
+  withholds certification. A missing or rejected groups inventory makes membership unknown and
+  withholds certification; a valid `groups: []` instead proves every row is outside the universe.
+  The producer publishes at most 1,000 native parser-gap rows, and a 1,001st withholds certification
+  whatever the eventual universe because its membership cannot be recovered. More than 20
+  in-universe native parser-gap files is a scanner-coverage failure: it withholds certification
+  without dispatching bulk work to reviewers. An unlocated
+  syntax notice, or a syntax notice accompanied by a timeout,
   size skip, unavailable capability, Dockerfile gap, or unknown/malformed coverage fact, still
   fails closed; a mixed capture names both the parse limitation and the certifying gap. Semgrep's
   `Missing plugin` notification is the sole explicit notification allowlist entry (#3610).
@@ -1025,8 +1046,11 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   descriptor id is a certifying coverage gap. If the notification has a standard SARIF location,
   or its message uses one of Semgrep v1.183.0's two source-pinned location forms, the bounded file
   appears as `scanner_notification` with bounded inert `notification_ids`, and the coverage note
-  names both. Otherwise it increments `unlocated_records`. A malformed note or descriptor likewise
-  fails closed as unlocated. The notification's diagnostic prose is never published.
+  names both. The location must resolve below the scanner's `/src` target: an `Invalid YAML`, rule
+  parse, or other notification naming `/opt/semgrep-rules` is unlocated and can never become a
+  target-repository review file. Otherwise it increments `unlocated_records`. A malformed note or
+  descriptor likewise fails closed as unlocated. The notification's diagnostic prose is never
+  published.
   **Files over Semgrep's size limit are listed by the host (#3193).** The argv also passes
   `--max-target-bytes=1000000`, Semgrep's own default. Semgrep skips every regular file larger than
   that, of any kind, binary included, and its SARIF says nothing about it. So when the capture lands,

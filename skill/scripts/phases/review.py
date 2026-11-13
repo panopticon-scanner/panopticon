@@ -1,6 +1,7 @@
 """Phase 4 -- review: the matrix-cell dispatch checkpoint and its cell artifacts."""
 from typing import Any
 import functools
+import json
 import os
 import shlex
 
@@ -11,6 +12,7 @@ import scripts.ingest_tools as ingest_tools
 # to CHECK the dispatch request this module writes, so both sides must
 # read the same function or a run can refuse itself.
 import scripts.loop_batch as loop_batch
+import scripts.native_unparsed as native_unparsed
 import scripts.ocrdb as ocrdb
 import scripts.safe_write as safe_write
 import scripts.synth.artifacts as artifacts_mod
@@ -147,7 +149,7 @@ def _cell_exhausted(review_root, group, domain):
             >= MAX_CELL_ATTEMPTS)
 
 
-def _get_valid_cell_data(review_root, manifest, group, domain):
+def _get_valid_cell_data(review_root, manifest, group, domain, targeted_by_group=None):
     path = runio._pano(review_root, "findings-%s-%s.json" % (group, domain))
     try:
         data = artifacts_mod.read_json(path)
@@ -159,14 +161,20 @@ def _get_valid_cell_data(review_root, manifest, group, domain):
     # alone would just move the false certification downstream.
     if not findings_contract.is_acceptable(data):
         return None
+    targeted_by_group = (_targeted_by_group(review_root, manifest)
+                         if targeted_by_group is None else targeted_by_group)
+    expected = (targeted_by_group.get(group, ()) if domain == "SEC" else ())
+    if findings_contract.targeted_review_paths(data) != tuple(expected):
+        return None
     meta = data.get("_panopticon")
     if (isinstance(meta, dict) and meta.get("run_id") == manifest.get("run_id")
             and meta.get("domain") == domain and meta.get("group") == group):
         return data
     return None
 
-def _cell_done(review_root, manifest, group, domain):
-    return _get_valid_cell_data(review_root, manifest, group, domain) is not None
+def _cell_done(review_root, manifest, group, domain, targeted_by_group=None):
+    return (_get_valid_cell_data(review_root, manifest, group, domain,
+                                 targeted_by_group=targeted_by_group) is not None)
 
 def _security_checklist_path():
     """The ONE absolute spelling of the SEC checklist. Shared by the prompt
@@ -362,6 +370,9 @@ def _hit_text(value, cap):
     text = " ".join(runio._prompt_safe(str(value or "")[:8 * cap]).split())
     return (text[:cap] + "…") if len(text) > cap else (text or "?")
 
+_INGESTED_TOOL_DISPOSITIONS: dict[tuple[object, ...], dict] = {}
+
+
 @functools.lru_cache(maxsize=None)
 def _ingested_tool_findings(review_root, include_fixtures,
                             security_mode="standard", run_id=None):
@@ -373,18 +384,44 @@ def _ingested_tool_findings(review_root, include_fixtures,
     comment in the scanned tree is honoured at the parse under `standard` -- and
     both phases ask about the same root. Returns () when the tools dir is
     absent or ingest fails — the map is advisory and must never break a review."""
+    key = (review_root, include_fixtures, security_mode, run_id)
     tools_dir = runio._pano(review_root, "tools")
     if not os.path.isdir(tools_dir):
+        _INGESTED_TOOL_DISPOSITIONS[key] = {}
         return ()
     try:
-        findings, _disp = ingest_tools.ingest_dir_detailed(
+        findings, dispositions = ingest_tools.ingest_dir_detailed(
             tools_dir, None, include_fixtures=include_fixtures,
             target_root=review_root, security_mode=security_mode,
             allowed_outputs=(tools_phase.tool_output_receipt(review_root, run_id)
                              if run_id else None))
     except Exception:  # noqa: BLE001 - advisory input; never break review on it
+        _INGESTED_TOOL_DISPOSITIONS[key] = {}
         return ()
+    _INGESTED_TOOL_DISPOSITIONS[key] = dispositions
     return tuple(findings)
+
+
+def _ingested_tool_dispositions(review_root, include_fixtures,
+                                security_mode="standard", run_id=None):
+    """The dispositions from the exact memoized ingest that built tool hits."""
+    key = (review_root, include_fixtures, security_mode, run_id)
+    _ingested_tool_findings(*key)
+    value = _INGESTED_TOOL_DISPOSITIONS.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _targeted_by_group(review_root, manifest, groups=None):
+    """Controller-selected native syntax gaps, keyed by covering group."""
+    groups = list(groups if groups is not None else coverage._discovered_groups(review_root))
+    dispositions = _ingested_tool_dispositions(
+        review_root, verify_tools._tools_include_fixtures(manifest),
+        manifest.get("security_mode", "standard"), manifest.get("run_id"))
+    semgrep = dispositions.get("semgrep") if isinstance(dispositions, dict) else None
+    facts = semgrep.get("file_coverage") if isinstance(semgrep, dict) else None
+    state = native_unparsed.read_facts(review_root, facts)
+    group_rows = [{"name": name, "files": files} for name, files in groups]
+    return native_unparsed.targets_by_group(state, group_rows)
 
 def _format_tool_hits(hits):
     """Render a cell's already-reported tool findings as a 'don't re-derive'
@@ -442,8 +479,26 @@ def _tool_hits_for_cell(review_root, manifest, domain, files):
                              (h.get("location") or {}).get("line_start") or 0))
     return _format_tool_hits(hits)
 
+def _render_targeted_review(domain, targets):
+    """The controller-selected manual security work and exact attestation."""
+    targets = list(targets or ()) if domain == "SEC" else []
+    if not targets:
+        return ""
+    listed = "\n".join("- " + runio._prompt_safe(path) for path in targets)
+    echo = json.dumps(targets, ensure_ascii=True)
+    return (
+        "## Targeted manual security review\n\n"
+        "Semgrep could not analyse the following native-language file(s):\n\n"
+        + listed + "\n\n"
+        "Review each one manually for security despite the scanner gap. In the "
+        "output object, say that you completed this work by including exactly "
+        "`\"targeted_review\": %s`. The controller validates that list; omitting "
+        "or changing it leaves the file uncovered.\n\n" % echo)
+
+
 def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle,
-                tools_context=False, inventory=None, unit=None, guide_path=None):
+                tools_context=False, inventory=None, unit=None, guide_path=None,
+                targeted_review=None):
     file_list = runio._abs_file_list(review_root, files)
     # #1190 AGT-A1A, via fix round 3: prompt-sanitized like `file_list`, with
     # the SAME function. Since fix round 2 (N1) a chunk's list is built from
@@ -467,6 +522,7 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
         "menu": _render_menu(bundle, domain, guide_path),
         "criteria": _render_criteria(bundle, domain), "run_id": manifest["run_id"],
         "tool_hits": _tool_hits_for_cell(review_root, manifest, domain, files),
+        "targeted_review": _render_targeted_review(domain, targeted_review),
         "security_checklist": _render_security_checklist(domain),
         "out_file": out_file}, host)
     host_ev = runio.host_evidence(review_root)
@@ -507,6 +563,9 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
             "inventory_unit": unit or group,
             "scope": requests.scope(
                 files=abs_files, reads=_cell_reads(domain, guide_path))}
+    targets = list(targeted_review or ()) if domain == "SEC" else []
+    if targets:
+        entry["targeted_review"] = targets
     if mode:
         entry["delivery"] = mode
     return entry
@@ -554,7 +613,8 @@ def review_done(review_root, manifest):
     # A cell that exhausted its retry budget is not DONE -- _cell_done still says
     # no, and synthesis surfaces it as a missing floor cell -- but there is no
     # work left to dispatch for it, so the phase must advance rather than wedge.
-    return all(_cell_done(review_root, manifest, g, d)
+    targeted_by_group = _targeted_by_group(review_root, manifest, groups)
+    return all(_cell_done(review_root, manifest, g, d, targeted_by_group)
                or _cell_exhausted(review_root, g, d)
                for g, _ in groups for d in coverage._effective_domains(review_root, g))
 
@@ -597,7 +657,9 @@ def cell_count(review_root):
 def review_execute(review_root, manifest):
     # #5.0-16 H2: declare every review cell before dispatching any, so an
     # injected/undeclared findings file is caught by reconcile at synthesis.
-    requests._write_driver_plan(review_root, manifest)
+    groups = coverage._discovered_groups(review_root)
+    targeted_by_group = _targeted_by_group(review_root, manifest, groups)
+    requests._write_driver_plan(review_root, manifest, targeted_by_group)
     host = manifest.get("host", "claude")
     bundle = runio._load_ocrdb_bundle()
     guide_path = _ensure_ocrdb_guide(review_root, bundle)
@@ -633,10 +695,10 @@ def review_execute(review_root, manifest):
         unit_tests[unit] = sorted((matrix.get(unit) or {}).get("tests") or [])
         inventory_of[unit] = inventory_mod.note(
             review_root, unit, unit_files, unit_tests[unit], units, stems_of, imported_by)
-    for group, files in coverage._discovered_groups(review_root):
+    for group, files in groups:
         domains = coverage._effective_domains(review_root, group)
         pending = [d for d in domains
-                   if not _cell_done(review_root, manifest, group, d)
+                   if not _cell_done(review_root, manifest, group, d, targeted_by_group)
                    and not _cell_exhausted(review_root, group, d)]
         if not pending:
             continue
@@ -653,7 +715,9 @@ def review_execute(review_root, manifest):
             _cell_entry(review_root, manifest, group, d, files, tests, host, bundle,
                         tools_context=tools_context,
                         inventory=inventory_of.get(unit),
-                        unit=unit, guide_path=guide_path)
+                        unit=unit, guide_path=guide_path,
+                        targeted_review=(targeted_by_group.get(group, ())
+                                         if d == "SEC" else ()))
             for d in pending)
     if all_entries:
         _record_attempts(review_root, [_cell_key(e["group"], e["domain"])
