@@ -42,13 +42,31 @@ Pick the **most specific** matching code for each finding. If nothing in the men
 
 Set `severity` to what the concrete case actually warrants — a code's
 `default_severity` is a starting point, not a verdict. Reserve **CRITICAL** for
-defects that are DIRECTLY and TRIVIALLY exploitable for severe, immediate impact:
-unauthenticated RCE, direct auth/authz bypass to privileged access, injection
-with data exfiltration on an exposed surface, or secret disclosure enabling full
-compromise. If exploitation requires authentication, a specific precondition, or
-chaining with another issue — or the blast radius is bounded — it is **HIGH**,
-not CRITICAL, EVEN IF the code defaults to CRITICAL (down-override to HIGH with a
-reason). When genuinely torn between CRITICAL and HIGH, choose **HIGH**.
+defects that are DIRECTLY exploitable for severe, immediate impact: code or
+template execution (unauthenticated RCE is the archetype), direct auth/authz
+bypass to privileged access, injection with data exfiltration on an exposed
+surface, or secret disclosure enabling full compromise.
+
+- **Authentication alone does not lower severity.** Any logged-in user reaching
+  code or template execution is still CRITICAL; self-hosted apps often run with
+  auth disabled or default credentials.
+- **For a library, untrusted input reaching the public API is the threat model,
+  not a precondition.** Dangerous behaviour that is on by default and reachable
+  through the public API stays CRITICAL.
+- **Down-override to HIGH** with a reason, EVEN IF the code defaults to
+  CRITICAL, when exploitation needs chaining with another issue, needs input
+  only the deployer or operator controls (configuration, environment, command
+  line, deployment files) — not an in-app administrator or any other logged-in
+  role — or needs a non-default configuration; or when the blast radius is
+  bounded (no code execution, and limited data: not whole-database or
+  credential exfiltration).
+- **A defect that is not security-exploitable at all** (a logic or reliability
+  bug) is rated on its actual impact: down to the code's permitted floor, or
+  below it with a controlled `severity_modifier`.
+- **Rate the defect, not the target's intent.** A demo, sample or deliberately
+  vulnerable app gets no severity discount.
+
+When genuinely torn between CRITICAL and HIGH, choose **HIGH**.
 
 For a menu code with a `permitted` range, its `raise_when[...]` and
 `lower_when[...]` lines are the citable severity rungs:
@@ -94,9 +112,9 @@ Each finding MUST carry:
 
 {security_checklist}
 For a SECURITY/REDTEAM finding, also carry the evidence that makes the severity
-above checkable — the Severity bar asks you to judge unauthenticated RCE,
-auth/authz bypass, injection-with-exfiltration and secret disclosure, and a
-reviewer cannot re-derive that from a title alone:
+above checkable — the Severity bar asks you to judge code execution
+(authenticated or not), auth/authz bypass, injection-with-exfiltration and
+secret disclosure, and a reviewer cannot re-derive that from a title alone:
 - `exploit_scenario`: the concrete path from attacker input to impact — the
   precondition, the step, the outcome. Redact secrets as `[REDACTED]`.
 - `citations: {"cwe": ["CWE-89", ...]}` when a standard class applies; omit rather
