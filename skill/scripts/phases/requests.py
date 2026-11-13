@@ -31,8 +31,8 @@ _SAFE_ENTRY_ID = re.compile(r"[A-Za-z0-9._-]{1,160}\Z")
 
 # Stable private seams for the phase callers that predate the line-ceiling split.
 # Module-attribute forwarding also keeps the coverage<->requests import cycle lazy.
-def _driver_plan_entries(review_root, manifest):
-    return run_artifacts._driver_plan_entries(review_root, manifest)
+def _driver_plan_entries(review_root, manifest, targeted_by_group=None):
+    return run_artifacts._driver_plan_entries(review_root, manifest, targeted_by_group)
 
 
 def _snapshot_review_out_files(review_root, manifest):
@@ -471,7 +471,7 @@ def load_bound_request(review_root, namespace=None, expected_sha256=None):
         return None, REQUEST_UNREADABLE % os.path.abspath(path)
     return request, None
 
-def _write_driver_plan(review_root, manifest):
+def _write_driver_plan(review_root, manifest, targeted_by_group=None):
     """Write .panopticon/dispatch-plan-driver.json declaring every review cell
     (#5.0-16 H2), so synthesize's reconcile_findings_files (undeclared-file
     detection) is live on the driver path. Idempotent: written once, only when
@@ -481,7 +481,7 @@ def _write_driver_plan(review_root, manifest):
     no-op rather than flagging an empty plan, and never RE-created once the
     manifest stamps it (`run_manifest.claim_artifact`, SEC-377944137)."""
     path = runio._pano(review_root, plan_mod.DRIVER_DISPATCH_PLAN)
-    entries = _driver_plan_entries(review_root, manifest)
+    entries = _driver_plan_entries(review_root, manifest, targeted_by_group)
     if not entries:
         return None
     # Before any write-capable cell is dispatched, on EVERY pass -- a resume

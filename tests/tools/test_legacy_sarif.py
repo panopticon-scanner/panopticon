@@ -912,6 +912,57 @@ class TestSemgrepTimeoutsAreDisclosed(unittest.TestCase):
                          ("future.py", ["Future scanner failure"]))
         self.assertNotIn(private, diagnostic + json.dumps(disposition))
 
+    def test_standard_sarif_rule_config_location_outside_src_is_unlocated(self):
+        private = "PRIVATE-RULE-CONFIG-DIAGNOSTIC"
+        note = _notification_note(
+            "Invalid YAML", "Invalid YAML at line /src/spoof.py:1:\n" + private)
+        note["locations"] = [{"physicalLocation": {
+            "artifactLocation": {"uri": "/opt/semgrep-rules/broken.yml"}}}]
+        _, disposition, diagnostic = self._ingest(_semgrep_capture([note]))
+        facts = disposition["file_coverage"]
+        self.assertEqual((facts["files"], facts["scanner_notifications_unlocated"],
+                          facts["unlocated_records"]), ([], 1, 1))
+        self.assertNotIn("semgrep-rules", diagnostic + json.dumps(disposition))
+        self.assertNotIn(private, diagnostic + json.dumps(disposition))
+
+    def test_dedicated_syntax_notification_outside_src_is_unlocated_not_targeted(self):
+        private = "PRIVATE-RULE-CONFIG-DIAGNOSTIC"
+        note = _notification_note(
+            "Syntax error",
+            "Syntax error at line /opt/semgrep-rules/broken.py:7:\n" + private)
+        _, disposition, diagnostic = self._ingest(_semgrep_capture([note]))
+        facts = disposition["file_coverage"]
+        self.assertEqual((facts["files"], facts["syntax_error_files"],
+                          facts["native_syntax_files"], facts["unlocated_records"]),
+                         ([], 0, 0, 1))
+        self.assertNotIn("semgrep-rules", diagnostic + json.dumps(disposition))
+        self.assertNotIn(private, diagnostic + json.dumps(disposition))
+
+    def test_standard_rule_config_location_beats_target_looking_syntax_prose(self):
+        private = "PRIVATE-RULE-CONFIG-DIAGNOSTIC"
+        note = _notification_note(
+            "Syntax error", "Syntax error at line /src/spoof.py:1:\n" + private)
+        note["locations"] = [{"physicalLocation": {
+            "artifactLocation": {"uri": "/opt/semgrep-rules/broken.py"}}}]
+        _, disposition, diagnostic = self._ingest(_semgrep_capture([note]))
+        facts = disposition["file_coverage"]
+        self.assertEqual((facts["files"], facts["native_syntax_files"],
+                          facts["unlocated_records"]), ([], 0, 1))
+        self.assertNotIn("spoof.py", diagnostic + json.dumps(disposition))
+        self.assertNotIn(private, diagnostic + json.dumps(disposition))
+
+    def test_rule_config_notification_outside_src_is_unlocated(self):
+        private = "PRIVATE-RULE-CONFIG-DIAGNOSTIC"
+        note = _notification_note(
+            "Invalid YAML",
+            "Invalid YAML at line /opt/semgrep-rules/broken.yml:7:\n" + private)
+        _, disposition, diagnostic = self._ingest(_semgrep_capture([note]))
+        facts = disposition["file_coverage"]
+        self.assertEqual((facts["files"], facts["scanner_notifications_unlocated"],
+                          facts["unlocated_records"]), ([], 1, 1))
+        self.assertNotIn("semgrep-rules", diagnostic + json.dumps(disposition))
+        self.assertNotIn(private, diagnostic + json.dumps(disposition))
+
     def test_notification_id_disclosure_is_bounded_and_inert(self):
         raw_id = "Future\x1b[2J" + "x" * 300
         note = _notification_note(raw_id, raw_id + " at line /src/a.py:1:\n private")
