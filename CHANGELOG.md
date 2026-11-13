@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **The fixtures image and local harness run as the production scan user (#3596).**
+  `Dockerfile.fixtures` now returns from its build-only root layers to `USER scanner`.
+  Both local harness launches still state `--user scanner`, set scanner's HOME, and
+  loudly prove uid 1000 before the presence probe or adapter tests run; argv tests
+  include a dropped-user mutant. Build steps use `WORKDIR` instead of `RUN cd`.
+  The base remains the deliberately current local `panopticon-tools:latest` handoff
+  used by the daily adapter lanes, with rule-specific registry-pin annotations rather
+  than freezing those lanes on an older tools image.
+
 - **First contact checks the session root's hook registration (#3541).** Session mode registers
   both guards in the session root's `.claude/settings.local.json`. A hook entry there that a guard
   claims but that is not exactly the entry arming writes now halts the run before anything is
