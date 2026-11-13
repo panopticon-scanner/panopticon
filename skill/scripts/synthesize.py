@@ -21,6 +21,7 @@ import scripts.config_schema as config_schema
 import scripts.executable as executable
 import scripts.first_contact as first_contact
 import scripts.html_report as html_report
+import scripts.ingest_tools as ingest_tools
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
 import scripts.redact as redact
@@ -270,12 +271,32 @@ def _compare(args):
     return 0
 
 
+def _resolve_analysis_root(args):
+    """Pin the one filesystem root ingest and synthesis both use (N6)."""
+    if args.root is not None:
+        return
+    target = args.target
+    # The driver always passes a concrete --root. A direct invocation keeps the
+    # documented --target fallback; otherwise use the same `.panopticon`
+    # ancestor ingest has always derived from --tools-dir. Only a bare tools
+    # directory with no target identity falls back to cwd, which is then passed
+    # into ingest too so classification cannot split across two trees.
+    if isinstance(target, str) and target and target != "unknown":
+        chosen = target
+    else:
+        chosen = (ingest_tools._target_root_for(args.tools_dir)
+                  if args.tools_dir else None) or os.getcwd()
+    args.root = os.path.abspath(chosen)
+
+
 def main(argv=None):
     """Main entry point: load findings, enrich citations, build and validate report."""
     args = build_parser().parse_args(argv)
 
     if args.compare:
         return _compare(args)
+
+    _resolve_analysis_root(args)
 
     try:
         plan_contract.artifact_root(os.getcwd())

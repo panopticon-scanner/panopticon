@@ -95,11 +95,17 @@ def classify(repo, rel):
     if not repo_path(rel):
         return False, None
     ext = os.path.splitext(rel)[1].lower()
-    if ext:
-        return True, EXT_LANG.get(ext)
+    mapped = EXT_LANG.get(ext)
+    if mapped is not None:
+        return True, mapped
+    # N1: Semgrep also chooses languages from shebangs on files whose suffix
+    # it does not know (for example deploy.prod). Preserve the old answer for
+    # every unmapped suffix when the bounded read cannot promote it: such a
+    # file was known non-native, and an optional read may never demote it to
+    # unknown. Extensionless files still need a successful read to be known.
     raw = _first_bytes(repo, rel)
     if raw is None:
-        return False, None
+        return (True, None) if ext else (False, None)
     return True, _SHEBANG_LANG.get(_interpreter(raw))
 
 

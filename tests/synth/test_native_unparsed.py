@@ -7,6 +7,7 @@ import unittest
 from scripts import native_unparsed
 from scripts import html_report
 from scripts.synth import findings as findings_mod
+from scripts.synth import coverage_io
 from scripts.synth import plan
 from scripts.synth import report
 from scripts.synth import render
@@ -50,9 +51,10 @@ class NativeUnparsedReportTest(unittest.TestCase):
             json.dump(payload, fh)
         return path
 
-    def _report(self, paths, *, group="Web", attestation=None, plan_targets=None,
-                include_cell=True, facts=None):
-        groups = [{"name": group, "files": list(paths)}]
+    def _report(self, paths, *, group="Web", group_files=None, attestation=None,
+                plan_targets=None, include_cell=True, facts=None):
+        groups = [{"name": group, "files": list(
+            paths if group_files is None else group_files)}]
         entry = {"group": group, "domain": "SEC",
                  "out_file": os.path.join(self.root, "findings-%s-SEC.json" % group)}
         if plan_targets is not None:
@@ -95,6 +97,43 @@ class NativeUnparsedReportTest(unittest.TestCase):
                 self.assertFalse(result["summary"]["coverage_certified"])
                 self.assertEqual(result["summary"]["gate"], "INCONCLUSIVE")
                 self.assertIn("src/broken.js", result["summary"]["coverage_note"])
+
+    def test_out_of_delta_native_gap_is_warning_only(self):
+        self._write("src/changed.py")
+        self._write("scripts/deploy.sh", "#!/bin/sh\nexit 0\n")
+        result = self._report(
+            ["scripts/deploy.sh"], group_files=["src/changed.py"],
+            attestation=None, plan_targets=None,
+        )
+        self.assertTrue(result["summary"]["coverage_certified"])
+        targeted = result["meta"]["coverage"]["targeted_review"]
+        self.assertEqual(targeted["native_unparsed"], 0)
+        self.assertEqual(targeted["out_of_scope"]["files"], [
+            {"file": "scripts/deploy.sh", "language": "Shell"}
+        ])
+        self.assertIn("scripts/deploy.sh", result["summary"]["coverage_note"])
+        self.assertIn("outside this run's reviewed universe", render.render_summary(result))
+
+    def test_pruned_fixture_native_gap_is_warning_only(self):
+        self._write("src/app.js")
+        self._write("testdata/broken.js")
+        result = self._report(
+            ["testdata/broken.js"], group_files=["src/app.js"],
+            attestation=None, plan_targets=None,
+        )
+        self.assertTrue(result["summary"]["coverage_certified"])
+        targeted = result["meta"]["coverage"]["targeted_review"]
+        self.assertEqual(targeted["out_of_scope"]["count"], 1)
+        self.assertFalse(targeted["over_cap"])
+
+    def test_in_scope_uncovered_gap_still_sinks(self):
+        self._write("src/broken.js")
+        result = self._report(
+            ["src/broken.js"], include_cell=False,
+            plan_targets=["src/broken.js"],
+        )
+        self.assertFalse(result["summary"]["coverage_certified"])
+        self.assertIn("not covered", result["summary"]["coverage_note"])
 
     def test_broken_markdown_is_warning_only(self):
         self._write("README.md")
@@ -143,3 +182,41 @@ class NativeUnparsedReportTest(unittest.TestCase):
         self.assertFalse(result["summary"]["coverage_certified"])
         self.assertIn("classification facts are missing or invalid",
                       result["summary"]["coverage_note"])
+
+    def test_malformed_findings_file_cannot_attest_with_a_correct_echo(self):
+        path = self._cell("Web", ["src/broken.js"])
+        with open(path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        payload["findings"] = "not a findings list"
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        self.assertEqual(coverage_io.targeted_review_attestations([path]), {})
+
+    def test_findings_stamp_must_name_the_filename_cell(self):
+        path = self._cell("Web", ["src/broken.js"])
+        with open(path, encoding="utf-8") as fh:
+            payload = json.load(fh)
+        payload["_panopticon"]["group"] = "Other"
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh)
+        self.assertEqual(coverage_io.targeted_review_attestations([path]), {})
+
+    def test_renderers_ignore_non_integer_omitted_counts(self):
+        value = {
+            "files": [{"file": "src/broken.js", "language": "JavaScript",
+                       "covered_by": [["Web", "SEC"]]}],
+            "files_omitted": "many",
+            "out_of_scope": {
+                "files": [{"file": "testdata/broken.js", "language": "JavaScript"}],
+                "files_omitted": "also many",
+            },
+        }
+        line = render._targeted_review_line(value)
+        self.assertIn("src/broken.js", line)
+        self.assertIn("testdata/broken.js", line)
+        self.assertNotIn("more omitted", line)
+        html = html_report._render_targeted_review(
+            {"coverage": {"targeted_review": value}})
+        self.assertIn("src/broken.js", html)
+        self.assertIn("testdata/broken.js", html)
+        self.assertNotIn("more omitted", html)

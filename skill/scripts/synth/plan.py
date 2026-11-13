@@ -562,6 +562,11 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
         args.tools_dir, None, exclude_globs=args.tools_exclude,
         include_fixtures=args.include_fixtures, suppressed_out=dropped,
         excluded_out=excluded,
+        # N6: main pins args.root once. Passing it explicitly keeps adapter
+        # classification and report-time reclassification on that same tree;
+        # without it direct runs derived ingest's root from tools_dir but later
+        # read args.target (often the display default "unknown").
+        target_root=getattr(args, "root", None),
         # #1839: this run's mode decides whether an inline suppression COMMENT
         # in the scanned tree stands, and it is decided at the parse (the
         # pinned scanners report a suppressed result either way). The same

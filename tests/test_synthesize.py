@@ -79,6 +79,57 @@ class TestPipelineCitations(unittest.TestCase):
             self.assertIn("A03:2021-Injection", cites["owasp"])
 
 class TestToolsDirIntegration(unittest.TestCase):
+    def test_direct_run_without_root_reclassifies_against_the_ingest_root(self):
+        # N6: ingest derives the target from <root>/.panopticon/tools. The
+        # targeted-review consumer must use that same root when --root is
+        # omitted, not the display-only default target "unknown".
+        with tempfile.TemporaryDirectory() as d:
+            adopt_panopticon(d)
+            os.makedirs(os.path.join(d, "src"))
+            os.makedirs(os.path.join(d, "scripts"))
+            with open(os.path.join(d, "src", "changed.py"), "w") as fh:
+                fh.write("x = 1\n")
+            with open(os.path.join(d, "scripts", "deploy"), "w") as fh:
+                fh.write("#!/bin/sh\nexit 0\n")
+            groups = os.path.join(d, ".panopticon", "groups.json")
+            with open(groups, "w") as fh:
+                json.dump({"groups": [{"name": "Web", "files": ["src/changed.py"]}]}, fh)
+            findings = os.path.join(d, "findings-Web-SEC.json")
+            with open(findings, "w") as fh:
+                json.dump({"schema_version": 1, "findings": [], "_panopticon": {
+                    "run_id": "R", "role": "domain_panel",
+                    "group": "Web", "domain": "SEC"}}, fh)
+            tools = os.path.join(d, ".panopticon", "tools")
+            os.makedirs(tools)
+            note = {
+                "descriptor": {"id": "Syntax error"}, "level": "warning",
+                "message": {"text":
+                            "Syntax error at line /src/scripts/deploy:1:\n parser failed"},
+            }
+            with open(os.path.join(tools, "semgrep.sarif"), "w") as fh:
+                json.dump({"runs": [{
+                    "tool": {"driver": {"name": "Semgrep OSS", "rules": []}},
+                    "results": [],
+                    "invocations": [{"executionSuccessful": True,
+                                     "toolExecutionNotifications": [note]}],
+                }]}, fh)
+            out = os.path.join(d, "report.json")
+            launch = os.path.join(d, "launch-elsewhere")
+            os.makedirs(launch)
+            with _chdir(launch), contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                code = syn.main(["--repo", "--groups", groups, "--tools-dir", tools,
+                                 "--out", out, findings])
+            self.assertEqual(code, 0)
+            with open(out, encoding="utf-8") as fh:
+                result = json.load(fh)
+        self.assertNotIn("classification facts are missing or invalid",
+                         result["summary"]["coverage_note"])
+        outside = result["meta"]["coverage"]["targeted_review"]["out_of_scope"]
+        self.assertEqual(outside["files"], [
+            {"file": "scripts/deploy", "language": "Shell"}
+        ])
+
     def _run_with_stale_output(self, manifest):
         with tempfile.TemporaryDirectory() as d:
             agent = os.path.join(d, "findings-g1-SEC.json")

@@ -1010,14 +1010,19 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   diagnostics. Those parser limitations remain in `meta.coverage.tools_file_partial`, but their
   bounded file names are disclosure-only in `summary.coverage_note` and do not withhold
   certification by themselves (#3603). The native-language refinement (#3611) uses the same
-  extension map as the setup spine; an extensionless file is classified by a bounded shebang read.
+  extension map as the setup spine; an extensionless file or one with an unmapped extension is
+  classified by a bounded shebang read (that probe can promote, never demote, an extension).
   A parser gap in Markdown, HTML, config, or another non-native file stays warning-only. A native
-  parser gap at or below the absolute run cap of 20 is added only to the covering group's effective
-  SEC cell, with an explicit manual-security-review instruction. The cell's findings envelope must
-  echo the exact `targeted_review` path list. `meta.coverage.targeted_review` names each file, its
-  language, where it was dispatched, and which valid completed SEC cell covered it. No SEC cell, a
-  failed or malformed cell, an incorrect attestation, or a file outside the matrix leaves the file
-  uncovered and withholds certification. More than 20 native parser-gap files is a scanner-coverage
+  parser gap inside this run's reviewed universe (the `groups.json` file lists, including SEC
+  carve-out groups) is added only to its covering effective SEC cell when that in-universe set is
+  at or below the absolute run cap of 20. The cell receives an explicit manual-security-review
+  instruction and its findings envelope must echo the exact `targeted_review` path list.
+  `meta.coverage.targeted_review` names each target, its language, where it was dispatched, and
+  which valid completed SEC cell covered it. A native gap outside the reviewed universe -- an
+  untouched file in a delta run or a pruned fixture-corpus file -- is warning-only, consumes none
+  of the cap, and appears in the separately capped `targeted_review.out_of_scope` list. No SEC cell,
+  a failed or malformed cell, or an incorrect attestation leaves an in-universe file uncovered and
+  withholds certification. More than 20 in-universe native parser-gap files is a scanner-coverage
   failure: it withholds certification without dispatching bulk work to reviewers. An unlocated
   syntax notice, or a syntax notice accompanied by a timeout,
   size skip, unavailable capability, Dockerfile gap, or unknown/malformed coverage fact, still

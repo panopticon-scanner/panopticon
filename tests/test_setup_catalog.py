@@ -198,16 +198,6 @@ class TestSetupFlow(SetupFixtureBase):
                                                {"path": "tests/search", "files": 1}])
         json.dumps(spine)                                  # serializable
 
-    def test_native_language_uses_the_spine_map_and_extensionless_shebang(self):
-        d = _repo(self)
-        script = os.path.join(d, "bin", "launch")
-        os.makedirs(os.path.dirname(script), exist_ok=True)
-        with open(script, "w", encoding="utf-8") as fh:
-            fh.write("#!/usr/bin/env bash\necho ready\n")
-        self.assertEqual(setup_spine.native_language(d, "src/app.js"), "JavaScript")
-        self.assertEqual(setup_spine.native_language(d, "bin/launch"), "Shell")
-        self.assertIsNone(setup_spine.native_language(d, "README.md"))
-
     def test_build_spine_size_precedence_matches_ingest(self):
         d = self._spine_repo()
         # max_per_group: 2 is below the 8-48 band (#1681 Plan 2): the spine

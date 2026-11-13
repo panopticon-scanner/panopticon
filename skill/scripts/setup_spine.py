@@ -45,11 +45,6 @@ _MAX_MANIFESTS = 20
 _MAX_LANGUAGES = 6
 _MAX_MANIFEST_BYTES = 65536    # bounded read of an untrusted manifest
 _EXT_LANG = native_language_mod.EXT_LANG
-
-
-def native_language(repo, rel):
-    """The same shared map/shebang classifier targeted review consumes."""
-    return native_language_mod.native_language(repo, rel)
 # Manifest basenames the framework probe reads (depth <= 2, so monorepo
 # packages count) and the substrings that name a framework in each.
 _MANIFEST_NAMES = frozenset({

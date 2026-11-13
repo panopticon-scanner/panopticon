@@ -15,6 +15,14 @@ from scripts import native_language
 # is meant to route around.  Twenty or fewer may certify when every file gets
 # a completed SEC review; the twenty-first is a scanner-coverage failure.
 MAX_TARGETED_REVIEW_FILES = 20
+# The producer cannot know a later run's reviewed universe, so its inventory
+# must be wider than the reviewer-attention cap. Reconciliation partitions
+# these rows against groups.json first, then applies the 20-file cap only to
+# the in-universe side (B1). A capture beyond this defensive record bound fails
+# closed as unknown scope membership; ordinary out-of-scope presentation is
+# independently capped at 20 below.
+MAX_CLASSIFIED_NATIVE_FILES = 1000
+MAX_OUT_OF_SCOPE_FILES = 20
 
 FACT_KEYS = frozenset({
     "native_syntax_files", "native_syntax", "native_syntax_files_omitted",
@@ -44,7 +52,7 @@ def producer_facts(root, syntax_paths):
         elif language is not None:
             rows.append({"file": path, "language": language})
     count = len(rows)
-    listed = rows[:MAX_TARGETED_REVIEW_FILES]
+    listed = rows[:MAX_CLASSIFIED_NATIVE_FILES]
     return {
         "native_syntax_files": count,
         "native_syntax": listed,
@@ -65,10 +73,10 @@ def fact_shape_valid(facts):
             and type(omitted) is int and omitted >= 0
             and type(unknown) is int and unknown >= 0
             and isinstance(rows, list)
-            and len(rows) <= MAX_TARGETED_REVIEW_FILES
+            and len(rows) <= MAX_CLASSIFIED_NATIVE_FILES
             and count == len(rows) + omitted):
         return False
-    expected_listed = min(count, MAX_TARGETED_REVIEW_FILES)
+    expected_listed = min(count, MAX_CLASSIFIED_NATIVE_FILES)
     if len(rows) != expected_listed or omitted != count - expected_listed:
         return False
     names = []
@@ -129,16 +137,20 @@ def read_facts(root, facts):
         "files": [dict(row) for row in rows],
         "files_omitted": facts["native_syntax_files_omitted"],
         "unknown": facts["native_syntax_unknown"],
-        "over_cap": count > MAX_TARGETED_REVIEW_FILES,
     }
 
 
 def targets_by_group(state, groups):
     """Sorted SEC target paths by every matrix group that covers them."""
-    if not isinstance(state, dict) or state.get("over_cap") or state.get("unknown"):
+    if (not isinstance(state, dict) or state.get("unknown")
+            or state.get("files_omitted")):
         return {}
+    file_groups = _file_groups(groups)
     wanted = [row["file"] for row in state.get("files") or ()
-              if isinstance(row, dict) and _repo_path(row.get("file"))]
+              if isinstance(row, dict) and _repo_path(row.get("file"))
+              and row["file"] in file_groups]
+    if len(wanted) > MAX_TARGETED_REVIEW_FILES:
+        return {}
     routed = {}
     for group in groups or ():
         if not (isinstance(group, dict) and isinstance(group.get("name"), str)
@@ -151,6 +163,19 @@ def targets_by_group(state, groups):
     return dict(sorted(routed.items()))
 
 
+def _file_groups(groups):
+    """Every reviewed path -> the matrix groups that own it."""
+    out: dict[str, set[str]] = {}
+    for group in groups or ():
+        if not (isinstance(group, dict) and isinstance(group.get("name"), str)
+                and group["name"] and isinstance(group.get("files"), list)):
+            continue
+        for path in group["files"]:
+            if isinstance(path, str):
+                out.setdefault(path, set()).add(group["name"])
+    return out
+
+
 def reconcile(state, groups, plan_entries, attestations):
     """Return ``(report block, certification-gap reason)`` for target review.
 
@@ -161,6 +186,15 @@ def reconcile(state, groups, plan_entries, attestations):
     if not isinstance(state, dict):
         return None, None
     groups = [group for group in (groups or ()) if isinstance(group, dict)]
+    file_groups = _file_groups(groups)
+    reviewed_rows = [row for row in (state.get("files") or ())
+                     if isinstance(row, dict) and row.get("file") in file_groups]
+    outside_rows = [row for row in (state.get("files") or ())
+                    if isinstance(row, dict) and row.get("file") not in file_groups]
+    reviewed_count = len(reviewed_rows)
+    inventory_omitted = state.get("files_omitted", 0)
+    classification_unknown = state.get("unknown", 0) + inventory_omitted
+    over_cap = reviewed_count > MAX_TARGETED_REVIEW_FILES
     routed = targets_by_group(state, groups)
     sec_cells = {
         (entry.get("group"), "SEC") for entry in (plan_entries or ())
@@ -184,18 +218,9 @@ def reconcile(state, groups, plan_entries, attestations):
         for cell, paths in attested.items()
         if isinstance(cell, tuple) and len(cell) == 2)
 
-    file_groups: dict[str, set[str]] = {}
-    for group in groups:
-        name, files = group.get("name"), group.get("files")
-        if not (isinstance(name, str) and isinstance(files, list)):
-            continue
-        for path in files:
-            if isinstance(path, str):
-                file_groups.setdefault(path, set()).add(name)
-
     files = []
     uncovered = []
-    for row in state.get("files") or ():
+    for row in reviewed_rows[:MAX_TARGETED_REVIEW_FILES]:
         path = row["file"]
         possible = sorted((group, "SEC") for group in file_groups.get(path, set())
                           if (group, "SEC") in sec_cells)
@@ -206,27 +231,39 @@ def reconcile(state, groups, plan_entries, attestations):
                    and tuple(attested.get(cell, ())) == expected.get(cell)
                    and path in expected.get(cell, ())]
         files.append({**row, "dispatched_to": dispatched, "covered_by": covered})
-        if not state.get("over_cap") and not covered:
+        if not over_cap and not classification_unknown and not covered:
             uncovered.append(path)
 
+    outside_listed = [dict(row) for row in outside_rows[:MAX_OUT_OF_SCOPE_FILES]]
+
     block = {
-        "native_unparsed": state.get("count", 0),
+        "native_unparsed": reviewed_count,
         "files": files,
-        "files_omitted": state.get("files_omitted", 0),
-        "classification_unknown": state.get("unknown", 0),
+        "files_omitted": max(0, reviewed_count - len(files)),
+        "classification_unknown": classification_unknown,
         "cap": MAX_TARGETED_REVIEW_FILES,
-        "over_cap": bool(state.get("over_cap")),
+        "over_cap": over_cap,
         "dispatch_valid": dispatch_valid,
         "attestations_valid": attestations_valid,
+        "out_of_scope": {
+            "count": len(outside_rows),
+            "files": outside_listed,
+            "files_omitted": max(0, len(outside_rows) - len(outside_listed)),
+            "cap": MAX_OUT_OF_SCOPE_FILES,
+        },
     }
     reasons = []
-    if state.get("over_cap"):
+    if over_cap:
         reasons.append("native Semgrep parser gaps exceed the targeted-review cap "
-                       "(%d > %d)" % (state.get("count", 0),
+                       "(%d > %d)" % (reviewed_count,
                                       MAX_TARGETED_REVIEW_FILES))
     if state.get("unknown"):
         reasons.append("%d Semgrep parser-gap file(s) could not be classified "
                        "as native or non-native" % state["unknown"])
+    if inventory_omitted:
+        reasons.append("%d native Semgrep parser-gap path(s) were omitted from the "
+                       "bounded classification inventory, so reviewed-universe "
+                       "membership is unknown" % inventory_omitted)
     if not dispatch_valid:
         reasons.append("targeted-review dispatch did not match the native parser gaps")
     if not attestations_valid:

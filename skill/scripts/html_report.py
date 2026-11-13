@@ -670,12 +670,27 @@ def _render_targeted_review(meta):
                              else "UNCOVERED")
         rows.append("<code>%s</code> (%s; %s)" % (
             _escape(row["file"]), _escape(row.get("language") or "unknown"), status))
-    if not rows:
-        return ""
-    if value.get("files_omitted"):
-        rows.append("%d more omitted" % value["files_omitted"])
-    return ("<div class='coverage'>Targeted manual security review: %s</div>"
-            % " &mdash; ".join(rows))
+    omitted = value.get("files_omitted")
+    if type(omitted) is int and omitted > 0:
+        rows.append("%d more omitted" % omitted)
+    sections = (["Targeted manual security review: %s" % " &mdash; ".join(rows)]
+                if rows else [])
+    outside = value.get("out_of_scope")
+    outside_rows = outside.get("files") if isinstance(outside, dict) else None
+    warnings = []
+    for row in outside_rows if isinstance(outside_rows, list) else ():
+        if not isinstance(row, dict) or not isinstance(row.get("file"), str):
+            continue
+        warnings.append("<code>%s</code> (%s)" % (
+            _escape(row["file"]), _escape(row.get("language") or "unknown")))
+    outside_omitted = outside.get("files_omitted") if isinstance(outside, dict) else None
+    if type(outside_omitted) is int and outside_omitted > 0:
+        warnings.append("%d more omitted" % outside_omitted)
+    if warnings:
+        sections.append("Semgrep parser gaps outside this run's reviewed universe "
+                        "(warning only): %s" % " &mdash; ".join(warnings))
+    return (("<div class='coverage'>%s</div>" % " &mdash; ".join(sections))
+            if sections else "")
 
 
 def _partial_audit_notes(sanitized):

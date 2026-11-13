@@ -620,6 +620,7 @@ def reconcile(plan, tools, resolved, run=None):
     if targeted_review is not None and (
             targeted_review["native_unparsed"]
             or targeted_review["classification_unknown"]
+            or targeted_review.get("out_of_scope", {}).get("count")
             or native_unparsed_gap):
         coverage["targeted_review"] = targeted_review
     if cleanup_failures:

@@ -2,6 +2,7 @@
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 from scripts import native_unparsed
 
@@ -32,8 +33,52 @@ class NativeUnparsedFactsTest(unittest.TestCase):
             ],
             "files_omitted": 0,
             "unknown": 0,
-            "over_cap": False,
         })
+
+    def test_unmapped_extension_shebang_promotes_the_file_to_native(self):
+        # N1: Semgrep selects executable languages by shebang even when the
+        # suffix is not in our map. The shared classifier must do the same.
+        self._write("bin/deploy.prod", "#!/bin/bash\necho ready\n")
+        state = native_unparsed.read_facts(
+            self.root,
+            native_unparsed.producer_facts(self.root, ["bin/deploy.prod"]),
+        )
+        self.assertEqual(state["files"], [
+            {"file": "bin/deploy.prod", "language": "Shell"}
+        ])
+
+    def test_failed_shebang_read_does_not_demote_an_unmapped_extension(self):
+        # The pre-N1 answer for an unmapped suffix was known non-native. A
+        # missing/unreadable optional shebang probe must preserve that answer,
+        # not turn it into classification_unknown and sink certification.
+        facts = native_unparsed.producer_facts(self.root, ["missing.prod"])
+        self.assertEqual((facts["native_syntax_files"],
+                          facts["native_syntax_unknown"]), (0, 0))
+
+    def test_shebang_reader_rejects_a_fifo_leaf(self):
+        # N2: without the descriptor's S_ISREG check, a nonblocking FIFO reads
+        # as an empty ordinary file and becomes known-non-native instead of an
+        # unclassifiable path.
+        path = os.path.join(self.root, "deploy")
+        try:
+            os.mkfifo(path)
+        except (AttributeError, OSError) as exc:
+            self.skipTest("FIFOs unavailable: %s" % exc)
+        facts = native_unparsed.producer_facts(self.root, ["deploy"])
+        self.assertEqual((facts["native_syntax_files"],
+                          facts["native_syntax_unknown"]), (0, 1))
+
+    def test_shebang_reader_rejects_a_directory_leaf_before_reading(self):
+        # N2: make the S_ISREG guard observable even on hosts where read(2) on
+        # a directory independently fails. Removing the guard would feed the
+        # planted shebang through the mocked read and misclassify the leaf.
+        os.makedirs(os.path.join(self.root, "deploy"))
+        with mock.patch("scripts.native_language.os.read",
+                        return_value=b"#!/bin/sh\n") as read:
+            facts = native_unparsed.producer_facts(self.root, ["deploy"])
+        read.assert_not_called()
+        self.assertEqual((facts["native_syntax_files"],
+                          facts["native_syntax_unknown"]), (0, 1))
 
     def test_absolute_cap_is_strictly_more_than_twenty(self):
         for i in range(21):
@@ -46,11 +91,9 @@ class NativeUnparsedFactsTest(unittest.TestCase):
             self.root,
             native_unparsed.producer_facts(
                 self.root, ["src/f%02d.js" % i for i in range(21)]))
-        self.assertFalse(twenty["over_cap"])
         self.assertEqual((len(twenty["files"]), twenty["files_omitted"]), (20, 0))
-        self.assertTrue(twenty_one["over_cap"])
         self.assertEqual((len(twenty_one["files"]), twenty_one["files_omitted"]),
-                         (20, 1))
+                         (21, 0))
 
     def test_consumer_rejects_malformed_or_reclassified_facts(self):
         self._write("src/broken.js")
@@ -125,7 +168,7 @@ class NativeUnparsedFactsTest(unittest.TestCase):
         self.assertIsNone(gap)
         self.assertEqual(block["files"][0]["covered_by"], [["Web", "SEC"]])
 
-    def test_missing_failed_or_outside_matrix_cell_leaves_target_uncovered(self):
+    def test_missing_or_failed_in_scope_cell_leaves_target_uncovered(self):
         self._write("src/broken.js")
         state = native_unparsed.read_facts(
             self.root, native_unparsed.producer_facts(self.root, ["src/broken.js"]))
@@ -134,7 +177,6 @@ class NativeUnparsedFactsTest(unittest.TestCase):
              [{"group": "Web", "domain": "SEC",
                "targeted_review": ["src/broken.js"]}], {}),
             ([{"name": "Web", "files": ["src/broken.js"]}], [], {}),
-            ([{"name": "Docs", "files": ["README.md"]}], [], {}),
         ]
         for groups, plan, attestations in cases:
             with self.subTest(groups=groups, plan=plan):
@@ -142,6 +184,31 @@ class NativeUnparsedFactsTest(unittest.TestCase):
                     state, groups, plan, attestations)
                 self.assertIn("not covered", gap)
                 self.assertEqual(block["files"][0]["covered_by"], [])
+
+    def test_outside_matrix_gap_is_warning_only_and_does_not_consume_the_cap(self):
+        outside = ["testdata/f%02d.js" % i for i in range(21)]
+        for path in outside:
+            self._write(path)
+        self._write("src/broken.js")
+        state = native_unparsed.read_facts(
+            self.root,
+            native_unparsed.producer_facts(
+                self.root, outside + ["src/broken.js"]),
+        )
+        groups = [{"name": "Web", "files": ["src/broken.js"]}]
+        plan = [{"group": "Web", "domain": "SEC",
+                 "targeted_review": ["src/broken.js"]}]
+        block, gap = native_unparsed.reconcile(
+            state, groups, plan, {("Web", "SEC"): ("src/broken.js",)})
+        self.assertIsNone(gap)
+        self.assertEqual((block["native_unparsed"], block["over_cap"]), (1, False))
+        self.assertEqual(block["files"][0]["file"], "src/broken.js")
+        self.assertEqual(
+            (block["out_of_scope"]["count"],
+             len(block["out_of_scope"]["files"]),
+             block["out_of_scope"]["files_omitted"]),
+            (21, 20, 1),
+        )
 
     def test_dispatch_or_attestation_mismatch_fails_closed(self):
         self._write("src/broken.js")

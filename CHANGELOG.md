@@ -5,12 +5,15 @@
 - **Native Semgrep parse gaps receive targeted SEC review (#3611).** Located
   syntax failures in Markdown, HTML, configuration, and other non-native files
   remain warning-only. Native files are classified with setup's extension map;
-  extensionless files use a bounded shebang read. At most 20 native gaps are
-  routed only to each covering group's effective SEC cell, whose findings
-  envelope must echo the exact manual-review list. The report names every
-  target plus its dispatched and completed cells. A missing/invalid cell, a
-  file outside the matrix, malformed producer facts, or more than 20 native
-  gaps withholds certification; over-cap runs do not spend reviewer capacity.
+  extensionless and unmapped-extension files use a bounded shebang read. Only
+  gaps inside this run's reviewed universe count toward the 20-file cap and
+  are routed to each covering group's effective SEC cell, whose findings
+  envelope must echo the exact manual-review list. Out-of-delta and pruned
+  fixture files are listed separately as warning-only and consume no cap.
+  The report names every target plus its dispatched and completed cells. A
+  missing/invalid in-scope cell, malformed producer facts, or more than 20
+  in-scope native gaps withholds certification; over-cap runs do not spend
+  reviewer capacity.
   Rule/config notifications outside `/src` are unlocated scanner gaps, never
   repository targets.
 

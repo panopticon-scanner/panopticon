@@ -477,8 +477,8 @@
             "targeted_review": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["native_unparsed", "files", "files_omitted", "classification_unknown", "cap", "over_cap", "dispatch_valid", "attestations_valid"],
-              "description": "#3611 native-language files Semgrep could not parse. At or below the absolute cap, each file is routed only to its covering group's SEC cell and certifies only when a valid completed cell echoes the exact target list. Above the cap no reviewer dispatch is attempted and coverage is uncertified.",
+              "required": ["native_unparsed", "files", "files_omitted", "classification_unknown", "cap", "over_cap", "dispatch_valid", "attestations_valid", "out_of_scope"],
+              "description": "#3611 native-language files Semgrep could not parse. Only files in this run's reviewed universe (groups.json, including the SEC carve-out groups) count toward the absolute cap, are routed to their covering SEC cells, and require an exact completed-cell echo to certify. Native gaps outside that universe are warning-only and listed separately under out_of_scope.",
               "properties": {
                 "native_unparsed": {"type": "integer", "minimum": 0},
                 "files": {
@@ -511,7 +511,30 @@
                 "cap": {"type": "integer", "enum": [20]},
                 "over_cap": {"type": "boolean"},
                 "dispatch_valid": {"type": "boolean"},
-                "attestations_valid": {"type": "boolean"}
+                "attestations_valid": {"type": "boolean"},
+                "out_of_scope": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["count", "files", "files_omitted", "cap"],
+                  "properties": {
+                    "count": {"type": "integer", "minimum": 0},
+                    "files": {
+                      "type": "array",
+                      "maxItems": 20,
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "required": ["file", "language"],
+                        "properties": {
+                          "file": {"type": "string", "minLength": 1, "maxLength": 4096},
+                          "language": {"type": "string", "minLength": 1}
+                        }
+                      }
+                    },
+                    "files_omitted": {"type": "integer", "minimum": 0},
+                    "cap": {"type": "integer", "enum": [20]}
+                  }
+                }
               }
             },
             "tools_suppressed": {

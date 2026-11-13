@@ -537,9 +537,10 @@ def semgrep_file_coverage(sarif, target_root=None):
         # an unlocated diagnostic still fails closed through `unlocated_records`.
         facts["syntax_error_files"] = len(syntax)
         # #3611: this producer sees every syntax path before the ordinary
-        # disclosure cap.  Record the exact native subset (bounded at the
-        # reviewer-cap rather than losing native files behind `files_omitted`)
-        # for the review and synthesis consumers to validate independently.
+        # disclosure cap. Record a wider bounded native inventory: only the
+        # later groups.json consumer knows which paths are in this run's
+        # reviewed universe and therefore count toward the 20-file reviewer
+        # cap (B1). Review and synthesis validate the inventory independently.
         facts.update(native_unparsed.producer_facts(target_root, syntax))
     if docker_count or docker_state != "listed":
         facts.update({"dockerfile_variants": docker_count,
