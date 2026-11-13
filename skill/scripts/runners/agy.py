@@ -97,7 +97,8 @@ MODELS_TIMEOUT = 60
 
 # #3613: the fail-closed preflight `prepare()` runs before any entry launches.
 # The turn is real and minimal: the default model (on the key route, its bound
-# default), no --effort, no agent and so no tools (owner ruling R3, 2026-11-13).
+# default), no --effort and no agent shell, so agy runs its default agent and any
+# tool call meets the guard hook (owner ruling R3, 2026-11-13).
 PREFLIGHT_PROMPT = "Reply with the single word OK."
 PREFLIGHT_TIMEOUT = 180
 KEY_ROUTE_DEFAULT = ROUTE_SUBSTITUTES[("key", "gemini-4-carbon")]
@@ -377,6 +378,9 @@ class Runner(base.HostRunner):
                 stop_on=INTERACTIVE_AUTH)
         except children.HostStopped as exc:
             raise agy_home.AgyAuthUnreachable() from exc
+        except subprocess.TimeoutExpired as exc:
+            raise AgyPreflightRefused(
+                "`agy models` timed out after %ss (#3613)" % MODELS_TIMEOUT) from exc
         names = listed_models(getattr(proc, "stdout", ""))
         if getattr(proc, "returncode", 1) != 0 or not names:
             raise agy_home.AgyAuthUnreachable(
@@ -396,7 +400,7 @@ class Runner(base.HostRunner):
             return
         read_scope = os.path.join(self.run_dir, base.SCOPE_FILE)
         write_allowlist = os.path.join(self.run_dir, base.ALLOWLIST_FILE)
-        route = agy_home.auth_route(self.launch_env())
+        route = agy_home.auth_route(self._parent_env())
         self.agy_home = agy_home.build(
             read_scope, write_allowlist,
             review_root=self.review_root,
@@ -421,13 +425,16 @@ class Runner(base.HostRunner):
         2. One minimal real turn proves the route signs in. Auth trouble raises
            AgyAuthUnreachable (naming the key route when a key is set but not
            chosen); anything else raises AgyPreflightRefused. Nothing falls back."""
-        launch, env = self._launch_callable(), self.launch_env()
+        launch, env, parent = self._launch_callable(), self.launch_env(), self._parent_env()
         try:
             proc = launch(self._agy("agents"), cwd=self.workspace_dir, env=env,
                           capture_output=True, text=True, timeout=MODELS_TIMEOUT,
                           stop_on=INTERACTIVE_AUTH)
         except children.HostStopped as exc:
-            raise agy_home.unreachable(env) from exc
+            raise agy_home.unreachable(parent) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise AgyPreflightRefused(
+                "`agy agents` timed out after %ss (#3613)" % MODELS_TIMEOUT) from exc
         out = getattr(proc, "stdout", "") or ""
         expected = agy_home.expected_agents(self.agy_home)
         listed = agy_home.listed_agents(out)
@@ -454,18 +461,28 @@ class Runner(base.HostRunner):
                           env=env, capture_output=True, text=True, timeout=PREFLIGHT_TIMEOUT,
                           stop_on=INTERACTIVE_AUTH)
         except children.HostStopped as exc:
-            raise agy_home.unreachable(env) from exc
+            raise agy_home.unreachable(parent) from exc
         except subprocess.TimeoutExpired as exc:
             raise AgyPreflightRefused(
-                "agy's preflight turn timed out after %ss (#3613)" % PREFLIGHT_TIMEOUT) from exc
+                "agy's preflight turn timed out after %ss (#3613)%s"
+                % (PREFLIGHT_TIMEOUT, self._key_hint(parent))) from exc
         stdout, stderr = getattr(proc, "stdout", "") or "", getattr(proc, "stderr", "") or ""
-        if reached_interactive_auth(stderr) or NOT_SIGNED_IN in stdout + stderr:
-            raise agy_home.unreachable(env)
+        if (reached_interactive_auth(stderr) or NOT_SIGNED_IN in stdout + stderr
+                or agy_home.run_log_says(self.agy_home, NOT_SIGNED_IN)):
+            raise agy_home.unreachable(parent)
         result = parse_envelope(stdout, getattr(proc, "returncode", 1), stderr,
                                 entry_id="agy-preflight")
         if not result.ok:
-            raise AgyPreflightRefused("agy's preflight turn failed: %s (#3613)"
-                                      % redact.redact(str(result.error))[:400])
+            raise AgyPreflightRefused("agy's preflight turn failed: %s (#3613)%s"
+                                      % (redact.redact(str(result.error))[:400],
+                                         self._key_hint(parent)))
+
+    def _key_hint(self, parent):
+        """R2: on the sign-in route with a key set, every failed turn names the key
+        route -- agy may report a lost sign-in only in its log (#3605 P1)."""
+        if self.auth_route == "key" or not (parent.get(agy_home.KEY_ENV) or "").strip():
+            return ""
+        return agy_home.KEY_NOT_CHOSEN
 
     def teardown(self, status=None):
         if self.agy_home is not None:
@@ -475,11 +492,20 @@ class Runner(base.HostRunner):
                 self.run_home = None
                 self.workspace_dir = None
 
+    def _parent_env(self, overlay=None):
+        """The environment before this runner's child preparation: what the
+        operator chose, read for the route and for the key-route hint."""
+        return super().launch_env(overlay)
+
     def launch_env(self, overlay=None):
         run_env = super().launch_env(overlay)
         # #3613: HOME stays the operator's; agy's configuration moves with
         # --gemini_dir. No child may open a browser.
         run_env[BROWSER_ENV[0]] = BROWSER_ENV[1]
+        # R2 enforced, not trusted to agy's precedence: off the key route the child
+        # never holds the key, so an expired sign-in cannot fall back to it.
+        if self.auth_route != "key":
+            run_env.pop(agy_home.KEY_ENV, None)
         run_env["NO_COLOR"] = "1"
         for marker in _NESTED_MARKERS:
             run_env.pop(marker, None)

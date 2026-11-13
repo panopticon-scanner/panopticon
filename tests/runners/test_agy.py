@@ -590,6 +590,128 @@ class TestThePreflightFailsClosed(unittest.TestCase):
                                      agy_runner.AgyPreflightRefused, text)
 
 
+class TestTheSigninRouteNeverHoldsTheKey(unittest.TestCase):
+    """#3617 review N1-N4: R2 enforced in the child environment, the key-route hint
+    on every failed sign-in turn, timeouts as refusals, and the hook proof read from
+    any of the run's logs."""
+
+    LOG = TestAgyAuthFailsClosed.LOG
+
+    def _prepare(self, runner, env):
+        d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(d, True))
+        user_home, agents_dir = _fixture_user_home(d)
+        patch = mock.patch.dict(os.environ, dict({"HOME": user_home}, **env))
+        patch.start()
+        self.addCleanup(patch.stop)
+        for name in ("GEMINI_API_KEY", "PANOPTICON_AGY_AUTH"):   # only what this call names
+            if name not in env:
+                os.environ.pop(name, None)
+        r = agy_runner.Runner("agy", runner=runner)
+        self.addCleanup(r.teardown, "complete")
+        r.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
+        return r
+
+    def test_no_signin_child_holds_the_key_and_a_key_route_child_does(self):
+        envs = []
+
+        def record(cmd, **kw):
+            envs.append((_args(cmd)[-1:], kw["env"]))
+            return subprocess.CompletedProcess(cmd, 0, stdout=ENVELOPE, stderr="")
+
+        def tracked(fake):
+            inner = _answers_preflight(fake, turn=record)
+
+            def wrapped(cmd, **kw):
+                if _args(cmd) == ["agents"]:
+                    envs.append((["agents"], kw["env"]))
+                return inner(cmd, **kw)
+            return wrapped
+        r = self._prepare(tracked(record), {"GEMINI_API_KEY": FAKE_KEY})
+        r.run_entry(_entry(True), {base.ENV_ENTRY_ID: "review-app-SEC"})
+        self.assertEqual("signin", r.auth_route)
+        self.assertEqual(3, len(envs))                     # agents, turn, entry
+        for argv, env in envs:
+            with self.subTest(launch=argv):
+                self.assertNotIn("GEMINI_API_KEY", env)
+        envs.clear()
+
+        def models(cmd, **kw):
+            if _args(cmd) == ["models"]:
+                return subprocess.CompletedProcess(cmd, 0, stdout=KEY_ROUTE_MODELS, stderr="")
+            return record(cmd, **kw)
+        r = self._prepare(tracked(models), {"GEMINI_API_KEY": FAKE_KEY,
+                                            "PANOPTICON_AGY_AUTH": "key"})
+        self.assertEqual("key", r.auth_route)
+        for argv, env in envs:
+            with self.subTest(launch=argv, route="key"):
+                self.assertEqual(FAKE_KEY, env["GEMINI_API_KEY"])
+
+    def test_every_failed_signin_turn_names_the_key_route_when_a_key_is_set(self):
+        def bad(cmd, **kw):
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"status": "ERROR", "error": "quota exhausted"}),
+                stderr="")
+
+        def timeout(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, agy_runner.PREFLIGHT_TIMEOUT)
+        for turn in (bad, timeout):
+            for env, hinted in (({"GEMINI_API_KEY": FAKE_KEY}, True), ({}, False)):
+                with self.subTest(turn=turn.__name__, key=hinted):
+                    with self.assertRaises(agy_runner.AgyPreflightRefused) as caught:
+                        self._prepare(_answers_preflight(turn=turn), env)
+                    self.assertEqual(hinted, "runs only when you choose it" in str(caught.exception))
+                    self.assertNotIn(FAKE_KEY, str(caught.exception))
+
+    def test_a_sign_in_lost_only_in_agys_log_is_auth_unreachable(self):
+        # #3605 P1: "not logged into Antigravity" can appear in agy's log alone.
+        def turn(cmd, **kw):
+            log = os.path.join(cmd[2], "antigravity-cli", "log", "cli-20261113_000001.log")
+            with open(log, "w", encoding="utf-8") as fh:
+                fh.write("E1113 errorreport.go:273] error getting token source: %s.\n"
+                         % agy_runner.NOT_SIGNED_IN)
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout=json.dumps({"status": "ERROR", "error": "no session"}), stderr="")
+        with self.assertRaises(agy_home.AgyAuthUnreachable) as caught:
+            self._prepare(_answers_preflight(turn=turn), {"GEMINI_API_KEY": FAKE_KEY})
+        self.assertIn("runs only when you choose it", str(caught.exception))
+
+    def test_agents_and_models_timeouts_refuse(self):
+        def agents_timeout(cmd, **kw):
+            raise subprocess.TimeoutExpired(cmd, agy_runner.MODELS_TIMEOUT)
+        wrapped = _answers_preflight()
+
+        def slow_agents(cmd, **kw):
+            return agents_timeout(cmd, **kw) if _args(cmd) == ["agents"] else wrapped(cmd, **kw)
+        with self.assertRaisesRegex(agy_runner.AgyPreflightRefused, "`agy agents` timed out"):
+            self._prepare(slow_agents, {})
+
+        def slow_models(cmd, **kw):
+            if _args(cmd) == ["models"]:
+                raise subprocess.TimeoutExpired(cmd, agy_runner.MODELS_TIMEOUT)
+            raise AssertionError("nothing after a refused listing: %r" % (cmd,))
+        with self.assertRaisesRegex(agy_runner.AgyPreflightRefused, "`agy models` timed out"):
+            self._prepare(slow_models, {"GEMINI_API_KEY": FAKE_KEY, "PANOPTICON_AGY_AUTH": "key"})
+
+    def test_the_hook_proof_is_read_from_any_of_the_runs_logs(self):
+        with tempfile.TemporaryDirectory() as d:
+            home = agy_home.build("/s.json", "/w.json", registration_dir=os.path.join(d, "none"),
+                                  route="signin")
+            self.addCleanup(agy_home.teardown, home, "complete")
+            self.assertFalse(agy_home.hook_load_proven(home)[0])
+            log_dir = os.path.join(agy_home.gemini_dir(home), "antigravity-cli", "log")
+            os.makedirs(log_dir)
+            for name, text in (("cli-20261113_000000.log", agy_home.HOOK_LOAD_PROOF),
+                               ("cli-20261113_000009.log", "models listed")):
+                with open(os.path.join(log_dir, name), "w", encoding="utf-8") as fh:
+                    fh.write("I1113 x.go:1] %s\n" % text)
+            self.assertEqual((True, ""), agy_home.hook_load_proven(home))
+            os.unlink(os.path.join(log_dir, "cli-20261113_000000.log"))
+            proven, why = agy_home.hook_load_proven(home)
+            self.assertFalse(proven)
+            self.assertIn("agy hook-load proof missing", why)
+
+
 class TestTheKeyRoute(unittest.TestCase):
     """#3576 step 2 and #3613: the Gemini API key as agy's auth, beside agy's own
     sign-in. Fixture homes and environments only; FAKE_KEY is a sentinel, not a key."""

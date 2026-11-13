@@ -99,6 +99,24 @@ class TestAgyShellSurfaceProbe(unittest.TestCase):
         self.assertEqual("--gemini_dir", cmd[1])
         self.assertEqual(os.path.join(os.path.dirname(kw["cwd"]), "gemini"), cmd[2])
 
+    def test_version_and_help_carry_an_empty_gemini_dir(self):
+        # #3617 review N5: no agy launch reads ~/.gemini, not even --version/--help.
+        seen = []
+
+        def fake(cmd, **kw):
+            seen.append(list(cmd))
+            return subprocess.CompletedProcess(cmd, 0, stdout="1.5.2\n-p --output-format\n",
+                                               stderr="")
+        with tempfile.TemporaryDirectory() as d:
+            _emit_agy_shells(d)
+            agy_probes.probe_agy_shell_surface("agy", registration_dir=d, runner=fake)
+        agy_probes.probe_agy_usage_envelope("agy", runner=fake)
+        for flag in ("--version", "--help"):
+            with self.subTest(flag=flag):
+                cmd = next(c for c in seen if c[-1] == flag)
+                self.assertEqual(["agy", "--gemini_dir"], cmd[:2])
+                self.assertEqual(4, len(cmd))
+
     def test_missing_shells_refute(self):
         runner, _ = self._runner()
         with tempfile.TemporaryDirectory() as d:
@@ -266,6 +284,30 @@ class TestTheModelProbeOnTheKeyRoute(unittest.TestCase):
             "PANOPTICON_MODEL_DOMAIN_PANEL": '{"model": "gemini-4-carbon", "effort": "high"}'})
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("never substituted", detail)
+
+    def test_only_a_key_route_probe_child_holds_the_key(self):
+        # #3617 review N1: the probes enforce R2 in the child environment too.
+        for extra, held in (({}, True), ({"PANOPTICON_AGY_AUTH": ""}, False)):
+            envs = []
+            with self.subTest(route="key" if held else "signin"), \
+                    mock.patch.object(agy_probes, "DEFAULT_RUNNER", None):
+                def fake(cmd, **kw):
+                    envs.append(kw["env"])
+                    if cmd[3:] == ["models"]:
+                        return subprocess.CompletedProcess(cmd, 0, stdout=self.LISTED, stderr="")
+                    return subprocess.CompletedProcess(cmd, 0, stdout=json.dumps(
+                        {"command": {"name": "model", "data": {"id": "x"}}}), stderr="")
+                with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as d:
+                    env = dict({"HOME": home, "GEMINI_API_KEY": self.FAKE_KEY,
+                                "PANOPTICON_AGY_AUTH": "key"}, **extra)
+                    with mock.patch.dict(os.environ, env):
+                        _emit_agy_shells(d)
+                        agy_probes.probe_agy_model_bound("agy", registration_dir=d, runner=fake)
+                self.assertTrue(envs)
+                for child in envs:
+                    self.assertEqual(held, child.get("GEMINI_API_KEY") == self.FAKE_KEY)
+                    if not held:
+                        self.assertNotIn("GEMINI_API_KEY", child)
 
     def test_a_key_alone_does_not_choose_the_key_route(self):
         # #3613 (R2): with no PANOPTICON_AGY_AUTH the probe stays on the sign-in

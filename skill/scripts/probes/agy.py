@@ -71,6 +71,13 @@ def _run_agy(argv, home, *, runner=None, extra_env=None, timeout=PROBE_TIMEOUT):
         env.pop(marker, None)
     if extra_env:
         env.update(extra_env)
+    # R2 enforced (#3613): off the key route the child never holds the key.
+    try:
+        route = agy_home.auth_route(env)
+    except agy_home.AgyAuthUnreachable:
+        route = None
+    if route != "key":
+        env.pop(agy_home.KEY_ENV, None)
     try:
         proc = run([_BINARY, *agy_home.gemini_dir_argv(home), *argv], env=env,
                    cwd=agy_home.workspace_dir(home),
@@ -173,8 +180,9 @@ def probe_agy_shell_surface(host, registration_dir=None, *, runner=None):
                 % reg_dir)
     run = DEFAULT_RUNNER if runner is None else runner
     try:
-        ver_proc = run([_BINARY, "--version"], capture_output=True, text=True,
-                       timeout=common.CLI_HELP_TIMEOUT)
+        with tempfile.TemporaryDirectory(prefix="panopticon-agy-version-") as empty:
+            ver_proc = run([_BINARY, agy_home.GEMINI_DIR_FLAG, empty, "--version"],
+                           capture_output=True, text=True, timeout=common.CLI_HELP_TIMEOUT)
     except runners_base.LaunchRefused:
         raise
     except Exception as exc:  # noqa: BLE001
@@ -702,8 +710,9 @@ def probe_agy_usage_envelope(host, settings_path=None, *, runner=None):
                 "probe %s applies only to host 'agy'" % AGY_USAGE_ENVELOPE)
     run = DEFAULT_RUNNER if runner is None else runner
     try:
-        proc = run([_BINARY, "--help"], capture_output=True, text=True,
-                   timeout=common.CLI_HELP_TIMEOUT)
+        with tempfile.TemporaryDirectory(prefix="panopticon-agy-help-") as empty:
+            proc = run([_BINARY, agy_home.GEMINI_DIR_FLAG, empty, "--help"],
+                       capture_output=True, text=True, timeout=common.CLI_HELP_TIMEOUT)
     except runners_base.LaunchRefused:
         raise
     except Exception as exc:  # noqa: BLE001

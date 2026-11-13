@@ -202,8 +202,9 @@ a future envelope reports a model that differs from the bound one, the driver sa
 **agy keeps the operator's HOME and takes its configuration from `--gemini_dir` (#3613).** Since
 agy's 2026-11-13 self-update its consumer sign-in lives only in the macOS login Keychain, which a
 child finds through its HOME (#3605). So the HOME is the operator's, agy reads its own sign-in, and
-panopticon never touches the Keychain. Every agy argv starts `agy --gemini_dir <run>/gemini`, an
-undocumented flag that replaces `~/.gemini` for hooks, agents, MCP servers and settings. The run's
+panopticon never touches the Keychain. Every agy launch that loads configuration starts `agy
+--gemini_dir <run>/gemini`, an undocumented flag that replaces `~/.gemini` for hooks, agents, MCP
+servers and settings (the agy probes' `--version` and `--help` reads carry an empty one). The run's
 directory holds our single `*` guard hook, the emitted shells, an empty MCP list (agy starts every
 listed server, even for `agy agents`) and the two settings above; nothing is copied or linked from
 `~/.gemini`. The child still reads the rest of the operator's HOME as any process does, a global
@@ -214,10 +215,12 @@ not HOME. Every child runs with `BROWSER=/usr/bin/false`.
 exactly the run's shells, with no `[project]` one, and agy's own log under the run must say `loaded
 1 named hooks from 1 hooks.json file(s)` (`agy_home.HOOK_LOAD_PROOF`): together they prove the
 undocumented flag took effect, and a change in either refuses with `AgyPreflightRefused`. Then one
-minimal real turn (`-p "Reply with the single word OK."`, the default model, no effort, no agent and
-so no tools) must return a success envelope. An interactive-auth line, `You are not logged into
-Antigravity` or a stopped child raises `AgyAuthUnreachable`; any other failure raises
-`AgyPreflightRefused`. A refused run leaves no run directory behind.
+minimal real turn (`-p "Reply with the single word OK."`, the default model, no effort and no agent
+shell, so agy runs its default agent and any tool call meets the guard hook) must return a success
+envelope. An interactive-auth line, a stopped child, or `You are not logged into Antigravity` on its
+output or in any of the run's agy logs raises `AgyAuthUnreachable`; any other failure, a timeout of
+`agy agents` or `agy models` included, raises `AgyPreflightRefused`. A refused run leaves no run
+directory behind.
 
 agy signs in one of two ways, chosen by `agy_home.auth_route()` (#3576, #3613).
 
@@ -228,9 +231,11 @@ agy signs in one of two ways, chosen by `agy_home.auth_route()` (#3576, #3613).
 
 The key route runs only when `PANOPTICON_AGY_AUTH=key` names it; any value other than `signin` or
 `key` is refused. A key alone never moves a run off the sign-in: the consumer plan carries Carbon,
-and a stray key in a shell must not move a run to another model and per-token billing. When the
-sign-in's preflight turn fails with a key set, the refusal says how to choose the key route and does
-not take it. The token file runs once linked (`antigravity-oauth-token`) no longer exists after the
+and a stray key in a shell must not move a run to another model and per-token billing. That is
+enforced, not left to agy's precedence: off the key route no agy child, entry or probe, holds
+`GEMINI_API_KEY`, so an expired sign-in cannot quietly fall back to it. When the sign-in's preflight
+turn fails with a key set, the refusal says how to choose the key route and does not take it. The
+token file runs once linked (`antigravity-oauth-token`) no longer exists after the
 self-update and is not read.
 
 **API-key runs use Argon (High), not Carbon.** The key route offers no Carbon at any effort. It takes

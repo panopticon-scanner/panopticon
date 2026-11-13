@@ -270,25 +270,37 @@ def listed_agents(stdout):
     return frozenset(found)
 
 
-def hook_load_proven(home):
-    """(True, "") when agy's newest log under the run loaded our hooks.json, else
-    (False, why). The log is agy's own; it lives under `<run>/gemini` only when
-    --gemini_dir took effect."""
+def _run_logs(home):
+    """agy's own logs under this run, oldest first. The run directory is fresh, so
+    every one of them is this run's -- written only if --gemini_dir took effect."""
     log_dir = os.path.join(gemini_dir(home), "antigravity-cli", "log")
     try:
-        logs = sorted(n for n in os.listdir(log_dir) if n.startswith("cli-") and n.endswith(".log"))
+        names = sorted(n for n in os.listdir(log_dir) if n.startswith("cli-") and n.endswith(".log"))
     except OSError:
-        logs = []
-    if not logs:
-        return False, HOOK_LOAD_UNPROVEN % (HOOK_LOAD_PROOF, log_dir)
-    newest = os.path.join(log_dir, logs[-1])
-    try:
-        with open(newest, encoding="utf-8", errors="replace") as fh:
-            if any(HOOK_LOAD_PROOF in line for line in fh):
-                return True, ""
-    except OSError:
-        pass
-    return False, HOOK_LOAD_UNPROVEN % (HOOK_LOAD_PROOF, newest)
+        names = []
+    return log_dir, [os.path.join(log_dir, n) for n in names]
+
+
+def run_log_says(home, text):
+    """Whether any of this run's agy logs contains `text`."""
+    for path in _run_logs(home)[1]:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as fh:
+                if any(text in line for line in fh):
+                    return True
+        except OSError:
+            continue
+    return False
+
+
+def hook_load_proven(home):
+    """(True, "") when one of agy's logs under the run loaded our hooks.json, else
+    (False, why). Any of them counts: on the key route `agy models` writes its own
+    log before `agy agents` does (#3613)."""
+    log_dir, logs = _run_logs(home)
+    if logs and run_log_says(home, HOOK_LOAD_PROOF):
+        return True, ""
+    return False, HOOK_LOAD_UNPROVEN % (HOOK_LOAD_PROOF, log_dir)
 
 
 def build(read_scope_path="", write_allowlist_path="", *, user_home=None,
