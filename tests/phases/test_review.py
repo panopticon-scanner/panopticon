@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 
 from scripts import hosts
+from scripts import native_unparsed
 from scripts import read_guard_hook
 from tests._test_helpers import write_host_evidence
 import scripts.phases.runio as runio
@@ -98,6 +99,52 @@ class TestCellFanOut(unittest.TestCase):
         entry = review._cell_entry(self.root, self.manifest, "Auth", "SEC",
                                     ["a.py"], [], "claude", ocrdb.load_bundle())
         self.assertIn(entry["out_file"], entry["prompt"])
+
+    def test_targeted_native_gap_is_explicit_in_sec_dispatch_and_output(self):
+        entry = review._cell_entry(
+            self.root, self.manifest, "Auth", "SEC", ["a.py"], [], "claude",
+            ocrdb.load_bundle(), targeted_review=["a.py"])
+        self.assertEqual(entry["targeted_review"], ["a.py"])
+        self.assertIn("Semgrep could not analyse", entry["prompt"])
+        self.assertIn("a.py", entry["prompt"])
+        self.assertIn('"targeted_review": ["a.py"]', entry["prompt"])
+
+    def test_native_gap_reaches_sec_dispatch_and_the_driver_plan(self):
+        facts = native_unparsed.producer_facts(self.root, ["a.py"])
+        facts["syntax_error_files"] = 1
+        dispositions = {"semgrep": {"file_coverage": facts}}
+        with mock.patch.object(review, "_ingested_tool_dispositions",
+                               return_value=dispositions), \
+             mock.patch.object(review, "_ingested_tool_findings", return_value=()), \
+             self._menu_stub(), \
+             mock.patch("scripts.dispatch.registered_agent_name",
+                        return_value="panopticon-domain-panel"), \
+             mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}}):
+            review.review_execute(self.root, self.manifest)
+        request = runio._load_json(runio._pano(self.root, "dispatch-request.json"))
+        entries = {entry["domain"]: entry for entry in request["entries"]}
+        self.assertEqual(entries["SEC"]["targeted_review"], ["a.py"])
+        self.assertNotIn("targeted_review", entries["DAT"])
+        plan = runio._load_json(runio._pano(self.root, "dispatch-plan-driver.json"))
+        planned = {entry["domain"]: entry for entry in plan}
+        self.assertEqual(planned["SEC"]["targeted_review"], ["a.py"])
+        self.assertNotIn("targeted_review", planned["DAT"])
+
+    def test_targeted_cell_is_done_only_after_exact_attestation(self):
+        path = runio._pano(self.root, "findings-Auth-SEC.json")
+        payload = {"findings": [], "_panopticon": {
+            "run_id": "R", "role": "domain_panel", "domain": "SEC", "group": "Auth"}}
+        with mock.patch.object(review, "_targeted_by_group",
+                               return_value={"Auth": ["a.py"]}):
+            runio._write_json(path, payload)
+            self.assertFalse(review._cell_done(
+                self.root, self.manifest, "Auth", "SEC"))
+            runio._write_json(path, dict(payload, targeted_review=["a.py"]))
+            self.assertTrue(review._cell_done(
+                self.root, self.manifest, "Auth", "SEC"))
+            runio._write_json(path, dict(payload, targeted_review=["other.py"]))
+            self.assertFalse(review._cell_done(
+                self.root, self.manifest, "Auth", "SEC"))
 
     def _run_review_with_guard(self, guard):
         write_host_evidence(self.root, {hosts.TOOL_POLICY_ENFORCED: hosts.PROVEN,

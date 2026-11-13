@@ -603,6 +603,7 @@ def _render_header(report):
     )
     cleanup = tool_cleanup.html_block(meta, _escape)
     parts.extend(([cleanup] if cleanup else []) + [_render_scanner_context(meta)])
+    parts.append(_render_targeted_review(meta))
     parts.append(_render_test_inventory(meta))
     # #2013: what the TARGET's own git config would have run, and did not.
     parts.append(_render_suppressed_git_drivers(meta))
@@ -650,6 +651,31 @@ def _render_scanner_context(meta):
         return ""
     return ("<div class='coverage'>Scanner context: %s</div>"
             % " &mdash; ".join(parts))
+
+
+def _render_targeted_review(meta):
+    """Native parser-gap targets and the SEC cells that covered them (#3611)."""
+    value = (meta.get("coverage") or {}).get("targeted_review")
+    if not isinstance(value, dict) or not isinstance(value.get("files"), list):
+        return ""
+    rows = []
+    for row in value["files"]:
+        if not isinstance(row, dict) or not isinstance(row.get("file"), str):
+            continue
+        raw_cells = row.get("covered_by")
+        cells: list = raw_cells if isinstance(raw_cells, list) else []
+        covered = ", ".join("%s/%s" % (_escape(cell[0]), _escape(cell[1]))
+                            for cell in cells if isinstance(cell, list) and len(cell) == 2)
+        status = covered or ("not dispatched: over cap" if value.get("over_cap")
+                             else "UNCOVERED")
+        rows.append("<code>%s</code> (%s; %s)" % (
+            _escape(row["file"]), _escape(row.get("language") or "unknown"), status))
+    if not rows:
+        return ""
+    if value.get("files_omitted"):
+        rows.append("%d more omitted" % value["files_omitted"])
+    return ("<div class='coverage'>Targeted manual security review: %s</div>"
+            % " &mdash; ".join(rows))
 
 
 def _partial_audit_notes(sanitized):
@@ -972,7 +998,8 @@ def _render_compare_summary(label, report):
     )
     meta = report.get("meta") if isinstance(report.get("meta"), dict) else {}
     host_caps, excluded_tools = _render_host_capabilities(meta), _render_excluded_tools(meta)
-    carve_out = tool_cleanup.html_block(meta, _escape) + _render_sec_carve_out(meta)
+    carve_out = (tool_cleanup.html_block(meta, _escape) + _render_targeted_review(meta)
+                 + _render_sec_carve_out(meta))
     return f"""
 <div class="compare-panel">
 <h3>{_escape(label)}</h3>

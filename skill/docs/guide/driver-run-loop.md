@@ -1009,7 +1009,17 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `syntax_error_files` distinguishes the exact number of located files from the number of
   diagnostics. Those parser limitations remain in `meta.coverage.tools_file_partial`, but their
   bounded file names are disclosure-only in `summary.coverage_note` and do not withhold
-  certification (#3603). An unlocated syntax notice, or a syntax notice accompanied by a timeout,
+  certification by themselves (#3603). The native-language refinement (#3611) uses the same
+  extension map as the setup spine; an extensionless file is classified by a bounded shebang read.
+  A parser gap in Markdown, HTML, config, or another non-native file stays warning-only. A native
+  parser gap at or below the absolute run cap of 20 is added only to the covering group's effective
+  SEC cell, with an explicit manual-security-review instruction. The cell's findings envelope must
+  echo the exact `targeted_review` path list. `meta.coverage.targeted_review` names each file, its
+  language, where it was dispatched, and which valid completed SEC cell covered it. No SEC cell, a
+  failed or malformed cell, an incorrect attestation, or a file outside the matrix leaves the file
+  uncovered and withholds certification. More than 20 native parser-gap files is a scanner-coverage
+  failure: it withholds certification without dispatching bulk work to reviewers. An unlocated
+  syntax notice, or a syntax notice accompanied by a timeout,
   size skip, unavailable capability, Dockerfile gap, or unknown/malformed coverage fact, still
   fails closed; a mixed capture names both the parse limitation and the certifying gap. Semgrep's
   `Missing plugin` notification is the sole explicit notification allowlist entry (#3610).
@@ -1017,8 +1027,11 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   descriptor id is a certifying coverage gap. If the notification has a standard SARIF location,
   or its message uses one of Semgrep v1.183.0's two source-pinned location forms, the bounded file
   appears as `scanner_notification` with bounded inert `notification_ids`, and the coverage note
-  names both. Otherwise it increments `unlocated_records`. A malformed note or descriptor likewise
-  fails closed as unlocated. The notification's diagnostic prose is never published.
+  names both. The location must resolve below the scanner's `/src` target: an `Invalid YAML`, rule
+  parse, or other notification naming `/opt/semgrep-rules` is unlocated and can never become a
+  target-repository review file. Otherwise it increments `unlocated_records`. A malformed note or
+  descriptor likewise fails closed as unlocated. The notification's diagnostic prose is never
+  published.
   **Files over Semgrep's size limit are listed by the host (#3193).** The argv also passes
   `--max-target-bytes=1000000`, Semgrep's own default. Semgrep skips every regular file larger than
   that, of any kind, binary included, and its SARIF says nothing about it. So when the capture lands,

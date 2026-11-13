@@ -6,11 +6,13 @@ import sys
 from pathlib import Path
 
 from scripts import plan_contract
+from scripts import native_unparsed
 from scripts import semgrep_targets
 from scripts.inert import surrogate_free
 from scripts.tolerant_json import depth_checked
 from . import sarif_utils as su
-from .base import REDTEAM, STANDARD, inert_text, ingest_policy_cv, scratch_cwd
+from .base import (REDTEAM, STANDARD, inert_text, ingest_policy_cv, scratch_cwd,
+                   target_root_cv)
 from .exec import run_tool
 
 
@@ -146,6 +148,29 @@ def _sarif_path(path):
     return path.removeprefix("file://").removeprefix(su._TARGET_PREFIX).lstrip("/")
 
 
+def _notification_target_path(path):
+    """A notification location only when it names a target below ``/src``.
+
+    Rule/config parser failures name files under the scanner image (for
+    example ``/opt/semgrep-rules``).  Stripping their leading slash made those
+    files look repository-relative and eligible for #3611 dispatch.  Standard
+    SARIF locations and every pinned prose form cross this same gate.
+    """
+    raw = path.removeprefix("file://") if isinstance(path, str) else ""
+    return _sarif_path(raw) if raw.startswith(su._TARGET_PREFIX) else ""
+
+
+def _standard_notification_path(note):
+    """``None`` when absent, else the standard location gated to ``/src``."""
+    try:
+        path = note["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
+    except (KeyError, IndexError, TypeError, AttributeError):
+        return None
+    # Presence wins even when malformed/outside the target: never fall back to
+    # target-looking prose after a standard location said this was rule config.
+    return _notification_target_path(path)
+
+
 def _notifications(sarif):
     """Yield Semgrep execution notes, tolerating every malformed container."""
     runs = sarif.get("runs") if isinstance(sarif, dict) else None
@@ -190,7 +215,9 @@ def _timeouts(sarif):
         text = message.get("text") if isinstance(message, dict) else None
         match = _SEMGREP_TIMEOUT_TEXT.match(text) if isinstance(text, str) else None
         rule = match.group(1) if match else ""
-        path = _sarif_path(match.group(2)) if match else ""
+        standard = _standard_notification_path(note)
+        path = (standard if standard is not None
+                else _notification_target_path(match.group(2)) if match else "")
         if path:
             per_file[path] = per_file.get(path, 0) + 1
             per_file_rules.setdefault(path, set()).add(rule)
@@ -223,7 +250,9 @@ def _syntax_errors(sarif):
             unlocated += 1
             continue
         match = _SEMGREP_SYNTAX_TEXT.match(text)
-        path = _sarif_path(match.group(1)) if match else ""
+        standard = _standard_notification_path(note)
+        path = (standard if standard is not None
+                else _notification_target_path(match.group(1)) if match else "")
         if not path:
             unlocated += 1
             continue
@@ -245,11 +274,8 @@ def _notification_path(note, notification_id):
     Prefer a standard SARIF location if a future writer retains one, then read
     only those two anchored forms.  A newline-bearing id/path cannot match.
     """
-    try:
-        path = note["locations"][0]["physicalLocation"]["artifactLocation"]["uri"]
-    except (KeyError, IndexError, TypeError, AttributeError):
-        path = None
-    if isinstance(path, str) and (path := _sarif_path(path)):
+    path = _standard_notification_path(note)
+    if path is not None:
         return path
 
     message = note.get("message") if isinstance(note, dict) else None
@@ -260,11 +286,11 @@ def _notification_path(note, notification_id):
     prefix = notification_id + " at line "
     if text.startswith(prefix):
         match = _SEMGREP_NOTIFICATION_AT_LINE.match(text[len(prefix):])
-        return _sarif_path(match.group(1)) if match else ""
+        return _notification_target_path(match.group(1)) if match else ""
     prefix = notification_id + " when running "
     if text.startswith(prefix):
         match = _SEMGREP_NOTIFICATION_WHEN_RUNNING.match(text[len(prefix):])
-        return _sarif_path(match.group(1)) if match else ""
+        return _notification_target_path(match.group(1)) if match else ""
     return ""
 
 
@@ -395,7 +421,7 @@ def _dockerfile_listing(sarif):
             listing["unanalyzed"], "listed" if listing["complete"] else "incomplete")
 
 
-def semgrep_file_coverage(sarif):
+def semgrep_file_coverage(sarif, target_root=None):
     """Semgrep's file gaps as partial file coverage, or None when it has none.
 
     #2957: a file with SEMGREP_TIMEOUT_THRESHOLD or more rule timeouts was
@@ -510,6 +536,11 @@ def semgrep_file_coverage(sarif):
         # without treating a parser limitation as missing scanner execution;
         # an unlocated diagnostic still fails closed through `unlocated_records`.
         facts["syntax_error_files"] = len(syntax)
+        # #3611: this producer sees every syntax path before the ordinary
+        # disclosure cap.  Record the exact native subset (bounded at the
+        # reviewer-cap rather than losing native files behind `files_omitted`)
+        # for the review and synthesis consumers to validate independently.
+        facts.update(native_unparsed.producer_facts(target_root, syntax))
     if docker_count or docker_state != "listed":
         facts.update({"dockerfile_variants": docker_count,
                       "dockerfile_analyzed": docker_analyzed,
@@ -602,4 +633,5 @@ class LegacySarifAdapter:
             sarif, self.name, group, self.prefix,
             security_mode=policy.get("security_mode"),
             suppressed_in_source=policy.get("suppressed_in_source"))
-        return findings, (semgrep_file_coverage(sarif) if self.name == "semgrep" else None)
+        return findings, (semgrep_file_coverage(sarif, target_root_cv.get())
+                          if self.name == "semgrep" else None)

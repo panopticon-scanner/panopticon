@@ -12,6 +12,7 @@ import re
 from scripts import discovery
 from scripts import discovery_catalog
 from scripts import grouping_engine  # 5.2: stage-3 size policy + setup report
+from scripts import native_language as native_language_mod
 from scripts import coverage_model  # 5.2: the surfaces enum for the brief
 from scripts import repo_config  # #1681: the one place the config names live
 from scripts import setup_config  # #3405: the committed size overrides
@@ -43,17 +44,12 @@ _MAX_TEST_TREE_ROWS = 20
 _MAX_MANIFESTS = 20
 _MAX_LANGUAGES = 6
 _MAX_MANIFEST_BYTES = 65536    # bounded read of an untrusted manifest
-_EXT_LANG = {
-    ".py": "Python", ".go": "Go", ".rs": "Rust", ".js": "JavaScript",
-    ".jsx": "JavaScript", ".mjs": "JavaScript", ".cjs": "JavaScript",
-    ".ts": "TypeScript", ".tsx": "TypeScript", ".rb": "Ruby", ".java": "Java",
-    ".kt": "Kotlin", ".kts": "Kotlin", ".cs": "C#", ".php": "PHP", ".c": "C",
-    ".h": "C", ".cpp": "C++", ".cc": "C++", ".cxx": "C++", ".hpp": "C++",
-    ".swift": "Swift", ".scala": "Scala", ".ex": "Elixir", ".exs": "Elixir",
-    ".erl": "Erlang", ".hs": "Haskell", ".dart": "Dart", ".lua": "Lua",
-    ".sh": "Shell", ".bash": "Shell", ".vue": "Vue", ".svelte": "Svelte",
-    ".m": "Objective-C", ".zig": "Zig", ".clj": "Clojure", ".sql": "SQL",
-}
+_EXT_LANG = native_language_mod.EXT_LANG
+
+
+def native_language(repo, rel):
+    """The same shared map/shebang classifier targeted review consumes."""
+    return native_language_mod.native_language(repo, rel)
 # Manifest basenames the framework probe reads (depth <= 2, so monorepo
 # packages count) and the substrings that name a framework in each.
 _MANIFEST_NAMES = frozenset({

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **Native Semgrep parse gaps receive targeted SEC review (#3611).** Located
+  syntax failures in Markdown, HTML, configuration, and other non-native files
+  remain warning-only. Native files are classified with setup's extension map;
+  extensionless files use a bounded shebang read. At most 20 native gaps are
+  routed only to each covering group's effective SEC cell, whose findings
+  envelope must echo the exact manual-review list. The report names every
+  target plus its dispatched and completed cells. A missing/invalid cell, a
+  file outside the matrix, malformed producer facts, or more than 20 native
+  gaps withholds certification; over-cap runs do not spend reviewer capacity.
+  Rule/config notifications outside `/src` are unlocated scanner gaps, never
+  repository targets.
+
 - **Unknown Semgrep execution notifications fail closed (#3610).** Semgrep's
   `Missing plugin` descriptor is now the sole explicit notification allowlist
   entry; `Timeout`, `Syntax error`, and `Other syntax error` keep their richer

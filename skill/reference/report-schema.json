@@ -273,11 +273,11 @@
           "properties": {
             "adapters": {
               "type": "object",
-              "description": "Per output file: {status: ok|empty|noscan|failed, findings: int, reason?: str, file_coverage?: object}. file_coverage separates usable scanner output from complete file coverage: status complete|partial, parsed_files/unparsed_files/unavailable_files counts, bounded files [{file, reason}], files_omitted, and capabilities_unavailable. Partial captures keep their genuine findings and baseline eligibility. Certifying gaps make summary.coverage_certified false with an explicit coverage_note; #3603's strictly located and exactly accounted Semgrep syntax notices are disclosure-only, while any mixed, unlocated, unknown, or malformed gap still fails closed. A failed file (0-byte, unparseable, or no registered adapter) is not counted as having run. noscan (#1335) = the adapter ran and produced a valid document but scanned zero files, so it gets no coverage credit. suppressed_in_source?: int (#1839) = how many of that tool's results this run honoured an INLINE suppression comment over (semgrep's `# nosemgrep`), dropped at the parse under `--security standard` and kept under redteam; an absent key means none were, which is not the same claim as 0."
+              "description": "Per output file: {status: ok|empty|noscan|failed, findings: int, reason?: str, file_coverage?: object}. file_coverage separates usable scanner output from complete file coverage: status complete|partial, parsed_files/unparsed_files/unavailable_files counts, bounded files [{file, reason}], files_omitted, and capabilities_unavailable. Partial captures keep their genuine findings and baseline eligibility. Certifying gaps make summary.coverage_certified false with an explicit coverage_note; #3603's strictly located and exactly accounted Semgrep syntax notices are disclosure-only for non-native files, while #3611 requires exact targeted SEC review before a native-file notice can certify. Any mixed, unlocated, unknown, or malformed gap still fails closed. A failed file (0-byte, unparseable, or no registered adapter) is not counted as having run. noscan (#1335) = the adapter ran and produced a valid document but scanned zero files, so it gets no coverage credit. suppressed_in_source?: int (#1839) = how many of that tool's results this run honoured an INLINE suppression comment over (semgrep's `# nosemgrep`), dropped at the parse under `--security standard` and kept under redteam; an absent key means none were, which is not the same claim as 0."
             },
             "tools_file_partial": {
               "type": "object",
-              "description": "Adapters with usable captures but incomplete file coverage, mapped to the same bounded file_coverage facts in adapters. Reasons: parse_error or typescript_parser_unavailable; for semgrep (#2957) rule_timeout (a rule ran past the stated per-file timeout, so its findings there are missing) or timeout_abandoned (the stated threshold of rules timed out, so no rule's findings from that file survive), each with rule_timeouts, plus a run total rule_timeouts and unlocated_records for timeouts whose file could not be identified; (#3229, #3603) syntax_error, with syntax_errors for diagnostics and syntax_error_files for the exact count of located parser-gap files; (#3610) scanner_notification for every descriptor left after the dedicated timeout/syntax readers and the explicit allowlist, with scanner_notifications, scanner_notification_files, scanner_notifications_unlocated, bounded inert notification_ids and notification_ids_omitted (Missing plugin is the sole allowlist entry; unreadable or malformed notifications are unlocated); or (#3193) size_skipped (over the stated size_limit, so Semgrep never read it), listed by the host at capture, with the run total size_skipped and size_listing (listed, or absent / malformed / incomplete, each one more unlocated record: a capture without a complete listing is never read as nothing skipped). Findings still gate; file gaps alone do not invalidate a baseline or change the finding-based gate. A strictly located, exactly accounted Semgrep syntax-only gap is named in coverage_note without making summary.coverage_certified false. Every other partial shape, including a mixed or unlocated syntax gap, makes it false."
+              "description": "Adapters with usable captures but incomplete file coverage, mapped to the same bounded file_coverage facts in adapters. Reasons: parse_error or typescript_parser_unavailable; for semgrep (#2957) rule_timeout (a rule ran past the stated per-file timeout, so its findings there are missing) or timeout_abandoned (the stated threshold of rules timed out, so no rule's findings from that file survive), each with rule_timeouts, plus a run total rule_timeouts and unlocated_records for timeouts whose file could not be identified; (#3229, #3603) syntax_error, with syntax_errors for diagnostics and syntax_error_files for the exact count of located parser-gap files; (#3610) scanner_notification for every descriptor left after the dedicated timeout/syntax readers and the explicit allowlist, with scanner_notifications, scanner_notification_files, scanner_notifications_unlocated, bounded inert notification_ids and notification_ids_omitted (Missing plugin is the sole allowlist entry; unreadable or malformed notifications are unlocated); or (#3193) size_skipped (over the stated size_limit, so Semgrep never read it), listed by the host at capture, with the run total size_skipped and size_listing (listed, or absent / malformed / incomplete, each one more unlocated record: a capture without a complete listing is never read as nothing skipped). Findings still gate and file gaps do not invalidate a baseline. A strictly located, exactly accounted Semgrep syntax-only gap is warning-only for a non-native file; #3611 requires exact targeted SEC review for every native file at or below the absolute cap of 20, and more than 20 withholds certification without dispatch. Every other partial shape, including a mixed, unlocated, unknown, or malformed syntax gap, makes summary.coverage_certified false."
             },
             "tools_ran": {
               "type": "array",
@@ -472,6 +472,46 @@
                     }
                   }
                 }
+              }
+            },
+            "targeted_review": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["native_unparsed", "files", "files_omitted", "classification_unknown", "cap", "over_cap", "dispatch_valid", "attestations_valid"],
+              "description": "#3611 native-language files Semgrep could not parse. At or below the absolute cap, each file is routed only to its covering group's SEC cell and certifies only when a valid completed cell echoes the exact target list. Above the cap no reviewer dispatch is attempted and coverage is uncertified.",
+              "properties": {
+                "native_unparsed": {"type": "integer", "minimum": 0},
+                "files": {
+                  "type": "array",
+                  "maxItems": 20,
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["file", "language", "dispatched_to", "covered_by"],
+                    "properties": {
+                      "file": {"type": "string", "minLength": 1, "maxLength": 4096},
+                      "language": {"type": "string", "minLength": 1},
+                      "dispatched_to": {
+                        "type": "array",
+                        "uniqueItems": true,
+                        "items": {"type": "array", "minItems": 2, "maxItems": 2,
+                                  "items": [{"type": "string", "minLength": 1}, {"enum": ["SEC"]}]}
+                      },
+                      "covered_by": {
+                        "type": "array",
+                        "uniqueItems": true,
+                        "items": {"type": "array", "minItems": 2, "maxItems": 2,
+                                  "items": [{"type": "string", "minLength": 1}, {"enum": ["SEC"]}]}
+                      }
+                    }
+                  }
+                },
+                "files_omitted": {"type": "integer", "minimum": 0},
+                "classification_unknown": {"type": "integer", "minimum": 0},
+                "cap": {"type": "integer", "enum": [20]},
+                "over_cap": {"type": "boolean"},
+                "dispatch_valid": {"type": "boolean"},
+                "attestations_valid": {"type": "boolean"}
               }
             },
             "tools_suppressed": {

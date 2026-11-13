@@ -60,6 +60,9 @@ class PlanInputs:
     # `exclude_paths:` at all, or had no discovery run to ask -- and the report
     # then carries no key, because zero behaviour change is zero output change.
     sec_carve_out: Any = None
+    # The hash-bound driver plan entries, retained so #3611 can prove the SEC
+    # target list was actually dispatched rather than infer it after the fact.
+    dispatch_entries: list = field(default_factory=list)
 
     @classmethod
     def load(cls, run_dir, files, verdicts_dir, groups_meta, plans, queue, verdicts,
@@ -117,7 +120,8 @@ class PlanInputs:
                    coverages=coverages, integrity=integrity, resume=resume,
                    test_inventory=load_test_inventory(run_dir),
                    git_drivers_suppressed=git_drivers_suppressed,
-                   sec_carve_out=sec_carve_out)
+                   sec_carve_out=sec_carve_out,
+                   dispatch_entries=list(plan))
 
 
 # One source for the per-group dispatch-plan filename glob (#681): synthesize

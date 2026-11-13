@@ -2,6 +2,7 @@
 import os
 
 from scripts import groups_schema
+from scripts import native_language
 
 # The artifact directory's name, spelled once (#3409). `artifact_root` below
 # is the vetted path to it; code that needs only the NAME (a dir_fd-relative
@@ -70,4 +71,14 @@ def driver_plan_issues(plan):
                 "findings-%s-%s.json" % (group, domain)):
             issues.append("entry %d out_file basename does not match "
                           "findings-<group>-<domain>.json" % index)
+        if "targeted_review" in entry:
+            targets = entry["targeted_review"]
+            if domain != "SEC":
+                issues.append("entry %d targeted_review belongs only on SEC" % index)
+            if not (isinstance(targets, list) and targets
+                    and all(native_language.repo_path(path) for path in targets)
+                    and targets == sorted(targets)
+                    and len(targets) == len(set(targets))):
+                issues.append("entry %d targeted_review is not a sorted unique "
+                              "repository-relative path list" % index)
     return issues

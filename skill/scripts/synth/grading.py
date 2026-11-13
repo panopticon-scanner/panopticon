@@ -103,7 +103,7 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
             missing_floor=0, tools_manifest_invalid=None, tools_network_excluded=None,
             delta_scope_suppressed_git_drivers=None, tools_file_partial=None,
             delta_zero_hunks=None, dependency_audit_gap=False, custom_profile=None,
-            config_notes=None):
+            config_notes=None, native_unparsed_gap=None):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
     (+ requested-absent tools + artifact integrity + verdict loadability +
     missing FLOOR review cells); grade is holistic (provisional on ANY gap).
@@ -172,7 +172,7 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
                          or not integrity_ok or bool(verdicts_unloadable)
                          or bool(verdicts_unanswered) or bool(missing_floor)
                          or bool(tools_network_excluded) or bool(delta_zero_hunks)
-                         or dependency_audit_gap)
+                         or dependency_audit_gap or bool(native_unparsed_gap))
     any_incomplete = bool(panels_incomplete)
 
     if base_gate == "PASS" and gate_relevant_gap:
@@ -240,6 +240,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
                % (_SUPPRESSED_DRIVER_EFFECT,
                   ", ".join(sorted(delta_scope_suppressed_git_drivers))))
         note = "%s; %s" % (note, gap) if note else gap
+    if native_unparsed_gap:
+        note = "%s; %s" % (note, native_unparsed_gap) if note else native_unparsed_gap
 
     if tools_file_partial:
         # Valid scanner captures retain their findings and delta eligibility.
@@ -720,6 +722,7 @@ def grade_report(run, resolved, reconciled, delta=None):
                    tools_file_partial=reconciled.coverage.get("tools_file_partial"),
                    delta_zero_hunks=delta_zero_hunks,
                    dependency_audit_gap=getattr(reconciled, "dependency_audit_gap", False),
+                   native_unparsed_gap=getattr(reconciled, "native_unparsed_gap", None),
                    custom_profile=health_basis.custom_profile_reasons(run, coverages),
                    config_notes=health_basis.config_notes(run, coverages))
     summary = {

@@ -38,7 +38,7 @@ guide and that code's explicit grading criteria differ, the criteria win.
 
 Pick the **most specific** matching code for each finding. If nothing in the menu fits, use the domain fallback `{domain}-X0X` and say why in the description (this is the catalog-gap signal).
 
-{tool_hits}## Severity bar
+{tool_hits}{targeted_review}## Severity bar
 
 Set `severity` to what the concrete case actually warrants — a code's
 `default_severity` is a starting point, not a verdict. Reserve **CRITICAL** for
@@ -125,7 +125,7 @@ worse than none.
 
 ## Output — write exactly one file
 
-Write your findings to `{out_file}` as a single JSON object with this exact shape. The `_panopticon` block is REQUIRED — the run uses it to identify your cell, and a file that omits it (or carries a wrong `run_id`/`domain`/`group`) is DISCARDED and your cell is treated as not done:
+Write your findings to `{out_file}` as a single JSON object with the base shape below. When the targeted-review section above instructs you to echo a `targeted_review` member, include that exact member alongside `findings`. The `_panopticon` block is REQUIRED — the run uses it to identify your cell, and a file that omits it (or carries a wrong `run_id`/`domain`/`group`) is DISCARDED and your cell is treated as not done:
 
     {
       "schema_version": 1,

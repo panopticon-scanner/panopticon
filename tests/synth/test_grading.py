@@ -14,6 +14,7 @@ except ImportError:
     resource = None
 
 import scripts.coverage_model as coverage_model
+from scripts import native_unparsed
 import scripts.hosts as hosts_mod
 import scripts.synth.coverage_io as coverage_io
 import scripts.synth.delta as delta_mod
@@ -86,7 +87,7 @@ class TestCertify(unittest.TestCase):
 
     @staticmethod
     def _syntax_only(*names):
-        return {"semgrep": {
+        facts = {
             "status": "partial", "parsed_files": 2,
             "unparsed_files": len(names), "unavailable_files": 0,
             "files": [{"file": name, "reason": "syntax_error",
@@ -97,7 +98,9 @@ class TestCertify(unittest.TestCase):
             "syntax_error_files": len(names), "size_skipped": 0,
             "size_limit": 1_000_000, "size_listing": "listed",
             "unlocated_records": 0,
-        }}
+        }
+        facts.update(native_unparsed.producer_facts(None, names))
+        return {"semgrep": facts}
 
     @staticmethod
     def _scanner_notifications(*names, unlocated=0):
