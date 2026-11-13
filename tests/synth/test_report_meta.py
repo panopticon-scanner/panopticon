@@ -219,6 +219,8 @@ class ModelFallbacksTest(_Case):
             fh.write("\n".join(json.dumps(r) for r in rows) + "\n")
         subs = cost_mod.load_ledger_substitutions(self.dir)
         self.assertEqual(1, len(subs))                        # first good one per entry
+        self.assertEqual((1, "gemini-4-argon-high"), (subs[0]["rung"], subs[0]["bound"]))
+        self.assertTrue(subs[0]["reason"].startswith("not listed"))
         self.assertNotIn("\x1b", subs[0]["reason"])
         self.assertNotIn("\x00", subs[0]["reason"])
         self.assertEqual((), cost_mod.load_ledger_substitutions(None))
