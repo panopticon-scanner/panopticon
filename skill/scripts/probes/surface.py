@@ -18,11 +18,14 @@ import stat
 from scripts import codex_read_tools
 
 
-# The walk's bounds, per pattern (§5.1). A tree deeper than DEPTH_CAP or
-# wider than ENTRY_CAP is not scanned to the end -- and reaching either cap
-# REFUTES, exactly as an unreadable directory does: a planted deep tree is not
-# a way to make this scan give up quietly.
-DEPTH_CAP = 12
+# The walk's bound, per pattern (§5.1): ENTRIES, never depth (#3645). A depth
+# cap refused every target with a deep fixture tree, however far its nearest
+# instruction file was from the cut-off, and the only way past it was
+# `--allow-unenforced`. A tree wider than ENTRY_CAP is not scanned to the end
+# -- and reaching the cap REFUTES, exactly as an unreadable directory does: a
+# planted huge tree is not a way to make this scan give up quietly. Depth needs
+# no bound of its own: `walk_tree` does not recurse, every level costs at least
+# one entry, and a path too long for the OS is a directory we could not read.
 ENTRY_CAP = 20_000
 # Directory NAMES the walk prunes. `codex_read_tools.EXCLUDED_DIRECTORIES` is
 # `discovery_scope.EXCLUDE_DIRS` plus `.panopticon` and `.worktrees`, pinned equal to
@@ -50,7 +53,7 @@ class Walk:
         self.capped = None             # the cap that stopped us, or None
 
     def failed(self, exc):
-        """`os.walk`'s `onerror`, and `listdir`'s except clause.
+        """Every except clause that could not list or stat something.
 
         An ABSENT directory is not a fault -- essentially every target lacks
         most of these paths, and folding that into "unreadable" would refuse
@@ -84,36 +87,75 @@ class Walk:
         return self.capped is not None
 
 
-def _depth(root, directory):
-    """How many levels below `root` this directory sits. 0 is `root` itself."""
-    relative = os.path.relpath(directory, root)
-    return 0 if relative == os.curdir else relative.count(os.sep) + 1
+def scan_directory(directory, on_error):
+    """(real subdirectory names, every other name) in `directory`, each sorted,
+    or None when it could not be listed.
+
+    `is_dir(follow_symlinks=False)`: nothing is ever stat'd THROUGH a link, so
+    a symlinked directory lands among the other names -- listed, and therefore
+    reportable as a hit, but never a directory to descend. Every failure goes
+    to `on_error`: the listing itself, and a single entry's stat on a
+    filesystem that does not say what an entry is. `os.walk` read that second
+    failure as "a file" and walked on, which left a directory unvisited with
+    nothing said about it.
+    """
+    subdirs: list[str] = []
+    others: list[str] = []
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                try:
+                    real_dir = entry.is_dir(follow_symlinks=False)
+                except OSError as exc:
+                    on_error(exc)
+                    real_dir = False
+                (subdirs if real_dir else others).append(entry.name)
+    except OSError as exc:
+        on_error(exc)
+        return None
+    return sorted(subdirs), sorted(others)
 
 
 def walk_tree(root, walk):
     """(directory, entry names) for every directory at or under `root`.
 
-    `os.walk(followlinks=False)` (R3), so a symlinked directory is listed --
-    and therefore reportable as a hit by the caller -- but never descended:
-    a link back to the review root would otherwise be an endless walk that
-    only the entry cap ended, turning an ordinary tree into a refusal.
+    Never follows a link (R3): a symlinked directory is listed -- and
+    therefore reportable as a hit by the caller -- but never descended: a link
+    back to the review root would otherwise be an endless walk that only the
+    entry cap ended, turning an ordinary tree into a refusal.
 
-    Pruning is by NAME, on the same list discovery prunes, and both caps stop
-    the walk here rather than inside the caller's loop: `dirnames[:] = []` is
-    what `os.walk` reads back, so a cap reached mid-tree stops the descent
-    instead of merely being noticed afterwards.
+    An explicit stack rather than `os.walk` (#3645), which recurses one frame
+    per level before Python 3.12: with no depth cap, a planted tree a thousand
+    levels deep would end this probe in a RecursionError instead of a sentence.
+    Here a tree of any depth costs entries, and the entry cap is what ends it.
+
+    Pruning is by NAME, on the same list discovery prunes, and the cap stops
+    the walk here rather than inside the caller's loop: nothing more is queued
+    once it is reached, so a cap reached mid-tree stops the descent instead of
+    merely being noticed afterwards.
     """
-    for directory, dirnames, filenames in os.walk(root, onerror=walk.failed,
-                                                  followlinks=False):
-        if _depth(root, directory) >= DEPTH_CAP:
-            walk.cap("%d levels" % DEPTH_CAP)
-            dirnames[:] = []
-        else:
-            dirnames[:] = [name for name in dirnames if name not in PRUNED_DIRS]
-        yield directory, walk.count(sorted(dirnames) + sorted(filenames))
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        # Asked again at the moment of descent, as `os.walk` did: the entry was
+        # a real directory when its parent was listed, and a tree that is being
+        # written to can have swapped it for a link since. It stays listed in
+        # its parent and is not descended. `root` is the caller's own path and
+        # is walked whatever it is -- a symlinked `.claude/hooks` is still the
+        # directory the host would load from.
+        if directory != root and os.path.islink(directory):
+            continue
+        listing = scan_directory(directory, walk.failed)
+        if listing is None:
+            continue
+        subdirs = [name for name in listing[0] if name not in PRUNED_DIRS]
+        yield directory, walk.count(subdirs + listing[1])
         if walk.stop():
-            dirnames[:] = []
             return
+        # Reversed, so the stack pops them in sorted order: the same tree is
+        # walked in the same order on every run and every filesystem.
+        pending.extend(os.path.join(directory, name)
+                       for name in reversed(subdirs))
 
 
 def candidates(review_root, segments, walk):
