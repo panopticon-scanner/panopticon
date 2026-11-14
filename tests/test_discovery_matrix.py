@@ -114,7 +114,7 @@ def test_authored_case_variant_suppresses_automatic_name(
     assert automatic not in names
     assert len(names) == len({n.casefold() for n in names})
     grouped = [f for g in report["groups"] for f in g["files"]]
-    assert sorted(grouped) == sorted(files + ["panopticon.yml"])
+    assert sorted(grouped) == sorted(files)          # #3642: the root config is not reviewed
     assert report["ungrouped_files"] == sorted(
         f for f in grouped if any(f in g["files"] for g in report["groups"]
                                 if g["name"].startswith("Ungrouped_")))
@@ -263,10 +263,10 @@ def test_repo_scan_bare_scalar_match_group_does_not_swallow_whole_repo(tmp_path)
     by_name = {g["name"]: g["files"] for g in data["groups"]}
     assert by_name.get("Auth") == ["src/auth/login.py"]
     assert "Bad" not in by_name                     # never grouped -- match=[]
-    # #1681 Task 7: the committed root config is an ordinary repo file, but the
-    # Commons vocabulary claims it under `Config` -- it is not a genuine
-    # leftover, only the unclaimed source file is.
-    assert by_name.get("Config") == ["panopticon.yml"]
+    # #3642: the committed root config is not reviewed in a full-repo scan (it is
+    # disclosed instead); only the unclaimed source file is a leftover.
+    assert by_name.get("Config") is None
+    assert data["excluded"]["scanner_config"] == ["panopticon.yml"]
     assert data["ungrouped_files"] == ["src/bad/thing.py"]
     leftover = [g for g in data["groups"] if g["name"].startswith("Ungrouped_")]
     assert [f for g in leftover for f in g["files"]] == ["src/bad/thing.py"]
@@ -303,9 +303,9 @@ def test_repo_scan_bare_well_formed_matrix_groups_unchanged(tmp_path):
     by_name = {g["name"]: sorted(g["files"]) for g in data["groups"]}
     assert by_name["Auth"] == ["src/auth/login.py"]
     assert by_name["Checkout"] == ["src/checkout/cart.py", "src/checkout/pay.py"]
-    # #1681 Task 7: the committed root config is claimed by the Commons
-    # `Config` category, not left as a genuine leftover.
-    assert by_name.get("Config") == ["panopticon.yml"]
+    # #3642: the committed root config is not reviewed in a full-repo scan.
+    assert by_name.get("Config") is None
+    assert data["excluded"]["scanner_config"] == ["panopticon.yml"]
     leftover = [g for g in data["groups"] if g["name"].startswith("Ungrouped_")]
     assert [f for g in leftover for f in g["files"]] == ["src/misc/other.py"]
     assert data["ungrouped_files"] == ["src/misc/other.py"]

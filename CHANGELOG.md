@@ -18,6 +18,15 @@
   project's own `workspace-app 1.2.3` and a registry `workspace-app 0.9.0` in the same lock stay
   two findings: before, one copy was dropped by input order or by an agent's line.
 
+- **A full-repo scan no longer reviews the scanner's own root config (#3642).** The root
+  `panopticon.yml` / `.panopticon.yml` -- including the one setup-scan just wrote -- was reviewed
+  like target code, and an owner-observed run graded a HIGH finding against the matrix itself.
+  Discovery now leaves the same `repo_config.CONFIG_NAMES` that `--pr` mode drops (#1681) out of
+  the whole-repo surface and discloses them under `excluded.scanner_config` and on stderr. A nested
+  `sub/panopticon.yml` is still reviewed; an explicit `--scope-files` and a plain delta that
+  changes the root config are unchanged, as are tool scans. This supersedes #1681 Task 7's
+  grouping of the root config under Commons `Config` in full-repo scans.
+
 - **agy's `Individual quota reached` response now pauses as a host outage (#3640).** The
   free-text classifier recognizes that account-level sentence with or without agy's reset tail
   and a leading 429, so the failed launch is not charged to an entry. The match keeps agy's
