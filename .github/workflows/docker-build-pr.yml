@@ -2,7 +2,7 @@ name: Dockerfile PR build
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']   # #3618: backport PRs to the stable line
     paths:
       - Dockerfile
       - Dockerfile.fixtures
