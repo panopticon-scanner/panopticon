@@ -14,6 +14,13 @@
   operator-visible exhaustion count, while a later tool output that only reuses the completed
   fail-closed origin result must not inherit that count. The report schema now describes the
   optional per-output disposition field and its absent-key meaning.
+- **An npm link must name a real local entry of the lock (#3653).** A `link: true` entry whose
+  `resolved` is not itself a lock key outside `node_modules` -- a leading-space, newline,
+  percent-encoded or schemeless registry URL, a dangling path, or an install path -- now fails
+  the whole lock, as does a link that carries its own `version` or `integrity`, which npm never
+  writes on a link. Before, such an entry was skipped as a link, so a disguised registry copy
+  beside a linked workspace member left the member first-party.
+
 - **npm advisories against the project's own packages are first-party (#3623).** #3593's
   Cargo rule now has an npm twin. An osv-scanner or Trivy advisory naming an exact name and
   version from the review root's own `package-lock.json` / `npm-shrinkwrap.json` (lockfile v2+;
