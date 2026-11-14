@@ -10,10 +10,13 @@
   the advisory disappeared, or was queued to the advisor in its place. A first-party advisory is
   now never collapsed into an agent finding: both survive, the advisory stays first-party (and
   reinforced when the agent agrees on category), and the agent claim queues on its own.
-  Separately, two tools reporting one advisory on one package at one locus (osv-scanner and
-  cargo-audit at `Cargo.lock:1`) kept whichever came first in input order, so the survivor's
-  severity and source moved with the order; the most severe now wins, then the source, then the
-  fingerprint.
+  Separately, two tools reporting one advisory on one package (osv-scanner and cargo-audit at
+  `Cargo.lock:1`) kept whichever came first in input order, so the survivor's severity and source
+  moved with the order. Content now decides: an agent-corroborated locus first, then the lowest
+  line (a LOW at line 1 still beats a CRITICAL at line 5), then the most severe, the source, the
+  reported version and the title. And the first-party mark is part of the grouping key, so the
+  project's own `workspace-app 1.2.3` and a registry `workspace-app 0.9.0` in the same lock stay
+  two findings: before, one copy was dropped by input order or by an agent's line.
 
 - **agy's `Individual quota reached` response now pauses as a host outage (#3640).** The
   free-text classifier recognizes that account-level sentence with or without agy's reset tail

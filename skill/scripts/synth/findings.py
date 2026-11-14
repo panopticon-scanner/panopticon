@@ -600,17 +600,23 @@ def aggregate_tool_findings(findings):
         loc = f.get("location") or {}
         line = _norm_line(loc.get("line_start"))
         corroborated = (evidence_mod.norm_path(loc.get("file")), line) in agent_loci
-        # #3649: two TOOLS reporting one advisory on one artifact at one locus
-        # (osv-scanner and cargo-audit both at `Cargo.lock:1`) used to keep whichever
-        # came first in input order -- so its severity, source and identity moved
-        # with the order. Content decides instead: the most severe, then the source,
-        # then the fingerprint.
+        # #3649: two TOOLS reporting one advisory on one artifact (osv-scanner and
+        # cargo-audit both at `Cargo.lock:1`) used to keep whichever came first in
+        # input order -- so its severity, source and identity moved with the order.
+        # Content decides instead. The corroborated locus comes first, then the
+        # LOWEST LINE (so a LOW at line 1 beats a CRITICAL at line 5), and only then
+        # the most severe, the source, the reported version and the title. Every
+        # member of a group shares one fingerprint (the group key holds its inputs),
+        # so the version and the title are what separate two copies of one package.
+        tool_evidence = f.get("tool_evidence")
+        version = (tool_evidence.get("vulnerable_versions")
+                   if isinstance(tool_evidence, dict) else None)
         return (0 if corroborated else 1, line if isinstance(line, int) else 0,
-                _sev_rank(f), str(f.get("source") or ""),
-                evidence_mod.finding_fingerprint(f))
+                _sev_rank(f), str(f.get("source") or ""), str(version or ""),
+                str(f.get("title") or ""))
 
     out = []
-    groups: dict[tuple[str, str, str, str, str | None],
+    groups: dict[tuple[str, str, str, str, str | None, bool],
                  list[dict[str, Any]]] = {}
     order = []
     for f in findings:
@@ -626,9 +632,15 @@ def aggregate_tool_findings(findings):
         # finding carrying `occurrences: 2` before dedupe ever saw them, which is
         # the same lost vulnerability one stage earlier. Naming no artifact means
         # one bucket, so every SARIF-path finding behaves exactly as before.
+        #
+        # #3655 review: the first-party mark is part of the key. A lock can hold the
+        # project's own `workspace-app 1.2.3` AND a registry `workspace-app 0.9.0`;
+        # keyed by name alone both copies landed in one group and one was dropped --
+        # by input order (osv, both at line 1), or by an agent's line (Trivy).
         key = (f.get("panel"), f.get("category"),
                evidence_mod.norm_path(((f.get("location") or {}).get("file"))),
-               str(rule), evidence_mod.artifact_term(f))
+               str(rule), evidence_mod.artifact_term(f),
+               evidence_mod.is_first_party_advisory(f))
         if key not in groups:
             groups[key] = []
             order.append(key)

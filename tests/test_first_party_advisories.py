@@ -1261,6 +1261,13 @@ class TestFirstPartyAdvisoryStability(unittest.TestCase):
 
     @staticmethod
     def _report(findings):
+        return {(f.get("source"), evidence.tool_rule_id(f)): f["evidence"]["status"]
+                for f in TestFirstPartyAdvisoryStability._report_findings(findings)
+                if evidence.is_tool_sourced(f)
+                and evidence.tool_rule_id(f) != "RUSTSEC-2099-0002"}
+
+    @staticmethod
+    def _report_findings(findings):
         prepared, _ = corroborate.prepare_for_queue([dict(f) for f in findings])
         entries, _cut = evidence.build_verify_queue(prepared)
         verdicts = {entry["queue_id"]: {"finding_id": entry["finding"]["id"],
@@ -1272,9 +1279,7 @@ class TestFirstPartyAdvisoryStability(unittest.TestCase):
                                      timestamp="2026-11-14T00:00:00Z"),
             findings=findings_mod.FindingSet(findings=[dict(f) for f in findings],
                                              verdicts=verdicts, verdicts_supplied=True)))
-        return {(f.get("source"), evidence.tool_rule_id(f)): f["evidence"]["status"]
-                for f in report["findings"] if evidence.is_tool_sourced(f)
-                and evidence.tool_rule_id(f) != "RUSTSEC-2099-0002"}
+        return report["findings"]
 
     def test_status_never_depends_on_an_agent_claim_or_the_tool_subset(self):
         names = sorted(self._tools())
@@ -1326,6 +1331,36 @@ class TestFirstPartyAdvisoryStability(unittest.TestCase):
             out = findings_mod.aggregate_tool_findings([dict(f) for f in members])
             self.assertEqual(["tool:cargo-audit"], [f["source"] for f in out])
 
+    def test_the_lowest_line_wins_before_severity(self):
+        # The order is corroborated locus, then the LOWEST LINE, then severity: a LOW at
+        # line 1 beats a CRITICAL at line 5, in either input order.
+        base = [f for f in self._ingest(["cargo-audit.json", "osv-scanner.json"])
+                if evidence.tool_rule_id(f) == "RUSTSEC-2099-0001"]
+        low, critical = sorted(base, key=lambda f: f["severity"] != "LOW")
+        self.assertEqual(("LOW", "CRITICAL"), (low["severity"], critical["severity"]))
+        critical = dict(critical, location={"file": "Cargo.lock", "line_start": 5})
+        for members in ([low, critical], [critical, low]):
+            out = findings_mod.aggregate_tool_findings([dict(f) for f in members])
+            self.assertEqual([("LOW", 1)], [(f["severity"], f["location"]["line_start"])
+                                            for f in out])
+
+    def test_a_full_tie_is_broken_by_the_reported_version_then_the_title(self):
+        # Every member of a group shares one fingerprint, so only content left over --
+        # the version, then the title -- separates two copies at one locus.
+        osv = [f for f in self._ingest(["osv-scanner.json"])
+               if evidence.tool_rule_id(f) == "RUSTSEC-2099-0002"][0]
+        older = dict(osv, tool_evidence=dict(osv["tool_evidence"], vulnerable_versions="0.8.0"),
+                     title="z")
+        newer = dict(osv, tool_evidence=dict(osv["tool_evidence"], vulnerable_versions="0.9.0"),
+                     title="a")
+        retitled = dict(older, title="a")
+        for pair, expected in (([older, newer], ("0.8.0", "z")),
+                               ([older, retitled], ("0.8.0", "a"))):
+            for members in (pair, pair[::-1]):
+                out = findings_mod.aggregate_tool_findings([dict(f) for f in members])
+                self.assertEqual([expected], [(f["tool_evidence"]["vulnerable_versions"],
+                                               f["title"]) for f in out])
+
     def test_an_ordinary_tool_agent_pair_still_collapses(self):
         # The exemption is the first-party mark and nothing else: a registry advisory
         # alone at a locus with one agent finding still collapses to one survivor.
@@ -1336,6 +1371,71 @@ class TestFirstPartyAdvisoryStability(unittest.TestCase):
         prepared, _ = corroborate.prepare_for_queue(
             [dict(f) for f in base + [self._agent(9, "CRITICAL")]])
         self.assertEqual(1, len(prepared))
+
+
+class TestFirstPartyAdvisoryBesideARegistryCopy(unittest.TestCase):
+    """#3655 review: a lock holding the project's own `workspace-app 1.2.3` AND a registry
+    `workspace-app 0.9.0` names one package twice. Grouped by name alone, the two copies
+    of one advisory merged and one was dropped -- by input order (F1) or by an agent's
+    line (F2) -- so the first-party advisory's status depended on both."""
+
+    REGISTRY_COPY = "0.9.0"
+    COPY_LINE = 9
+
+    def _root(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        _write_lock(root.name)
+        with open(os.path.join(root.name, "Cargo.lock"), "a", encoding="utf-8") as fh:
+            fh.write('\n[[package]]\nname = "%s"\nversion = "%s"\n'
+                     'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+                     % (WORKSPACE_NAME, self.REGISTRY_COPY))
+        _write_manifest(root.name)
+        return root.name
+
+    def _ingest(self, filename, document):
+        return _ingest_document(self._root(), filename, document)
+
+    @staticmethod
+    def _statuses(findings):
+        tool = [f for f in TestFirstPartyAdvisoryStability._report_findings(findings)
+                if evidence.is_tool_sourced(f)
+                and evidence.tool_rule_id(f) != "RUSTSEC-2099-0002"]
+        return sorted((evidence.is_first_party_advisory(f), f["evidence"]["status"])
+                      for f in tool)
+
+    EXPECTED = [(False, "needs_more_info"), (True, "tool_confirmed")]
+
+    def test_f1_osv_input_order_keeps_both_copies(self):
+        own = _osv_package(WORKSPACE_NAME, WORKSPACE_VERSION, "RUSTSEC-2099-0001")
+        copy = _osv_package(WORKSPACE_NAME, self.REGISTRY_COPY, "RUSTSEC-2099-0001")
+        for packages in ([own, copy], [copy, own]):
+            with self.subTest(first=packages[0]["package"]["version"]):
+                document = {"results": [{"source": {"path": "/src/Cargo.lock"},
+                                         "packages": packages}]}
+                findings = self._ingest("osv-scanner.json", document)
+                self.assertEqual(self.EXPECTED, self._statuses(findings))
+                self.assertEqual(self.EXPECTED, self._statuses(findings[::-1]))
+
+    def test_f2_an_agent_line_cannot_pick_the_registry_copy(self):
+        trivy = _trivy_document()
+        result = trivy["runs"][0]["results"][0]
+        result["locations"][0]["physicalLocation"]["region"]["startLine"] = 3
+        copy = json.loads(json.dumps(result))
+        copy["message"]["text"] = copy["message"]["text"].replace(
+            WORKSPACE_VERSION, self.REGISTRY_COPY)
+        copy["locations"][0]["physicalLocation"]["region"]["startLine"] = self.COPY_LINE
+        trivy["runs"][0]["results"].append(copy)
+        findings = self._ingest("trivy.sarif", trivy)
+        self.assertEqual(self.EXPECTED, self._statuses(findings))
+        for severity in ("LOW", "CRITICAL"):
+            for category in ("configuration", "dependency_vulnerability"):
+                agent = TestFirstPartyAdvisoryStability._agent(self.COPY_LINE, severity,
+                                                               category)
+                with self.subTest(severity=severity, category=category):
+                    self.assertEqual(self.EXPECTED, self._statuses(findings + [agent]))
+                    self.assertEqual(self.EXPECTED,
+                                     self._statuses([agent] + findings[::-1]))
 
 
 class TestFirstPartyAdvisoryVerification(unittest.TestCase):
