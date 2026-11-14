@@ -833,18 +833,28 @@ class TestModelDisclosure(Workspace):
     def test_per_run_requests_routes_and_unreadable_records_are_said(self):
         a = dict(self.SUB, requested="gemini-4-argon-high", bound="gemini-3.8-flash-medium")
         b = dict(self.SUB, requested="gemini-4-carbon-high", bound="gemini-3.8-flash-medium",
-                 route="signin")
+                 route="signin", role="domain_advisor")
         _doc, lines = self._summary({"model_strict": False, "model_substitutions": [a]},
                                     {"model_strict": False, "model_substitutions": [b, "junk"]})
         self.assertIn("  run2: 1 fallback record unreadable", lines)
-        self.assertIn("  review-g-SEC (domain_panel): run1 requested gemini-4-argon-high, ran "
+        self.assertIn("  review-g-SEC: run1 as domain_panel, requested gemini-4-argon-high, ran "
                       "gemini-3.8-flash-medium via route key (fallback rung 1: not listed on route "
-                      "key); run2 requested gemini-4-carbon-high, ran gemini-3.8-flash-medium via "
-                      "route signin (fallback rung 1: not listed on route key) -- DIFFERS ACROSS "
-                      "RUNS", lines)
+                      "key); run2 as domain_advisor, requested gemini-4-carbon-high, ran "
+                      "gemini-3.8-flash-medium via route signin (fallback rung 1: not listed on "
+                      "route key) -- DIFFERS ACROSS RUNS", lines)
         _doc, lines = self._summary({"model_strict": True, "model_substitutions": {"x": 1}},
                                     {"model_strict": True})
         self.assertIn("  run1: fallback records unreadable (not a list)", lines)
+        # #3633 r2 N9: neither run records strict; the unreadable line still prints.
+        _doc, lines = self._summary({"model_substitutions": [5]}, {})
+        self.assertIn("  run1: 1 fallback record unreadable", lines)
+        # #3633 r2 item 3: a run that dropped records is "maybe", and the header is partial.
+        _doc, lines = self._summary({"model_strict": False, "model_substitutions": [self.SUB]},
+                                    {"model_strict": False, "model_substitutions": ["junk"]})
+        self.assertTrue(any(line.endswith("ran on a fallback in the runs that recorded it")
+                            for line in lines), lines)
+        self.assertTrue(any("run2 ran as requested, or its record is unreadable" in line
+                            for line in lines), lines)
         self.assertFalse(any("none ran on a fallback" in line for line in lines))
 
     def test_the_document_carries_the_models_block(self):

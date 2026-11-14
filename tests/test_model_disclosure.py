@@ -122,6 +122,26 @@ class TestAcrossRuns(unittest.TestCase):
         self.assertTrue(got["recorded"])
         self.assertTrue(got["partial"])                 # run1's fallbacks are unknown
 
+    def test_unreadable_records_alone_count_as_recorded(self):
+        # #3633 r2 N9: neither run records strict; one carries only an unreadable record.
+        got = md.compare_models([{"model_substitutions": [5]}, {}])
+        self.assertTrue(got["recorded"])
+        self.assertEqual([1, 0], got["unreadable"])
+
+    def test_a_run_with_dropped_records_is_maybe_not_as_requested(self):
+        # #3633 r2 item 3: its missing entry may be one of the dropped records.
+        got = md.compare_models([{"model_strict": False, "model_substitutions": [SUB]},
+                                 {"model_strict": False, "model_substitutions": ["junk"]}])
+        row = got["entries"][0]
+        self.assertEqual(md.MAYBE_UNREADABLE, row["runs"][1])
+        self.assertFalse(row["same"])
+        self.assertTrue(got["partial"])
+        self.assertEqual("ran as requested, or its record is unreadable",
+                         md.ran_word(md.MAYBE_UNREADABLE))
+        both = md.compare_models([{"model_strict": False, "model_substitutions": [SUB, "junk"]},
+                                  {"model_strict": False, "model_substitutions": [SUB]}])
+        self.assertEqual(_ran(SUB), both["entries"][0]["runs"][0])
+
     def test_fallbacks_without_a_strict_state_still_count_as_recorded(self):
         got = md.compare_models([{"model_substitutions": [SUB]}, {"model_substitutions": [SUB]}])
         self.assertTrue(got["recorded"])
@@ -148,6 +168,8 @@ class TestAcrossRuns(unittest.TestCase):
         self.assertEqual("requested gemini-4-carbon-high, ran gemini-4-argon-high via route key "
                          "(fallback rung 1: not listed on route key)",
                          md.ran_word(ran, with_requested=True, with_route=True))
+        self.assertEqual("as domain_panel, ran gemini-4-argon-high (fallback rung 1: not listed "
+                         "on route key)", md.ran_word(ran, with_role=True))
         self.assertEqual(["ran as requested", "not recorded"],
                          [md.ran_word(md.AS_REQUESTED), md.ran_word(None)])
         self.assertEqual(["", "1 fallback record unreadable", "2 fallback records unreadable",

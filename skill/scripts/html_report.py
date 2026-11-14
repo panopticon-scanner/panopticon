@@ -1068,10 +1068,10 @@ def _render_compare_models(base, head):
     labels = ("Base", "Head")
     if not models["disclose"]:
         return ""
-    head = ("<div class='coverage'>Models differ or fell back: %s</div>" % " &middot; ".join(
+    banner = ("<div class='coverage'>Models differ or fell back: %s</div>" % " &middot; ".join(
         "%s %s" % (label, _escape(model_disclosure.strict_word(s)))
         for label, s in zip(labels, models["strict"])))
-    lines = [head]
+    lines = [banner]
     for label, value in zip(labels, models["unreadable"]):
         if value:
             lines.append("<div class='coverage'>%s: %s</div>"
@@ -1079,7 +1079,8 @@ def _render_compare_models(base, head):
     for row in models["entries"]:
         shared = row["requested"]
         runs = " &middot; ".join("%s %s" % (label, _escape(model_disclosure.ran_word(
-            r, with_requested=not shared, with_route=row["routes_differ"])))
+            r, with_requested=not shared, with_route=row["routes_differ"],
+            with_role=not row["role"])))
             for label, r in zip(labels, row["runs"]))
         lines.append("<div class='coverage'>%s%s: %s%s%s</div>"
                      % (_escape(row["entry"]),

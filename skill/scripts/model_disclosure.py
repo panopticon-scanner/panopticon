@@ -27,6 +27,9 @@ every string they print.
 
 NOT_RECORDED = None          # a run's strict state or substitutions when it recorded neither
 AS_REQUESTED = "as requested"
+# A run that recorded fallbacks but dropped some unreadable records: an entry missing from
+# it may have run as requested, or its record may be one of the dropped ones.
+MAYBE_UNREADABLE = "as requested or unreadable"
 _TEXT = ("entry", "role", "requested", "bound", "route", "reason")
 
 
@@ -79,7 +82,8 @@ def compare_models(metas):
     `strict`: each run's strict state (None: not recorded).
     `entries`: one row per entry that ran on a fallback in ANY run. Per run, what
     that run did: a fallback (its own role, requested, bound, rung, route and
-    reason), "as requested", or None when that run's fallbacks are unknown.
+    reason), "as requested", "as requested or unreadable" when that run dropped
+    unreadable records, or None when that run's fallbacks are unknown.
     `requested` is the one requested model every falling-back run agrees on, else
     None (print it per run). `same`: every run recorded the entry and did the same
     thing (requested, bound and route). `routes_differ`: the falling-back runs used
@@ -88,7 +92,8 @@ def compare_models(metas):
     when its list is malformed.
     `disclose`: the strict states differ (not recorded counts as its own state),
     any run fell back, or any run had unreadable records. `recorded`: whether any
-    run recorded anything. `partial`: some run's fallbacks are unknown."""
+    run recorded anything. `partial`: some run's fallbacks are unknown, wholly or
+    because it dropped unreadable records."""
     runs = [run_models(m) for m in metas]
     strict = [r["strict"] for r in runs]
     by_entry: dict = {}
@@ -103,7 +108,7 @@ def compare_models(metas):
         row = by_entry[entry]
         for i, run in enumerate(runs):
             if row["runs"][i] is None and run["substitutions"] is not NOT_RECORDED:
-                row["runs"][i] = AS_REQUESTED
+                row["runs"][i] = MAYBE_UNREADABLE if run["dropped"] else AS_REQUESTED
         fell_back = [r for r in row["runs"] if isinstance(r, dict)]
         requested = {r["requested"] for r in fell_back}
         roles = {r["role"] for r in fell_back}
@@ -112,7 +117,8 @@ def compare_models(metas):
         row["requested"] = requested.pop() if len(requested) == 1 else None
         row["role"] = roles.pop() if len(roles) == 1 else None
         row["routes_differ"] = len({r["route"] for r in fell_back}) > 1
-        row["same"] = None not in row["runs"] and len(did) == 1
+        row["same"] = (None not in row["runs"] and MAYBE_UNREADABLE not in row["runs"]
+                       and len(did) == 1)
         entries.append(row)
     unreadable = ["all" if r["malformed"] else r["dropped"] for r in runs]
     return {"strict": strict,
@@ -123,7 +129,7 @@ def compare_models(metas):
             "recorded": any(s is not NOT_RECORDED for s in strict)
                         or any(r["substitutions"] or r["malformed"] or r["dropped"]
                                for r in runs),
-            "partial": any(r["substitutions"] is NOT_RECORDED for r in runs)}
+            "partial": any(r["substitutions"] is NOT_RECORDED or r["dropped"] for r in runs)}
 
 
 def strict_word(value):
@@ -131,15 +137,18 @@ def strict_word(value):
     return {True: "fallbacks off (strict)", False: "fallbacks on"}.get(value, "not recorded")
 
 
-def ran_word(value, *, with_requested=False, with_route=False):
+def ran_word(value, *, with_requested=False, with_route=False, with_role=False):
     """How one run's model for an entry reads to an operator. `with_requested` names
     the run's own requested model (the runs disagree on it); `with_route` names the
-    route (the runs used different ones)."""
+    route, and `with_role` the role (the runs used different ones)."""
     if isinstance(value, dict):
-        return "%sran %s%s (fallback rung %d: %s)" % (
+        return "%s%sran %s%s (fallback rung %d: %s)" % (
+            "as %s, " % value["role"] if with_role else "",
             "requested %s, " % value["requested"] if with_requested else "",
             value["bound"], " via route %s" % value["route"] if with_route else "",
             value["rung"], value["reason"])
+    if value == MAYBE_UNREADABLE:
+        return "ran as requested, or its record is unreadable"
     return "ran as requested" if value == AS_REQUESTED else "not recorded"
 
 

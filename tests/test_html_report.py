@@ -1127,14 +1127,16 @@ class TestCompareModelDisclosure(unittest.TestCase):
 
     def test_per_run_requests_and_unreadable_records(self):
         a = dict(self.SUB, requested="gemini-4-argon-high", bound="gemini-3.8-flash-medium")
-        b = dict(self.SUB, requested="gemini-4-carbon-high", bound="gemini-3.8-flash-medium")
+        b = dict(self.SUB, requested="gemini-4-carbon-high", bound="gemini-3.8-flash-medium",
+                 role="domain_advisor")
         out = self._pair({"model_strict": False, "model_substitutions": [a, "junk"]},
                          {"model_strict": False, "model_substitutions": [b]})
         self.assertIn("Base: 1 fallback record unreadable", out)
-        self.assertIn("review-g-SEC (domain_panel): Base requested gemini-4-argon-high, ran "
+        self.assertIn("review-g-SEC: Base as domain_panel, requested gemini-4-argon-high, ran "
                       "gemini-3.8-flash-medium (fallback rung 1: not listed on route key) "
-                      "&middot; Head requested gemini-4-carbon-high, ran gemini-3.8-flash-medium "
-                      "(fallback rung 1: not listed on route key) &mdash; differs", out)
+                      "&middot; Head as domain_advisor, requested gemini-4-carbon-high, ran "
+                      "gemini-3.8-flash-medium (fallback rung 1: not listed on route key) "
+                      "&mdash; differs", out)
 
 
 class TestChartAggregations(unittest.TestCase):

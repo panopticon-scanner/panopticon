@@ -466,7 +466,8 @@ def model_lines(models):
             _text(row["entry"]), " (%s)" % _text(row["role"]) if row["role"] else "",
             "requested %s; " % _text(shared) if shared else "",
             "; ".join("run%d %s" % (i + 1, inert_text(model_disclosure.ran_word(
-                ran, with_requested=not shared, with_route=row["routes_differ"]),
+                ran, with_requested=not shared, with_route=row["routes_differ"],
+                with_role=not row["role"]),
                 limit=MODEL_LIMIT)) for i, ran in enumerate(row["runs"])),
             "" if row["same"] else " -- DIFFERS ACROSS RUNS"))
     return lines
