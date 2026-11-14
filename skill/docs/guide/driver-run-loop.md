@@ -406,9 +406,20 @@ on Claude hooks, and always uses the return-persist path.
   the macOS Keychain** (#3607): panopticon never needs it from a child, so every host's read and
   write tools refuse a path under `Library/Keychains/` or naming a `.keychain`/`.keychain-db` file,
   inside a granted directory, named exactly or reached through a symlink. A repository's own
-  `*.keychain`/`*.keychain-db` files are unreadable to reviewers for the same reason. One gap
-  remains (#3616): a host's own recursive search over an ancestor of a Keychain directory, such
-  as `Grep` over a granted home directory, still walks into it. No host child has a shell
+  `*.keychain`/`*.keychain-db` files are unreadable to reviewers for the same reason. A host's own
+  recursive search walks the tree itself, so the rule also covers ancestors (#3616): arming walks
+  each directory grant once and records its Keychain paths, plus any in-grant link into a Keychain
+  or to an ancestor of one. A directory-level search or listing (Grep, Glob, `grep_search`,
+  `list_dir`, `list_directory`, `find_by_name`, `glob`) whose target, or a wildcard's literal
+  prefix, has one at or under it is denied. Paths are compared by file identity, so a case or
+  Unicode spelling of an ancestor (`library`, an NFD name) is the same directory, as APFS treats
+  it. A walk that hits the cap denies every directory-level search under that grant; a directory
+  the walk could not read denies only searches at, above or below it. Exact file reads are
+  unaffected. This over-blocks a repository that ships its own `Library/Keychains` or a committed
+  `*.keychain` (a Swift or iOS test fixture): directory search over that path and its ancestors
+  is refused, so search a narrower directory beside it, or name files by path. A Keychain or link
+  created after the scope is built is a known residual, as for #2063's link walk. No host child
+  has a shell
   (pinned in `tests/test_guard_rules.py`), so there is no `security` call to refuse. Write
   confinement is
   **per entry, not per batch** (#1571): the allowlist is a version-2 document keyed by entry id —

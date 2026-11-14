@@ -83,7 +83,8 @@ _GUARD_RULES_USED = (
     "ENV_ENTRY_ID", "UNBOUND_ENTRY", "SCOPE_KEYS", "GLOB_PATTERN_DENIAL", "GIT_STORE_DENIAL",
     "ARTIFACT_DIR", "SYMLINKED_COMPONENT", "UNMEASURABLE_COMPONENT", "ESCAPED_ARTIFACT_TREE",
     "PARENT_COMPONENT", "_resolve_path", "_readable", "_in_dir_grant", "_glob_pattern_climbs",
-    "_names_git_store", "_load_scope", "_load_allowlist", "_escaped_component", "_glob_refusal")
+    "_names_git_store", "_load_scope", "_load_allowlist", "_escaped_component", "_glob_refusal",
+    "_keychain_refusal")
 
 # --- GUARD RULES LOADER (#3273 cut 11) ---
 # Byte-identical in the three guard hooks (tests/test_guard_rules.py). Run as a
@@ -165,8 +166,12 @@ def _decide_read(tool_name, tool_input, scope, cwd):
             # #1917: for Glob, the second argument -- the only one of these
             # tools whose pattern is a PATH pattern, expanded against `path`.
             # #2063: and through no symlink out of the grant (guard_rules._glob_refusal).
+            # #3616: and over no Keychain path (guard_rules._keychain_refusal).
             refusal = (guard_rules._glob_refusal(target, tool_input.get("pattern"), scope)
-                       if tool_name == "Glob" else None)
+                       if tool_name == "Glob" else
+                       guard_rules._keychain_refusal("%s over %s" % (tool_name, raw), target,
+                                                     scope)
+                       if tool_name == "Grep" else None)
             return (False, refusal) if refusal else (True, "")
         if tool_name in ("Read", "ReadMediaFile"):
             return False, ("%s of directory %s is outside your cell's scope; the "

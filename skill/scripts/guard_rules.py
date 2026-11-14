@@ -32,6 +32,7 @@ import os
 import shlex
 import stat
 import sys
+import unicodedata
 
 MARKER_PREFIX = "panopticon-entry: "
 # Spec 5.3 (plan 6): the headless runner exports this per subprocess, and it
@@ -170,22 +171,156 @@ GLOB_LINK_DENIAL = ("Glob pattern %r is denied: a symlink under it leads outside
                     "grant -- pass an explicit path instead of a wildcard")
 
 
-def grant_escapes(dirs, cap=ESCAPE_WALK_CAP):
-    """{grant: sorted in-grant symlinks leaving it, or None past `cap` entries}; never follows a
-    link or walks the `.git` store no grant covers."""
-    out: dict[str, list[str] | None] = {}
+# #3616: the Keychain rule (#3607) is checked on the path a call NAMES, so a recursive search
+# over an ANCESTOR of a Keychain directory -- a granted home -- let the host CLI walk into it
+# itself. The same walk records each grant's Keychain paths (and in-grant links into one), and a
+# directory-level search or listing with one at or under its target is denied. Compared by FILE
+# IDENTITY, never by string: APFS opens `library` or an NFD spelling as `Library`. A capped walk
+# denies the whole grant; a directory the walk could not read denies only searches on its line
+# (at, above or below it). A Keychain or link created after the scope is built is a residual,
+# as for #2063. Exact file reads are untouched.
+KEYCHAINS_KEY, UNWALKED_KEY = "keychains", "unwalked"
+KEYCHAIN_SEARCH_DENIAL = ("%s is denied: a macOS Keychain path lies under %s, and no grant covers "
+                          "the Keychain -- search a narrower directory, or name files by path")
+KEYCHAIN_WALK_DENIAL = ("%s is denied: the walk that records the Keychain paths under directory "
+                        "grant %s was capped or is missing -- name files by path")
+UNWALKED_DENIAL = ("%s is denied: %s could not be read when the scope was armed, so what lies "
+                   "under it is unknown -- search a directory beside it, or name files by path")
+
+
+def _fold(path):
+    """A path as APFS compares names: NFC, case-folded."""
+    return unicodedata.normalize("NFC", path).casefold()
+
+
+def _keychain_homes():
+    """The Keychain directories outside any grant a link may lead toward, as STRINGS: the
+    system one and the user's. Never stat'd -- panopticon does not touch the Keychain."""
+    homes = [os.path.join(os.sep, "Library", "Keychains")]
+    try:
+        home = os.path.realpath(os.path.expanduser("~"))
+    except (OSError, ValueError):
+        return homes
+    return homes + ([os.path.join(home, "Library", "Keychains")] if os.path.isabs(home) else [])
+
+
+def grant_walk(dirs, cap=ESCAPE_WALK_CAP):
+    """(escapes, keychains, unwalked), each {grant: sorted paths, or None when the walk passed
+    `cap` entries}. One walk per grant; never follows a link, walks the `.git` store no grant
+    covers, or descends into a Keychain directory.
+
+    escapes (#2063): in-grant symlinks leaving the grant. keychains (#3616): Keychain paths under
+    the grant, and in-grant links whose target names a Keychain or lies at or above one (an
+    in-grant Keychain, or the system's or the user's, by string). unwalked (#3616): directories
+    the walk could not read."""
+    escapes: dict[str, list[str] | None] = {}
+    keychains: dict[str, list[str] | None] = {}
+    unwalked: dict[str, list[str] | None] = {}
     for grant in dirs:
-        found, seen = [], 0
-        for root, subdirs, files in os.walk(grant, followlinks=False):
+        links: list[str] = []
+        found: list[str] = []
+        failed: list[str] = []
+        pointing: list[tuple[str, str]] = []
+        seen = 0
+
+        def note(exc, failed=failed, grant=grant):
+            failed.append(os.path.abspath(getattr(exc, "filename", None) or grant))
+
+        for root, subdirs, files in os.walk(grant, followlinks=False, onerror=note):
             subdirs[:] = [d for d in subdirs if root != grant or d.casefold() != ".git"]
             seen += len(subdirs) + len(files)
             if seen > cap:
                 break
-            found += [os.path.join(root, n) for n in subdirs + files
-                      if os.path.islink(os.path.join(root, n))
-                      and not _under(os.path.realpath(os.path.join(root, n)), grant)]
-        out[grant] = None if seen > cap else sorted(found)
-    return out
+            for name in subdirs + files:
+                path = os.path.join(root, name)
+                if not os.path.islink(path):
+                    if _names_keychain(path):
+                        found.append(path)
+                    continue
+                real = os.path.realpath(path)
+                if not _under(real, grant):
+                    links.append(path)
+                if _names_keychain(path) or _names_keychain(real):
+                    found.append(path)
+                else:
+                    pointing.append((path, real))
+            subdirs[:] = [d for d in subdirs if not _names_keychain(os.path.join(root, d))]
+        if seen > cap:
+            escapes[grant] = keychains[grant] = unwalked[grant] = None
+            continue
+        if pointing:
+            # Only now, and only for links: the homes are string math, never a Keychain stat.
+            targets = [_fold(p) for p in found] + [_fold(p) for p in _keychain_homes()]
+            found += [path for path, real in pointing
+                      if any(_under(t, _fold(real)) for t in targets)]
+        escapes[grant] = sorted(links)
+        keychains[grant] = sorted(found)
+        unwalked[grant] = sorted(set(failed))
+    return escapes, keychains, unwalked
+
+
+def grant_escapes(dirs, cap=ESCAPE_WALK_CAP):
+    """{grant: sorted in-grant symlinks leaving it, or None}: `grant_walk`'s first part."""
+    return grant_walk(dirs, cap)[0]
+
+
+def _chain(grant, path):
+    """`grant`, then every directory from it down to `path` inclusive."""
+    rest = [p for p in path[len(grant.rstrip(os.sep)):].split(os.sep) if p]
+    return [os.path.join(grant, *rest[:i]) for i in range(len(rest) + 1)]
+
+
+def _same(a_stat, path):
+    try:
+        return os.path.samestat(a_stat, os.stat(path))
+    except (OSError, ValueError):
+        return False
+
+
+def _on_line(target, path, grant, below=False):
+    """True when `path` lies under directory `target` -- or, with `below`, when it is `target`
+    or `target` lies under it -- by FILE IDENTITY, never by string (#3616: a case or NFD
+    spelling of an ancestor is the same directory on APFS). `path` is a walk record under
+    `grant`. A Keychain record itself is never stat'd: only the directories above it are, and
+    a Keychain named directly is refused by name already (`_in_dir_grant`)."""
+    try:
+        target_stat = os.stat(target)
+    except (OSError, ValueError):
+        return False                # nothing there to search
+    # Only the directories ABOVE the record: `below` reaches the record itself from the other
+    # side, through `target`'s own chain.
+    if any(_same(target_stat, step) for step in _chain(grant, path)[:-1]):
+        return True
+    if below:
+        try:
+            path_stat = os.stat(path)
+        except (OSError, ValueError):
+            return False
+        return any(_same(path_stat, step) for step in _chain(grant, target))
+    return False
+
+
+def _walk_record(scope, key):
+    return scope.get(key) if isinstance(scope.get(key), dict) else {}
+
+
+def _keychain_refusal(subject, target, scope):
+    """The denial for a directory-level search or listing (`subject`, e.g. "Grep over /x") of
+    directory `target`, or None (#3616): a grant covering it whose walk is unknown, a recorded
+    Keychain path at or under it, or a directory the walk could not read on its line."""
+    keychains, unwalked = _walk_record(scope, KEYCHAINS_KEY), _walk_record(scope, UNWALKED_KEY)
+    for grant in scope["dirs"]:
+        if not _in_dir_grant(target, grant):
+            continue
+        found, failed = keychains.get(grant), unwalked.get(grant)
+        if found is None or failed is None:
+            return KEYCHAIN_WALK_DENIAL % (subject, grant)
+        if any(_on_line(target, path, grant) for path in found):
+            return KEYCHAIN_SEARCH_DENIAL % (subject, target)
+        bad = next((path for path in failed if _on_line(target, path, grant, below=True)), None)
+        if bad is not None:
+            return UNWALKED_DENIAL % (subject, bad)
+    return None
 
 
 def _glob_refusal(target, pattern, scope):
@@ -212,7 +347,8 @@ def _glob_refusal(target, pattern, scope):
         links = escapes.get(grant)
         if links is None or any(_under(link, base) for link in links):
             return GLOB_LINK_DENIAL % (pattern,)
-    return None
+    # #3616: a wildcard lists names under its literal prefix, Keychain files included.
+    return _keychain_refusal("Glob pattern %r" % (pattern,), base, scope)
 
 
 def scope_paths_ok(val):
@@ -242,11 +378,12 @@ def _load_scope(scope_path):
             if not scope_paths_ok(val):
                 return None, "read guard scope is malformed"
             entry[k] = [p for p in (val or []) if isinstance(p, str)]
-        # #2063: {grant: [link, ...] | None}; anything else reads as no walk (wildcards denied).
-        raw = scope.get(ESCAPES_KEY)
-        entry[ESCAPES_KEY] = ({g: ([p for p in v if isinstance(p, str)] if isinstance(v, list)
-                                   else None) for g, v in raw.items() if isinstance(g, str)}
-                              if isinstance(raw, dict) else {})
+        # #2063/#3616: {grant: [path, ...] | None}; anything else reads as no walk (denied).
+        for key in (ESCAPES_KEY, KEYCHAINS_KEY, UNWALKED_KEY):
+            raw = scope.get(key)
+            entry[key] = ({g: ([p for p in v if isinstance(p, str)] if isinstance(v, list)
+                               else None) for g, v in raw.items() if isinstance(g, str)}
+                          if isinstance(raw, dict) else {})
         out[eid] = entry
     return out, ""
 
