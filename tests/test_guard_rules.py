@@ -635,7 +635,7 @@ class TestASearchOverAKeychainAncestorIsDenied(_KeychainTree):
     def test_a_glob_is_judged_on_its_literal_prefix(self):
         env = dict(self.ENV)
         for pattern, allowed in (("src/*", True), ("src/a.py", True), ("notes.txt", True),
-                                 ("missing/*", True),           # nothing there to list
+                                 ("missing/*", False),          # #3636: unmeasurable = denied
                                  ("*", False), ("deep/**", False)):
             with self.subTest(pattern=pattern):
                 allow, reason = rg.adjudicate(
@@ -804,6 +804,74 @@ class TestTheKeychainRuleHoldsAgainstSpellingsLinksAndUnreadableDirs(_KeychainTr
             for tool, call in self._dir_tools(path, self.scope):
                 with mock.patch.object(guard_rules.os, "stat", spy):
                     call()
+        self.assertTrue(statted)
+        self.assertEqual([], [p for p in statted if guard_rules._names_keychain(p)])
+
+    def test_a_target_the_refusal_cannot_measure_is_denied(self):
+        # #3636: fail closed on its own, not because every hook happens to gate on isdir first.
+        gone = os.path.join(self.home, "gone")
+        scope = {"dirs": [self.home], "keychains": {self.home: [self.kdir]},
+                 "unwalked": {self.home: []}}
+        self.assertTrue(guard_rules._on_line(gone, self.kdir, self.home))
+        reason = guard_rules._keychain_refusal("Grep over %s" % gone, gone, scope)
+        self.assertIn(self.SEARCH, reason)
+        clean = {"dirs": [self.home], "keychains": {self.home: []}, "unwalked": {self.home: []}}
+        self.assertIsNone(guard_rules._keychain_refusal("Grep over %s" % gone, gone, clean))
+
+    def _firm(self, path):
+        """`path` under macOS's firmlink spelling, when this volume has one for it."""
+        firm = "/System/Volumes/Data" + path
+        if os.path.isdir(firm) and os.path.samefile(firm, path):
+            return firm
+        self.skipTest("no /System/Volumes/Data firmlink spelling on this volume")
+
+    def test_a_link_to_a_keychain_ancestor_under_a_firmlink_spelling_is_recorded(self):
+        # #3636: realpath keeps `/System/Volumes/Data/...`, which no string fold maps back, so
+        # the link check compares by identity against the directories above each Keychain.
+        user = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, user, True)
+        os.makedirs(os.path.join(user, "Library"))
+        to_home = os.path.join(self.deep, "firm")
+        os.symlink(self._firm(user), to_home)
+        to_library = os.path.join(self.deep, "firmlib")
+        os.symlink(self._firm(os.path.join(user, "Library")), to_library)
+        to_grant = os.path.join(self.clean, "firmup")
+        os.symlink(self._firm(self.home), to_grant)
+        for link in (to_home, to_library, to_grant):
+            self.assertTrue(os.path.realpath(link).startswith("/System/Volumes/Data/"))
+        with mock.patch.dict(os.environ, {"HOME": user}):
+            keychains = guard_rules.grant_walk([self.home])[1][self.home]
+            scope = self._arm(rg.scope_from_plan([{"id": "e1", "scope": {
+                "files": [], "dirs": [self.home], "reads": []}}]))
+        for link in (to_home, to_library, to_grant):
+            self.assertIn(link, keychains)
+        for tool, call in self._dir_tools(self.clean, scope):
+            with self.subTest(tool=tool):
+                allow, reason = call()
+                self.assertFalse(allow)
+                if "Glob" in tool or "glob" in tool:
+                    continue            # #2063 denies first: the firmlink spelling reads as leaving
+                self.assertIn(self.SEARCH, reason)
+
+    def test_the_arm_time_identity_check_never_stats_a_keychain_path(self):
+        user = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, user, True)
+        os.makedirs(os.path.join(user, "Library", "Keychains"))
+        os.symlink(user, os.path.join(self.deep, "home"))
+        os.symlink(self.outside, os.path.join(self.deep, "plain"))
+        # A dangling link leads nowhere a walker could follow: never recorded (#3636 F7).
+        dangling = os.path.join(self.clean, "dangling")
+        os.symlink(os.path.join(self.outside, "nowhere"), dangling)
+        real_stat, statted = os.stat, []
+
+        def spy(path, *a, **k):
+            statted.append(os.fspath(path))
+            return real_stat(path, *a, **k)
+        with mock.patch.dict(os.environ, {"HOME": user}), \
+                mock.patch.object(guard_rules.os, "stat", spy):
+            keychains = guard_rules.grant_walk([self.home])[1][self.home]
+        self.assertNotIn(dangling, keychains)
+        self.assertIn(os.path.join(self.deep, "home"), keychains)
         self.assertTrue(statted)
         self.assertEqual([], [p for p in statted if guard_rules._names_keychain(p)])
 
