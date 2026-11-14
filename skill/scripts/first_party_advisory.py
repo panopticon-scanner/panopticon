@@ -454,8 +454,7 @@ def _npm_manifest_fact(package_dir, target_root, cache: IngestCache):
     the public registry is private-only, like a Cargo publish list without
     crates-io. Anything malformed is None."""
     real_dir = os.path.realpath(package_dir)
-    if not _inside(target_root, real_dir):
-        return None
+    # _read_json confines the realpath to the review root, cache hits included.
     document = _read_json(os.path.join(real_dir, "package.json"), MAX_NPM_MANIFEST_BYTES,
                           target_root, cache)
     if document is None:

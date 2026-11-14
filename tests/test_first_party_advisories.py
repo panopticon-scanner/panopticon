@@ -865,6 +865,8 @@ class TestNpmFirstPartyAdvisory(unittest.TestCase):
 
     def test_malformed_manifest_fields_fail_closed(self):
         for member in ({"name": NPM_MEMBER[0], "version": NPM_MEMBER[1], "private": "no"},
+                       {"name": NPM_MEMBER[0], "version": NPM_MEMBER[1], "private": 0},
+                       {"name": NPM_MEMBER[0], "version": NPM_MEMBER[1], "private": None},
                        {"name": NPM_MEMBER[0], "version": NPM_MEMBER[1], "publishConfig": 1},
                        {"name": NPM_MEMBER[0], "version": NPM_MEMBER[1],
                         "publishConfig": {"registry": 5}},
@@ -917,6 +919,39 @@ class TestNpmFirstPartyAdvisory(unittest.TestCase):
                     entry["name"] = NPM_MEMBER[0]       # an aliased install, named in the lock
                 _npm_tree(self.root, lock=_npm_lock(**{key: entry}))
                 self.assertIsNone(self._origin(NPM_MEMBER))
+
+    def test_a_nested_registry_install_of_another_package_changes_nothing(self):
+        _npm_tree(self.root, lock=_npm_lock(**{
+            "node_modules/other/node_modules/@acme/util": {
+                "version": "9.9.9", "resolved": "https://registry.npmjs.org/x"}}))
+        self.assertEqual("first_party", self._origin(NPM_MEMBER))
+
+    def test_a_root_entry_without_a_name_takes_the_locks_name(self):
+        lock = _npm_lock(**{"": {"version": NPM_ROOT[1]}})
+        _npm_tree(self.root, lock=lock)
+        self.assertEqual("first_party", self._origin(NPM_ROOT))
+
+    def test_a_cached_manifest_cannot_bypass_confinement(self):
+        # One cache, two roots, two locks: `lib/package.json`, read in-tree under the wider
+        # root, must not be reused once the narrower review root does not contain it.
+        _write_json(os.path.join(self.root, "lib", "package.json"),
+                    {"name": NPM_MEMBER[0], "version": NPM_MEMBER[1]})
+        wide_lock = _npm_lock(**{"packages/lib": None, "node_modules/@acme/lib": None,
+                                 "lib": {"name": NPM_MEMBER[0], "version": NPM_MEMBER[1]},
+                                 "node_modules/lib": {"resolved": "lib", "link": True}})
+        _npm_tree(self.root, lock=wide_lock, member=False)
+        app = os.path.join(self.root, "app")
+        narrow_lock = _npm_lock(**{"packages/lib": None, "node_modules/@acme/lib": None,
+                                   "../lib": {"name": NPM_MEMBER[0], "version": NPM_MEMBER[1]},
+                                   "node_modules/lib": {"resolved": "../lib", "link": True}})
+        _npm_tree(app, lock=narrow_lock, member=False)
+        cache = first_party_advisory.IngestCache()
+        self.assertEqual("first_party", self._origin(NPM_MEMBER, cache=cache))
+        self.assertIn(os.path.join(self.root, "lib", "package.json"), cache.manifests)
+        narrow = _raw_advisory_finding(path="package-lock.json", package=NPM_MEMBER[0],
+                                       version=NPM_MEMBER[1])
+        first_party_advisory.mark([narrow], app, cache)
+        self.assertNotIn("package_origin", narrow["tool_evidence"])
 
     def test_a_malformed_or_old_lock_classifies_nothing(self):
         locks = {
