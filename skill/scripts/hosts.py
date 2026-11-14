@@ -208,7 +208,7 @@ Surface = namedtuple("Surface", "pattern kind control cell")
 #          which lists one or several (`CLAUDE.md`, `**/CLAUDE.md`) under ONE
 #          cell id. One `*` segment means "any single directory name"; `**`,
 #          at the head or at the tail, means "at any depth" (bounded by
-#          probes/common's DEPTH_CAP / ENTRY_CAP).
+#          probes/surface's ENTRY_CAP, and by nothing else: #3645).
 # kind:    OPEN       -- nothing in the launch closes it; a hit REFUTES
 #          CONTROLLED -- a launch control closes it; a hit is DISCLOSED
 # control: for CONTROLLED, the id of the control (probes/common.CONTROLS);
