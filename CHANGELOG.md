@@ -51,9 +51,10 @@
 
 - **First-party Cargo advisory discovery now shares manifest parses and caps ingest reads
   (#3624).** One parsed-manifest cache, keyed by each confined real path, is shared across every
-  Cargo.lock in an ingest. Manifest reads have a named 48 MiB total budget; exhausting it leaves
-  the triggering and every still-unresolved finding on the advisor path, while findings already
-  proved first-party keep their result. Existing per-manifest bounds and fail-closed parsing,
+  Cargo.lock in an ingest. Cargo.lock and manifest reads share a named 48 MiB total budget;
+  exhausting it leaves every new graph walk on the advisor path while safely reusing any complete
+  lock-origin result already cached. The triggering tool disposition counts the exhaustion so the
+  operator can see why classification stopped. Existing per-file bounds and fail-closed parsing,
   confinement, publishability, and per-finding isolation remain unchanged.
 
 - **First-party Cargo advisories no longer depend on a third-party-usage verdict (#3593).**

@@ -39,11 +39,12 @@ ManifestCache = dict[str, ManifestDocument | None]
 class IngestCache:
     """Cargo advisory facts and bounded manifest parses for one ingest."""
 
-    def __init__(self):
+    def __init__(self) -> None:
         self.package_origins: OriginCache = {}
         self.manifests: ManifestCache = {}
         self.manifest_bytes_remaining = MAX_CARGO_MANIFEST_INGEST_BYTES
         self.manifest_budget_exhausted = False
+        self.budget_exhaustion_count = 0
 
 
 def _cargo_lock_path(target_root, finding):
@@ -60,7 +61,7 @@ def _cargo_lock_path(target_root, finding):
     if (not rel or rel.startswith("/") or os.path.basename(rel) != "Cargo.lock"
             or any(part in ("", ".", "..") for part in rel.split("/"))):
         return None
-    root = os.path.realpath(target_root)
+    root = target_root
     candidate = os.path.realpath(os.path.join(root, *rel.split("/")))
     try:
         if os.path.commonpath((root, candidate)) != root:
@@ -81,40 +82,52 @@ def _manifest_path(target_root, base, package_dir):
     """A Cargo.toml below *target_root*, resolved from one manifest path."""
     if not isinstance(package_dir, str) or not package_dir or os.path.isabs(package_dir):
         return None
-    root = os.path.realpath(target_root)
+    root = target_root
     candidate = os.path.realpath(os.path.join(base, package_dir, "Cargo.toml"))
     return candidate if _inside(root, candidate) else None
 
 
+def _read_budgeted_bytes(path, file_limit, cache: IngestCache):
+    """Read one file while charging the shared advisory-ingest byte budget."""
+    if cache.manifest_budget_exhausted or cache.manifest_bytes_remaining <= 0:
+        cache.manifest_bytes_remaining = 0
+        cache.manifest_budget_exhausted = True
+        cache.budget_exhaustion_count += 1
+        return None
+
+    limit = min(file_limit, cache.manifest_bytes_remaining)
+    try:
+        raw = safe_write.read_regular_bytes(path, limit)
+    except safe_write.ReadLimitExceeded:
+        cache.manifest_bytes_remaining -= limit
+        if cache.manifest_bytes_remaining == 0:
+            cache.manifest_budget_exhausted = True
+            cache.budget_exhaustion_count += 1
+        return None
+    except OSError:
+        return None
+
+    cache.manifest_bytes_remaining -= len(raw)
+    if cache.manifest_bytes_remaining == 0:
+        cache.manifest_budget_exhausted = True
+    return raw
+
+
 def _read_toml(path, target_root, cache: IngestCache):
     """Return one confined, cached TOML document within the ingest budget."""
-    root = os.path.realpath(target_root)
+    root = target_root
     real_path = os.path.realpath(path)
     if not _inside(root, real_path):
         return None
     if real_path in cache.manifests:
         return cache.manifests[real_path]
-    if cache.manifest_budget_exhausted or cache.manifest_bytes_remaining <= 0:
-        cache.manifest_bytes_remaining = 0
-        cache.manifest_budget_exhausted = True
-        return None
-
-    limit = min(MAX_CARGO_MANIFEST_BYTES, cache.manifest_bytes_remaining)
-    try:
-        raw = safe_write.read_regular_bytes(real_path, limit)
-        cache.manifest_bytes_remaining -= len(raw)
-        if cache.manifest_bytes_remaining == 0:
-            cache.manifest_budget_exhausted = True
-        document = tomllib.loads(raw.decode("utf-8"))
-    except safe_write.ReadLimitExceeded:
-        # The bounded reader consumed enough bytes to prove that this document
-        # cannot fit in the remaining per-file or per-ingest allowance.
-        cache.manifest_bytes_remaining -= limit
-        if cache.manifest_bytes_remaining == 0:
-            cache.manifest_budget_exhausted = True
+    raw = _read_budgeted_bytes(real_path, MAX_CARGO_MANIFEST_BYTES, cache)
+    if raw is None:
         cache.manifests[real_path] = None
         return None
-    except (OSError, UnicodeError, ValueError, RecursionError):
+    try:
+        document = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError, RecursionError):
         cache.manifests[real_path] = None
         return None
     cached = document if isinstance(document, dict) else None
@@ -141,7 +154,7 @@ def _expand_member_pattern(workspace_dir, pattern, target_root):
             expanded = []
             for directory in candidates:
                 real_dir = os.path.realpath(directory)
-                if not _inside(os.path.realpath(target_root), real_dir):
+                if not _inside(target_root, real_dir):
                     raise ValueError("Cargo workspace member escapes target")
                 try:
                     entries = sorted(os.scandir(real_dir), key=lambda entry: entry.name)
@@ -335,10 +348,13 @@ def _cargo_package_origins(path, target_root, cache: IngestCache):
     if path in cache.package_origins:
         return cache.package_origins[path]
     origins: PackageOrigins = {}
+    raw = _read_budgeted_bytes(path, MAX_CARGO_LOCK_BYTES, cache)
+    if raw is None:
+        cache.package_origins[path] = origins
+        return origins
     try:
-        raw = safe_write.read_regular_bytes(path, MAX_CARGO_LOCK_BYTES)
         document = tomllib.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeError, ValueError, RecursionError):
+    except (UnicodeError, ValueError, RecursionError):
         cache.package_origins[path] = origins
         return origins
     packages = document.get("package") if isinstance(document, dict) else None
@@ -396,6 +412,7 @@ def mark(findings, target_root, cache: IngestCache):
         return
     if not target_root:
         return
+    target_root = os.path.realpath(target_root)
     for finding in findings:
         try:
             _mark_finding(finding, target_root, cache)
@@ -405,8 +422,6 @@ def mark(findings, target_root, cache: IngestCache):
 
 def _mark_finding(finding, target_root, cache):
     """Classify one finding; the public loop owns fail-closed isolation."""
-    if cache.manifest_budget_exhausted:
-        return
     tool = evidence.tool_name(finding)
     if tool not in ADVISORY_ADAPTERS and tool != "trivy":
         return

@@ -456,6 +456,26 @@ class TestCargoFirstPartyAdvisoryIngest(unittest.TestCase):
             root, "osv-scanner.json", _osv_document())[0]
         self.assertNotIn("package_origin", finding["tool_evidence"])
 
+    def test_cached_toml_cannot_bypass_real_path_confinement(self):
+        parent = tempfile.TemporaryDirectory()
+        self.addCleanup(parent.cleanup)
+        root = os.path.join(parent.name, "target")
+        outside = os.path.join(parent.name, "outside")
+        os.mkdir(root)
+        os.mkdir(outside)
+        _write_manifest(outside)
+        outside_manifest = os.path.realpath(
+            os.path.join(outside, "Cargo.toml"))
+        cache = first_party_advisory.IngestCache()
+        cache.manifests[outside_manifest] = {
+            "package": {"name": WORKSPACE_NAME, "version": WORKSPACE_VERSION},
+        }
+        remaining = cache.manifest_bytes_remaining
+
+        self.assertIsNone(first_party_advisory._read_toml(
+            outside_manifest, root, cache))
+        self.assertEqual(cache.manifest_bytes_remaining, remaining)
+
     def test_ingest_manifest_budget_is_exactly_48_mib(self):
         self.assertEqual(
             first_party_advisory.MAX_CARGO_MANIFEST_INGEST_BYTES,
@@ -510,43 +530,195 @@ class TestCargoFirstPartyAdvisoryIngest(unittest.TestCase):
         self.assertEqual(reads.count(os.path.realpath(
             os.path.join(shared, "Cargo.toml"))), 1)
 
-    def test_manifest_budget_exhaustion_keeps_every_unresolved_finding_advisory(self):
+    def test_budget_charges_two_complete_graphs_before_refusing_the_third(self):
         root = tempfile.TemporaryDirectory()
         self.addCleanup(root.cleanup)
-        decided_root = os.path.join(root.name, "decided")
-        exhausted_root = os.path.join(root.name, "exhausted")
-        os.mkdir(decided_root)
-        os.mkdir(exhausted_root)
-        _write_lock(decided_root)
-        _write_lock(exhausted_root)
-        decided_manifest = (
+        manifest = (
             '[package]\nname = "workspace-app"\nversion = "1.2.3"\n'
         )
-        _write_manifest(decided_root, decided_manifest)
-        _write_manifest(exhausted_root, decided_manifest + "# padding\n")
+        findings = []
+        lock_sizes = []
+        for index, project in enumerate(("one", "two", "three"), 1):
+            project_root = os.path.join(root.name, project)
+            os.mkdir(project_root)
+            _write_lock(project_root)
+            _write_manifest(project_root, manifest)
+            lock_sizes.append(os.path.getsize(
+                os.path.join(project_root, "Cargo.lock")))
+            finding = _raw_advisory_finding(
+                path="%s/Cargo.lock" % project)
+            finding["id"] = "OS-%03d" % index
+            findings.append(finding)
 
-        decided = _raw_advisory_finding(path="decided/Cargo.lock")
-        exhausted = _raw_advisory_finding(path="exhausted/Cargo.lock")
-        exhausted["id"] = "OS-002"
-        unresolved_cache_hit = _raw_advisory_finding(path="decided/Cargo.lock")
-        unresolved_cache_hit["id"] = "OS-003"
-        budget = len(decided_manifest.encode("utf-8")) + 1
+        manifest_size = len(manifest.encode("utf-8"))
+        budget = sum(lock_sizes) + 2 * manifest_size + 1
         with mock.patch.object(
                 first_party_advisory,
                 "MAX_CARGO_MANIFEST_INGEST_BYTES", budget):
             cache = first_party_advisory.IngestCache()
-            first_party_advisory.mark([decided], root.name, cache)
-            first_party_advisory.mark([exhausted], root.name, cache)
-            first_party_advisory.mark(
-                [unresolved_cache_hit], root.name, cache)
+            first_party_advisory.mark([findings[0]], root.name, cache)
+            self.assertEqual(
+                cache.manifest_bytes_remaining,
+                budget - lock_sizes[0] - manifest_size,
+            )
+            first_party_advisory.mark([findings[1]], root.name, cache)
+            self.assertEqual(
+                cache.manifest_bytes_remaining,
+                budget - sum(lock_sizes[:2]) - 2 * manifest_size,
+            )
+            first_party_advisory.mark([findings[2]], root.name, cache)
 
         self.assertEqual(
-            decided["tool_evidence"].get("package_origin"), "first_party")
-        self.assertNotIn("package_origin", exhausted["tool_evidence"])
-        self.assertNotIn(
-            "package_origin", unresolved_cache_hit["tool_evidence"])
+            [finding["tool_evidence"].get("package_origin")
+             for finding in findings],
+            ["first_party", "first_party", None],
+        )
         self.assertTrue(cache.manifest_budget_exhausted)
         self.assertEqual(cache.manifest_bytes_remaining, 0)
+
+    def test_exact_root_budget_refuses_an_unread_private_redeclaration(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        _write_lock(root.name)
+        root_manifest = (
+            '[package]\nname = "workspace-app"\nversion = "1.2.3"\n'
+            '[dependencies.private]\npath = "private"\n'
+        )
+        _write_manifest(root.name, root_manifest)
+        private = os.path.join(root.name, "private")
+        os.mkdir(private)
+        _write_manifest(private, (
+            '[package]\nname = "workspace-app"\nversion = "1.2.3"\n'
+            'publish = false\n'
+        ))
+        budget = (
+            os.path.getsize(os.path.join(root.name, "Cargo.lock"))
+            + len(root_manifest.encode("utf-8"))
+        )
+        finding = _raw_advisory_finding()
+
+        with mock.patch.object(
+                first_party_advisory,
+                "MAX_CARGO_MANIFEST_INGEST_BYTES", budget):
+            cache = first_party_advisory.IngestCache()
+            first_party_advisory.mark([finding], root.name, cache)
+
+        self.assertNotIn("package_origin", finding["tool_evidence"])
+        self.assertTrue(cache.manifest_budget_exhausted)
+        self.assertEqual(cache.manifest_bytes_remaining, 0)
+
+    def test_completed_lock_origins_are_reused_after_exact_exhaustion(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        _write_lock(root.name)
+        manifest = (
+            '[package]\nname = "workspace-app"\nversion = "1.2.3"\n'
+        )
+        _write_manifest(root.name, manifest)
+        first = _raw_advisory_finding()
+        second = _raw_advisory_finding(source="tool:trivy")
+        second["id"] = "TR-002"
+        budget = (
+            os.path.getsize(os.path.join(root.name, "Cargo.lock"))
+            + len(manifest.encode("utf-8"))
+        )
+
+        with mock.patch.object(
+                first_party_advisory,
+                "MAX_CARGO_MANIFEST_INGEST_BYTES", budget):
+            cache = first_party_advisory.IngestCache()
+            first_party_advisory.mark([first, second], root.name, cache)
+
+        self.assertTrue(cache.manifest_budget_exhausted)
+        self.assertEqual(
+            [finding["tool_evidence"].get("package_origin")
+             for finding in (first, second)],
+            ["first_party", "first_party"],
+        )
+
+    def test_cargo_lock_bytes_spend_the_shared_ingest_budget(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        _write_lock(root.name)
+        _write_manifest(root.name)
+        lock_size = os.path.getsize(os.path.join(root.name, "Cargo.lock"))
+        finding = _raw_advisory_finding()
+
+        with mock.patch.object(
+                first_party_advisory,
+                "MAX_CARGO_MANIFEST_INGEST_BYTES", lock_size):
+            cache = first_party_advisory.IngestCache()
+            first_party_advisory.mark([finding], root.name, cache)
+
+        self.assertNotIn("package_origin", finding["tool_evidence"])
+        self.assertEqual(cache.manifests, {
+            os.path.realpath(os.path.join(root.name, "Cargo.toml")): None,
+        })
+        self.assertTrue(cache.manifest_budget_exhausted)
+        self.assertEqual(cache.manifest_bytes_remaining, 0)
+
+    def test_each_ingest_gets_a_fresh_budget_and_reports_exhaustion(self):
+        first_root = tempfile.TemporaryDirectory()
+        second_root = tempfile.TemporaryDirectory()
+        self.addCleanup(first_root.cleanup)
+        self.addCleanup(second_root.cleanup)
+        _write_lock(first_root.name)
+        _write_lock(second_root.name)
+        first_manifest = (
+            '[package]\nname = "workspace-app"\nversion = "1.2.3"\n'
+            '[dependencies.private]\npath = "private"\n'
+        )
+        _write_manifest(first_root.name, first_manifest)
+        private = os.path.join(first_root.name, "private")
+        os.mkdir(private)
+        _write_manifest(private, (
+            '[package]\nname = "workspace-app"\nversion = "1.2.3"\n'
+            'publish = false\n'
+        ))
+        _write_manifest(second_root.name)
+
+        def tools_output(root):
+            tools = os.path.join(root, "tools")
+            os.mkdir(tools)
+            document = {"results": [{
+                "source": {"path": "/src/Cargo.lock"},
+                "packages": [_osv_package(
+                    WORKSPACE_NAME, WORKSPACE_VERSION, "RUSTSEC-2099-0001")],
+            }]}
+            with open(os.path.join(tools, "osv-scanner.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump(document, fh)
+            return tools
+
+        first_tools = tools_output(first_root.name)
+        second_tools = tools_output(second_root.name)
+        budget = (
+            os.path.getsize(os.path.join(first_root.name, "Cargo.lock"))
+            + len(first_manifest.encode("utf-8"))
+        )
+        with mock.patch.object(
+                first_party_advisory,
+                "MAX_CARGO_MANIFEST_INGEST_BYTES", budget):
+            first_findings, first_dispositions = ingest_tools.ingest_dir_detailed(
+                first_tools, "g1", target_root=first_root.name)
+            second_findings, second_dispositions = ingest_tools.ingest_dir_detailed(
+                second_tools, "g1", target_root=second_root.name)
+
+        self.assertNotIn(
+            "package_origin", first_findings[0]["tool_evidence"])
+        self.assertEqual(
+            first_dispositions["osv-scanner"].get(
+                "advisory_manifest_budget_exhausted"),
+            1,
+        )
+        self.assertEqual(
+            second_findings[0]["tool_evidence"].get("package_origin"),
+            "first_party",
+        )
+        self.assertNotIn(
+            "advisory_manifest_budget_exhausted",
+            second_dispositions["osv-scanner"],
+        )
 
     def test_one_classification_error_does_not_drop_later_findings(self):
         root = tempfile.TemporaryDirectory()
