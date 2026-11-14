@@ -11,6 +11,12 @@
   advisor-confirmed under every gate policy, so an unconfirmed finding never caps. Per-group
   panel grades were already the max-severity rollup of each group's own findings.
 
+- **The instruction-file walk re-checks a directory for a link before descending it (#3645
+  follow-up).** The entry-capped walk decided "real directory" when it listed the parent and
+  descended later, so a directory swapped for a symlink in between was followed. It is now asked
+  again at the moment of descent, as the previous `os.walk`-based walk did, and a link is left
+  listed and not descended. The entry cap's exact boundary and its mid-tree stop are pinned.
+
 - **A glob may name a bracketed directory with fnmatch's escapes (#3644).** Setup on a
   Next.js-style target proposed `users/[[]id]/route.ts` for a `[id]` route directory, and
   the glob compiler refused every `[`, so the whole proposal was rejected. `[[]` (a literal
@@ -19,6 +25,17 @@
   claim exactly the bracketed path. Every other `[` is still a refused character class.
   The setup-scan brief says how to write such a segment, and a test-scope literal prefix
   decodes the escape.
+
+- **Setup no longer refuses a target for being more than 12 directories deep (#3645).** The
+  `target-discovery-surface` probe bounded its instruction-file walk by depth, so any tree with a
+  deep fixture was refused with `**/CLAUDE.md was not scanned past the cap (12 levels)` and ran
+  only under `--allow-unenforced`. The walk is now bounded by its entry cap alone (unchanged:
+  20,000 per pattern), still prunes the directories the review excludes, and still never follows a
+  link. It no longer recurses, so a very deep tree cannot crash it on Python 3.11. An incomplete
+  walk still refuses and says why: the entry cap, a directory it could not read, or -- new -- an
+  entry whose stat failed, which the old walk silently treated as a file. One listing change: a
+  symlink to a directory that is named like an excluded directory is now listed like any other
+  link instead of being dropped.
 
 - **A full-repo scan no longer reviews the scanner's own root config (#3642).** The root
   `panopticon.yml` / `.panopticon.yml` -- including the one setup-scan just wrote -- was reviewed
