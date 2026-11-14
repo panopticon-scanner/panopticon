@@ -117,8 +117,9 @@ def compare_models(metas):
         row["requested"] = requested.pop() if len(requested) == 1 else None
         row["role"] = roles.pop() if len(roles) == 1 else None
         row["routes_differ"] = len({r["route"] for r in fell_back}) > 1
-        row["same"] = (None not in row["runs"] and MAYBE_UNREADABLE not in row["runs"]
-                       and len(did) == 1)
+        # A MAYBE_UNREADABLE run always sits beside a real fallback (the row exists only
+        # because some run fell back), so `did` then holds two values: never `same`.
+        row["same"] = None not in row["runs"] and len(did) == 1
         entries.append(row)
     unreadable = ["all" if r["malformed"] else r["dropped"] for r in runs]
     return {"strict": strict,
