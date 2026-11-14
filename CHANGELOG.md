@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Cargo advisory budget diagnostics are pinned and documented per output (#3638).** An
+  oversized manifest that spends the last byte of the shared ingest budget must increment the
+  operator-visible exhaustion count, while a later tool output that only reuses the completed
+  fail-closed origin result must not inherit that count. The report schema now describes the
+  optional per-output disposition field and its absent-key meaning.
+
 - **A link to a Keychain ancestor under a firmlink spelling is recorded (#3636).** #3616's walk
   matched an in-grant link's target against the Keychain homes as strings, and macOS `realpath`
   keeps the firmlink spelling (`/System/Volumes/Data/Users/<me>`), so such a link went
