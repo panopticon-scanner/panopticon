@@ -12,6 +12,7 @@ import scripts.evidence_sections as evidence_sections
 import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.integrity_messages as integrity_messages
+import scripts.model_disclosure as model_disclosure
 import scripts.ocrdb as ocrdb
 import scripts.synth.grading as grading
 import scripts.synth.health_basis as health_basis
@@ -1058,6 +1059,37 @@ def _render_compare_summary(label, report):
 """
 
 
+def _render_compare_models(base, head):
+    """#3626: the compare view says when Base and Head did not run the same models --
+    a differing strict state or any fallback, per entry, requested and bound apart.
+    Disclosure only; a report from before #3582 reads as not recorded."""
+    metas = [r.get("meta") if isinstance(r.get("meta"), dict) else {} for r in (base, head)]
+    models = model_disclosure.compare_models(metas)
+    labels = ("Base", "Head")
+    if not models["disclose"]:
+        return ""
+    banner = ("<div class='coverage'>Models differ or fell back: %s</div>" % " &middot; ".join(
+        "%s %s" % (label, _escape(model_disclosure.strict_word(s)))
+        for label, s in zip(labels, models["strict"])))
+    lines = [banner]
+    for label, value in zip(labels, models["unreadable"]):
+        if value:
+            lines.append("<div class='coverage'>%s: %s</div>"
+                         % (label, _escape(model_disclosure.unreadable_word(value))))
+    for row in models["entries"]:
+        shared = row["requested"]
+        runs = " &middot; ".join("%s %s" % (label, _escape(model_disclosure.ran_word(
+            r, with_requested=not shared, with_route=row["routes_differ"],
+            with_role=not row["role"])))
+            for label, r in zip(labels, row["runs"]))
+        lines.append("<div class='coverage'>%s%s: %s%s%s</div>"
+                     % (_escape(row["entry"]),
+                        " (%s)" % _escape(row["role"]) if row["role"] else "",
+                        "requested <code>%s</code> &mdash; " % _escape(shared) if shared else "",
+                        runs, "" if row["same"] else " &mdash; differs"))
+    return "<div class='compare-models'>%s</div>\n" % "\n".join(lines)
+
+
 def _render_compare_dashboard(matches):
     counts = {"new": 0, "resolved": 0, "unchanged": 0, "severity changed": 0}
     for m in matches:
@@ -1624,6 +1656,7 @@ def render(report, compare_report=None):
         body = (
             _render_compare_summary("Base", compare_report) +
             _render_compare_summary("Head", report) +
+            _render_compare_models(compare_report, report) +
             _render_compare_dashboard(matches) +
             _render_compare_findings(matches)
         )

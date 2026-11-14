@@ -1083,6 +1083,62 @@ class TestModelFallbackDisclosure(unittest.TestCase):
                               hr._render_header(report))
 
 
+class TestCompareModelDisclosure(unittest.TestCase):
+    """#3626: the --compare view says when Base and Head did not run the same models."""
+    SUB = {"entry": "review-g-SEC", "role": "domain_panel", "requested": "gemini-4-carbon-high",
+           "bound": "gemini-4-argon-high", "route": "key", "rung": 1,
+           "reason": "not listed on route key"}
+
+    def _pair(self, base_meta, head_meta):
+        base, head = _minimal_report(), _minimal_report()
+        base["meta"].update(base_meta)
+        head["meta"].update(head_meta)
+        return hr.render(head, compare_report=base)
+
+    def test_a_fallback_on_one_side_is_disclosed_per_entry(self):
+        out = self._pair({"model_strict": False, "model_substitutions": [dict(self.SUB)]},
+                         {"model_strict": False})
+        self.assertIn("Models differ or fell back: Base fallbacks on &middot; Head fallbacks on",
+                      out)
+        self.assertIn("review-g-SEC (domain_panel): requested <code>gemini-4-carbon-high</code> "
+                      "&mdash; Base ran gemini-4-argon-high (fallback rung 1: not listed on route "
+                      "key) &middot; Head ran as requested &mdash; differs", out)
+
+    def test_differing_strict_and_old_reports_and_no_difference(self):
+        self.assertIn("Base fallbacks off (strict) &middot; Head not recorded",
+                      self._pair({"model_strict": True}, {}))
+        self.assertNotIn("Models differ", self._pair({"model_strict": True},
+                                                     {"model_strict": True}))
+        self.assertNotIn("Models differ", self._pair({}, {}))
+
+    def test_every_field_is_escaped_on_both_paths(self):
+        # #3633 review: poison EVERY printed field, shared-request and per-run paths alike.
+        for field in ("entry", "role", "requested", "bound", "route", "reason"):
+            for shared in (True, False):
+                with self.subTest(field=field, shared=shared):
+                    evil = dict(self.SUB, **{field: "<script>x</script>"})
+                    other = dict(evil, requested="other-high", route="signin") if not shared \
+                        else evil
+                    out = self._pair({"model_strict": False, "model_substitutions": [evil]},
+                                     {"model_strict": False, "model_substitutions": [other]})
+                    if not (field == "route" and shared):     # a shared route is not shown
+                        self.assertIn("&lt;script&gt;x&lt;/script&gt;", out)
+                    self.assertNotIn("<script>x</script>", out)
+
+    def test_per_run_requests_and_unreadable_records(self):
+        a = dict(self.SUB, requested="gemini-4-argon-high", bound="gemini-3.8-flash-medium")
+        b = dict(self.SUB, requested="gemini-4-carbon-high", bound="gemini-3.8-flash-medium",
+                 role="domain_advisor")
+        out = self._pair({"model_strict": False, "model_substitutions": [a, "junk"]},
+                         {"model_strict": False, "model_substitutions": [b]})
+        self.assertIn("Base: 1 fallback record unreadable", out)
+        self.assertIn("review-g-SEC: Base as domain_panel, requested gemini-4-argon-high, ran "
+                      "gemini-3.8-flash-medium (fallback rung 1: not listed on route key) "
+                      "&middot; Head as domain_advisor, requested gemini-4-carbon-high, ran "
+                      "gemini-3.8-flash-medium (fallback rung 1: not listed on route key) "
+                      "&mdash; differs", out)
+
+
 class TestChartAggregations(unittest.TestCase):
     def test_severity_counts_empty(self):
         self.assertEqual(

@@ -775,6 +775,95 @@ class TestCriticalHigh(Workspace):
         self.assertEqual((1, 0, 0), (row["same"], row["lower"], row["missed"]))
 
 
+class TestModelDisclosure(Workspace):
+    """#3626: disclosed in the document and the summary, never refused or altered."""
+    SUB = {"entry": "review-g-SEC", "role": "domain_panel", "requested": "gemini-4-carbon-high",
+           "bound": "gemini-4-argon-high", "route": "key", "rung": 1,
+           "reason": "not listed on route key"}
+
+    def _summary(self, *metas):
+        doc = self.compare(*[report([agent(10)], meta=m) for m in metas])
+        return doc, cr.summary_lines(doc)
+
+    def test_a_fallback_in_one_run_is_disclosed_per_entry_and_compares_anyway(self):
+        doc, lines = self._summary({"model_strict": False, "model_substitutions": [self.SUB]},
+                                   {"model_strict": False})
+        self.assertTrue(doc["models"]["disclose"])
+        self.assertEqual(1, doc["agreement"]["all"])                    # not altered
+        self.assertIn("MODELS DIFFER OR FELL BACK: run1 fallbacks on, run2 fallbacks on; "
+                      "1 entry ran on a fallback in some run", lines)
+        self.assertIn("  review-g-SEC (domain_panel): requested gemini-4-carbon-high; run1 ran "
+                      "gemini-4-argon-high (fallback rung 1: not listed on route key); run2 ran "
+                      "as requested -- DIFFERS ACROSS RUNS", lines)
+
+    def test_a_differing_strict_state_is_disclosed(self):
+        _doc, lines = self._summary({"model_strict": True}, {"model_strict": False})
+        self.assertIn("MODELS DIFFER OR FELL BACK: run1 fallbacks off (strict), run2 fallbacks "
+                      "on; 0 entries ran on a fallback in some run", lines)
+
+    def test_an_old_report_reads_not_recorded(self):
+        _doc, lines = self._summary({"model_strict": True}, {})
+        self.assertIn("MODELS DIFFER OR FELL BACK: run1 fallbacks off (strict), run2 not "
+                      "recorded; 0 entries ran on a fallback in the runs that recorded it", lines)
+        _doc, lines = self._summary({}, {})
+        self.assertIn("models: model fallbacks not recorded on any run (the reports predate "
+                      "#3582)", lines)
+
+    def test_matching_runs_say_so_in_one_line(self):
+        _doc, lines = self._summary({"model_strict": True}, {"model_strict": True})
+        self.assertIn("models: every run fallbacks off (strict), and none ran on a fallback",
+                      lines)
+        self.assertFalse(any(line.startswith("MODELS") for line in lines))
+
+    def test_every_model_field_from_a_report_is_made_inert(self):
+        # #3633 review: poison EVERY printed field, on both the shared and per-run paths.
+        for field in ("entry", "role", "requested", "bound", "route", "reason"):
+            for shared in (True, False):
+                with self.subTest(field=field, shared=shared):
+                    evil = dict(self.SUB, **{field: "x\x1b[31m\u202ey"})
+                    other = dict(evil, requested="other-high", route="signin") if not shared \
+                        else evil
+                    _doc, lines = self._summary(
+                        {"model_strict": False, "model_substitutions": [evil]},
+                        {"model_strict": False, "model_substitutions": [other]})
+                    text = "\n".join(lines)
+                    self.assertNotIn("\x1b", text)
+                    self.assertNotIn("\u202e", text)
+
+    def test_per_run_requests_routes_and_unreadable_records_are_said(self):
+        a = dict(self.SUB, requested="gemini-4-argon-high", bound="gemini-3.8-flash-medium")
+        b = dict(self.SUB, requested="gemini-4-carbon-high", bound="gemini-3.8-flash-medium",
+                 route="signin", role="domain_advisor")
+        _doc, lines = self._summary({"model_strict": False, "model_substitutions": [a]},
+                                    {"model_strict": False, "model_substitutions": [b, "junk"]})
+        self.assertIn("  run2: 1 fallback record unreadable", lines)
+        self.assertIn("  review-g-SEC: run1 as domain_panel, requested gemini-4-argon-high, ran "
+                      "gemini-3.8-flash-medium via route key (fallback rung 1: not listed on route "
+                      "key); run2 as domain_advisor, requested gemini-4-carbon-high, ran "
+                      "gemini-3.8-flash-medium via route signin (fallback rung 1: not listed on "
+                      "route key) -- DIFFERS ACROSS RUNS", lines)
+        _doc, lines = self._summary({"model_strict": True, "model_substitutions": {"x": 1}},
+                                    {"model_strict": True})
+        self.assertIn("  run1: fallback records unreadable (not a list)", lines)
+        # #3633 r2 N9: neither run records strict; the unreadable line still prints.
+        _doc, lines = self._summary({"model_substitutions": [5]}, {})
+        self.assertIn("  run1: 1 fallback record unreadable", lines)
+        # #3633 r2 item 3: a run that dropped records is "maybe", and the header is partial.
+        _doc, lines = self._summary({"model_strict": False, "model_substitutions": [self.SUB]},
+                                    {"model_strict": False, "model_substitutions": ["junk"]})
+        self.assertTrue(any(line.endswith("ran on a fallback in the runs that recorded it")
+                            for line in lines), lines)
+        self.assertTrue(any("run2 ran as requested, or its record is unreadable" in line
+                            for line in lines), lines)
+        self.assertFalse(any("none ran on a fallback" in line for line in lines))
+
+    def test_the_document_carries_the_models_block(self):
+        doc, _lines = self._summary({"model_strict": False, "model_substitutions": [self.SUB]},
+                                    {"model_strict": True})
+        self.assertEqual([False, True], doc["models"]["strict"])
+        self.assertEqual("review-g-SEC", doc["models"]["entries"][0]["entry"])
+
+
 class TestAgreementScoresCells(Workspace):
     def test_all_majority_and_only_one(self):
         doc = self.compare(report([agent(10), agent(100), agent(200)]),

@@ -275,12 +275,14 @@ refused, as it is with no ladder.
   - the `agy-model-bound` proof, which names each fallback and proves the bound model.
 
   A run on a fallback is never labelled with the requested model.
-- **Strict mode.** `PANOPTICON_MODEL_STRICT=1` turns every ladder off (refuse-on-unlisted);
-  `=0` keeps them on. When it is unset, CI runs (`CI` or `GITHUB_ACTIONS` set) are strict. Set
+- **Strict mode.** `PANOPTICON_MODEL_STRICT=1` turns every ladder off (refuse-on-unlisted); `=0`
+  keeps them on. When it is unset, CI runs (`CI` or `GITHUB_ACTIONS` set) are strict. Set
   `PANOPTICON_MODEL_STRICT=1` for calibration and comparison runs, so a measurement never mixes
   models. The manifest records the effective state as `model_strict`, so a pair can be checked
-  afterwards. That record is the run's truth: entries built on resume use it, and a resume under a
-  different strict state is refused as flag drift. A bad value is refused at run start.
+  afterwards: `devtools/compare_runs.py` and the HTML `--compare` view disclose a differing strict
+  state or any fallback per entry, and read a report from before #3582 as "not recorded" (#3626).
+  That record is the run's truth: entries built on resume use it, and a resume under a different
+  strict state is refused as flag drift. A bad value is refused at run start.
 - **Quota is not a fallback trigger.** Ladders resolve at bind time, before launch. Running out of
   quota mid-run stays a typed host failure; the next run resolves again.
 
