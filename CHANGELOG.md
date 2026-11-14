@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **The instruction-file walk re-checks a directory for a link before descending it (#3645
+  follow-up).** The entry-capped walk decided "real directory" when it listed the parent and
+  descended later, so a directory swapped for a symlink in between was followed. It is now asked
+  again at the moment of descent, as the previous `os.walk`-based walk did, and a link is left
+  listed and not descended. The entry cap's exact boundary and its mid-tree stop are pinned.
+
 - **A glob may name a bracketed directory with fnmatch's escapes (#3644).** Setup on a
   Next.js-style target proposed `users/[[]id]/route.ts` for a `[id]` route directory, and
   the glob compiler refused every `[`, so the whole proposal was rejected. `[[]` (a literal

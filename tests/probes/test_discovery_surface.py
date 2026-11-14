@@ -884,6 +884,78 @@ class TestTheWalk(unittest.TestCase):
         self.assertEqual([self.root], visited)
         self.assertEqual("2 entries", walk.capped)
 
+    def test_exactly_the_cap_is_not_over_the_cap(self):
+        # The cap is the number of entries a walk may SEE: a tree holding
+        # exactly that many has been read to the end and must not be refused.
+        for name in ("one", "two", "three"):
+            _plant(self.root, name)
+        walk = probes_surface.Walk("**")
+        with mock.patch.object(probes_surface, "ENTRY_CAP", 3):
+            listed = dict(probes_surface.walk_tree(self.root, walk))
+        self.assertEqual(["one", "three", "two"], listed[self.root])
+        self.assertEqual(3, walk.entries)
+        self.assertIsNone(walk.capped)
+
+    def test_a_cap_reached_below_the_root_abandons_what_was_still_queued(self):
+        # Reached in `a`, with `b` and `c` already queued behind it: stopping
+        # means those are dropped too, not merely that `a` is not descended.
+        _plant(self.root, "a/x/f")
+        _plant(self.root, "b/f")
+        _plant(self.root, "c/f")
+        walk = probes_surface.Walk("**")
+        with mock.patch.object(probes_surface, "ENTRY_CAP", 3):
+            visited = [os.path.relpath(directory, self.root) for directory, _names
+                       in probes_surface.walk_tree(self.root, walk)]
+        self.assertEqual([os.curdir, "a"], visited)
+        self.assertEqual("3 entries", walk.capped)
+
+    def test_a_directory_swapped_for_a_link_before_descent_is_not_descended(self):
+        # Listing a parent and descending into its child are two moments. A
+        # child that was a real directory at the first and is a link at the
+        # second must not be followed -- here it would lead outside the root.
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        _plant(outside.name, "CLAUDE.md")
+        victim = os.path.join(self.root, "victim")
+        os.makedirs(victim)
+        _plant(self.root, "zebra/file")       # queued behind it, sorted later
+        real = os.scandir
+
+        @contextlib.contextmanager
+        def swapping(path):
+            with real(path) as entries:
+                listed = list(entries)
+            if path == self.root and not os.path.islink(victim):
+                os.rmdir(victim)
+                os.symlink(outside.name, victim)
+            yield listed
+
+        walk = probes_surface.Walk("**")
+        with mock.patch.object(probes_surface.os, "scandir", swapping):
+            listed = dict(probes_surface.walk_tree(self.root, walk))
+        self.assertTrue(os.path.islink(victim), "the swap did not happen")
+        self.assertEqual(["victim", "zebra"], listed[self.root])   # listed...
+        # ...only, and the walk goes on: skipping the link must not cost the
+        # rest of the tree, which nothing would then have looked at.
+        self.assertEqual([self.root, os.path.join(self.root, "zebra")],
+                         list(listed))
+        self.assertEqual([], walk.unreadable)
+
+    def test_the_walk_root_itself_may_be_a_link(self):
+        # The re-check above is for what the walk queued, never for where the
+        # caller pointed it: `.claude/hooks -> elsewhere` is still the
+        # directory the host loads hooks from, and skipping it would be a
+        # refusal the target could switch off with one `ln -s`.
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        _plant(outside.name, "evil.sh")
+        os.makedirs(os.path.join(self.root, ".claude"))
+        os.symlink(outside.name, os.path.join(self.root, ".claude", "hooks"))
+        state, _by, detail = probes_common.probe_discovery_surface(
+            "claude", self.root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn(os.path.join(".claude", "hooks", "evil.sh"), detail)
+
     def test_a_link_named_like_a_pruned_directory_is_listed_like_any_link(self):
         # The one place the listing differs from the `os.walk` version, and on
         # purpose: that version stat'd THROUGH a link to learn it was a

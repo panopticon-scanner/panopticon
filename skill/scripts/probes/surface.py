@@ -137,6 +137,14 @@ def walk_tree(root, walk):
     pending = [root]
     while pending:
         directory = pending.pop()
+        # Asked again at the moment of descent, as `os.walk` did: the entry was
+        # a real directory when its parent was listed, and a tree that is being
+        # written to can have swapped it for a link since. It stays listed in
+        # its parent and is not descended. `root` is the caller's own path and
+        # is walked whatever it is -- a symlinked `.claude/hooks` is still the
+        # directory the host would load from.
+        if directory != root and os.path.islink(directory):
+            continue
         listing = scan_directory(directory, walk.failed)
         if listing is None:
             continue
