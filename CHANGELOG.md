@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **A recursive search over an ancestor of a Keychain directory is denied (#3616).** #3607's
+  Keychain rule is checked on the path a tool call names, so a `Grep` over a granted home
+  directory let the host CLI walk into `Library/Keychains` itself. Arming the read scope now walks
+  each directory grant once, in the same bounded, link-free walk as #2063's escape check, and
+  records its Keychain paths. Every host's directory-level search and listing (claude and kimi
+  `Grep`/`Glob`, agy `grep_search`/`list_dir`/`find_by_name`, gemini
+  `grep_search`/`list_directory`/`glob`) over a directory with one at or under it is denied, as is
+  a wildcard whose literal prefix has one. A capped, failed or missing walk denies them all under
+  that grant, with a named reason. Exact reads of non-Keychain files under the same grant are
+  unchanged. The kimi read-guard probe now builds its scope the way the driver does.
+
 - **Setup completes on agy: the setup-scan brief pins the absolute repo root, and persist
   validates the proposal (#3631).** agy starts its agent in a scratch workspace (the confinement
   design), and the setup-scan brief was the one prompt with no absolute review root. Its

@@ -21,7 +21,8 @@ import shlex
 import tempfile
 import tomllib
 
-from scripts import dispatch, hosts, kimi_toml, model_resolver, write_guard_hook
+from scripts import (dispatch, hosts, kimi_toml, model_resolver, read_guard_hook,
+                     write_guard_hook)
 from scripts.runners import children, kimi_home
 
 from . import common
@@ -412,9 +413,13 @@ def probe_kimi_read_guard(host, runner=None, doctor_runner=None):
                 with open(p, "w", encoding="utf-8") as fh:
                     fh.write("")
             scope_path = os.path.join(sandbox, "read-scope.json")
+            # Built as the driver builds it (#3616): a directory grant carries its arm-time
+            # walk, and a hand-written scope without one now denies every directory search.
             with open(scope_path, "w", encoding="utf-8") as fh:
-                json.dump({"probe-cell": {"files": [inside], "dirs": [], "reads": []},
-                           "probe-scan": {"files": [], "dirs": [scan_dir], "reads": []}}, fh)
+                json.dump(read_guard_hook.scope_from_plan([
+                    {"id": "probe-cell", "scope": {"files": [inside], "dirs": [], "reads": []}},
+                    {"id": "probe-scan", "scope": {"files": [], "dirs": [scan_dir],
+                                                   "reads": []}}]), fh)
             rows = (
                 ("bound Read inside scope",
                  {"tool_name": "Read", "tool_input": {"path": inside}}, "probe-cell", True),

@@ -48,7 +48,7 @@ _GUARD_RULES_USED = (
     "ARTIFACT_DIR", "SYMLINKED_COMPONENT", "UNMEASURABLE_COMPONENT",
     "ESCAPED_ARTIFACT_TREE", "PARENT_COMPONENT", "_resolve_path", "_readable",
     "_in_dir_grant", "_glob_pattern_climbs", "_names_git_store", "_load_scope",
-    "_load_allowlist", "_escaped_component", "_glob_refusal", "marker_of",
+    "_load_allowlist", "_escaped_component", "_glob_refusal", "_keychain_refusal", "marker_of",
     "hook_command", "_trusted_hook_argv", "record_denial")
 
 # --- GUARD RULES LOADER (#3273 cut 11) ---
@@ -174,7 +174,9 @@ def _decide_read(tool_name, tool_input, scope):
                            "a file from the list in your prompt")
         if os.path.isdir(target):
             if any(guard_rules._in_dir_grant(target, d) for d in scope["dirs"]):
-                return True, ""
+                refusal = guard_rules._keychain_refusal(            # #3616
+                    "grep_search over %s" % raw, target, scope)
+                return (False, refusal) if refusal else (True, "")
             return False, ("grep_search over a directory is denied in a confined cell: "
                            "search a file by its path; your cell's files are listed in "
                            "your prompt")
@@ -192,7 +194,8 @@ def _decide_read(tool_name, tool_input, scope):
             return False, "list_dir is denied: pass `DirectoryPath` explicitly"
         if os.path.isdir(target) and any(
                 guard_rules._in_dir_grant(target, d) for d in scope["dirs"]):
-            return True, ""
+            refusal = guard_rules._keychain_refusal("list_dir of %s" % raw, target, scope)
+            return (False, refusal) if refusal else (True, "")              # #3616
         return False, ("list_dir is not available in a confined cell: your file "
                        "list is in your prompt")
     if tool_name == "find_by_name":
