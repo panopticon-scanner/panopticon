@@ -58,7 +58,8 @@ _MATCHER = "|".join(_READ_TOOLS_LIST)
 _GUARD_RULES_USED = (
     "MARKER_PREFIX", "SCOPE_KEYS", "ENV_ENTRY_ID", "GLOB_PATTERN_DENIAL", "GIT_STORE_DENIAL",
     "_resolve_path", "_readable", "_in_dir_grant", "_glob_pattern_climbs", "_names_git_store",
-    "_glob_refusal", "grant_escapes", "ESCAPES_KEY",
+    "_glob_refusal", "grant_escapes", "ESCAPES_KEY", "grant_walk", "KEYCHAINS_KEY", "UNWALKED_KEY",
+    "_keychain_refusal",
     "_load_scope", "bind", "hook_command", "_trusted_hook_argv", "_is_our_entry", "_load",
     "atomic_write_json", "_write_hook_entry", "_remove_hook_entry", "_armed",
     "resolve_policy_path", "record_denial", "scope_paths_ok")
@@ -159,8 +160,10 @@ def scope_from_plan(plan):
         if not isinstance(eid, str) or not eid or not isinstance(scope, dict):
             continue
         out[eid] = {k: _realpaths(scope.get(k)) for k in guard_rules.SCOPE_KEYS}
-        # #2063: each dir grant's symlinks out of it, walked once here, for the Glob rule.
-        out[eid][guard_rules.ESCAPES_KEY] = guard_rules.grant_escapes(out[eid]["dirs"])
+        # #2063: each dir grant's symlinks out of it, for the Glob rule; #3616: and its
+        # Keychain paths, for every directory-level search and listing. One walk per grant.
+        (out[eid][guard_rules.ESCAPES_KEY], out[eid][guard_rules.KEYCHAINS_KEY],
+         out[eid][guard_rules.UNWALKED_KEY]) = guard_rules.grant_walk(out[eid]["dirs"])
     return out
 
 
@@ -195,8 +198,10 @@ def decide(tool_name, tool_input, scope):
             # #1917: and for Glob, the second argument -- the only one of these
             # tools whose pattern is a PATH pattern, expanded against `path`.
             # #2063: and through no symlink out of the grant (guard_rules._glob_refusal).
+            # #3616: and over no Keychain path (guard_rules._keychain_refusal).
             refusal = (guard_rules._glob_refusal(target, tool_input.get("pattern"), scope)
-                       if tool_name == "Glob" else None)
+                       if tool_name == "Glob" else
+                       guard_rules._keychain_refusal("Grep over %s" % raw, target, scope))
             return (False, refusal) if refusal else (True, "")
         if tool_name == "Grep":
             return False, ("Grep over a directory is denied in a confined cell: grep a "
