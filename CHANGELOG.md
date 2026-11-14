@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A resume under a live host limit stays paused instead of erroring (#3646).** A run paused
+  for a host outage (a Claude weekly limit, in the owner's run) was resumed while the limit still
+  held. Its capability probe could not launch the write/read canary, so both guards read unknown,
+  and the proven -> unknown move was refused as "host posture changed mid-run" -- an `error` for
+  a run that was only paused. The canary now classifies its own failed launch exactly as the loop
+  classifies a reviewer's (`runners.outage.classify_failure`, via `Runner.parse_envelope`). When
+  every moved guard is unknown for that host-class reason, the run stays `paused`, with the resume
+  advice and the stored posture unchanged. A probe that ran and proved less is still drift.
+
 - **A full-repo scan no longer reviews the scanner's own root config (#3642).** The root
   `panopticon.yml` / `.panopticon.yml` -- including the one setup-scan just wrote -- was reviewed
   like target code, and an owner-observed run graded a HIGH finding against the matrix itself.

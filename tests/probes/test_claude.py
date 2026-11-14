@@ -1478,6 +1478,16 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
             return mock.Mock(returncode=0, stdout=stdout, stderr="")
         return launch, seen
 
+    def limited(self, envelope, returncode=1):
+        """#3646: a launch the host refused before the model ran -- the envelope a
+        quota-limited `claude -p` prints, and no file written."""
+        seen = {"calls": 0}
+
+        def launch(cmd, cwd=None, env=None, **_kw):
+            seen["calls"] += 1
+            return mock.Mock(returncode=returncode, stdout=json.dumps(envelope), stderr="")
+        return launch, seen
+
     def canary(self, *behaviours):
         import scripts.probes.claude_write_canary as canary
         launch, seen = self.fake(*behaviours)
@@ -1545,6 +1555,54 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
         self.assertEqual(verdict, canary.NOT_MEASURED)
         self.assertIn("could not run", detail)
         self.assertEqual(seen["calls"], 2)
+
+    def test_a_host_class_launch_failure_is_host_limited_not_a_measurement(self):
+        # #3646: the resume probe under a Claude usage limit. Classified exactly as the
+        # loop classifies a reviewer's launch (`Runner.parse_envelope`), so the detail
+        # carries `hosts.HOST_LIMITED_LEAD` -- what lets a resume stay paused.
+        import scripts.probes.claude_write_canary as canary
+        for label, envelope in (
+                ("error object", {"type": "result", "is_error": True, "result": "",
+                                  "error": {"type": "rate_limit_error",
+                                            "message": "usage limit reached"}}),
+                ("CLI error line", {"type": "result", "is_error": True,
+                                    "result": "API Error: 429 Too Many Requests"})):
+            with self.subTest(label):
+                launch, seen = self.limited(envelope)
+                with mock.patch.object(canary, "_launch", side_effect=launch):
+                    measured = canary.measure()
+                for capability in ("write", "read"):
+                    verdict, detail = measured[capability]
+                    self.assertEqual(canary.HOST_LIMITED, verdict)
+                    self.assertTrue(detail.startswith(hosts.HOST_LIMITED_LEAD), detail)
+                self.assertEqual(canary.ATTEMPTS, seen["calls"])
+
+    def test_an_entry_class_failure_stays_plain_not_measured(self):
+        # A failed launch the host did not cause (the agent's own reply quoting a 429)
+        # is NOT host-limited: it measured nothing, and a resume reading it is drift.
+        import scripts.probes.claude_write_canary as canary
+        launch, _seen = self.limited({"type": "result", "is_error": True,
+                                      "result": "the handler returns 429 Too Many Requests"})
+        with mock.patch.object(canary, "_launch", side_effect=launch):
+            measured = canary.measure()
+        for capability in ("write", "read"):
+            verdict, detail = measured[capability]
+            self.assertEqual(canary.NOT_MEASURED, verdict)
+            self.assertFalse(detail.startswith(hosts.HOST_LIMITED_LEAD), detail)
+
+    def test_the_probes_report_a_host_limit_as_unknown_with_the_lead(self):
+        import scripts.probes.claude_write_canary as canary
+        launch, _seen = self.limited({"type": "result", "is_error": True,
+                                      "result": "API Error: 429 Too Many Requests"})
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(canary, "_launch", side_effect=launch):
+            settings = os.path.join(d, "host-settings.json")
+            for probe in (claude_probes.probe_write_guard_armed,
+                          claude_probes.probe_read_guard_armed):
+                with self.subTest(probe=probe.__name__):
+                    state, _by, detail = probe("claude", settings_path=settings)
+                    self.assertEqual(hosts.UNKNOWN, state)
+                    self.assertTrue(detail.startswith(hosts.HOST_LIMITED_LEAD), detail)
 
     def test_one_flaky_launch_is_retried_once(self):
         import scripts.probes.claude_write_canary as canary

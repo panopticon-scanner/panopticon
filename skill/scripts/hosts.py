@@ -101,6 +101,11 @@ SHAPE_PROVEN, SHAPE_REFUTED, SHAPE_UNMEASURED = "proven", "refuted", "unmeasured
 # the vocabulary) ----------------------------------------------------------
 PROVEN, REFUTED, UNKNOWN = "proven", "refuted", "unknown"
 STATES = (PROVEN, REFUTED, UNKNOWN)
+# #3646: how an UNKNOWN capability's evidence detail begins when its real-CLI probe could
+# not launch because of a HOST-class failure (`runners.outage.classify_failure`: auth,
+# quota, a plan or rate limit, the provider down). Such a probe measured nothing about the
+# posture, so a resume that reads it does not refuse the run as drift: it stays paused.
+HOST_LIMITED_LEAD = "not measured: the probe's launch failed with a host-class failure"
 
 # --- registration directories ---------------------------------------------
 # Defined here and nowhere else. dispatch.py briefly re-exported them; nothing

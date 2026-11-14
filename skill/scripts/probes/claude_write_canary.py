@@ -22,10 +22,11 @@ import json
 import os
 import tempfile
 
-from scripts import read_guard_hook, write_guard_hook
+from scripts import hosts, read_guard_hook, write_guard_hook
 from scripts.runners import base as runner_base
 from scripts.runners import children
 from scripts.runners import claude as claude_runner
+from scripts.runners import outage
 
 CANARY_AGENT = "panopticon-write-canary"
 CANARY_MODEL = "claude-haiku-5-5"
@@ -80,6 +81,11 @@ def _denials(envelope):
 # a model that never attempted the Write) measured nothing, and the probe says
 # UNKNOWN rather than claiming a denial nobody saw.
 PROVEN, REFUTED, NOT_MEASURED = "proven", "refuted", "not-measured"
+# #3646: NOT_MEASURED because the launch itself failed host-class (a quota or plan
+# limit, a rate limit, auth, the provider down), classified exactly as the loop
+# classifies a reviewer's launch. Its detail begins `hosts.HOST_LIMITED_LEAD`, which
+# is how a resume tells "the host is limited" from "the posture changed".
+HOST_LIMITED = "host-limited"
 ATTEMPTS = 2   # one retry: a single flaky launch must not decide a run
 # How round_trip's NOT_MEASURED detail begins: the write-guard refusal reads it
 # to say "re-run first" rather than "accept the gap" (#3220).
@@ -134,6 +140,12 @@ def _attempt():
             env = claude_runner.Runner().launch_env({write_guard_hook.ENV_ENTRY_ID: OWN_ID})
             proc = _launch(cmd, cwd=target, env=env, capture_output=True, text=True,
                            timeout=CANARY_TIMEOUT)
+            launched = claude_runner.Runner().parse_envelope(
+                OWN_ID, proc.stdout, proc.returncode, getattr(proc, "stderr", None))
+            if not launched.ok and launched.failure_class == outage.HOST_FAILURE:
+                row = (HOST_LIMITED, "%s (exit %s)" % (hosts.HOST_LIMITED_LEAD,
+                                                      proc.returncode))
+                return {"write": row, "read": row}
             try:
                 envelope = json.loads(proc.stdout or "")
             except ValueError:
@@ -194,16 +206,18 @@ def measure():
         latest = _attempt()
         for capability in ("write", "read"):
             verdict, _detail = latest[capability]
-            if capability not in decided and verdict != NOT_MEASURED:
+            if capability not in decided and verdict not in (NOT_MEASURED, HOST_LIMITED):
                 decided[capability] = latest[capability]
         if len(decided) == 2:
             break
     for capability in ("write", "read"):
         if capability not in decided:
-            _verdict, detail = latest[capability]
+            verdict, detail = latest[capability]
+            # #3646: the LAST launch decides which kind of "not measured" this is; a
+            # host-limited one keeps its lead so a resume can recognise it.
             decided[capability] = (
-                NOT_MEASURED,
-                NOT_MEASURED_LEAD + "%d attempt(s): %s" % (attempt, detail))
+                (HOST_LIMITED, detail) if verdict == HOST_LIMITED else
+                (NOT_MEASURED, NOT_MEASURED_LEAD + "%d attempt(s): %s" % (attempt, detail)))
     return decided
 
 

@@ -3,6 +3,7 @@ import os
 import sys
 
 from scripts import hosts
+from scripts.runners import outage
 import scripts.host_disclosure as host_disclosure
 import scripts.host_probes as host_probes
 import scripts.probes.common as probes_common
@@ -277,6 +278,9 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     was, now = host_probes.capabilities_of(stored), host_probes.capabilities_of(fresh)
     gating_was, gating_now = _gating_states(was), _gating_states(now)
     if gating_was != gating_now:
+        limited = _host_limited(gating_was, gating_now, fresh)
+        if limited:
+            return HostLimited(limited)
         return _posture_drift(gating_was, gating_now, manifest)
     # The GATING states agree, so the run continues. An operational
     # capability may still have moved (#1626 I1) and the write below records
@@ -375,6 +379,43 @@ def _gating_states(states):
     """
     return {name: state for name, state in states.items()
             if name not in hosts.OPERATIONAL_CAPABILITIES}
+
+
+class HostLimited(str):
+    """#3646: `_establish_host_posture`'s answer when the only capabilities that moved
+    went UNKNOWN because their probe could not LAUNCH -- a host-class failure, such as
+    a plan or rate limit. A message like any other refusal, but `driver.run` turns it
+    into a `paused` status, not an `error`: the run is resumable once the host is back,
+    and nothing about its posture was measured to have changed."""
+
+
+HOST_LIMITED_PAUSE = ("paused: this resume's capability probe could not launch because the "
+                      "host failed it with a host-class failure (auth, quota, a plan or session "
+                      "limit, a rate limit, or the provider itself), so %s read unknown without "
+                      "being measured; the stored posture is unchanged and nothing was "
+                      "dispatched; ")
+
+
+def _host_limited(was, now, fresh):
+    """The pause message when EVERY gating capability that moved went to UNKNOWN with
+    `hosts.HOST_LIMITED_LEAD` evidence -- its probe's launch failed host-class -- else None.
+
+    Every one, or the drift refusal stands: a capability that moved for any other
+    reason (a probe that ran and proved less, an UNKNOWN that is not host-limited, a
+    REFUTED) is a real posture change, and a host limit beside it does not excuse it."""
+    moved = sorted(name for name in set(was) | set(now) if was.get(name) != now.get(name))
+    caps = fresh.get("capabilities") if isinstance(fresh, dict) else None
+    caps = caps if isinstance(caps, dict) else {}
+
+    def limited(name):
+        body = caps.get(name)
+        detail = body.get("detail") if isinstance(body, dict) else None
+        return (now.get(name) == hosts.UNKNOWN and isinstance(detail, str)
+                and detail.startswith(hosts.HOST_LIMITED_LEAD))
+
+    if not moved or not all(limited(name) for name in moved):
+        return None
+    return (HOST_LIMITED_PAUSE % ", ".join(moved)) + outage.RESUME_ADVICE
 
 
 def _posture_drift(was, now, manifest):
