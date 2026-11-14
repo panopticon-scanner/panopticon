@@ -264,6 +264,15 @@ class TestScannerConfigIsNotReviewed(unittest.TestCase):
             self.assertIn("scanner config: not reviewed", err)
             self.assertIn("#3642", err)
 
+    def test_the_disclosure_sits_beside_the_fixture_disclosure(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d)
+            touch(d, "tests/fixtures/vuln/app.py")
+            out = run_scan(d)
+            self.assertEqual(out["excluded"], {
+                "fixture_dirs": ["tests/fixtures"],
+                "scanner_config": sorted(discovery.repo_config.CONFIG_NAMES)})
+
     def test_a_nested_config_is_still_reviewed(self):
         with tempfile.TemporaryDirectory() as d:
             self._tree(d)
