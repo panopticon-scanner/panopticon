@@ -29,6 +29,7 @@ import scripts.plan_contract as plan_contract
 import scripts.read_guard_hook as read_guard_hook
 import scripts.rejected_retention as rejected_retention
 import scripts.repo_config as repo_config
+import scripts.run_manifest as run_manifest
 import scripts.runners.base as runners_base
 import scripts.runners.batch as batch_mod
 import scripts.runners.outage as outage
@@ -335,6 +336,11 @@ def _loop(args, pause):
                     refusal = loop_batch.record_entry(
                         entry, result, timing, run_dir, batch, ledger, req,
                         mode, runner)
+                    substitution = getattr(result, "model_substitution", None)
+                    if namespace is None and isinstance(substitution, dict) and substitution:
+                        # #3582: the fallback goes on the run's own record too.
+                        run_manifest.record_model_substitution(review_root, None, eid,
+                                                               substitution)
                     handled.append(eid)
                     landed.append((entry, result))
                     tally.record(eid, result, refusal, seq=order.get(eid))

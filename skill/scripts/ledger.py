@@ -239,6 +239,10 @@ class Ledger:
                 # #3576: the name the launch was bound to when it is not the entry's own
                 # (agy's key route), so a row says Argon when Argon is what ran.
                 line["bound_model"] = launched
+            substitution = getattr(result, "model_substitution", None)
+            if isinstance(substitution, dict) and substitution:
+                # #3582: never silent -- the row says which rung ran and why.
+                line["model_substitution"] = dict(substitution)
             expected = launched if isinstance(launched, str) and launched else bound_model
             if isinstance(result.model, str) and result.model and result.model != expected:
                 print("driver loop: %s: host %r reported model %r, bound %r"

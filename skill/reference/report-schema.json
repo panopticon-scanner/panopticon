@@ -68,6 +68,25 @@
           "minItems": 1,
           "description": "#3162: ids of the agent-sourced security/redteam CRITICAL/HIGH findings that carry no CVSS vector. The reviewer prompt says to omit a vector it cannot justify rather than invent one, so an omission is disclosed here instead of counted in schema_errors. Present only when non-empty."
         },
+        "model_substitutions": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "properties": {
+              "entry": {"type": "string"},
+              "role": {"type": "string"},
+              "requested": {"type": "string"},
+              "bound": {"type": "string"},
+              "route": {"type": "string"},
+              "rung": {"type": "integer", "minimum": 1},
+              "reason": {"type": "string"}
+            },
+            "required": ["entry", "role", "requested", "bound", "route", "rung", "reason"],
+            "additionalProperties": false
+          },
+          "description": "#3582: every dispatch that ran on a profile fallback rung instead of its requested model, because the route's live model list lacked the requested one. `bound` is what ran; the run is never labelled with `requested`. Present only when non-empty."
+        },
         "severity_capped": {
           "type": "object",
           "properties": {
@@ -93,6 +112,10 @@
           "type": "string",
           "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
           "description": "#3560: the scanned tree's HEAD, copied at synthesis from the driver's run-manifest.json (`target_commit`, #1492). Absent when no manifest recorded one (a direct synthesize.py run, or a target that is not a Git checkout), never null. devtools/compare_runs.py refuses to compare runs whose commits differ."
+        },
+        "model_strict": {
+          "type": "boolean",
+          "description": "#3582: whether this run's model fallbacks were off (PANOPTICON_MODEL_STRICT, strict by default under CI), copied at synthesis from the run manifest. Absent when no manifest recorded it."
         },
         "target_dirty": {
           "type": "boolean",

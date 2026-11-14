@@ -341,6 +341,7 @@ def render_summary(report):
     basis_note = health_basis_mod.rendered_note(s.get("health"))
     unscored = report["meta"].get("cvss_unscored") or []      # #3162
     capped = report["meta"].get("severity_capped") or {}      # #3231
+    fallbacks = report["meta"].get("model_substitutions") or []   # #3582
     lines = [
         # #1829 SEC-798292895: belt and braces for the two fields the
         # normalization boundary does not own -- the target path this run was
@@ -366,7 +367,11 @@ def render_summary(report):
         "**Unscored:** %d high-severity security finding(s) carry no CVSS vector (omitted, not invented)"
         % len(unscored), ""] if unscored else []) + ([
         "**Capped at MEDIUM:** %d unconfirmed claim(s) (%s)" % (sum(map(len, capped.values())), ", ".join(
-            "%s %d" % (k.replace("_", " "), len(v)) for k, v in sorted(capped.items()))), ""] if capped else []) + [
+            "%s %d" % (k.replace("_", " "), len(v)) for k, v in sorted(capped.items()))), ""] if capped else []) + ([
+        "**Model fallbacks:** %d dispatch(es) ran on a fallback, not the requested model (%s)" % (
+            len(fallbacks), "; ".join(sorted({tool_base.inert_text(
+                "%s -> %s (%s)" % (f.get("requested"), f.get("bound"), f.get("reason")))
+                for f in fallbacks}))), ""] if fallbacks else []) + [
         "## Groups",
     ]
     if not s.get("coverage_certified", True):

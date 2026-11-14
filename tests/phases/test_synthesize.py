@@ -1053,6 +1053,21 @@ class TestAMidRunToolsDowngradeReachesSynthesize(unittest.TestCase):
                 parsed = synthesize_cli.build_parser().parse_args(cmd[2:])
                 self.assertEqual((sha, spelled), (parsed.target_commit, parsed.target_dirty))
 
+    def test_the_strict_state_reaches_the_report(self):
+        # #3582 (#3627 review 4): the manifest's model_strict rides the same argv route.
+        import scripts.synthesize as synthesize_cli
+        for strict, spelled in ((False, "false"), (True, "true")):
+            with self.subTest(strict=strict):
+                cmd = self._cmd({"run_id": "R", "security_mode": "standard", "flags": {},
+                                 "model_strict": strict})
+                self.assertEqual(spelled, cmd[cmd.index("--model-strict") + 1])
+                self.assertEqual(spelled, synthesize_cli.build_parser().parse_args(
+                    cmd[2:]).model_strict)
+        for unrecorded in (None, "yes"):
+            self.assertNotIn("--model-strict", self._cmd(
+                {"run_id": "R", "security_mode": "standard", "flags": {},
+                 "model_strict": unrecorded}))
+
     def test_an_unrecorded_commit_or_dirtiness_passes_nothing(self):
         # Not a Git checkout, or a refused status probe: null in the manifest, so the
         # report leaves the key absent rather than reading unknown as clean.

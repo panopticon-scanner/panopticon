@@ -15,6 +15,7 @@ import json
 import os
 import re
 import subprocess
+import sys
 import tempfile
 
 import scripts.agy_guard_hook as agy_guard_hook
@@ -87,11 +88,12 @@ INTERACTIVE_AUTH = re.compile(
     rb"Print mode: silent auth failed|triggering interactive OAuth|consumerOAuth: starting OAuth")
 
 
-# #3576: route substitutions, keyed by (auth route, requested model). The key route
-# lists no Carbon at any effort (owner's `agy models` on that route, 2026-11-12), and
-# the owner chose Argon (High) in its place. #3582 generalises this into a per-role
-# fallback ladder. An explicit PANOPTICON_MODEL_* override is never substituted.
-ROUTE_SUBSTITUTES = {("key", "gemini-4-carbon"): "gemini-4-argon-high"}
+# #3582: a key-route launch tries the entry's own model, then its profile ladder
+# (`fallbacks: {key: [...]}`, bound into the entry by model_resolver.entry_policy),
+# against the route's live `agy models` list. #3576's Carbon -> Argon (High) choice is
+# that ladder's first rung. Every substitution is recorded; an explicit
+# PANOPTICON_MODEL_* override and a strict run carry no ladder.
+FALLBACK_REASON = "not listed on route %s"
 _MODEL_ID = re.compile(r"[a-z0-9][a-z0-9.\-]*")
 MODELS_TIMEOUT = 60
 
@@ -101,7 +103,7 @@ MODELS_TIMEOUT = 60
 # tool call meets the guard hook (owner ruling R3, 2026-11-13).
 PREFLIGHT_PROMPT = "Reply with the single word OK."
 PREFLIGHT_TIMEOUT = 180
-KEY_ROUTE_DEFAULT = ROUTE_SUBSTITUTES[("key", "gemini-4-carbon")]
+KEY_ROUTE_DEFAULT = "gemini-4-argon-high"   # pinned to the Carbon roles' first key rung
 NOT_SIGNED_IN = "You are not logged into Antigravity"
 BROWSER_ENV = ("BROWSER", "/usr/bin/false")
 
@@ -120,24 +122,29 @@ def listed_models(stdout):
     return frozenset(names)
 
 
-def key_route_model(model, effort, listed, explicit=False):
-    """The `--model` name a key-route launch is bound to, or ValueError (#3576).
+def key_route_model(model, effort, listed, explicit=False, ladder=()):
+    """(name, substitution) for a key-route launch, or ValueError (#3576, #3582).
 
     That route takes no `--effort`: the level is part of the name. The name must be
-    one `agy models` lists for the route; else a profile default may be substituted
-    from ROUTE_SUBSTITUTES, and nothing else is ever tried."""
+    one `agy models` lists for the route; else the first listed rung of the entry's
+    `ladder` is bound and `substitution` records it. Nothing off the ladder is ever
+    tried, and an explicit override has no ladder."""
     if not model:
         raise ValueError("agy key route needs a model, and the entry names none (#3576)")
     name = "%s-%s" % (model, effort) if effort else model
     if name in listed:
-        return name
-    substitute = None if explicit else ROUTE_SUBSTITUTES.get(("key", model))
-    if substitute is not None and substitute in listed:
-        return substitute
+        return name, None
+    rungs = () if explicit else tuple(ladder or ())
+    for rung, candidate in enumerate(rungs, start=1):
+        if candidate in listed:
+            return candidate, {"requested": name, "bound": candidate, "route": "key",
+                               "rung": rung, "reason": FALLBACK_REASON % "key"}
     raise ValueError(
-        "agy key route lists no model %r (configured %s%s)%s (#3576)"
+        "agy key route lists no model %r (configured %s%s)%s (#3576, #3582)"
         % (name, model, " at effort %s" % effort if effort else "",
-           "; an explicit PANOPTICON_MODEL_* override is never substituted" if explicit else ""))
+           "; an explicit PANOPTICON_MODEL_* override is never substituted" if explicit
+           else ("; nor any fallback (%s)" % ", ".join(rungs) if rungs
+                 else "; no fallback ladder applies (strict run, or none in the profile)")))
 
 
 def reached_interactive_auth(stderr):
@@ -161,9 +168,10 @@ def auth_stopped(entry_id, exc):
 # num_turns, structured_output, json_schema and usage -- no model
 # (https://antigravity.google/docs/cli/headless/, read 2026-11-11).
 NO_ANSWERING_MODEL = (
-    "agy's JSON envelope reports no answering model, so each ledger row records the bound "
-    "`requested_model` (and `requested_effort`) with `model` null, and usage has no per-model "
-    "split; headless agy exits non-zero rather than fall back from --model "
+    "agy's JSON envelope reports no answering model, so each ledger row records "
+    "`requested_model` (and `requested_effort`), plus `bound_model` when the launch was bound "
+    "to another name (#3576, #3582), with `model` null, and usage has no per-model split; "
+    "headless agy exits non-zero rather than fall back from --model "
     "(https://antigravity.google/docs/cli/headless/)")
 
 
@@ -613,16 +621,25 @@ class Runner(base.HostRunner):
             effort_argv(entry.get("effort"), eff_model)
         except ValueError as exc:
             return base.RunResult.failed(entry_id, redact.redact(str(exc)))
-        launch_entry, launch_model, bound_model = entry, eff_model, None
+        launch_entry, launch_model, bound_model, substitution = entry, eff_model, None, None
         if self.auth_route == "key":
+            # #3627 review 1: belt and braces -- a strict run walks no ladder even if an
+            # entry carries one.
+            ladders = None if model_resolver.strict_models() else entry.get("fallbacks")
             try:
-                bound_model = key_route_model(eff_model, entry.get("effort"), self.key_models,
-                                              explicit=bool(entry.get("model_override")))
+                bound_model, substitution = key_route_model(
+                    eff_model, entry.get("effort"), self.key_models,
+                    explicit=bool(entry.get("model_override")),
+                    ladder=(ladders.get("key") if isinstance(ladders, dict) else None) or ())
             except ValueError as exc:
                 return base.RunResult.failed(entry_id, str(exc), host_error=str(exc),
                                              failure_class=outage.HOST_FAILURE)
             launch_entry = {k: v for k, v in entry.items() if k != "effort"}
             launch_model = bound_model
+            if substitution is not None:
+                print("agy: entry %s: %s %s; bound fallback %s (rung %d) (#3582)"
+                      % (entry_id, substitution["requested"], substitution["reason"],
+                         bound_model, substitution["rung"]), file=sys.stderr, flush=True)
         launcher = self._launch_callable()
         fd, denial_log = tempfile.mkstemp(
             prefix="denials-", suffix=".jsonl", dir=self.agy_home)
@@ -672,4 +689,5 @@ class Runner(base.HostRunner):
         if hook_denials:
             result.denials = list(result.denials or []) + hook_denials
         result.bound_model = bound_model
+        result.model_substitution = substitution
         return result

@@ -556,8 +556,10 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
             except ValueError as exc:
                 faults.append("%s: %s" % (role, exc))
                 continue
+            ladders = policy.get("fallbacks")
             runtime_checks.append((role, agent_name, resolved_model, effort,
-                                   bool(policy.get("model_override"))))
+                                   bool(policy.get("model_override")),
+                                   tuple((ladders or {}).get("key") or ())))
     if faults:
         return (hosts.REFUTED, AGY_MODEL_BOUND, "; ".join(faults))
     if not runtime_checks:
@@ -566,6 +568,7 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
 
     home = None
     bound_names = []
+    substitutions = []
     try:
         route = agy_home.auth_route()
         home = agy_home.build(
@@ -581,16 +584,21 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
                         "`agy models` on the API-key route exited %s with %d listed models, "
                         "so no binding could be measured (#3576)"
                         % (getattr(listing, "returncode", 1), len(listed)))
-        for role, agent_name, resolved_model, effort, explicit in runtime_checks:
+        for role, agent_name, resolved_model, effort, explicit, ladder in runtime_checks:
             if route == "key":
                 # #3576: the key route folds the effort into the name and takes no --effort.
                 try:
-                    launch_model = agy_runner.key_route_model(
+                    launch_model, substitution = agy_runner.key_route_model(
                         resolved_model, effort[1] if effort else None, listed,
-                        explicit=explicit)
+                        explicit=explicit, ladder=ladder)
                 except ValueError as exc:
                     faults.append("%s: %s" % (role, exc))
                     continue
+                if substitution is not None:
+                    # #3582: the proof names the fallback and then proves the BOUND model.
+                    substitutions.append("%s: requested %s -> bound %s (fallback rung %d: %s)"
+                                         % (role, substitution["requested"], launch_model,
+                                            substitution["rung"], substitution["reason"]))
                 launch_effort: list[str] = []
             else:
                 launch_model, launch_effort = resolved_model, effort
@@ -635,9 +643,11 @@ def probe_agy_model_bound(host, registration_dir=None, *, runner=None):
         return (hosts.REFUTED, AGY_MODEL_BOUND, "; ".join(faults))
     return (hosts.PROVEN, AGY_MODEL_BOUND,
             "all %d driver roles match frontmatter tiers and runtime `/model` "
-            "resolution (%s)%s; %s" % (len(common.DRIVER_ROLES), ", ".join(sorted(set(bound_names))),
-                                       " on the API-key route" if route == "key" else "",
-                                       agy_runner.NO_ANSWERING_MODEL))
+            "resolution (%s)%s%s; %s" % (len(common.DRIVER_ROLES), ", ".join(sorted(set(bound_names))),
+                                         " on the API-key route" if route == "key" else "",
+                                         "; FALLBACKS: " + "; ".join(substitutions)
+                                         if substitutions else "",
+                                         agy_runner.NO_ANSWERING_MODEL))
 
 
 def _command_data(doc):

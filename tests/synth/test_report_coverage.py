@@ -852,6 +852,17 @@ class TestTheScannedCommitIsRecorded(unittest.TestCase):
                 self.assertEqual([], validate_schema_mod.schema_errors(
                     self._report(target_commit=self.SHA, target_dirty=dirty)))
 
+    def test_the_strict_state_is_copied_and_validates(self):
+        # #3582 (#3627 review 4): the manifest's model_strict reaches meta; unrecorded, absent.
+        for spelled, expected in (("false", False), ("true", True)):
+            with self.subTest(strict=spelled):
+                report = self._report(model_strict=spelled)
+                self.assertIs(expected, report["meta"]["model_strict"])
+                self.assertEqual([], validate_schema_mod.schema_errors(report))
+        for flags in ({}, {"model_strict": None}, {"model_strict": "maybe"}):
+            with self.subTest(flags=flags):
+                self.assertNotIn("model_strict", self._report(**flags)["meta"])
+
     def test_a_sha256_object_name_is_a_commit(self):
         sha = "ab" * 32
         self.assertEqual(sha, self._report(target_commit=sha)["meta"]["target_commit"])

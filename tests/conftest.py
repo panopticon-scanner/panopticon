@@ -102,6 +102,11 @@ _STATE_DIR = tempfile.mkdtemp(prefix="panopticon-test-state-")
 atexit.register(shutil.rmtree, _STATE_DIR, ignore_errors=True)
 os.environ["PANOPTICON_STATE_DIR"] = _STATE_DIR
 
+# #3582: model fallbacks are off by default under CI. The suite pins them ON, so a
+# laptop and GitHub Actions resolve the same policies; a test of strictness sets
+# PANOPTICON_MODEL_STRICT (or CI with it unset) itself.
+os.environ["PANOPTICON_MODEL_STRICT"] = "0"
+
 # --- #1515: no live scanner containers from the unit suite -------------------
 # driver.run() advances into tools_execute unless --no-tools; run_tools then
 # asks docker_available() whether to launch `docker run --memory 6g --cpus 4`

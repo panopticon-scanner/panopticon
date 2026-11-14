@@ -65,14 +65,23 @@ hosts:
       model: gemini-3.8-flash-medium
       tier: flash
     # #3564: Carbon is a base ID with its effort passed as `--effort`, never a `-high` slug.
+    # #3582: `fallbacks` is an ordered ladder per route, tried only when the route's live
+    # model list lacks the requested model, and recorded wherever the run is reported.
+    # The key route lists no Carbon (owner capture 2026-11-12); the owner chose Argon (High)
+    # in its place (#3576). Rungs use the route's own spelling (the key route folds effort
+    # into the name). PANOPTICON_MODEL_STRICT=1, and CI, turn every ladder off.
     domain_panel:
       model: gemini-4-carbon
       effort: high
       tier: pro
+      fallbacks:
+        key: [gemini-4-argon-high]
     domain_advisor:
       model: gemini-4-carbon
       effort: high
       tier: pro
+      fallbacks:
+        key: [gemini-4-argon-high]
     setup_scan:
       model: null
   # `gemini-4-carbon` is the flagship reasoning model (`domain_panel`,

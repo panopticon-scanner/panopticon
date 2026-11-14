@@ -173,6 +173,8 @@ class RunResult:
                                    # runner chose one other than the entry's (agy's key route
                                    # folds the effort into the name, or substitutes a model
                                    # that route does not list); None when it launched as asked
+    model_substitution: object = None  # #3582: the fallback record when a ladder rung was
+                                       # bound in place of the requested model, else None
 
     def __post_init__(self):
         """Classify any result that did not say (#1623).

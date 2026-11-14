@@ -102,6 +102,9 @@ def build_parser():
     ap.add_argument("--target-dirty", default=None, choices=("true", "false"),
                     help="whether the scanned tree had uncommitted changes, off the run "
                          "manifest (#3560); copied to meta.target_dirty, absent when not given")
+    ap.add_argument("--model-strict", default=None, choices=("true", "false"),
+                    help="whether the run's model fallbacks were off, off the run manifest "
+                         "(#3582); copied to meta.model_strict, absent when not given")
     ap.add_argument("--tools-skipped", action="store_true",
                     help="no scanner ran this run (--no-tools), so no output in "
                          "--tools-dir is bound to it: none is ingested, every one "

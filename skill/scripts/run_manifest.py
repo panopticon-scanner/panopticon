@@ -412,7 +412,7 @@ def verified_setup_owned(review_root):
 
 def build_manifest(*, target, review_root, host, security_mode, base=None,
                    flags=None, config=None, run_id=None, worktree=None,
-                   scope=None, pr=None, pr_base=None, created=None):
+                   scope=None, pr=None, pr_base=None, created=None, model_strict=None):
     # The WRITE path: this host came from CLI args, so a host the registry does
     # not know is a programming error and raising is both correct and the only
     # place it is reachable from (#1344).
@@ -460,6 +460,11 @@ def build_manifest(*, target, review_root, host, security_mode, base=None,
         # orchestrator's --pr-base for origin/<base> preference (#947). NOT an
         # anti-drift key -- a PR's base is fixed by the PR, not a user knob.
         "pr_base": pr_base,
+        # #3582: whether this run's model fallbacks were off (model_resolver.strict_models),
+        # and every entry that ran on a fallback rung (`record_model_substitution`), so a
+        # calibration pair can be checked after the fact. Not anti-drift keys.
+        MODEL_STRICT: bool(model_strict),
+        MODEL_SUBSTITUTIONS: [],
         # #1492: provenance of the tree that was scanned. Recorded so a
         # cross-run comparison can be VERIFIED rather than assumed; never an
         # anti-drift key (see _target_provenance).
@@ -637,6 +642,8 @@ ARTIFACT_STAMPS = (DRIVER_PLAN, OUT_FILE_SNAPSHOT, OUTPUT_SCHEMA_SHAPE)
 DISCARDED_BATCHES = "discarded_batches"
 
 COMPLETED_AT = "completed_at"            # #3367: see `record_completed_at`
+MODEL_STRICT = "model_strict"            # #3582: fallbacks off for this run (strict_models)
+MODEL_SUBSTITUTIONS = "model_substitutions"  # #3582: see `record_model_substitution`
 
 
 def _rewrite(review_root, manifest, *, namespace=None):
@@ -802,6 +809,27 @@ def record_completed_at(review_root, manifest, at=None):
     if manifest.get(COMPLETED_AT):
         return manifest
     manifest[COMPLETED_AT] = at or _now_iso()
+    return _rewrite(review_root, manifest)
+
+
+def record_model_substitution(review_root, manifest, entry_id, substitution):
+    """Record that entry `entry_id` ran on a fallback rung, not its requested model (#3582).
+
+    The SEVENTH deliberate rewrite, and not an anti-drift key: `conflicting_flags`
+    never reads it. One row per entry, the first write winning, so a resumed batch
+    does not repeat it. A tree with no manifest on disk records nothing, as
+    `record_artifact_stamp` explains.
+    """
+    if manifest is None:
+        manifest = load_manifest(review_root)
+    if manifest is None or not os.path.isfile(manifest_path(review_root)):
+        return None
+    rows = manifest.get(MODEL_SUBSTITUTIONS)
+    rows = list(rows) if isinstance(rows, list) else []
+    if any(isinstance(r, dict) and r.get("entry") == entry_id for r in rows):
+        return manifest
+    rows.append(dict(substitution, entry=entry_id))
+    manifest[MODEL_SUBSTITUTIONS] = rows
     return _rewrite(review_root, manifest)
 
 

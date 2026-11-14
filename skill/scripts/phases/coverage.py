@@ -112,7 +112,7 @@ def _scout_entry(review_root, manifest, group, files, host, registry_tools=None)
     entry = {"id": entry_id,
              "agent": dispatch.registered_agent_name("scout.md") if enforced else None,
              "enforced": enforced,
-             **requests.bound_policy(host, "scout"),
+             **requests.bound_policy(host, "scout", manifest),
              "prompt": requests.entry_marker(entry_id) + prefix + prompt,
              "marker": read_guard_hook.marker_line(entry_id),
              "out_file": out_file,

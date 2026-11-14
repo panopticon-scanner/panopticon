@@ -613,6 +613,7 @@ def _render_header(report):
     parts.append(_render_suppressed_tools(meta))
     parts.append(_render_sec_carve_out(meta))   # #1757: ABOVE, as the md ranks it
     parts.append(_render_excluded_tools(meta))
+    parts.append(_render_model_fallbacks(meta))   # #3582
     return "\n".join(parts)
 
 
@@ -971,6 +972,31 @@ def _render_sec_carve_out(meta):
             "hide code-shaped files from SEC</div>"
             % (carve["count"], ", ".join("<code>%s</code>" % _escape(f)
                                          for f in kept[:20]) or "none", more))
+
+
+def _render_model_fallbacks(meta):
+    """#3582: never silent -- the run's strict state and one line per dispatch that ran
+    on a fallback rung, as the markdown summary says it. Shown when there is a
+    substitution, or on an agy run (the only host with a ladder) that recorded its
+    strict state; a claude/codex/kimi run, where no ladder can exist, shows nothing."""
+    subs = meta.get("model_substitutions")
+    subs = [s for s in subs if isinstance(s, dict)] if isinstance(subs, list) else []
+    strict = meta.get("model_strict")
+    caps = meta.get("host_capabilities")
+    host = caps.get("host") if isinstance(caps, dict) else None
+    if not subs and not (host == "agy" and isinstance(strict, bool)):
+        return ""
+    state = ("off (strict run)" if strict is True else "on" if strict is False
+             else "state not recorded")
+    head = ("<div class='coverage'>Model fallbacks: %s &mdash; %d dispatch(es) ran on a "
+            "fallback, not the requested model</div>" % (state, len(subs)))
+    lines = [head]
+    for sub in subs:
+        lines.append("<div class='coverage'>%s: requested <code>%s</code> &rarr; ran "
+                     "<code>%s</code> (%s, rung %s)</div>"
+                     % tuple(_escape(sub.get(k)) for k in
+                             ("entry", "requested", "bound", "reason", "rung")))
+    return "\n".join(lines)
 
 
 def _render_excluded_tools(meta):
