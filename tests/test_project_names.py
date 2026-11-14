@@ -8,6 +8,7 @@ from the AST so a comment or docstring that names the image is not a hit and a
 string split across lines or inside an f-string still is.
 """
 import ast
+import re
 import unittest
 from pathlib import Path
 
@@ -20,7 +21,9 @@ SPELLINGS = ("panopticon-scanner", "panopticon-tools", "panopticon-fixtures")
 HOMES = {
     ("devtools/gh_transport.py", "REPO_SLUG"),
     ("skill/scripts/tools_image.py", "LOCAL_NAME"),
+    ("skill/scripts/tools_image.py", "REGISTRY_REPOSITORY"),
     ("skill/scripts/tools_image.py", "REGISTRY_IMAGE"),
+    ("skill/scripts/tools_image.py", "DEFAULT_IMAGE"),
     ("skill/scripts/tools_image.py", "FIXTURES_NAME"),
 }
 
@@ -33,8 +36,17 @@ class TestPinnedValues(unittest.TestCase):
         self.assertEqual(tools_image.LOCAL_NAME, "panopticon-tools")
 
     def test_registry_image(self):
+        self.assertEqual(tools_image.REGISTRY_REPOSITORY,
+                         "ghcr.io/panopticon-scanner/panopticon-tools")
         self.assertEqual(tools_image.REGISTRY_IMAGE,
                          "ghcr.io/panopticon-scanner/panopticon-tools:latest")
+
+    def test_branch_owned_default_is_local_on_main_or_digest_pinned_on_a_release(self):
+        self.assertTrue(
+            tools_image.DEFAULT_IMAGE == tools_image.LOCAL_NAME
+            or re.fullmatch(re.escape(tools_image.REGISTRY_REPOSITORY)
+                            + r"@sha256:[0-9a-f]{64}", tools_image.DEFAULT_IMAGE),
+            tools_image.DEFAULT_IMAGE)
 
     def test_fixtures_image_and_root(self):
         self.assertEqual(tools_image.FIXTURES_NAME, "panopticon-fixtures")
