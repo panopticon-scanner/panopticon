@@ -69,7 +69,8 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         # and loses none -- usage_document() reads `phase`/`usage` and
         # total_cost() reads `cost_usd`, all still there. D10 ruling 1 adds a
         # fourth, `rejected_file`: null on a row whose reply the loop could
-        # use, and the path to the kept reply on one it could not.
+        # use, and the path to the kept reply on one it could not. #3641 adds
+        # `failure_class`, null on success and durable across synthesis.
         d, floor = self._repo()
         runner = FakeRunner()
         self._run(d, floor, runner)
@@ -78,7 +79,8 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         for row in rows:
             self.assertEqual(
                 {"ts", "entry_id", "checkpoint", "phase", "mode", "host", "model", "ok",
-                 "usage", "cost_usd", "duration_ms", "session_id", "denials", "error",
+                 "failure_class", "usage", "cost_usd", "duration_ms", "session_id",
+                 "denials", "error",
                  "started_at", "finished_at", "rejected_file"}, set(row))
             self.assertIsNone(row["rejected_file"])       # a clean run keeps nothing
             self.assertIsInstance(row["duration_ms"], int)

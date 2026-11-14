@@ -12,11 +12,14 @@ import scripts.dispatch as dispatch_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.codes as codes_mod
 import scripts.synth.plan as plan_mod
+import scripts.synth.cost as cost_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.report as report_mod
 import scripts.synth.render as render_mod
+import scripts.html_report as html_report_mod
 import scripts.evidence as evidence_mod
 import scripts.ocrdb as ocrdb
+import scripts.runners.outage as outage_mod
 from tests._test_helpers import adopt_panopticon
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir, _target_with_files, _agentic
 
@@ -482,6 +485,95 @@ class TestResumeDisclosure(unittest.TestCase):
             plan=plan_mod.PlanInputs(groups_meta=self.G),
         ))
         self.assertIsNone(r["meta"]["coverage"]["resume"])
+
+    def _cut_short_report(self, failure_class, max_verify=None):
+        groups = [{"name": "app", "files": ["app.py"]}]
+        finding = _agentic(
+            fid="SEC-001", sev="HIGH", _group="app", domain="SEC",
+            location={"file": "app.py", "line_start": 1},
+        )
+        tools = [{
+            "id": "TOOL-%03d" % n,
+            "source": "tool:%s" % name,
+            "severity": "MEDIUM",
+            "panel": "security",
+            "category": "injection",
+            "title": "tool finding %d" % n,
+            "confidence": "LIKELY",
+            "description": "d",
+            "location": {"file": "app.py", "line_start": n + 1},
+            "provenance": {"confirmation_reasoning": "RULE-%d" % n},
+        } for n, name in enumerate(("bandit", "semgrep"), start=1)]
+        with _target_with_files(groups) as target:
+            return report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target=target, root=target, fail_on="high", timestamp=self.TS,
+                    max_verify=max_verify),
+                findings=findings_mod.FindingSet(findings=[finding] + tools),
+                plan=plan_mod.PlanInputs(
+                    groups_meta=groups,
+                    resume={
+                        "fan_out": {"total": 1, "done": 1, "pending": 0},
+                        "verify": {"total": 3, "done": 1, "pending": 2},
+                    },
+                ),
+                cost=cost_mod.CostInputs(verify_failure_classes=(failure_class,)),
+            ))
+
+    def test_host_cut_short_verify_is_not_certified_on_every_grade_surface(self):
+        report = self._cut_short_report(outage_mod.HOST_FAILURE)
+        summary = report["summary"]
+        self.assertFalse(summary["coverage_certified"])
+        self.assertEqual([], validate_schema_mod.schema_errors(report))
+        note = summary["coverage_note"]
+        self.assertIn("host-class failure", note)
+        self.assertIn("1 verify cell", note)
+        self.assertIn("2 tool-advisor entries", note)
+        self.assertIn("re-run the same command", note)
+
+        terminal = render_mod.render_summary(report)
+        self.assertIn("**Grade:**", terminal)
+        self.assertIn(note, terminal)
+        html = html_report_mod.render(report)
+        self.assertIn("Grade:", html)
+        self.assertIn("NOT CERTIFIED", html)
+        self.assertIn("1 verify cell", html)
+        self.assertIn("2 tool-advisor entries", html)
+
+    def test_entry_failure_does_not_invent_the_host_shortfall_reason(self):
+        report = self._cut_short_report(outage_mod.ENTRY_FAILURE)
+        self.assertTrue(report["summary"]["coverage_certified"])
+        self.assertNotIn("host-class failure", report["summary"].get("coverage_note") or "")
+
+    def test_host_shortfall_keeps_the_band_grade_math_unchanged(self):
+        host = self._cut_short_report(outage_mod.HOST_FAILURE)
+        entry = self._cut_short_report(outage_mod.ENTRY_FAILURE)
+        self.assertEqual(host["summary"]["overall_grade"], entry["summary"]["overall_grade"])
+
+    def test_findings_deliberately_cut_from_verify_are_not_counted_as_undone(self):
+        report = self._cut_short_report(outage_mod.HOST_FAILURE, max_verify=2)
+        note = report["summary"]["coverage_note"]
+        # The HIGH matrix finding sorts first, so only one of the two tool
+        # findings was ever owed an advisor launch under this cap.
+        self.assertIn("1 tool-advisor entry", note)
+        self.assertNotIn("2 tool-advisor entries", note)
+
+    def test_complete_run_stays_certified_despite_historical_host_class(self):
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(
+                groups_meta=self.G,
+                resume={
+                    "fan_out": {"total": 1, "done": 1, "pending": 0},
+                    "verify": {"total": 0, "done": 0, "pending": 0},
+                },
+            ),
+            cost=cost_mod.CostInputs(
+                verify_failure_classes=(outage_mod.HOST_FAILURE,)),
+        ))
+        self.assertTrue(report["summary"]["coverage_certified"])
+        self.assertNotIn("host-class failure", report["summary"].get("coverage_note") or "")
 
     def test_main_tolerates_non_list_verify_queue_entries(self):
         # A verify-queue.json with a truthy non-list `entries` (e.g. an int)

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A host-cut-short verify phase is now visibly NOT CERTIFIED (#3641).** The dispatch
+  ledger preserves the loop's host/entry failure class, and synthesis joins each verify entry's
+  latest result to the exact unresolved cell or tool claim before counting the never-launched
+  tail. The JSON summary, HTML header and terminal grade line name those counts, the host class,
+  and the same-command resume path; an unreadable/oversize ledger names its class as unknown
+  instead of hiding the gap. A completed retry retires the old outage, entry-class failures do
+  not trigger the reason, and the shared undone-work policy controls certification, gate, and
+  provisional-grade posture. A bare tool-stderr `quota reached.` sentence remains entry-class.
+
 ## 5.4.0 — Verdict integrity and the whole-repository audit
 
 Cut after a five-gate review of everything since 5.3.0 (security, correctness, robustness,
@@ -678,7 +687,6 @@ better.
   `--scope-files` on `discovery.py` itself) is unchanged, as are tool scans. This supersedes
   #1681 Task 7's
   grouping of the root config under Commons `Config` in full-repo scans.
-
 - **agy's `Individual quota reached` response now pauses as a host outage (#3640).** The
   free-text classifier recognizes that account-level sentence with or without agy's reset tail
   and a leading 429, so the failed launch is not charged to an entry. The match keeps agy's

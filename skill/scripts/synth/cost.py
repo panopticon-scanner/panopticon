@@ -10,6 +10,7 @@ import scripts.runners.base as runners_base
 import scripts.safe_write as safe_write
 import scripts.tolerant_json as tolerant_json
 import scripts.tools.base as tool_base
+import scripts.runners.outage as outage_mod
 from . import artifacts as artifacts_mod
 from . import plan as plan_mod
 
@@ -24,6 +25,9 @@ class CostInputs:
     run_usage: dict | None = None
     ledger_models: tuple = ()
     ledger_substitutions: tuple = ()     # #3582: entries that ran on a fallback rung
+    # #3641: the latest failed verify launch for each entry, classified from
+    # the durable ledger. A successful retry retires the old failure.
+    verify_failure_classes: tuple = ()
 
     @classmethod
     def load(cls, run_dir, verdicts_dir, tools_produced):
@@ -33,7 +37,8 @@ class CostInputs:
         return cls(driver_cost=driver_cost_counts(run_dir, verdicts_dir, tools_produced),
                    run_usage=load_run_usage(run_dir),
                    ledger_models=load_ledger_models(run_dir),
-                   ledger_substitutions=load_ledger_substitutions(run_dir))
+                   ledger_substitutions=load_ledger_substitutions(run_dir),
+                   verify_failure_classes=load_verify_failure_classes(run_dir))
 
 
 def load_run_usage(run_dir):
@@ -114,6 +119,31 @@ def _ledger_rows(run_dir):
         if isinstance(row, dict):
             rows.append(row)
     return rows
+
+
+def load_verify_failure_classes(run_dir):
+    """Failure class of each entry whose latest verify launch still failed.
+
+    The ledger predates a persisted ``failure_class``, so old rows are
+    classified from their bounded error text. Newer/foreign rows may carry the
+    class directly; only the two classifier values are accepted. One latest
+    row per entry matters: a host failure followed by a successful resume is
+    no longer an unfinished host failure and must not taint another shortfall.
+    """
+    latest = {}
+    for row in _ledger_rows(run_dir):
+        entry_id = row.get("entry_id")
+        if row.get("phase") == "verify" and isinstance(entry_id, str) and entry_id:
+            latest[entry_id] = row
+    classes = []
+    for row in latest.values():
+        if row.get("ok") is not False:
+            continue
+        failure_class = row.get("failure_class")
+        if failure_class not in (outage_mod.HOST_FAILURE, outage_mod.ENTRY_FAILURE):
+            failure_class = outage_mod.classify_failure(row.get("error"))
+        classes.append(failure_class)
+    return tuple(classes)
 
 
 def load_ledger_models(run_dir):

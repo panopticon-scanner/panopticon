@@ -16,6 +16,7 @@ import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.cost as cost_mod
 import scripts.synth.report as report_mod
+import scripts.runners.outage as outage_mod
 
 
 class TestCostLedgerDriver(unittest.TestCase):
@@ -321,3 +322,39 @@ class CostLoaderTest(unittest.TestCase):
             ci = cost_mod.CostInputs.load(d, None, None)
             self.assertEqual(ci.driver_cost, cost_mod.driver_cost_counts(d, None, None))
             self.assertIsNotNone(ci.driver_cost)
+
+    def test_only_latest_failed_verify_rows_supply_failure_classes(self):
+        with tempfile.TemporaryDirectory() as d:
+            rows = [
+                {"entry_id": "review-app-SEC", "phase": "review", "ok": False,
+                 "error": "Individual quota reached"},
+                {"entry_id": "verify-app-SEC-primary", "phase": "verify", "ok": False,
+                 "error": "Individual quota reached"},
+                {"entry_id": "verify-app-ACC-primary", "phase": "verify", "ok": False,
+                 "error": "operator-facing text", "failure_class": outage_mod.HOST_FAILURE},
+                {"entry_id": "verify-tool-deadbeef", "phase": "verify", "ok": False,
+                 "error": "codex stderr: quota reached."},
+            ]
+            with open(os.path.join(d, "dispatch-ledger.jsonl"), "w", encoding="utf-8") as fh:
+                for row in rows:
+                    fh.write(json.dumps(row) + "\n")
+
+            ci = cost_mod.CostInputs.load(d, None, None)
+            self.assertEqual(
+                ci.verify_failure_classes,
+                (outage_mod.HOST_FAILURE, outage_mod.HOST_FAILURE,
+                 outage_mod.ENTRY_FAILURE),
+            )
+
+            # A successful retry retires that entry's old host failure. It
+            # cannot taint an unrelated entry-class shortfall on a later run.
+            with open(os.path.join(d, "dispatch-ledger.jsonl"), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "entry_id": "verify-app-SEC-primary", "phase": "verify",
+                    "ok": True, "error": None,
+                }) + "\n")
+            ci = cost_mod.CostInputs.load(d, None, None)
+            self.assertEqual(
+                ci.verify_failure_classes,
+                (outage_mod.HOST_FAILURE, outage_mod.ENTRY_FAILURE),
+            )

@@ -234,8 +234,9 @@ def build_report(inp):
     # #2178: grading needs the delta context itself, not only the classified
     # findings -- a zero-range hunk map leaves the on-diff gate scoping
     # against something nobody measured, which is a certification fact.
-    graded = grading_mod.grade_report(inp.run, resolved, reconciled,
-                                      delta=inp.delta)
+    graded = grading_mod.grade_report(
+        inp.run, resolved, reconciled, delta=inp.delta,
+        verify_ledger=inp.cost.verify_ledger)
     cost = cost_mod.cost_section(inp.cost, inp.plan.scout_profiles_seen,
                                  resolved.verdict_stats["queued"])
     # #2951: the backstop. Findings, verdicts and scanner output are made

@@ -2,10 +2,12 @@
 from typing import Any
 from dataclasses import dataclass
 import os
+import re
 import stat
 
 import scripts.coverage_model as coverage_model
 import scripts.evidence as evidence_mod
+import scripts.runners.outage as outage_mod
 import scripts.tools_manifest as tools_manifest
 from . import backups as backups_mod
 from . import coverage_io
@@ -114,7 +116,111 @@ GATE_GAP_NOTE = "gate-relevant coverage did not complete"
 PROVISIONAL_PREFIX = "grade provisional: "
 
 
-def grade_shortfalls(resolved, backups=None):
+_VERIFY_CELL_STAGE = re.compile(r"(?:primary|backup)(?:-part[0-9]+)?$")
+
+
+def _verify_entry_target(entry_id, cells, tool_queue_ids):
+    """Every current verify item ``entry_id`` could name.
+
+    Group names may contain hyphens, so splitting an id cannot recover a cell.
+    Match it against the actual engaged ``(group, domain)`` population instead.
+    An empty set is a future/malformed/unmapped spelling; more than one target
+    is the theoretical collision where an id names both a cell and a tool
+    queue entry. Both shapes remain unknown for host-failure attribution, but
+    every candidate still proves that item was launched.
+    """
+    targets: set[tuple[Any, ...]] = set()
+    if isinstance(entry_id, str):
+        for group, domain in cells:
+            prefix = "verify-%s-%s-" % (group, domain)
+            if entry_id.startswith(prefix) and _VERIFY_CELL_STAGE.fullmatch(
+                    entry_id[len(prefix):]):
+                targets.add(("cell", group, domain))
+        if entry_id.startswith("verify-tool-"):
+            queue_id = entry_id[len("verify-tool-"):]
+            if queue_id in tool_queue_ids:
+                targets.add(("tool", queue_id))
+    return targets
+
+
+def _verify_shortfall_counts(targets, unknown=0):
+    verify_cells = sum(target[0] == "cell" for target in targets)
+    tool_advisors = sum(target[0] == "tool" for target in targets)
+    counts = []
+    if verify_cells:
+        counts.append("%d verify cell%s" % (verify_cells, "" if verify_cells == 1 else "s"))
+    if tool_advisors:
+        counts.append("%d tool-advisor entr%s" % (
+            tool_advisors, "y" if tool_advisors == 1 else "ies"))
+    if unknown:
+        counts.append("%d verify entr%s of unknown shape" % (
+            unknown, "y" if unknown == 1 else "ies"))
+    return " and ".join(counts)
+
+
+def verify_host_shortfall(resolved, verify_ledger):
+    """The named shortfall left by a host-cut-short verify phase.
+
+    Latest ledger entry ids are joined to the two populations verify actually
+    dispatched: engaged matrix cells and queued tool findings. Only an undone
+    item with a latest host failure, plus items not launched before that stop,
+    is attributed to the host. A verdict retires a cell/tool's older host
+    failure; an entry-class or legacy-unknown failure cannot taint a different
+    shortfall. Unreadable bounded ledger bytes fail closed with an explicit
+    unknown-class reason, while a missing ledger remains ordinary legacy state.
+    """
+    if verify_ledger is None:
+        return None
+    raw_unverified = (getattr(resolved, "verify_matrix", None) or {}).get(
+        "unverified_engaged") or []
+    pending_cells = {
+        tuple(cell) for cell in raw_unverified
+        if isinstance(cell, (list, tuple)) and len(cell) == 2
+    }
+    all_cells = {
+        tuple(cell) for cell in getattr(resolved, "verify_engaged_cells", ())
+        if isinstance(cell, (list, tuple)) and len(cell) == 2
+    } | pending_cells
+    pending_tools = set(getattr(resolved, "tool_advisor_pending_ids", ()) or ())
+    all_tools = set(getattr(resolved, "tool_advisor_queue_ids", ()) or ()) | pending_tools
+    pending = ({("cell", group, domain) for group, domain in pending_cells}
+               | {("tool", queue_id) for queue_id in pending_tools})
+    if not pending:
+        return None
+
+    if getattr(verify_ledger, "unreadable", False):
+        counts = _verify_shortfall_counts(pending)
+        return ("verify phase cut short — failure class unknown (ledger unreadable); "
+                "%s left undone; %s" % (counts, outage_mod.RESUME_ADVICE))
+
+    launched_entries = tuple(getattr(verify_ledger, "launched_entries", ()) or ())
+    host_entries = tuple(getattr(verify_ledger, "host_failure_entries", ()) or ())
+    targets = {
+        entry_id: _verify_entry_target(entry_id, all_cells, all_tools)
+        for entry_id in set(launched_entries) | set(host_entries)
+    }
+    launched_targets = {
+        target for entry_id, candidates in targets.items()
+        if entry_id in launched_entries for target in candidates
+    }
+    host_targets = {
+        next(iter(candidates)) for entry_id, candidates in targets.items()
+        if entry_id in host_entries and len(candidates) == 1
+    }
+    active_host_targets = pending & host_targets
+    unknown_host_entries = sum(len(targets.get(entry_id, ())) != 1
+                               for entry_id in host_entries)
+    if not active_host_targets and not unknown_host_entries:
+        return None
+
+    stranded = set(active_host_targets)
+    stranded.update(pending - launched_targets)
+    counts = _verify_shortfall_counts(stranded, unknown=unknown_host_entries)
+    return ("verify phase cut short by a host-class failure — %s left undone; %s"
+            % (counts, outage_mod.RESUME_ADVICE))
+
+
+def grade_shortfalls(resolved, backups=None, verify_ledger=None):
     """#3667 (owner ruling 2026-11-15): verify work this run left UNDONE, one
     reason per entry. ONE shared rule reads this list: any reason here holds the
     letter back as `provisional_grade`, sinks `coverage_certified`, moves a PASS
@@ -142,8 +248,10 @@ def grade_shortfalls(resolved, backups=None):
                 "" if kind == "tool finding" else "verify ", "" if count == 1 else "s"))
     # #3702: verdicts an advisor wrote that were not counted are undone work too:
     # whatever they said, nobody the controller asked has said it.
+    host = verify_host_shortfall(resolved, verify_ledger)
     return (reasons + backups_mod.shortfall_reasons(backups)
-            + verdict_scope_mod.reasons(getattr(resolved, "verdict_stats", None)))
+            + verdict_scope_mod.reasons(getattr(resolved, "verdict_stats", None))
+            + ([host] if host else []))
 
 
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
@@ -249,7 +357,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
 
     coverage_certified = not (gate_relevant_gap or any_incomplete
                               or tools_manifest_invalid
-                              or delta_scope_suppressed_git_drivers or tools_file_partial)
+                              or delta_scope_suppressed_git_drivers or tools_file_partial
+                              or verify_host_shortfall)
 
     note = None
     if tools_manifest_invalid:
@@ -266,6 +375,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         tail = sorted(p for p in panels_incomplete if p not in findings_mod.HIGH_VALUE_PANELS)
         note = ("gate certified; grade provisional — low-value panel(s) incomplete: %s"
                 % ", ".join(tail))
+    if verify_host_shortfall:
+        note = "; ".join(filter(None, (note, verify_host_shortfall)))
     if custom_profile:
         # #1495 review: the profile reason sits BESIDE any coverage reason, never in its place.
         # A gate-relevant gap with no named reason gets the generic one here, or the profile text
@@ -764,7 +875,7 @@ _GATE_ROLE_NOTE = {
 }
 
 
-def grade_report(run, resolved, reconciled, delta=None):
+def grade_report(run, resolved, reconciled, delta=None, verify_ledger=None):
     """The grading cluster (WS-0 S2): per-group panel grades, the health index,
     certification and the gate, from the resolved findings and the reconciled
     plan. Severity is never mutated here; grades and the gate are computed
@@ -852,7 +963,7 @@ def grade_report(run, resolved, reconciled, delta=None):
             delta, len(would_have_judged), run.gate_scope)
     coverages = getattr(reconciled, "coverages", None)
     shortfalls = grade_shortfalls(resolved, (getattr(reconciled, "coverage", None) or {})
-                                  .get("backups"))
+                                  .get("backups"), verify_ledger)
     cert = certify(overall, gate_eligible, run.fail_on, reconciled.panels_incomplete,
                    reconciled.tools_absent,
                    integrity_ok=reconciled.integrity_ok,

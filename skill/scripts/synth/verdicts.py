@@ -81,6 +81,10 @@ class Resolved:
     verdict_stats: dict
     verify_matrix: dict
     tool_axis: dict
+    # Tool-sourced queue entries with no matching advisor answer. Unlike
+    # tool_axis.unanswered, this excludes findings cut by --max-verify because
+    # the driver never owed those entries a launch.
+    tool_advisor_pending: int
     tool_names: set
     delta_mode: bool
     delta_meta: dict | None
@@ -941,6 +945,11 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     pre_verdict_fps = {id(f): evidence_mod.finding_fingerprint(f) for f in findings}
     matches = _bind_verdicts(fs, findings, queue, holders, merged, owed)
     verify_matrix_cov = _verify_matrix(findings, matches)
+    tool_advisor_pending = sum(
+        evidence_mod.is_tool_sourced(entry["finding"])
+        and matches.matched.get(id(entry["finding"])) is None
+        for entry in queue
+    )
     if ocrdb_coverage is not None:
         ocrdb_coverage.update(codes_mod.apply_verdict_quality(findings, matches.matched, ocrdb_bundle))
     verdict_stats = _verdict_stats(fs, findings, queue, cut, matches, held)
@@ -960,7 +969,8 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
                     integration_findings=integration_findings,
                     ocrdb_bundle=ocrdb_bundle, ocrdb_coverage=ocrdb_coverage,
                     verdict_stats=verdict_stats, verify_matrix=verify_matrix_cov,
-                    tool_axis=tool_axis, tool_names=tool_names,
+                    tool_axis=tool_axis, tool_advisor_pending=tool_advisor_pending,
+                    tool_names=tool_names,
                     delta_mode=delta.active, delta_meta=_delta_meta(delta, partitions),
                     # #2169: emitted for an INACTIVE context too, whenever a file
                     # was read -- the one carrier a rejected payload has.
