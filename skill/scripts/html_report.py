@@ -984,8 +984,9 @@ def _render_model_fallbacks(meta):
         return ""
     state = ("off (strict run)" if strict is True else "on" if strict is False
              else "state not recorded")
-    lines = ["<div class='coverage'>Model fallbacks: %s &mdash; %d dispatch(es) ran on a "
-             "fallback, not the requested model</div>" % (state, len(subs))]
+    head = ("<div class='coverage'>Model fallbacks: %s &mdash; %d dispatch(es) ran on a "
+            "fallback, not the requested model</div>" % (state, len(subs)))
+    lines = [head]
     for sub in subs:
         lines.append("<div class='coverage'>%s: requested <code>%s</code> &rarr; ran "
                      "<code>%s</code> (%s, rung %s)</div>"
