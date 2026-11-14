@@ -23,6 +23,7 @@ from scripts.tools.sarif_utils import SECRET_KIND
 # scanner output. An overlarge lock simply keeps the advisor in the loop.
 MAX_CARGO_LOCK_BYTES = 8 * 1024 * 1024
 MAX_CARGO_MANIFEST_BYTES = 1024 * 1024
+MAX_CARGO_MANIFEST_INGEST_BYTES = 48 * 1024 * 1024
 MAX_CARGO_MANIFESTS = 1024
 _TRIVY_PACKAGE = re.compile(
     r"(?:^|\s)Package:\s*(\S+)\s+Installed Version:\s*(\S+)(?:\s|$)")
@@ -31,6 +32,18 @@ _MISSING = object()
 
 PackageOrigins = dict[tuple[str, str], set[str]]
 OriginCache = dict[str, PackageOrigins]
+ManifestDocument = dict[str, object]
+ManifestCache = dict[str, ManifestDocument | None]
+
+
+class IngestCache:
+    """Cargo advisory facts and bounded manifest parses for one ingest."""
+
+    def __init__(self):
+        self.package_origins: OriginCache = {}
+        self.manifests: ManifestCache = {}
+        self.manifest_bytes_remaining = MAX_CARGO_MANIFEST_INGEST_BYTES
+        self.manifest_budget_exhausted = False
 
 
 def _cargo_lock_path(target_root, finding):
@@ -73,14 +86,40 @@ def _manifest_path(target_root, base, package_dir):
     return candidate if _inside(root, candidate) else None
 
 
-def _read_toml(path, limit):
-    """Read one regular TOML document without following its leaf or exceeding *limit*."""
-    try:
-        raw = safe_write.read_regular_bytes(path, limit)
-        document = tomllib.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeError, ValueError, RecursionError):
+def _read_toml(path, target_root, cache: IngestCache):
+    """Return one confined, cached TOML document within the ingest budget."""
+    root = os.path.realpath(target_root)
+    real_path = os.path.realpath(path)
+    if not _inside(root, real_path):
         return None
-    return document if isinstance(document, dict) else None
+    if real_path in cache.manifests:
+        return cache.manifests[real_path]
+    if cache.manifest_budget_exhausted or cache.manifest_bytes_remaining <= 0:
+        cache.manifest_bytes_remaining = 0
+        cache.manifest_budget_exhausted = True
+        return None
+
+    limit = min(MAX_CARGO_MANIFEST_BYTES, cache.manifest_bytes_remaining)
+    try:
+        raw = safe_write.read_regular_bytes(real_path, limit)
+        cache.manifest_bytes_remaining -= len(raw)
+        if cache.manifest_bytes_remaining == 0:
+            cache.manifest_budget_exhausted = True
+        document = tomllib.loads(raw.decode("utf-8"))
+    except safe_write.ReadLimitExceeded:
+        # The bounded reader consumed enough bytes to prove that this document
+        # cannot fit in the remaining per-file or per-ingest allowance.
+        cache.manifest_bytes_remaining -= limit
+        if cache.manifest_bytes_remaining == 0:
+            cache.manifest_budget_exhausted = True
+        cache.manifests[real_path] = None
+        return None
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        cache.manifests[real_path] = None
+        return None
+    cached = document if isinstance(document, dict) else None
+    cache.manifests[real_path] = cached
+    return cached
 
 
 def _expand_member_pattern(workspace_dir, pattern, target_root):
@@ -236,7 +275,7 @@ def _manifest_package(package, workspace_package):
     return (name, version), publishable
 
 
-def _publishable_manifest_identities(lock_path, target_root):
+def _publishable_manifest_identities(lock_path, target_root, cache: IngestCache):
     """Exact identities proved by one in-tree publishable Cargo.toml."""
     root_manifest = _manifest_path(target_root, os.path.dirname(lock_path), ".")
     if root_manifest is None:
@@ -254,7 +293,7 @@ def _publishable_manifest_identities(lock_path, target_root):
             if prior != inherited:
                 return set()
             continue
-        document = _read_toml(manifest_path, MAX_CARGO_MANIFEST_BYTES)
+        document = _read_toml(manifest_path, target_root, cache)
         if document is None:
             return set()
         seen[manifest_path] = inherited
@@ -291,22 +330,22 @@ def _publishable_manifest_identities(lock_path, target_root):
     }
 
 
-def _cargo_package_origins(path, target_root, cache):
+def _cargo_package_origins(path, target_root, cache: IngestCache):
     """Map Cargo package identities to fail-closed lock/manifest origin classes."""
-    if path in cache:
-        return cache[path]
+    if path in cache.package_origins:
+        return cache.package_origins[path]
     origins: PackageOrigins = {}
     try:
         raw = safe_write.read_regular_bytes(path, MAX_CARGO_LOCK_BYTES)
         document = tomllib.loads(raw.decode("utf-8"))
     except (OSError, UnicodeError, ValueError, RecursionError):
-        cache[path] = origins
+        cache.package_origins[path] = origins
         return origins
     packages = document.get("package") if isinstance(document, dict) else None
     if not isinstance(packages, list):
-        cache[path] = origins
+        cache.package_origins[path] = origins
         return origins
-    publishable = _publishable_manifest_identities(path, target_root)
+    publishable = _publishable_manifest_identities(path, target_root, cache)
     for package in packages:
         if not isinstance(package, dict):
             continue
@@ -323,7 +362,7 @@ def _cargo_package_origins(path, target_root, cache):
         else:
             origin = "unknown"
         origins.setdefault(identity, set()).add(origin)
-    cache[path] = origins
+    cache.package_origins[path] = origins
     return origins
 
 
@@ -342,7 +381,7 @@ def _advisory_package(finding):
     return (match.group(1), match.group(2)) if match else None
 
 
-def mark(findings, target_root, cache: OriginCache):
+def mark(findings, target_root, cache: IngestCache):
     """Mark and reframe exact in-tree publishable Cargo package advisories.
 
     An ambiguous identity, a malformed lock/manifest, an unpublishable or
@@ -366,6 +405,8 @@ def mark(findings, target_root, cache: OriginCache):
 
 def _mark_finding(finding, target_root, cache):
     """Classify one finding; the public loop owns fail-closed isolation."""
+    if cache.manifest_budget_exhausted:
+        return
     tool = evidence.tool_name(finding)
     if tool not in ADVISORY_ADAPTERS and tool != "trivy":
         return
