@@ -11,6 +11,15 @@
   advisor-confirmed under every gate policy, so an unconfirmed finding never caps. Per-group
   panel grades were already the max-severity rollup of each group's own findings.
 
+- **A glob may name a bracketed directory with fnmatch's escapes (#3644).** Setup on a
+  Next.js-style target proposed `users/[[]id]/route.ts` for a `[id]` route directory, and
+  the glob compiler refused every `[`, so the whole proposal was rejected. `[[]` (a literal
+  `[`) and `[]]` (a literal `]`) are now exact literals in the shared compiler, so a
+  proposal, a committed `match:`/`tests:` entry and `exclude_paths:` all accept them and
+  claim exactly the bracketed path. Every other `[` is still a refused character class.
+  The setup-scan brief says how to write such a segment, and a test-scope literal prefix
+  decodes the escape.
+
 - **A full-repo scan no longer reviews the scanner's own root config (#3642).** The root
   `panopticon.yml` / `.panopticon.yml` -- including the one setup-scan just wrote -- was reviewed
   like target code, and an owner-observed run graded a HIGH finding against the matrix itself.

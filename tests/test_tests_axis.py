@@ -173,3 +173,16 @@ class TestTestsCatalogData(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestEscapedBracketPrefixes(unittest.TestCase):
+    """#3644: a literal prefix is the PATH the compiler matches, so an escaped bracket
+    is decoded -- `app/[[]id]/**` owns `app/[id]`, never the glob's spelling of it."""
+
+    def test_literal_prefix_decodes_escaped_brackets(self):
+        self.assertEqual("app/users/[id]", ta.literal_prefix("app/users/[[]id]/**"))
+        self.assertEqual("a]/b", ta.literal_prefix("!a[]]/b/*.ts"))
+        self.assertEqual({"Users": ["app/users/[id]"]}, ta.distinguishing_prefixes(
+            {"Users": {"match": ["app/users/[[]id]/**"]}}))
+        self.assertTrue(ta.scope_ok("app/users/[id]/route.test.ts", set(),
+                                    [ta.literal_prefix("app/users/[[]id]/**")]))
