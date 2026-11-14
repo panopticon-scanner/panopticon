@@ -242,6 +242,32 @@ class TestSeverityCapOverTheBandGrade(unittest.TestCase):
         self.assertEqual("A", r["groups"][0]["panel_grades"]["security"])
 
 
+class TestSeverityCapReadsTheGatePopulation(unittest.TestCase):
+    def test_an_off_diff_confirmed_critical_does_not_cap_an_on_diff_grade(self):
+        # Under `--gate-scope on-diff` the grade, the health and the gate are about the
+        # change; a confirmed CRITICAL in pre-existing code is active but outside that
+        # population, so it caps nothing -- the cap reads the gate's own population.
+        import scripts.synth.delta as delta_mod
+        groups = [{"name": "g1", "files": ["a.py"]}]
+        critical = _at_line("AG-001", "CRITICAL", 1)
+        verdicts = {evidence_mod.finding_fingerprint(critical): {
+            "finding_id": "AG-001", "verdict": "CONFIRMED", "reasoning": "v"}}
+        for hunk, letter, capped in (([400, 410], "S", False), ([1, 2], "D", True)):
+            with self.subTest(hunk=hunk), _target_with_files(groups, lines=50000) as tgt:
+                r = report_mod.build_report(report_mod.ReportInputs(
+                    run=report_mod.RunConfig(target=tgt, fail_on="high",
+                                             timestamp="2026-01-01T00:00:00Z",
+                                             gate_scope="on-diff"),
+                    findings=findings_mod.FindingSet(findings=[dict(critical)],
+                                                     verdicts=verdicts),
+                    delta=delta_mod.DeltaContext(
+                        diff_hunks={"base": "main", "hunks": {"a.py": [hunk]}}),
+                    plan=plan_mod.PlanInputs(groups_meta=groups)))
+                self.assertEqual(letter, r["summary"]["overall_grade"]
+                                 or r["summary"]["provisional_grade"])
+                self.assertEqual(capped, r["summary"]["grade_cap"] is not None)
+
+
 class TestSeverityCapUnits(unittest.TestCase):
     def test_confirmed_is_the_default_gate_population(self):
         for status, caps in (("tool_confirmed", True), ("advisor_confirmed", True),
