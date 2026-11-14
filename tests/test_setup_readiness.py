@@ -55,12 +55,17 @@ class TestSetupFlow(SetupFixtureBase):
 
         def runner(cmd, **_kw):
             seen.append(list(cmd))
-            return type("R", (), {"returncode": 0})()
+            missing = list(cmd[:3]) == ["docker", "image", "inspect"]
+            return type("R", (), {"returncode": 1 if missing else 0})()
 
         with mock.patch.object(tools_image, "DEFAULT_IMAGE", pinned):
             checks = setup_preflight._check_docker(runner)
-        self.assertEqual(("tools-image", True, "ok"), checks[-1])
         self.assertEqual(["docker", "image", "inspect", pinned], seen[-1])
+        self.assertEqual(
+            ("tools-image", False,
+             "%s image absent for this arch -- pull that exact release digest "
+             "(see DEVELOPMENT.md#stable-tools-image-pins; multi-arch: #461)" % pinned),
+            checks[-1])
 
     def test_nvd_readiness_uses_target_env_and_ambient_fallback_without_secret(self):
         d = _repo(self)

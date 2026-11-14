@@ -86,7 +86,9 @@ class TestDocsMatchTheTree(unittest.TestCase):
         with open(os.path.join(root, "CONTRIBUTING.md"), encoding="utf-8") as fh:
             contributing = fh.read()
         for token in ("## Releases and backports", "release/5.5", "backport:5.5",
-                      "git cherry-pick -x", "one fix per backport PR", "## 5.5.x",
+                      "git cherry-pick -x -m 1 <PR merge commit>",
+                      "main's `## Unreleased` CHANGELOG hunk", "one fix per backport PR",
+                      "## 5.5.x",
                       "Feature work never lands", "DEFAULT_IMAGE", "@sha256:",
                       "`panopticon.yml` cannot override"):
             with self.subTest(token=token):

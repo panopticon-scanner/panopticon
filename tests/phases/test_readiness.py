@@ -34,6 +34,7 @@ import scripts.phases.readiness as readiness
 import scripts.phases.readiness_checks as readiness_checks
 import scripts.phases.runio as runio
 import scripts.run_manifest as run_manifest
+import scripts.tools_image as tools_image
 
 from tests.tools.git_repo import make_git_repo
 
@@ -41,13 +42,10 @@ from tests.tools.git_repo import make_git_repo
 _READINESS = "scripts.phases.readiness"
 _READINESS_CHECKS = "scripts.phases.readiness_checks"
 
-# The one spelling of the pull remedy the operator is supposed to be able to
-# paste. Pinned here as a literal, not imported from the module under test: a
-# remedy that drifts is a remedy that does not work, and importing it would
-# make the test agree with whatever it became.
-PULL_REMEDY = ("docker pull ghcr.io/panopticon-scanner/panopticon-tools:latest "
-               "&& docker tag ghcr.io/panopticon-scanner/panopticon-tools:latest "
-               "panopticon-tools:latest")
+# End-to-end expectations follow the branch-owned default. Focused tests below
+# separately pin the local-main and digest-release shapes, so a release cut can
+# remain the promised one-assignment change without weakening either policy.
+DEFAULT_IMAGE_REMEDY = readiness_checks.image_remedy(tools_image.DEFAULT_IMAGE)
 
 
 class _Probe:
@@ -102,6 +100,13 @@ class _ReadinessCase(unittest.TestCase):
 
 class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
 
+    def test_main_local_remedy_keeps_pull_tag_build_and_opt_out_paths(self):
+        remedy = readiness_checks.image_remedy(tools_image.LOCAL_NAME)
+        self.assertIn("docker pull " + tools_image.REGISTRY_IMAGE, remedy)
+        self.assertIn("docker tag", remedy)
+        self.assertIn("docker build -t " + tools_image.LOCAL_NAME, remedy)
+        self.assertIn("--no-tools", remedy)
+
     def test_release_digest_remedy_never_falls_back_to_main_or_a_local_build(self):
         pinned = "ghcr.io/panopticon-scanner/panopticon-tools@sha256:" + "f" * 64
         remedy = readiness_checks.image_remedy(pinned)
@@ -110,6 +115,26 @@ class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
         self.assertNotIn("docker tag", remedy)
         self.assertNotIn("docker build", remedy)
         self.assertIn("--no-tools", remedy)
+
+    def test_release_digest_default_drives_the_image_row_and_driver_refusal(self):
+        pinned = tools_image.REGISTRY_REPOSITORY + "@sha256:" + "d" * 64
+        expected = readiness_checks.image_remedy(pinned)
+        d = self._repo()
+        with mock.patch.object(tools_image, "DEFAULT_IMAGE", pinned), \
+                mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER",
+                           _docker_runner(daemon=0, image=1)):
+            raw_rows = {name: (ok, detail)
+                        for name, ok, detail in readiness_checks._docker_checks(None)}
+            status = driver.run(self._args(d))
+        surfaces = (raw_rows["tools-image"][1], status["message"],
+                    self._rows(d)["tools-image"]["detail"])
+        self.assertEqual(expected, surfaces[0])
+        for surface in surfaces:
+            with self.subTest(surface=surface):
+                self.assertIn("`docker pull " + pinned + "`", surface)
+                self.assertNotIn(":latest", surface)
+                self.assertNotIn("docker tag", surface)
+                self.assertNotIn("docker build", surface)
 
     def test_online_sidecar_warning_precedes_scouting_and_names_the_pull(self):
         from scripts.tools import egress
@@ -140,8 +165,7 @@ class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
             status = driver.run(self._args(d))
         self.assertEqual(status["status"], "error", status)
         self.assertIsNone(status.get("checkpoint"))
-        self.assertIn(PULL_REMEDY, status["message"])
-        self.assertIn("docker build -t panopticon-tools", status["message"])
+        self.assertIn(DEFAULT_IMAGE_REMEDY, status["message"])
         self.assertIn("--no-tools", status["message"])
         # The whole point: nothing was dispatched. No request file, and no
         # scout artifact, because `coverage` was never reached.
@@ -158,7 +182,7 @@ class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
         rows = self._rows(d)
         self.assertIs(rows["docker"]["ok"], True)
         self.assertIs(rows["tools-image"]["ok"], False)
-        self.assertIn(PULL_REMEDY, rows["tools-image"]["detail"])
+        self.assertIn(DEFAULT_IMAGE_REMEDY, rows["tools-image"]["detail"])
 
     def test_a_missing_python_dependency_refuses_before_the_scout(self):
         # #1639 P15 fix round 2, F7: the dependencies row existed only in the
@@ -208,7 +232,7 @@ class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
                         _docker_runner(daemon=0, image=1)):
             status = orchestrate.loop(args)
         self.assertEqual(status["status"], "error", status)
-        self.assertIn(PULL_REMEDY, status["message"])
+        self.assertIn(DEFAULT_IMAGE_REMEDY, status["message"])
 
     def test_gemini_host_with_unconfigured_or_missing_api_key_auth_refuses_before_the_scout(self):
         d = self._repo()
@@ -301,7 +325,7 @@ class TestTheDonePredicateIsNotACachedPass(_ReadinessCase):
                         _docker_runner(daemon=0, image=1)):
             status = driver.run(self._args(d))
         self.assertEqual(status["status"], "error", status)
-        self.assertIn(PULL_REMEDY, status["message"])
+        self.assertIn(DEFAULT_IMAGE_REMEDY, status["message"])
 
     def test_a_pass_is_not_re_run_on_the_next_invocation(self):
         d = self._repo()

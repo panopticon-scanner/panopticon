@@ -47,6 +47,7 @@ import scripts.phases.readiness as readiness
 import scripts.phases.readiness_plan as readiness_plan
 import scripts.phases.readiness_checks as readiness_checks
 import scripts.repo_config as repo_config
+import scripts.tools_image as tools_image
 from scripts import hosts
 
 from tests.tools.git_repo import make_git_repo
@@ -201,8 +202,8 @@ class TestTheUnreadyMachine(_VerbCase):
         self.assertEqual(1, code)
         self.assertIs(False, body["ready"])
         self.assertEqual(["matrix", "tools-image"], body["failed"])
-        self.assertIn("docker pull ghcr.io/panopticon-scanner/panopticon-tools"
-                      ":latest", body["tools_image"]["remedy"])
+        self.assertEqual(readiness_checks.image_remedy(tools_image.DEFAULT_IMAGE),
+                         body["tools_image"]["remedy"])
         self.assertIn("--no-tools", body["tools_image"]["remedy"])
         self.assertIs(True, body["tools_image"]["docker"])
         self.assertIs(False, body["tools_image"]["image"])
@@ -212,7 +213,8 @@ class TestTheUnreadyMachine(_VerbCase):
     def test_the_image_remedy_is_the_phase_s_own_text_not_a_second_copy(self):
         d = self._repo()
         _code, body = self._json(d, image=1, which=READY_CLI)
-        self.assertEqual(readiness_checks.IMAGE_REMEDY, body["tools_image"]["remedy"])
+        self.assertEqual(readiness_checks.image_remedy(tools_image.DEFAULT_IMAGE),
+                         body["tools_image"]["remedy"])
 
     def test_a_dead_daemon_is_gating_too(self):
         d = self._repo()

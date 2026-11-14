@@ -65,13 +65,15 @@ def _check_docker(runner):
     if docker_ok:
         r2 = _probe(runner, ["docker", "image", "inspect", tools_image.DEFAULT_IMAGE])
         img_ok = getattr(r2, "returncode", 1) == 0
-        action = ("build/pull it" if tools_image.DEFAULT_IMAGE == tools_image.LOCAL_NAME
-                  else "pull that exact release digest")
+        local_image = tools_image.DEFAULT_IMAGE == tools_image.LOCAL_NAME
+        action = "build/pull it" if local_image else "pull that exact release digest"
+        guide = ("DEVELOPMENT.md" if local_image
+                 else "DEVELOPMENT.md#stable-tools-image-pins")
         checks.append(("tools-image", img_ok,
                        "ok" if img_ok else
                        "%s image absent for this arch -- %s "
-                       "(see DEVELOPMENT.md; multi-arch: #461)"
-                       % (tools_image.DEFAULT_IMAGE, action)))
+                       "(see %s; multi-arch: #461)"
+                       % (tools_image.DEFAULT_IMAGE, action, guide)))
     return checks
 
 

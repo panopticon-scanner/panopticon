@@ -25,10 +25,11 @@ Fixes always merge to `main` first. Apply `backport:5.5` when a fix affects the
 supported 5.5 line, and track the backport in the `5.5.x` milestone. After the
 main PR merges:
 
-1. branch from `release/5.5` and run `git cherry-pick -x <merge-or-fix-commit>`;
+1. branch from `release/5.5` and run
+   `git cherry-pick -x -m 1 <PR merge commit>`;
 2. keep one fix per backport PR;
-3. add the user-visible note under a `## 5.5.x` heading in `CHANGELOG.md` on the
-   release branch;
+3. expect main's `## Unreleased` CHANGELOG hunk to conflict, and move that
+   user-visible entry under a `## 5.5.x` heading on the release branch;
 4. open the PR with base `release/5.5` and merge only after its required checks
    pass.
 

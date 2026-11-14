@@ -61,8 +61,6 @@ def image_remedy(image):
               "(meta.tools.panels_with_scanner_context and the tool coverage line).")
 
 
-IMAGE_REMEDY = image_remedy(tools_image.DEFAULT_IMAGE)
-
 _NOT_APPLICABLE = "not applicable (--no-tools)"
 
 # TEST-ONLY injection point; production value is None (see the module
@@ -108,7 +106,7 @@ def _docker_checks(tools_flag):
     rows = []
     for name, ok, detail in setup_preflight._check_docker(runner):
         if name == "tools-image" and ok is False:
-            detail = IMAGE_REMEDY
+            detail = image_remedy(tools_image.DEFAULT_IMAGE)
         rows.append((name, ok, detail))
     return rows
 
@@ -236,7 +234,8 @@ def _tools_image_row():
     if not docker_ok:
         return {"docker": False, "image": False, "ok": False,
                 "remedy": docker_detail}
-    image_ok, image_detail = rows.get("tools-image", (False, IMAGE_REMEDY))
+    image_ok, image_detail = rows.get(
+        "tools-image", (False, image_remedy(tools_image.DEFAULT_IMAGE)))
     # F7: `null`, not the string "ok". A field called `remedy` holding "ok"
     # rendered as `tools-image   ok   ok`, and read as a contract it claimed
     # there was a remedy to apply. The two booleans beside it already say what
