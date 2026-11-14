@@ -55,6 +55,10 @@ def _verify_cell(review_root, findings=2):
             "verdicts": lambda ids: [_advisor_verdict(i) for i in ids]}
 
 
+
+# #3631: the smallest proposal setup_proposal.validate_proposal accepts.
+MIN_PROPOSAL = {"groups": [{"capability": "Auth", "match": ["src/auth/**"]}]}
+
 class TestRoleOf(unittest.TestCase):
     def test_roles_are_keyed_on_the_out_file_name(self):
         cases = {
@@ -403,10 +407,10 @@ class TestWriteReply(unittest.TestCase):
         for error in (OSError("disk full"), ValueError("escaping path")):
             with self.subTest(error=error), \
                  mock.patch.object(runio, "_write_json", side_effect=error) as writer:
-                ok, reason = persist.write_reply(entry, '{"groups": []}')
+                ok, reason = persist.write_reply(entry, json.dumps(MIN_PROPOSAL))
             self.assertFalse(ok)
             self.assertEqual(reason, "could not write %s: %s" % (entry["out_file"], error))
-            writer.assert_called_once_with(entry["out_file"], {"groups": []})
+            writer.assert_called_once_with(entry["out_file"], MIN_PROPOSAL)
             self.assertFalse(os.path.exists(entry["out_file"]))
 
     def test_a_rejected_escaping_parent_does_not_delete_its_staging_file(self):
@@ -417,12 +421,86 @@ class TestWriteReply(unittest.TestCase):
             stream.write("KEEP")
         os.symlink(outside, self._out("escape"))
         entry = _entry(self._out("escape", "setup-proposal.json"))
-        ok, reason = persist.write_reply(entry, "{}")
+        ok, reason = persist.write_reply(entry, json.dumps(MIN_PROPOSAL))
         self.assertFalse(ok)
         self.assertIn("artifact path escapes", reason)
         with open(victim, encoding="utf-8") as stream:
             self.assertEqual(stream.read(), "KEEP")
         self.assertEqual(os.listdir(outside), ["setup-proposal.json.tmp"])
+
+
+class TestASetupProposalIsValidatedAtPersist(unittest.TestCase):
+    """#3631: persist applies ingest's own validator (setup_proposal.validate_proposal),
+    so `{}` -- what setup-scan returned when agy's read guard refused its relative
+    reads -- is a failed dispatch naming the role, not an accepted reply."""
+
+    def _entry(self):
+        return {"id": "setup-scan", "out_file": "/r/.panopticon/setup-proposal.json"}
+
+    def test_an_empty_or_shapeless_proposal_is_refused_naming_the_role(self):
+        for data, why in (({}, "'groups' must be a non-empty list"),
+                          ({"groups": []}, "'groups' must be a non-empty list"),
+                          ({"groups": ["Auth"]}, "proposal group 0: must be a mapping"),
+                          ({"groups": [{"capability": "Auth"}]}, "match"),
+                          ([], "top-level must be a mapping")):
+            with self.subTest(data=data):
+                ok, reason = persist.accepts(self._entry(), data)
+                self.assertFalse(ok)
+                self.assertTrue(reason.startswith("setup-scan proposal is not valid: "), reason)
+                self.assertIn(why, reason)
+
+    def test_a_minimal_valid_proposal_is_accepted(self):
+        self.assertEqual((True, ""), persist.accepts(self._entry(), MIN_PROPOSAL))
+
+    def test_persist_and_ingest_share_one_validator(self):
+        import scripts.setup_proposal as setup_proposal
+        with mock.patch.object(setup_proposal, "validate_proposal",
+                               return_value=["sentinel rule"]) as rule:
+            ok, reason = persist.accepts(self._entry(), MIN_PROPOSAL)
+        rule.assert_called_once_with(MIN_PROPOSAL, review_root="/r")
+        self.assertEqual((False, "setup-scan proposal is not valid: sentinel rule"), (ok, reason))
+
+    def test_an_absolute_glob_under_the_root_is_refused_at_persist(self):
+        # #3632 review 1: the root comes from the reply's own artifact path.
+        for glob in ("/r/src/**", "!/r/src/gen/**"):
+            with self.subTest(glob=glob):
+                data = {"groups": [{"capability": "Auth", "match": ["src/**", glob]}]}
+                ok, reason = persist.accepts(self._entry(), data)
+                self.assertFalse(ok)
+                self.assertIn("is an absolute path under the review root; globs must be "
+                              "root-relative", reason)
+        ok, _ = persist.accepts(self._entry(), {"groups": [{"capability": "Auth",
+                                                             "match": ["/src/**"]}]})
+        self.assertTrue(ok)                                  # an anchored glob, not the root
+
+    def test_a_reply_whose_root_cannot_be_derived_is_refused_not_unchecked(self):
+        # #3632 r2: fail closed -- no root means the absolute-glob check cannot run.
+        out_file = "/x/setup-proposal.json"
+        ok, reason = persist.accepts(dict(self._entry(), out_file=out_file),
+                                     {"groups": [{"capability": "Auth", "match": ["/x/src/**"]}]})
+        self.assertFalse(ok)
+        self.assertEqual("setup-scan reply cannot be placed: out_file %r has no .panopticon "
+                         "segment" % out_file, reason)
+
+    def test_the_refusal_reason_is_masked_and_capped(self):
+        # #3632 review 2: agent-written capability names reach the reason.
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        data = {"groups": [{"capability": "x\x1b[31m%s" % token + "y" * 4000}]}
+        ok, reason = persist.accepts(self._entry(), data)
+        self.assertFalse(ok)
+        self.assertNotIn(token, reason)
+        self.assertNotIn("\x1b", reason)
+        self.assertLessEqual(len(reason), len("setup-scan proposal is not valid: ")
+                             + persist.REASON_CAP)
+
+    def test_a_refused_proposal_is_a_failed_write_and_nothing_lands(self):
+        with tempfile.TemporaryDirectory() as d:
+            out = os.path.join(d, ".panopticon", "setup-proposal.json")
+            os.makedirs(os.path.dirname(out))
+            ok, reason = persist.write_reply(_entry(out), "{}")
+            self.assertFalse(ok)
+            self.assertIn("setup-scan proposal is not valid", reason)
+            self.assertFalse(os.path.exists(out))
 
 
 class TestVerifyCellCompleteness(unittest.TestCase):

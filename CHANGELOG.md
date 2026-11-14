@@ -2,10 +2,20 @@
 
 ## Unreleased
 
+- **Setup completes on agy: the setup-scan brief pins the absolute repo root, and persist
+  validates the proposal (#3631).** agy starts its agent in a scratch workspace (the confinement
+  design), and the setup-scan brief was the one prompt with no absolute review root. Its
+  relative reads resolved in the scratch directory, the read guard refused them, and the agent
+  returned `{}`. The brief now opens with the same `Repo root:` pin the advisors carry, plus a
+  line saying reads use absolute paths while the proposed globs stay relative. Persist now
+  validates a setup proposal with ingest's own `setup_proposal.validate_proposal`, so `{}` or
+  `{"groups": []}` is a failed dispatch naming the role, not an accepted reply that setup
+  rejects later. An audit of every role on every host found no other prompt that relies on a
+  relative cwd; a test now pins the absolute root in each one.
 - **Cross-run views disclose differing model fallbacks and strict state (#3626).**
   `devtools/compare_runs.py` and the HTML `--compare` view now say when the runs'
   `meta.model_strict` differ, or when any run ran a dispatch on a fallback rung: one line per
-  entry with its role, the requested model (per run when the runs disagree), and what each run
+  entry with its role and requested model (each per run when the runs disagree), and what each run
   ran (the bound model and rung, with the route when routes differ, "as requested", or "not
   recorded"). Unreadable fallback records are counted and said, never read as "none". The
   comparison JSON gains a `models` block. A report from before #3582 reads as "not recorded",
