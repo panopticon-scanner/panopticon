@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- **agy's `Individual quota reached` response now pauses as a host outage (#3640).** The
+  free-text classifier recognizes that account-level sentence with or without agy's reset tail
+  and a leading 429, so the failed launch is not charged to an entry. The match keeps agy's
+  `Individual` scope and a sentence boundary: bare `quota reached` lines from tools inside kimi
+  or codex stderr, identifiers, and ordinary discussion remain entry failures. Certification and
+  grade behavior are unchanged here.
+
+- **Cargo advisory budget diagnostics are pinned and documented per output (#3638).** An
+  oversized manifest that spends the last byte of the shared ingest budget must increment the
+  operator-visible exhaustion count, while a later tool output that only reuses the completed
+  fail-closed origin result must not inherit that count. The report schema now describes the
+  optional per-output disposition field and its absent-key meaning.
 - **npm advisories against the project's own packages are first-party (#3623).** #3593's
   Cargo rule now has an npm twin. An osv-scanner or Trivy advisory naming an exact name and
   version from the review root's own `package-lock.json` / `npm-shrinkwrap.json` (lockfile v2+;

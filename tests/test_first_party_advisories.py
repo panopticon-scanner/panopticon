@@ -657,6 +657,71 @@ class TestCargoFirstPartyAdvisoryIngest(unittest.TestCase):
         self.assertTrue(cache.manifest_budget_exhausted)
         self.assertEqual(cache.manifest_bytes_remaining, 0)
 
+    def test_oversized_manifest_that_drains_budget_reports_one_exhaustion(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        _write_lock(root.name)
+        _write_manifest(root.name)
+        tools = os.path.join(root.name, "tools")
+        os.mkdir(tools)
+        document = {"results": [{
+            "source": {"path": "/src/Cargo.lock"},
+            "packages": [_osv_package(
+                WORKSPACE_NAME, WORKSPACE_VERSION, "RUSTSEC-2099-0001")],
+        }]}
+        with open(os.path.join(tools, "osv-scanner.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump(document, fh)
+        budget = os.path.getsize(os.path.join(root.name, "Cargo.lock")) + 1
+
+        with mock.patch.object(
+                first_party_advisory,
+                "MAX_CARGO_MANIFEST_INGEST_BYTES", budget):
+            ingested, dispositions = ingest_tools.ingest_dir_detailed(
+                tools, "g1", target_root=root.name)
+
+        self.assertNotIn("package_origin", ingested[0]["tool_evidence"])
+        self.assertEqual(
+            dispositions["osv-scanner"].get(
+                "advisory_manifest_budget_exhausted"),
+            1,
+        )
+
+    def test_budget_exhaustion_disposition_is_per_tool_file(self):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        _write_lock(root.name)
+        _write_manifest(root.name)
+        tools = os.path.join(root.name, "tools")
+        os.mkdir(tools)
+        osv_document = {"results": [{
+            "source": {"path": "/src/Cargo.lock"},
+            "packages": [_osv_package(
+                WORKSPACE_NAME, WORKSPACE_VERSION, "RUSTSEC-2099-0001")],
+        }]}
+        for filename, document in (
+                ("osv-scanner.json", osv_document),
+                ("trivy.sarif", _trivy_document())):
+            with open(os.path.join(tools, filename), "w", encoding="utf-8") as fh:
+                json.dump(document, fh)
+        budget = os.path.getsize(os.path.join(root.name, "Cargo.lock")) + 1
+
+        with mock.patch.object(
+                first_party_advisory,
+                "MAX_CARGO_MANIFEST_INGEST_BYTES", budget):
+            _ingested, dispositions = ingest_tools.ingest_dir_detailed(
+                tools, "g1", target_root=root.name)
+
+        self.assertEqual(
+            dispositions["osv-scanner"].get(
+                "advisory_manifest_budget_exhausted"),
+            1,
+        )
+        self.assertNotIn(
+            "advisory_manifest_budget_exhausted",
+            dispositions["trivy"],
+        )
+
     def test_each_ingest_gets_a_fresh_budget_and_reports_exhaustion(self):
         first_root = tempfile.TemporaryDirectory()
         second_root = tempfile.TemporaryDirectory()
