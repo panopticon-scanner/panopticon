@@ -1068,15 +1068,24 @@ def _render_compare_models(base, head):
     labels = ("Base", "Head")
     if not models["disclose"]:
         return ""
-    lines = ["<div class='coverage'>Models differ or fell back: %s</div>" % " &middot; ".join(
+    head = ("<div class='coverage'>Models differ or fell back: %s</div>" % " &middot; ".join(
         "%s %s" % (label, _escape(model_disclosure.strict_word(s)))
-        for label, s in zip(labels, models["strict"]))]
+        for label, s in zip(labels, models["strict"])))
+    lines = [head]
+    for label, value in zip(labels, models["unreadable"]):
+        if value:
+            lines.append("<div class='coverage'>%s: %s</div>"
+                         % (label, _escape(model_disclosure.unreadable_word(value))))
     for row in models["entries"]:
-        lines.append("<div class='coverage'>%s (%s): requested <code>%s</code> &mdash; %s%s</div>"
-                     % (_escape(row["entry"]), _escape(row["role"]), _escape(row["requested"]),
-                        " &middot; ".join("%s %s" % (label, _escape(model_disclosure.ran_word(r)))
-                                          for label, r in zip(labels, row["runs"])),
-                        "" if row["same"] else " &mdash; differs"))
+        shared = row["requested"]
+        runs = " &middot; ".join("%s %s" % (label, _escape(model_disclosure.ran_word(
+            r, with_requested=not shared, with_route=row["routes_differ"])))
+            for label, r in zip(labels, row["runs"]))
+        lines.append("<div class='coverage'>%s%s: %s%s%s</div>"
+                     % (_escape(row["entry"]),
+                        " (%s)" % _escape(row["role"]) if row["role"] else "",
+                        "requested <code>%s</code> &mdash; " % _escape(shared) if shared else "",
+                        runs, "" if row["same"] else " &mdash; differs"))
     return "<div class='compare-models'>%s</div>\n" % "\n".join(lines)
 
 

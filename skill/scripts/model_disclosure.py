@@ -9,9 +9,16 @@ non-strict, would hide an instrument change, so every cross-run view
 Disclosure only: nothing here refuses or alters a comparison.
 
 A report from before #3582 records neither fact. It reads as NOT RECORDED --
-never as strict, and never as "no fallbacks". A report from #3582 on that
-recorded `model_strict` and carries no `model_substitutions` ran every dispatch
-as requested (the key is present only when non-empty).
+never as strict, and never as "no fallbacks". A report that recorded
+`model_strict` and carries no `model_substitutions` is read as having run every
+dispatch as requested: the key is present only when non-empty. That reading
+rests on the run's ledger, which is where the substitutions come from. A
+session-mode run has no ledger, so for it "as requested" means "no fallback was
+recorded", not "proven to have run as requested".
+
+A `model_substitutions` that is not a list is UNREADABLE (its fallbacks are
+unknown), and records that fail the shape check are counted and disclosed, never
+silently dropped into "none ran on a fallback".
 
 Reports are untrusted input (`--compare` is the documented route for a foreign
 report.json), so only well-formed records are read and the callers escape
@@ -36,56 +43,87 @@ def _record(value):
 
 
 def run_models(meta):
-    """{"strict": True|False|None, "substitutions": [records]|None} for one run.
+    """One run's model facts.
 
-    None means not recorded (a report from before #3582)."""
+    `strict`: True, False, or None (not recorded). `substitutions`: the readable
+    records, first record per entry winning as the producer's does, or None when
+    the run recorded nothing or its list is unreadable. `dropped`: records that
+    failed the shape check. `malformed`: the
+    key is present but not a list."""
     meta = meta if isinstance(meta, dict) else {}
     strict = meta.get("model_strict")
     strict = strict if isinstance(strict, bool) else NOT_RECORDED
     raw = meta.get("model_substitutions")
     subs: list | None
+    dropped, malformed = 0, False
     if isinstance(raw, list):
-        subs = [r for r in map(_record, raw) if r is not None]
+        subs, seen = [], set()
+        for record in map(_record, raw):
+            if record is None:
+                dropped += 1
+                continue
+            if record["entry"] in seen:          # first write wins, as the producer's
+                continue
+            seen.add(record["entry"])
+            subs.append(record)
+    elif raw is not None:
+        subs, malformed = NOT_RECORDED, True
     else:
         subs = [] if strict is not NOT_RECORDED else NOT_RECORDED
-    return {"strict": strict, "substitutions": subs}
+    return {"strict": strict, "substitutions": subs, "dropped": dropped, "malformed": malformed}
 
 
 def compare_models(metas):
     """What a cross-run view must disclose about the runs' models.
 
     `strict`: each run's strict state (None: not recorded).
-    `entries`: one row per entry that ran on a fallback in ANY run -- its role, the
-    requested model, and per run the model it ran (`bound`, with the rung), "as
-    requested", or None when that run recorded nothing. `same` says whether every
-    run that recorded the entry ran the same model.
-    `disclose`: the strict states differ (not recorded counts as its own state), or
-    any run fell back. `recorded`: whether any run recorded anything at all."""
+    `entries`: one row per entry that ran on a fallback in ANY run. Per run, what
+    that run did: a fallback (its own role, requested, bound, rung, route and
+    reason), "as requested", or None when that run's fallbacks are unknown.
+    `requested` is the one requested model every falling-back run agrees on, else
+    None (print it per run). `same`: every run recorded the entry and did the same
+    thing (requested, bound and route). `routes_differ`: the falling-back runs used
+    different routes.
+    `unreadable`: per run, how many fallback records could not be read, or "all"
+    when its list is malformed.
+    `disclose`: the strict states differ (not recorded counts as its own state),
+    any run fell back, or any run had unreadable records. `recorded`: whether any
+    run recorded anything. `partial`: some run's fallbacks are unknown."""
     runs = [run_models(m) for m in metas]
     strict = [r["strict"] for r in runs]
     by_entry: dict = {}
     for i, run in enumerate(runs):
         for sub in run["substitutions"] or ():
-            row = by_entry.setdefault(sub["entry"], {
-                "entry": sub["entry"], "role": sub["role"], "requested": sub["requested"],
-                "runs": [None] * len(runs)})
-            row["runs"][i] = {"bound": sub["bound"], "rung": sub["rung"],
-                              "route": sub["route"], "reason": sub["reason"]}
+            row = by_entry.setdefault(sub["entry"], {"entry": sub["entry"],
+                                                     "runs": [None] * len(runs)})
+            row["runs"][i] = {k: sub[k] for k in ("role", "requested", "bound", "rung",
+                                                  "route", "reason")}
     entries = []
     for entry in sorted(by_entry):
         row = by_entry[entry]
         for i, run in enumerate(runs):
             if row["runs"][i] is None and run["substitutions"] is not NOT_RECORDED:
                 row["runs"][i] = AS_REQUESTED
-        seen = [r["bound"] if isinstance(r, dict) else r for r in row["runs"] if r is not None]
-        row["same"] = len(set(seen)) <= 1 and None not in row["runs"]
+        fell_back = [r for r in row["runs"] if isinstance(r, dict)]
+        requested = {r["requested"] for r in fell_back}
+        roles = {r["role"] for r in fell_back}
+        did = {(r["requested"], r["bound"], r["route"]) if isinstance(r, dict) else r
+               for r in row["runs"]}
+        row["requested"] = requested.pop() if len(requested) == 1 else None
+        row["role"] = roles.pop() if len(roles) == 1 else None
+        row["routes_differ"] = len({r["route"] for r in fell_back}) > 1
+        row["same"] = None not in row["runs"] and len(did) == 1
         entries.append(row)
+    unreadable = ["all" if r["malformed"] else r["dropped"] for r in runs]
     return {"strict": strict,
             "strict_differs": len(set(strict)) > 1,
             "entries": entries,
-            "disclose": len(set(strict)) > 1 or bool(entries),
+            "unreadable": unreadable,
+            "disclose": len(set(strict)) > 1 or bool(entries) or any(unreadable),
             "recorded": any(s is not NOT_RECORDED for s in strict)
-                        or any(r["substitutions"] for r in runs)}
+                        or any(r["substitutions"] or r["malformed"] or r["dropped"]
+                               for r in runs),
+            "partial": any(r["substitutions"] is NOT_RECORDED for r in runs)}
 
 
 def strict_word(value):
@@ -93,8 +131,20 @@ def strict_word(value):
     return {True: "fallbacks off (strict)", False: "fallbacks on"}.get(value, "not recorded")
 
 
-def ran_word(value):
-    """How one run's model for an entry reads to an operator."""
+def ran_word(value, *, with_requested=False, with_route=False):
+    """How one run's model for an entry reads to an operator. `with_requested` names
+    the run's own requested model (the runs disagree on it); `with_route` names the
+    route (the runs used different ones)."""
     if isinstance(value, dict):
-        return "ran %s (fallback rung %d: %s)" % (value["bound"], value["rung"], value["reason"])
+        return "%sran %s%s (fallback rung %d: %s)" % (
+            "requested %s, " % value["requested"] if with_requested else "",
+            value["bound"], " via route %s" % value["route"] if with_route else "",
+            value["rung"], value["reason"])
     return "ran as requested" if value == AS_REQUESTED else "not recorded"
+
+
+def unreadable_word(value):
+    """How a run's unreadable fallback records read to an operator, or "" for none."""
+    if value == "all":
+        return "fallback records unreadable (not a list)"
+    return "%d fallback record%s unreadable" % (value, "" if value == 1 else "s") if value else ""

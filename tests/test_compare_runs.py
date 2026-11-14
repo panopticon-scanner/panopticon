@@ -804,7 +804,7 @@ class TestModelDisclosure(Workspace):
     def test_an_old_report_reads_not_recorded(self):
         _doc, lines = self._summary({"model_strict": True}, {})
         self.assertIn("MODELS DIFFER OR FELL BACK: run1 fallbacks off (strict), run2 not "
-                      "recorded; 0 entries ran on a fallback in some run", lines)
+                      "recorded; 0 entries ran on a fallback in the runs that recorded it", lines)
         _doc, lines = self._summary({}, {})
         self.assertIn("models: model fallbacks not recorded on any run (the reports predate "
                       "#3582)", lines)
@@ -815,13 +815,37 @@ class TestModelDisclosure(Workspace):
                       lines)
         self.assertFalse(any(line.startswith("MODELS") for line in lines))
 
-    def test_model_text_from_a_report_is_made_inert(self):
-        evil = dict(self.SUB, entry="review-\x1b[31mred", requested="x\u202ey")
-        _doc, lines = self._summary({"model_strict": False, "model_substitutions": [evil]},
-                                    {"model_strict": False})
-        text = "\n".join(lines)
-        self.assertNotIn("\x1b", text)
-        self.assertNotIn("\u202e", text)
+    def test_every_model_field_from_a_report_is_made_inert(self):
+        # #3633 review: poison EVERY printed field, on both the shared and per-run paths.
+        for field in ("entry", "role", "requested", "bound", "route", "reason"):
+            for shared in (True, False):
+                with self.subTest(field=field, shared=shared):
+                    evil = dict(self.SUB, **{field: "x\x1b[31m\u202ey"})
+                    other = dict(evil, requested="other-high", route="signin") if not shared \
+                        else evil
+                    _doc, lines = self._summary(
+                        {"model_strict": False, "model_substitutions": [evil]},
+                        {"model_strict": False, "model_substitutions": [other]})
+                    text = "\n".join(lines)
+                    self.assertNotIn("\x1b", text)
+                    self.assertNotIn("\u202e", text)
+
+    def test_per_run_requests_routes_and_unreadable_records_are_said(self):
+        a = dict(self.SUB, requested="gemini-4-argon-high", bound="gemini-3.8-flash-medium")
+        b = dict(self.SUB, requested="gemini-4-carbon-high", bound="gemini-3.8-flash-medium",
+                 route="signin")
+        _doc, lines = self._summary({"model_strict": False, "model_substitutions": [a]},
+                                    {"model_strict": False, "model_substitutions": [b, "junk"]})
+        self.assertIn("  run2: 1 fallback record unreadable", lines)
+        self.assertIn("  review-g-SEC (domain_panel): run1 requested gemini-4-argon-high, ran "
+                      "gemini-3.8-flash-medium via route key (fallback rung 1: not listed on route "
+                      "key); run2 requested gemini-4-carbon-high, ran gemini-3.8-flash-medium via "
+                      "route signin (fallback rung 1: not listed on route key) -- DIFFERS ACROSS "
+                      "RUNS", lines)
+        _doc, lines = self._summary({"model_strict": True, "model_substitutions": {"x": 1}},
+                                    {"model_strict": True})
+        self.assertIn("  run1: fallback records unreadable (not a list)", lines)
+        self.assertFalse(any("none ran on a fallback" in line for line in lines))
 
     def test_the_document_carries_the_models_block(self):
         doc, _lines = self._summary({"model_strict": False, "model_substitutions": [self.SUB]},

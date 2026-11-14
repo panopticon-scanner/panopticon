@@ -86,6 +86,9 @@ IDENTITY = (
     ("profile", lambda r: _basis(r).get("profile")),
 )
 TITLE_LIMIT = 100
+# #3626: a run's model line names its request, bound model, route and reason; a title's
+# bound would cut the disclosure mid-sentence.
+MODEL_LIMIT = 300
 # The schema's `meta.target_commit` pattern (#3560).
 COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
@@ -449,15 +452,22 @@ def model_lines(models):
     if not models["disclose"]:
         return ["models: every run %s, and none ran on a fallback"
                 % model_disclosure.strict_word(models["strict"][0])]
-    lines = ["MODELS DIFFER OR FELL BACK: %s; %d entr%s ran on a fallback in some run" % (
+    lines = ["MODELS DIFFER OR FELL BACK: %s; %d entr%s ran on a fallback in %s" % (
         ", ".join("run%d %s" % (i + 1, model_disclosure.strict_word(s))
                   for i, s in enumerate(models["strict"])),
-        len(models["entries"]), "y" if len(models["entries"]) == 1 else "ies")]
+        len(models["entries"]), "y" if len(models["entries"]) == 1 else "ies",
+        "the runs that recorded it" if models["partial"] else "some run")]
+    for i, value in enumerate(models["unreadable"]):
+        if value:
+            lines.append("  run%d: %s" % (i + 1, model_disclosure.unreadable_word(value)))
     for row in models["entries"]:
-        lines.append("  %s (%s): requested %s; %s%s" % (
-            _text(row["entry"]), _text(row["role"]), _text(row["requested"]),
-            "; ".join("run%d %s" % (i + 1, _text(model_disclosure.ran_word(ran)))
-                      for i, ran in enumerate(row["runs"])),
+        shared = row["requested"]
+        lines.append("  %s%s: %s%s%s" % (
+            _text(row["entry"]), " (%s)" % _text(row["role"]) if row["role"] else "",
+            "requested %s; " % _text(shared) if shared else "",
+            "; ".join("run%d %s" % (i + 1, inert_text(model_disclosure.ran_word(
+                ran, with_requested=not shared, with_route=row["routes_differ"]),
+                limit=MODEL_LIMIT)) for i, ran in enumerate(row["runs"])),
             "" if row["same"] else " -- DIFFERS ACROSS RUNS"))
     return lines
 

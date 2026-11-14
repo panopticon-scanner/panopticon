@@ -1111,12 +1111,30 @@ class TestCompareModelDisclosure(unittest.TestCase):
                                                      {"model_strict": True}))
         self.assertNotIn("Models differ", self._pair({}, {}))
 
-    def test_report_text_is_escaped(self):
-        out = self._pair({"model_strict": False,
-                          "model_substitutions": [dict(self.SUB, entry="<script>x</script>")]},
-                         {"model_strict": False})
-        self.assertIn("&lt;script&gt;x&lt;/script&gt;", out)
-        self.assertNotIn("<script>x</script>", out)
+    def test_every_field_is_escaped_on_both_paths(self):
+        # #3633 review: poison EVERY printed field, shared-request and per-run paths alike.
+        for field in ("entry", "role", "requested", "bound", "route", "reason"):
+            for shared in (True, False):
+                with self.subTest(field=field, shared=shared):
+                    evil = dict(self.SUB, **{field: "<script>x</script>"})
+                    other = dict(evil, requested="other-high", route="signin") if not shared \
+                        else evil
+                    out = self._pair({"model_strict": False, "model_substitutions": [evil]},
+                                     {"model_strict": False, "model_substitutions": [other]})
+                    if not (field == "route" and shared):     # a shared route is not shown
+                        self.assertIn("&lt;script&gt;x&lt;/script&gt;", out)
+                    self.assertNotIn("<script>x</script>", out)
+
+    def test_per_run_requests_and_unreadable_records(self):
+        a = dict(self.SUB, requested="gemini-4-argon-high", bound="gemini-3.8-flash-medium")
+        b = dict(self.SUB, requested="gemini-4-carbon-high", bound="gemini-3.8-flash-medium")
+        out = self._pair({"model_strict": False, "model_substitutions": [a, "junk"]},
+                         {"model_strict": False, "model_substitutions": [b]})
+        self.assertIn("Base: 1 fallback record unreadable", out)
+        self.assertIn("review-g-SEC (domain_panel): Base requested gemini-4-argon-high, ran "
+                      "gemini-3.8-flash-medium (fallback rung 1: not listed on route key) "
+                      "&middot; Head requested gemini-4-carbon-high, ran gemini-3.8-flash-medium "
+                      "(fallback rung 1: not listed on route key) &mdash; differs", out)
 
 
 class TestChartAggregations(unittest.TestCase):

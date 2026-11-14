@@ -5,10 +5,11 @@
 - **Cross-run views disclose differing model fallbacks and strict state (#3626).**
   `devtools/compare_runs.py` and the HTML `--compare` view now say when the runs'
   `meta.model_strict` differ, or when any run ran a dispatch on a fallback rung: one line per
-  entry with its role, the requested model, and what each run ran (the bound model and rung,
-  "as requested", or "not recorded"). The comparison JSON gains a `models` block. A report
-  from before #3582 reads as "not recorded", never as strict or as no fallbacks. Disclosure
-  only: nothing is refused or altered.
+  entry with its role, the requested model (per run when the runs disagree), and what each run
+  ran (the bound model and rung, with the route when routes differ, "as requested", or "not
+  recorded"). Unreadable fallback records are counted and said, never read as "none". The
+  comparison JSON gains a `models` block. A report from before #3582 reads as "not recorded",
+  never as strict or as no fallbacks. Disclosure only: nothing is refused or altered.
 - **Documented model fallbacks: a per-role ladder per route, never silent (#3582).**
   A role in `model-profiles.yml` may name `fallbacks: {<route>: [...]}`, tried in order only when
   the route's live model list lacks the requested model. Today only agy's API-key route has such a
