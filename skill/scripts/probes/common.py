@@ -619,7 +619,7 @@ def probe_discovery_surface(host, review_root, disclose=None):
 
     Can only REFUTE, for the shadow scan's reason: finding nothing says
     nothing about whether the host enforces anything. Not being able to LOOK
-    -- an unreadable directory, or a tree so deep or so wide that a cap
+    -- an unreadable directory, or a tree with so many entries that the cap
     stopped the walk -- refutes too, because UNKNOWN loses to PROVEN in
     `hosts.resolve_state` and the miss would be invisible.
 
