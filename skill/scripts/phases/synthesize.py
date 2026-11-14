@@ -371,6 +371,9 @@ def synthesize_execute(review_root, manifest):
         cmd += ["--target-commit", manifest["target_commit"]]
     if isinstance(manifest.get("target_dirty"), bool):
         cmd += ["--target-dirty", "true" if manifest["target_dirty"] else "false"]
+    # #3582: whether this run's model fallbacks were off, for the report's disclosure.
+    if isinstance(manifest.get("model_strict"), bool):
+        cmd += ["--model-strict", "true" if manifest["model_strict"] else "false"]
     # SEC-377944137 (#1832): threaded rather than re-read by the child for the
     # reason above, and for one more -- `synth/` must not import
     # `scripts.run_manifest`, so the stamp's two facts cross the seam, not the

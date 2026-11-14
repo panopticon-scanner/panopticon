@@ -392,6 +392,15 @@ def _manifest_for_run(args, review_root, worktree, base, scope, pr_base, first, 
             # keeps a bare `driver run` resume from conflicting with itself.
             security_mode=args.security or resolution.effective.get("security"),
             base=base, flags=cli_flags, scope=scope, pr=args.pr)
+        # #3582 (#3627 review 1): the manifest's `model_strict` is the run's truth; a
+        # resume under a different strict state would mix models within one run.
+        recorded = manifest.get(run_manifest.MODEL_STRICT)
+        if isinstance(recorded, bool) and recorded != model_resolver.strict_models():
+            conflicts = list(conflicts) + [
+                "model_strict: this run was started with model fallbacks %s, and %s=%r now "
+                "turns them %s" % ("off" if recorded else "on", model_resolver.STRICT_ENV,
+                                   os.environ.get(model_resolver.STRICT_ENV, ""),
+                                   "on" if recorded else "off")]
         if conflicts:
             return None, runio._error_status("flag drift (use --reset to start over): "
                                        + "; ".join(conflicts))

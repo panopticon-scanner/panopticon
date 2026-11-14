@@ -100,11 +100,40 @@ class TestModelResolver(unittest.TestCase):
                             ({"CI": "false"}, False), ({"CI": "0"}, False),
                             ({"PANOPTICON_MODEL_STRICT": "1"}, True),
                             ({"PANOPTICON_MODEL_STRICT": "0", "CI": "true"}, False),
-                            ({"PANOPTICON_MODEL_STRICT": "yes"}, True)):
+                            ({"PANOPTICON_MODEL_STRICT": "yes"}, True),
+                            ({"PANOPTICON_MODEL_STRICT": "true"}, True),
+                            ({"PANOPTICON_MODEL_STRICT": "false", "CI": "true"}, False)):
             with self.subTest(env=env):
                 self.assertIs(strict, mr.strict_models(env))
         with self.assertRaisesRegex(ValueError, "neither on .1. nor off .0."):
             mr.strict_models({"PANOPTICON_MODEL_STRICT": "maybe"})
+
+    def test_the_run_start_check_refuses_a_bad_strict_value_or_ladder(self):
+        # #3627 review 2, 3: refused before any reset or paid dispatch.
+        mr.validate_env_overrides("agy")
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_STRICT": "maybe"}), \
+                self.assertRaisesRegex(ValueError, "neither on"):
+            mr.validate_env_overrides("agy")
+        with mock.patch.dict(mr._KIMI_FALLBACK, {"scout": {
+                "model": "primary", "fallbacks": {"key": ["k3"]}}}), \
+                mock.patch.object(mr, "_PROFILES", {"hosts": {}}), \
+                self.assertRaisesRegex(ValueError, "model fallbacks cannot be honoured: kimi "
+                                                   "scout .hard-coded. names fallbacks"):
+            mr.validate_env_overrides("claude")
+
+    def test_an_explicit_strict_argument_wins_over_the_env(self):
+        # The run manifest's model_strict, passed by requests.bound_policy, is the truth.
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_STRICT": "0"}):
+            self.assertNotIn("fallbacks", mr.entry_policy("agy", "domain_panel", strict=True))
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_STRICT": "1"}):
+            self.assertIn("fallbacks", mr.entry_policy("agy", "domain_panel", strict=False))
+        import scripts.phases.requests as requests
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_STRICT": "0"}):
+            self.assertNotIn("fallbacks", requests.bound_policy(
+                "agy", "domain_panel", {"model_strict": True}))
+            self.assertIn("fallbacks", requests.bound_policy("agy", "domain_panel", None))
+            self.assertIn("fallbacks", requests.bound_policy(
+                "agy", "domain_panel", {"model_strict": "yes"}))      # unreadable: env
 
     def test_strict_runs_and_operator_named_models_carry_no_ladder(self):
         for env in ({"PANOPTICON_MODEL_STRICT": "1"},
@@ -135,7 +164,12 @@ class TestModelResolver(unittest.TestCase):
                 ("agy", {"fallbacks": {}}, "not a route-to-ladder"),
                 ("agy", {"fallbacks": {"key": []}}, "not a non-empty list"),
                 ("agy", {"fallbacks": {"key": ["Gemini 4"]}}, "not a non-empty list"),
-                ("agy", {"fallbacks": {"key": ["a-1", "a-1"]}}, "repeats a model")):
+                ("agy", {"fallbacks": {"key": ["a-high", "a-high"]}}, "repeats a model"),
+                ("agy", {"fallbacks": {"key": ["gemini-4-argon-xhigh"]}}, "can never list"),
+                ("agy", {"fallbacks": {"key": ["gemini-4-argon-max"]}}, "can never list"),
+                ("agy", {"fallbacks": {"key": ["gemini-4-argon"]}}, "can never list"),
+                ("agy", {"fallbacks": {"key": ["gemini-4-argon-high", "gemini4"]}},
+                 "can never list: gemini4 ")):
             with self.subTest(host=host, cfg=cfg):
                 self.assertRegex(mr.fallbacks_problem(host, cfg), why)
         self.assertIsNone(mr.fallbacks_problem("agy", {"model": "x"}))

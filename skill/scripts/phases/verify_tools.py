@@ -394,7 +394,7 @@ def _tool_verify_entry(review_root, manifest, queue_id, finding, host, lift=None
     entry_id = "%s%s" % (TOOL_ENTRY_PREFIX, queue_id)
     entry = {"id": entry_id,
             "agent": dispatch.registered_agent_name("advisor.md") if enforced else None,
-            "enforced": enforced, **requests.bound_policy(host, "advisor"),
+            "enforced": enforced, **requests.bound_policy(host, "advisor", manifest),
             "prompt": requests.entry_marker(entry_id) + prefix + prompt,
             "marker": read_guard_hook.marker_line(entry_id),
             "out_file": out_file, "finding_id": str(finding.get("id")),

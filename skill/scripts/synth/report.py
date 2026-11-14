@@ -122,6 +122,8 @@ class RunConfig:
     # manifest recorded them (a direct invocation): absent from the report, never clean.
     target_commit: str | None = None
     target_dirty: bool | None = None
+    # #3582: the run manifest's `model_strict`. None when unrecorded: absent from the report.
+    model_strict: bool | None = None
 
     @classmethod
     def from_args(cls, args, groups_json, timestamp, host_capabilities=None,
@@ -181,6 +183,7 @@ class RunConfig:
                    exclude_paths=health_basis_mod.exclude_paths_record(groups_json),
                    target_commit=_target_commit(getattr(args, "target_commit", None)),
                    target_dirty=_target_dirty(getattr(args, "target_dirty", None)),
+                   model_strict=_target_dirty(getattr(args, "model_strict", None)),
                    gate_security_mode=plan_mod.gate_security_mode(args))
 
 
@@ -359,6 +362,7 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=(), model_subs
             # `target_dirty` reads as unknown, never clean.
             **({"target_commit": run.target_commit} if run.target_commit else {}),
             **({"target_dirty": run.target_dirty} if run.target_dirty is not None else {}),
+            **({"model_strict": run.model_strict} if run.model_strict is not None else {}),
             "security_mode": run.security_mode,
             "gate_security_mode": run.gate_security_mode,
             "models_used": list(models_used),

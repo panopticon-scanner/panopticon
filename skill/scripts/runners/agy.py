@@ -168,9 +168,10 @@ def auth_stopped(entry_id, exc):
 # num_turns, structured_output, json_schema and usage -- no model
 # (https://antigravity.google/docs/cli/headless/, read 2026-11-11).
 NO_ANSWERING_MODEL = (
-    "agy's JSON envelope reports no answering model, so each ledger row records the bound "
-    "`requested_model` (and `requested_effort`) with `model` null, and usage has no per-model "
-    "split; headless agy exits non-zero rather than fall back from --model "
+    "agy's JSON envelope reports no answering model, so each ledger row records "
+    "`requested_model` (and `requested_effort`), plus `bound_model` when the launch was bound "
+    "to another name (#3576, #3582), with `model` null, and usage has no per-model split; "
+    "headless agy exits non-zero rather than fall back from --model "
     "(https://antigravity.google/docs/cli/headless/)")
 
 
@@ -622,7 +623,9 @@ class Runner(base.HostRunner):
             return base.RunResult.failed(entry_id, redact.redact(str(exc)))
         launch_entry, launch_model, bound_model, substitution = entry, eff_model, None, None
         if self.auth_route == "key":
-            ladders = entry.get("fallbacks")
+            # #3627 review 1: belt and braces -- a strict run walks no ladder even if an
+            # entry carries one.
+            ladders = None if model_resolver.strict_models() else entry.get("fallbacks")
             try:
                 bound_model, substitution = key_route_model(
                     eff_model, entry.get("effort"), self.key_models,

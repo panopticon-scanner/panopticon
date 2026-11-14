@@ -6,10 +6,11 @@
   `model-profiles.yml` may name `fallbacks: {<route>: [...]}`, tried in order only when the
   route's live model list lacks the requested model. Today only agy's API-key route has such a
   list, and #3576's Carbon -> `gemini-4-argon-high` choice is now that ladder's first rung. A
-  ladder anywhere else is refused, not ignored. Every substitution is recorded on the ledger row,
+  ladder anywhere else, or a malformed one, is refused at run start, not ignored. Every substitution is recorded on the ledger row,
   in the run manifest (`model_substitutions`, beside the effective `model_strict`), in
-  `meta.model_substitutions` with a "Model fallbacks" summary line, and in the `agy-model-bound`
-  proof. `PANOPTICON_MODEL_STRICT=1` turns ladders off, and CI is strict by default. An
+  `meta.model_substitutions` with a "Model fallbacks" line in the markdown and HTML reports, and
+  in the `agy-model-bound` proof. `PANOPTICON_MODEL_STRICT=1` turns ladders off, and CI is strict
+  by default. A resume under a different strict state is refused as flag drift. An
   operator-named model never falls back, and quota never triggers a fallback. The
   host-capabilities guide gains a dated "Access and fallbacks" table.
 - **agy's preflight no longer refuses a signed-in run (#3620).** Since #3613 every sign-in run

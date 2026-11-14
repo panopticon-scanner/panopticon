@@ -261,14 +261,17 @@ tried only when that route's **live** model list lacks the requested model. The 
 always rung 0, and the first listed rung is bound. If nothing on the ladder is listed, the entry is
 refused, as it is with no ladder.
 
-- **Only routes with a measured list.** Today that is agy's API-key route (`agy models`). A ladder
-  for any other route or host (agy sign-in, claude, codex, kimi, gemini) is refused when the policy
-  is resolved: `route <r> has no measured model list`. Codex's bundled catalogue
+- **Only routes with a measured list.** Today that is agy's API-key route (`agy models`), where
+  every rung must end in an agy effort word (`-low`, `-medium` or `-high`), as that route's names do.
+  A ladder for any other route or host (agy sign-in, claude, codex, kimi, gemini), or one that is
+  malformed, is refused at run start, before any reset or dispatch: `route <r> has no measured
+  model list`. Codex's bundled catalogue
   (`codex debug models --bundled`) is not what an account can use, so it does not count.
 - **Never silent.** Every substitution (requested, bound, route, rung, reason) is recorded on:
   - the ledger row;
   - the run manifest (`model_substitutions`);
-  - the report (`meta.model_substitutions` and a "Model fallbacks" summary line);
+  - the report (`meta.model_substitutions` and `meta.model_strict`, a "Model fallbacks" summary
+    line, and the same disclosure in the HTML report);
   - the `agy-model-bound` proof, which names each fallback and proves the bound model.
 
   A run on a fallback is never labelled with the requested model.
@@ -276,7 +279,8 @@ refused, as it is with no ladder.
   `=0` keeps them on. When it is unset, CI runs (`CI` or `GITHUB_ACTIONS` set) are strict. Set
   `PANOPTICON_MODEL_STRICT=1` for calibration and comparison runs, so a measurement never mixes
   models. The manifest records the effective state as `model_strict`, so a pair can be checked
-  afterwards.
+  afterwards. That record is the run's truth: entries built on resume use it, and a resume under a
+  different strict state is refused as flag drift. A bad value is refused at run start.
 - **Quota is not a fallback trigger.** Ladders resolve at bind time, before launch. Running out of
   quota mid-run stays a typed host failure; the next run resolves again.
 

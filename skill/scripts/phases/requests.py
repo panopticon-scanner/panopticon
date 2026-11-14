@@ -50,7 +50,7 @@ def entry_file_component(entry_id):
         return original
     return "~" + hashlib.sha256(original.encode("utf-8")).hexdigest()
 
-def bound_policy(host, role):
+def bound_policy(host, role, manifest=None):
     """The model policy this entry REQUESTS, from the one resolver, to spread in.
 
     #1344 F4 (b). Every builder used to write the literal `"model": None`, which
@@ -66,7 +66,11 @@ def bound_policy(host, role):
     aliases and context sizes stay off the entry. A host with no model policy
     binds None -- gemini and generic today -- the value they already dispatch with.
     """
-    return model_resolver.entry_policy(host, role)
+    # #3582 (#3627 review 1): the run manifest's `model_strict` is the run's truth, so
+    # a phase built on resume uses it, never the environment it happens to run in.
+    strict = manifest.get("model_strict") if isinstance(manifest, dict) else None
+    return model_resolver.entry_policy(host, role,
+                                       strict=strict if isinstance(strict, bool) else None)
 
 
 def entry_marker(entry_id):

@@ -540,7 +540,7 @@ def _cell_entry(review_root, manifest, group, domain, files, tests, host, bundle
     abs_files = runio._abs_files(review_root, files)
     entry = {"id": entry_id,
             "agent": dispatch.registered_agent_name("domain-panel.md") if enforced else None,
-            "enforced": enforced, **requests.bound_policy(host, "domain_panel"),
+            "enforced": enforced, **requests.bound_policy(host, "domain_panel", manifest),
             "prompt": requests.entry_marker(entry_id) + prefix + prompt,
             "marker": read_guard_hook.marker_line(entry_id),
             "out_file": out_file, "run_id": manifest["run_id"],

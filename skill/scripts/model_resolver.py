@@ -127,6 +127,9 @@ _GEMINI_FALLBACK: dict[str, dict[str, Any]] = {
 # route (`agy models`, #3576). Anywhere else a ladder would be a promise
 # nothing checks, so it is refused, never ignored.
 LADDER_ROUTES = {"agy": ("key",)}
+# A rung must be a name the route can list. agy's key route folds the effort into
+# the name, so a rung there ends in one of agy's effort words (#3627 review 6).
+_EFFORT_SUFFIXED_ROUTES = {("agy", "key")}
 STRICT_ENV = "PANOPTICON_MODEL_STRICT"
 _CI_ENVS = ("CI", "GITHUB_ACTIONS")
 _LADDER_RUNG = re.compile(r"[a-z0-9][a-z0-9.\-]*")
@@ -167,6 +170,12 @@ def fallbacks_problem(host, cfg):
                     "names (#3582)" % route)
         if len(set(ladder)) != len(ladder):
             return "repeats a model in its fallbacks for route %r (#3582)" % route
+        if (host, route) in _EFFORT_SUFFIXED_ROUTES:
+            bad = [r for r in ladder if "-" not in r or r.rsplit("-", 1)[1] not in AGY_EFFORTS]
+            if bad:
+                return ("has fallbacks for route %r that the route can never list: %s (each "
+                        "must end in -%s, as %s names do) (#3582)"
+                        % (route, ", ".join(bad), "/-".join(AGY_EFFORTS), route))
     return None
 
 
@@ -310,6 +319,12 @@ def validate_env_overrides(host=None):
         problem = effort_key_problem(host, override)
         if problem:
             raise ValueError("PANOPTICON_MODEL_%s: %s" % (role.upper(), problem))
+    # #3582 (#3627 review 2, 3): a bad strict value or an unhonourable ladder is
+    # refused here, before any reset or paid dispatch, never at first use.
+    strict_models()
+    problems = profile_problems()
+    if problems:
+        raise ValueError("model fallbacks cannot be honoured: %s" % "; ".join(problems))
 
 
 _KIMI_TIERS = ("primary", "secondary")
@@ -399,7 +414,7 @@ def resolve_model(host, role, cli_overrides=None):
     return cfg
 
 
-def entry_policy(host, role):
+def entry_policy(host, role, strict=None):
     """#2879: the resolved fields a dispatch entry carries (phases/requests.bound_policy).
 
     The model on every host; on Codex the reasoning effort beside it, which
@@ -421,7 +436,8 @@ def entry_policy(host, role):
         # #3576: the agy runner never substitutes a model the operator named.
         policy["model_override"] = True
     ladders = cfg.get("fallbacks")
-    if ladders and not policy.get("model_override") and not strict_models():
+    strict = strict_models() if strict is None else bool(strict)
+    if ladders and not policy.get("model_override") and not strict:
         # #3582: the ladder is bound with the model, at one moment; strict runs and
         # operator-named models carry none, so nothing downstream can fall back.
         policy["fallbacks"] = {route: list(ladders[route]) for route in sorted(ladders)}

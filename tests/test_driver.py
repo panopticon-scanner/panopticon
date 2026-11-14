@@ -567,6 +567,30 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                 driver.run(self._args(d))
                 self.assertIs(strict, run_manifest.load_manifest(d)["model_strict"])
 
+    def test_resuming_under_a_different_strict_state_is_flag_drift(self):
+        # #3627 review 1: the manifest's model_strict is the run's truth.
+        d = self._repo()
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_STRICT": "1"}):
+            driver.run(self._args(d))
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_STRICT": "0"}):
+            status = driver.run(self._args(d))
+        self.assertEqual("error", status["status"])
+        self.assertIn("flag drift", status["message"])
+        self.assertIn("model_strict: this run was started with model fallbacks off", status["message"])
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_STRICT": "1"}):
+            self.assertNotIn("model_strict", driver.run(self._args(d)).get("message", ""))
+
+    def test_a_bad_strict_value_is_an_error_before_any_reset(self):
+        # #3627 review 3: validated with the env overrides, before reset_run.
+        d = self._repo()
+        driver.run(self._args(d))
+        before = run_manifest.load_manifest(d)
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_STRICT": "maybe"}):
+            status = driver.run(self._args(d, "--reset"))
+        self.assertEqual("error", status["status"])
+        self.assertIn("neither on (1) nor off (0)", status["message"])
+        self.assertEqual(before["run_id"], run_manifest.load_manifest(d)["run_id"])
+
     def test_changing_a_settings_knob_between_resumes_is_flag_drift(self):
         # #1681 Plan 1: the grain knobs resolve CLI > `settings:` and the
         # manifest pins the EFFECTIVE value, so editing the committed config

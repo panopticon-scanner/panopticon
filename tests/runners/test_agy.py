@@ -1015,6 +1015,18 @@ class TestTheKeyRoute(unittest.TestCase):
         self.assertIn("no fallback ladder applies", res.error)
         self.assertEqual(1, len(seen))                          # only `agy models`
 
+    def test_a_strict_run_walks_no_ladder_even_if_the_entry_carries_one(self):
+        # #3627 review 1: belt and braces at the runner.
+        seen = []
+        with tempfile.TemporaryDirectory() as d:
+            r = self._key_runner(d, seen)
+            with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_STRICT": "1"}):
+                res = r.run_entry(_entry(True, model="gemini-4-carbon", effort="high",
+                                         fallbacks=self.LADDER), self._env())
+        self.assertFalse(res.ok)
+        self.assertIn("no fallback ladder applies", res.error)
+        self.assertIsNone(res.model_substitution)
+
     def test_a_quota_failure_on_a_fallback_tries_no_other_rung(self):
         # #3582: quota is never a fallback trigger -- the entry fails typed, once.
         seen = []

@@ -209,7 +209,8 @@ class ModelFallbacksTest(_Case):
 
     def test_malformed_or_repeated_records_are_skipped_and_text_made_inert(self):
         rows = [{"entry_id": "review-g-SEC", "model_substitution": dict(self.SUB, rung=0)},
-                {"entry_id": "review-g-SEC", "model_substitution": dict(self.SUB, rung=True)},
+                {"entry_id": "review-g-SEC", "model_substitution": dict(
+                    self.SUB, rung=True, bound="gemini-bool-high")},
                 {"entry_id": "review-g-SEC", "model_substitution": dict(self.SUB, bound=None)},
                 {"entry_id": "review-g-SEC", "model_substitution": "x"},
                 {"entry_id": "review-g-SEC", "model_substitution": dict(
@@ -220,6 +221,7 @@ class ModelFallbacksTest(_Case):
         subs = cost_mod.load_ledger_substitutions(self.dir)
         self.assertEqual(1, len(subs))                        # first good one per entry
         self.assertEqual((1, "gemini-4-argon-high"), (subs[0]["rung"], subs[0]["bound"]))
+        self.assertIs(int, type(subs[0]["rung"]))
         self.assertTrue(subs[0]["reason"].startswith("not listed"))
         self.assertNotIn("\x1b", subs[0]["reason"])
         self.assertNotIn("\x00", subs[0]["reason"])
