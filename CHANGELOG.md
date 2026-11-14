@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Setup completes on agy: the setup-scan brief pins the absolute repo root, and persist
+  validates the proposal (#3631).** agy starts its agent in a scratch workspace (the confinement
+  design), and the setup-scan brief was the one prompt with no absolute review root. Its
+  relative reads resolved in the scratch directory, the read guard refused them, and the agent
+  returned `{}`. The brief now opens with the same `Repo root:` pin the advisors carry, plus a
+  line saying reads use absolute paths while the proposed globs stay relative. Persist now
+  validates a setup proposal with ingest's own `setup_proposal.validate_proposal`, so `{}` or
+  `{"groups": []}` is a failed dispatch naming the role, not an accepted reply that setup
+  rejects later. An audit of every role on every host found no other prompt that relies on a
+  relative cwd; a test now pins the absolute root in each one.
 - **Documented model fallbacks: a per-role ladder per route, never silent (#3582).**
   A role in `model-profiles.yml` may name `fallbacks: {<route>: [...]}`, tried in order only when
   the route's live model list lacks the requested model. Today only agy's API-key route has such a

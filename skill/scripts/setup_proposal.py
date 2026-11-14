@@ -11,6 +11,7 @@ handed). See docs/superpowers/specs/2026-08-14-panopticon-5.0-setup-scan-design.
 and the 5.2 grouping-engine spec (§3 catalogs, §5.3 assembly).
 """
 from typing import Any
+import os
 import re
 
 from scripts import coverage_model, groups_schema, repo_config
@@ -205,7 +206,28 @@ _NOT_LAYER_KEYS = frozenset({alias_key(n) for n in RESERVED_GROUP_NAMES}) | froz
     "test", "config", "configuration", "doc", "docs", "documentation"})
 
 
-def _validate_str_list(group_label, field, values, required):
+def _review_roots(review_root):
+    """The review root's absolute and real spellings, for refusing absolute globs (#3631)."""
+    if not review_root:
+        return ()
+    return tuple({os.path.abspath(review_root), os.path.realpath(review_root)})
+
+
+def _absolute_glob_errors(group_label, field, values, roots):
+    """#3631: a glob naming the review root by absolute path compiles, then matches
+    nothing -- `glob_to_re` anchors it as a root-relative path -- so the group would
+    silently claim no files. A bare leading `/` stays legal: it is an anchored glob."""
+    errors = []
+    for glob in values:
+        bare = glob[1:] if glob.startswith("!") else glob
+        if any(bare == root or bare.startswith(root.rstrip(os.sep) + os.sep) for root in roots):
+            errors.append("proposal group %s: %s glob %r is an absolute path under the review "
+                          "root; globs must be root-relative (e.g. 'src/**')"
+                          % (group_label, field, glob))
+    return errors
+
+
+def _validate_str_list(group_label, field, values, required, roots=()):
     """Shared shape/caps check for a proposal group's `match`/`tests` list
     (#run7 QAL-D1A: the two fields validated with near-verbatim duplicated code).
 
@@ -240,10 +262,11 @@ def _validate_str_list(group_label, field, values, required):
     # place a proposal glob is checked.
     errors.extend(groups_schema.glob_errors(
         "proposal group %s" % group_label, field, values))
+    errors.extend(_absolute_glob_errors(group_label, field, values, roots))
     return errors
 
 
-def _validate_layers(group_label, layers):
+def _validate_layers(group_label, layers, roots=()):
     """Shape/caps check for a proposal group's optional `layers` list
     (spec §5.2): each entry is `{"layer": name, "match": [glob, ...]}`.
     Two entries whose names fold to one alias_key are a duplicate (they
@@ -281,7 +304,7 @@ def _validate_layers(group_label, layers):
         seen.add(key)
         match = layer.get("match")
         errors.extend(_validate_str_list("%s layer %s" % (group_label, lname),
-                                         "match", match, required=True))
+                                         "match", match, required=True, roots=roots))
         if isinstance(match, list):
             for glob in match:
                 if isinstance(glob, str) and glob.startswith("!"):
@@ -337,8 +360,12 @@ def _validate_profile(group_label, profile):
     return errors
 
 
-def validate_proposal(proposal):
-    """Return a list of human-readable errors (empty = valid)."""
+def validate_proposal(proposal, review_root=None):
+    """Return a list of human-readable errors (empty = valid).
+
+    With `review_root`, a glob that names that root by absolute path is refused
+    (#3631): persist and ingest both pass it, so the one validator says so."""
+    roots = _review_roots(review_root)
     if not isinstance(proposal, dict):
         return ["proposal: top-level must be a mapping"]
     if "schema_version" in proposal and not isinstance(proposal.get("schema_version"), int):
@@ -362,9 +389,11 @@ def validate_proposal(proposal):
                           % (label, _MAX_ENTRY_LEN))
         if isinstance(cap, str) and cap and _group_name(cap) == "":
             errors.append("proposal group %s: custom: prefix cannot be empty" % label)
-        errors.extend(_validate_str_list(label, "match", g.get("match"), required=True))
-        errors.extend(_validate_str_list(label, "tests", g.get("tests"), required=False))
-        errors.extend(_validate_layers(label, g.get("layers")))
+        errors.extend(_validate_str_list(label, "match", g.get("match"), required=True,
+                                         roots=roots))
+        errors.extend(_validate_str_list(label, "tests", g.get("tests"), required=False,
+                                         roots=roots))
+        errors.extend(_validate_layers(label, g.get("layers"), roots=roots))
         errors.extend(_validate_profile(label, g.get("profile")))
     return errors
 
@@ -453,7 +482,7 @@ def _clean_profile(profile):
     return out
 
 
-def assemble(proposal, vocabulary, affinity, layers=None):
+def assemble(proposal, vocabulary, affinity, layers=None, review_root=None):
     """Return (groups_mapping | None, disclosure).
 
     Each assembled group is `{"match", "tests", "panels", "layers", "profile"}`;
@@ -493,7 +522,7 @@ def assemble(proposal, vocabulary, affinity, layers=None):
     draft is written in (leaf fields only, layers as subgroups) and a
     violation returns (None, disclosure) so setup fails loudly.
     """
-    errors = validate_proposal(proposal)
+    errors = validate_proposal(proposal, review_root=review_root)
     if errors:
         return None, {"groups": [], "errors": errors, "collisions": [], "warnings": []}
     known = set(vocabulary.get("names") or [])

@@ -46,6 +46,22 @@ class TestSetupFlow(SetupFixtureBase):
         self.assertEqual(list(drafted["Checkout"]), ["API", "Core"])     # parent intact
         self.assertEqual(drafted["Search"]["match"], ["src/search/**"])
 
+    def test_ingest_refuses_an_absolute_glob_under_the_repo(self):
+        # #3632 review 1: ingest passes the repo to the one validator, so a glob the agent
+        # copied from an absolute Glob result cannot become a group that matches nothing.
+        d = _repo(self)
+        for spelled in (os.path.abspath(d), os.path.realpath(d)):
+            with self.subTest(spelled=spelled):
+                proposal = {"groups": [{"capability": "Search",
+                                        "match": [spelled + "/src/search/**"]}]}
+                pp = os.path.join(d, ".panopticon", "setup-proposal.json")
+                with open(pp, "w") as fh:
+                    json.dump(proposal, fh)
+                res = setup_flow.ingest_proposal(d, pp)
+                self.assertFalse(res["ok"])
+                self.assertTrue(any("globs must be root-relative" in e for e in res["errors"]),
+                                res["errors"])
+
     def test_ingest_writes_draft_with_affinity_floor(self):
         with self._ingest_fixture() as (d, pp):
             res = setup_flow.ingest_proposal(d, pp)
