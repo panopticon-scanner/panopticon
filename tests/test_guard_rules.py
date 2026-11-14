@@ -859,6 +859,9 @@ class TestTheKeychainRuleHoldsAgainstSpellingsLinksAndUnreadableDirs(_KeychainTr
         os.makedirs(os.path.join(user, "Library", "Keychains"))
         os.symlink(user, os.path.join(self.deep, "home"))
         os.symlink(self.outside, os.path.join(self.deep, "plain"))
+        # A dangling link leads nowhere a walker could follow: never recorded (#3636 F7).
+        dangling = os.path.join(self.clean, "dangling")
+        os.symlink(os.path.join(self.outside, "nowhere"), dangling)
         real_stat, statted = os.stat, []
 
         def spy(path, *a, **k):
@@ -866,7 +869,9 @@ class TestTheKeychainRuleHoldsAgainstSpellingsLinksAndUnreadableDirs(_KeychainTr
             return real_stat(path, *a, **k)
         with mock.patch.dict(os.environ, {"HOME": user}), \
                 mock.patch.object(guard_rules.os, "stat", spy):
-            guard_rules.grant_walk([self.home])
+            keychains = guard_rules.grant_walk([self.home])[1][self.home]
+        self.assertNotIn(dangling, keychains)
+        self.assertIn(os.path.join(self.deep, "home"), keychains)
         self.assertTrue(statted)
         self.assertEqual([], [p for p in statted if guard_rules._names_keychain(p)])
 
