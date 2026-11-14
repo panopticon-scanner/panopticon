@@ -3,18 +3,20 @@
 ## Unreleased
 
 - **npm advisories against the project's own packages are first-party (#3623).** #3593's
-  Cargo rule now has an npm twin. An osv-scanner or Trivy advisory naming an exact
-  name and version from a `package-lock.json` / `npm-shrinkwrap.json` (lockfile v2+) is confirmed
+  Cargo rule now has an npm twin. An osv-scanner or Trivy advisory naming an exact name and
+  version from the review root's own `package-lock.json` / `npm-shrinkwrap.json` (lockfile v2+;
+  a nested, vendored or tarball-shipped lock is never the reviewed project) is confirmed
   at ingest, without an advisor, when every lock entry with that identity is a local package --
   the root, or a workspace / `file:` package npm linked -- whose realpath is inside the review
   root and whose own `package.json` has the same name and version and is publishable.
   `private: true` counts as `publish = false` except for the review root itself, and a
   `publishConfig.registry` other than the public registry is private-only. A registry copy of
-  the same identity, an outside-tree or unlinked package, a version mismatch, a malformed or
+  the same identity, an outside-tree or unlinked package, a version mismatch, an install entry
+  whose name or version cannot be read, a link that is not a relative path, a malformed or
   duplicate-keyed lock, an old lockfile v1, or an unread manifest all keep the ordinary advisor
-  path. Every read spends #3634's shared ingest budget; fingerprints and reconcile keys are
-  unchanged. npm-audit reports a vulnerable range, not an installed version, so it is never
-  classified.
+  path. Every read spends #3634's shared ingest budget, and the parse cache is keyed by format
+  as well as path; fingerprints and reconcile keys are unchanged. npm-audit is never classified:
+  its `vulnerable_versions` is a range, even when it names a single version.
 
 - **A link to a Keychain ancestor under a firmlink spelling is recorded (#3636).** #3616's walk
   matched an in-grant link's target against the Keychain homes as strings, and macOS `realpath`

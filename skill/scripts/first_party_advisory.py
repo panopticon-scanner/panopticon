@@ -41,6 +41,7 @@ NPM_LOCKS = ("package-lock.json", "npm-shrinkwrap.json")
 MAX_NPM_LOCK_BYTES = 16 * 1024 * 1024
 MAX_NPM_MANIFEST_BYTES = 1024 * 1024
 NPM_PUBLIC_REGISTRY = "https://registry.npmjs.org"
+NPM_INSTALLED_VERSION_TOOLS = frozenset({"osv-scanner", "trivy"})
 _TRIVY_PACKAGE = re.compile(
     r"(?:^|\s)Package:\s*(\S+)\s+Installed Version:\s*(\S+)(?:\s|$)")
 _DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
@@ -49,7 +50,9 @@ _MISSING = object()
 PackageOrigins = dict[tuple[str, str], set[str]]
 OriginCache = dict[str, PackageOrigins]
 ManifestDocument = dict[str, object]
-ManifestCache = dict[str, ManifestDocument | None]
+# #3639 review: keyed by (format, realpath) -- a Cargo.toml symlinked to a package.json
+# must never be answered from the other parser's cache entry.
+ManifestCache = dict[tuple[str, str], ManifestDocument | None]
 
 
 class IngestCache:
@@ -140,19 +143,20 @@ def _read_toml(path, target_root, cache: IngestCache):
     real_path = os.path.realpath(path)
     if not _inside(root, real_path):
         return None
-    if real_path in cache.manifests:
-        return cache.manifests[real_path]
+    key = ("toml", real_path)
+    if key in cache.manifests:
+        return cache.manifests[key]
     raw = _read_budgeted_bytes(real_path, MAX_CARGO_MANIFEST_BYTES, cache)
     if raw is None:
-        cache.manifests[real_path] = None
+        cache.manifests[key] = None
         return None
     try:
         document = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError, RecursionError):
-        cache.manifests[real_path] = None
+        cache.manifests[key] = None
         return None
     cached = document if isinstance(document, dict) else None
-    cache.manifests[real_path] = cached
+    cache.manifests[key] = cached
     return cached
 
 
@@ -419,8 +423,9 @@ def _read_json(path, file_limit, target_root, cache: IngestCache):
     real_path = os.path.realpath(path)
     if not _inside(target_root, real_path):
         return None
-    if real_path in cache.manifests:
-        return cache.manifests[real_path]
+    key = ("json", real_path)
+    if key in cache.manifests:
+        return cache.manifests[key]
     raw = _read_budgeted_bytes(real_path, file_limit, cache)
     document = None
     if raw is not None:
@@ -429,8 +434,11 @@ def _read_json(path, file_limit, target_root, cache: IngestCache):
         except (UnicodeError, ValueError, RecursionError):
             document = None
     cached = document if isinstance(document, dict) else None
-    cache.manifests[real_path] = cached
+    cache.manifests[key] = cached
     return cached
+
+
+_URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 
 
 def _npm_node_modules_name(key):
@@ -505,16 +513,24 @@ def _npm_package_origins(lock_path, target_root, cache: IngestCache):
             return origins
         if installed is not None:
             if entry.get("link") is True:
+                # #3639 review: a link resolves to a RELATIVE in-lock path; a URL or an
+                # absolute path is not a local package and fails the whole lock.
                 resolved = entry.get("resolved")
-                if not isinstance(resolved, str):
+                if (not isinstance(resolved, str) or not resolved or os.path.isabs(resolved)
+                        or _URL_SCHEME.match(resolved)):
                     return origins
                 linked.add(os.path.normpath(resolved))
                 continue
+            # #3639 review: a scanner names an install from its key path, so a registry
+            # entry whose own name or version cannot be read would hide that copy.
             name = entry.get("name", installed)
             version = entry.get("version")
-            if isinstance(name, str) and name and isinstance(version, str) and version:
-                found.setdefault((name, version), set()).add("external")
+            if not (isinstance(name, str) and name and isinstance(version, str) and version):
+                return origins
+            found.setdefault((name, version), set()).add("external")
             continue
+        if "name" in entry and not (isinstance(entry["name"], str) and entry["name"]):
+            return origins
         local.append((key, entry))
     if len(local) > MAX_CARGO_MANIFESTS:
         return origins
@@ -591,6 +607,13 @@ def _mark_finding(finding, target_root, cache):
         ecosystem, member = "Cargo", "workspace/path member"
         origins = _cargo_package_origins(lock_path, target_root, cache).get(package, set())
     else:
+        # #3639 review: only the review root's own lock is the reviewed project -- a
+        # shrinkwrap npm published inside a tarball (`node_modules/x/`) or a vendored
+        # project's lock is somebody else's root. Members are proved through the root
+        # lock's links. And only scanners that report an INSTALLED version: npm-audit's
+        # `vulnerable_versions` is a range, which may happen to equal one version.
+        if os.path.dirname(lock_path) != target_root or tool not in NPM_INSTALLED_VERSION_TOOLS:
+            return
         ecosystem, member = "npm", "workspace/local package"
         origins = _npm_package_origins(lock_path, target_root, cache).get(package, set())
     if origins != {evidence.FIRST_PARTY_PACKAGE_ORIGIN}:

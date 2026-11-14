@@ -467,7 +467,7 @@ class TestCargoFirstPartyAdvisoryIngest(unittest.TestCase):
         outside_manifest = os.path.realpath(
             os.path.join(outside, "Cargo.toml"))
         cache = first_party_advisory.IngestCache()
-        cache.manifests[outside_manifest] = {
+        cache.manifests[("toml", outside_manifest)] = {
             "package": {"name": WORKSPACE_NAME, "version": WORKSPACE_VERSION},
         }
         remaining = cache.manifest_bytes_remaining
@@ -652,7 +652,7 @@ class TestCargoFirstPartyAdvisoryIngest(unittest.TestCase):
 
         self.assertNotIn("package_origin", finding["tool_evidence"])
         self.assertEqual(cache.manifests, {
-            os.path.realpath(os.path.join(root.name, "Cargo.toml")): None,
+            ("toml", os.path.realpath(os.path.join(root.name, "Cargo.toml"))): None,
         })
         self.assertTrue(cache.manifest_budget_exhausted)
         self.assertEqual(cache.manifest_bytes_remaining, 0)
@@ -857,7 +857,8 @@ class TestNpmFirstPartyAdvisory(unittest.TestCase):
     def test_publish_config_decides_public_versus_private_only(self):
         for registry, expected in (("https://registry.npmjs.org/", "first_party"),
                                    ("https://registry.npmjs.org", "first_party"),
-                                   ("https://npm.example.internal/", None)):
+                                   ("https://npm.example.internal/", None),
+                                   ("https://registry.npmjs.org.evil.example", None)):
             with self.subTest(registry=registry):
                 _npm_tree(self.root, member={"name": NPM_MEMBER[0], "version": NPM_MEMBER[1],
                                              "publishConfig": {"registry": registry}})
@@ -947,11 +948,93 @@ class TestNpmFirstPartyAdvisory(unittest.TestCase):
         _npm_tree(app, lock=narrow_lock, member=False)
         cache = first_party_advisory.IngestCache()
         self.assertEqual("first_party", self._origin(NPM_MEMBER, cache=cache))
-        self.assertIn(os.path.join(self.root, "lib", "package.json"), cache.manifests)
+        self.assertIn(("json", os.path.join(self.root, "lib", "package.json")), cache.manifests)
         narrow = _raw_advisory_finding(path="package-lock.json", package=NPM_MEMBER[0],
                                        version=NPM_MEMBER[1])
         first_party_advisory.mark([narrow], app, cache)
         self.assertNotIn("package_origin", narrow["tool_evidence"])
+
+    def test_a_malformed_install_entry_fails_the_whole_lock(self):
+        # #3639 review: osv names a registry install from its key path, so an entry whose
+        # own name or version is unreadable would hide that third-party copy.
+        bad = {
+            "null name": {"node_modules/@acme/lib2": {"name": None, "version": "1.4.0",
+                                                      "resolved": "https://registry.npmjs.org/x"}},
+            "int name": {"node_modules/@acme/lib2": {"name": 5, "version": "1.4.0"}},
+            "missing version": {"node_modules/other/node_modules/@acme/lib": {
+                "resolved": "https://registry.npmjs.org/x"}},
+            "int version": {"node_modules/other": {"version": 1}},
+            "registry link": {"node_modules/@acme/lib": {
+                "resolved": "https://registry.npmjs.org/@acme/lib/-/lib-1.4.0.tgz",
+                "link": True}},
+            "file: link": {"node_modules/@acme/lib": {"resolved": "file:packages/lib",
+                                                      "link": True}},
+            "absolute link": {"node_modules/@acme/lib": {
+                "resolved": os.path.join(self.root, "packages", "lib"), "link": True}},
+            "empty link": {"node_modules/@acme/lib": {"resolved": "", "link": True}},
+            "local null name": {"packages/lib": {"name": None, "version": "1.4.0"}},
+        }
+        for label, extra in bad.items():
+            with self.subTest(entry=label):
+                _npm_tree(self.root, lock=_npm_lock(**extra))
+                self.assertIsNone(self._origin(NPM_MEMBER))
+                self.assertIsNone(self._origin(NPM_ROOT))
+
+    def test_only_the_review_roots_own_lock_is_the_reviewed_project(self):
+        # #3639 review: npm publishes a shrinkwrap inside its tarball, and a vendored
+        # project carries its own lock; either names somebody else's root.
+        _npm_tree(self.root)
+        for where, lock_name in ((os.path.join("node_modules", "left-pad"),
+                                  "npm-shrinkwrap.json"),
+                                 (os.path.join("vendor", "y"), "package-lock.json")):
+            with self.subTest(lock=where):
+                nested = os.path.join(self.root, where)
+                top = {"name": NPM_REGISTRY[0], "version": NPM_REGISTRY[1]}
+                lock = {"name": NPM_REGISTRY[0], "version": NPM_REGISTRY[1],
+                        "lockfileVersion": 3,
+                        "packages": {"": {"name": NPM_REGISTRY[0],
+                                          "version": NPM_REGISTRY[1]}}}
+                _write_json(os.path.join(nested, "package.json"), top)
+                _write_json(os.path.join(nested, lock_name), lock)
+                path = "/".join(where.split(os.sep) + [lock_name])
+                self.assertIsNone(self._origin(NPM_REGISTRY, path=path))
+        self.assertEqual("first_party", self._origin(NPM_MEMBER))
+
+    def test_the_parse_cache_never_answers_one_format_with_the_other(self):
+        # #3639 review: Cargo.toml symlinked to package.json. Read first as JSON (an npm
+        # finding), the document carries a Cargo-shaped table; the TOML read must not
+        # reuse it, whatever the order.
+        top = {"name": NPM_ROOT[0], "version": NPM_ROOT[1],
+               "package": {"name": WORKSPACE_NAME, "version": WORKSPACE_VERSION}}
+        _npm_tree(self.root, top=top)
+        _write_lock(self.root)
+        os.symlink(os.path.join(self.root, "package.json"),
+                   os.path.join(self.root, "Cargo.toml"))
+        for order in ("npm first", "cargo first"):
+            with self.subTest(order=order):
+                cache = first_party_advisory.IngestCache()
+                cargo = _raw_advisory_finding()
+                if order == "npm first":
+                    self.assertEqual("first_party", self._origin(NPM_ROOT, cache=cache))
+                first_party_advisory.mark([cargo], self.root, cache)
+                self.assertNotIn("package_origin", cargo["tool_evidence"])
+
+    def test_the_entry_and_local_caps_are_exact(self):
+        # 64 x MAX_CARGO_MANIFESTS lock entries and MAX_CARGO_MANIFESTS local packages.
+        def filler(n):
+            return {"node_modules/f%d" % i: {"version": "1.0.0", "resolved": "https://r/x"}
+                    for i in range(n)}
+        with mock.patch.object(first_party_advisory, "MAX_CARGO_MANIFESTS", 2):
+            for entries, expected in ((128, "first_party"), (129, None)):
+                with self.subTest(entries=entries):
+                    _npm_tree(self.root, lock=_npm_lock(**filler(entries - 4)))
+                    self.assertEqual(expected, self._origin(NPM_MEMBER))
+            _write_json(os.path.join(self.root, "packages", "util", "package.json"),
+                        {"name": "@acme/util", "version": "0.1.0"})
+            _npm_tree(self.root, lock=_npm_lock(**{
+                "packages/util": {"name": "@acme/util", "version": "0.1.0"},
+                "node_modules/@acme/util": {"resolved": "packages/util", "link": True}}))
+            self.assertIsNone(self._origin(NPM_MEMBER))         # 3 local packages > 2
 
     def test_a_malformed_or_old_lock_classifies_nothing(self):
         locks = {
@@ -1001,9 +1084,16 @@ class TestNpmFirstPartyAdvisory(unittest.TestCase):
         self.assertEqual(evidence.finding_fingerprint(marked), evidence.finding_fingerprint(plain))
         self.assertEqual(evidence.reconcile_key(marked), evidence.reconcile_key(plain))
 
-    def test_an_npm_audit_range_is_not_an_exact_identity(self):
+    def test_npm_audit_is_never_classified_even_when_its_range_equals_the_version(self):
+        # #3639 review: a single-version GHSA gives vulnerable_versions == "1.4.0". It is
+        # still a range, not an installed version: npm classification is limited to the
+        # scanners that report one.
         _npm_tree(self.root)
-        self.assertIsNone(self._origin((NPM_MEMBER[0], "<1.4.1"), source="tool:npm-audit"))
+        for version in ("<1.4.1", NPM_MEMBER[1]):
+            with self.subTest(version=version):
+                self.assertIsNone(self._origin((NPM_MEMBER[0], version),
+                                               source="tool:npm-audit"))
+        self.assertEqual("first_party", self._origin(NPM_MEMBER, source="tool:trivy"))
 
     def test_exact_budget_refuses_an_unread_private_redeclaration(self):
         # M10-style (#3634): the budget covers the lock and the root package.json exactly,
@@ -1023,7 +1113,8 @@ class TestNpmFirstPartyAdvisory(unittest.TestCase):
             self.assertIsNone(self._origin(NPM_ROOT, cache=cache))
         self.assertTrue(cache.manifest_budget_exhausted)
         self.assertEqual(0, cache.manifest_bytes_remaining)
-        self.assertIsNone(cache.manifests[os.path.join(self.root, "private", "package.json")])
+        self.assertIsNone(cache.manifests[("json", os.path.join(self.root, "private",
+                                                                "package.json"))])
 
     def test_lock_bytes_spend_the_shared_ingest_budget(self):
         _npm_tree(self.root)
@@ -1034,8 +1125,8 @@ class TestNpmFirstPartyAdvisory(unittest.TestCase):
             self.assertIsNone(self._origin(NPM_MEMBER, cache=cache))
         self.assertTrue(cache.manifest_budget_exhausted)
         self.assertEqual(0, cache.manifest_bytes_remaining)
-        self.assertIsNone(cache.manifests[os.path.join(self.root, "packages", "lib",
-                                                       "package.json")])
+        self.assertIsNone(cache.manifests[("json", os.path.join(self.root, "packages", "lib",
+                                                                "package.json"))])
 
     def test_cargo_and_npm_share_one_budget_and_cache(self):
         _npm_tree(self.root)
