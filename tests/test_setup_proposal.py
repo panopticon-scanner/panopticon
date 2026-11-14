@@ -1018,6 +1018,7 @@ class TestAbsoluteGlobsUnderTheRoot(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             for spelled in (os.path.abspath(root), os.path.realpath(root)):
                 for where, group in (
+                        ("match", {"match": [spelled]}),                  # the bare root (D13)
                         ("match", {"match": [spelled + "/src/**"]}),
                         ("match", {"match": ["src/**", "!" + spelled + "/src/gen/**"]}),
                         ("tests", {"match": ["src/**"], "tests": [spelled + "/tests/**"]}),

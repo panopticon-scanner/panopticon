@@ -473,6 +473,15 @@ class TestASetupProposalIsValidatedAtPersist(unittest.TestCase):
                                                              "match": ["/src/**"]}]})
         self.assertTrue(ok)                                  # an anchored glob, not the root
 
+    def test_a_reply_whose_root_cannot_be_derived_is_refused_not_unchecked(self):
+        # #3632 r2: fail closed -- no root means the absolute-glob check cannot run.
+        out_file = "/x/setup-proposal.json"
+        ok, reason = persist.accepts(dict(self._entry(), out_file=out_file),
+                                     {"groups": [{"capability": "Auth", "match": ["/x/src/**"]}]})
+        self.assertFalse(ok)
+        self.assertEqual("setup-scan reply cannot be placed: out_file %r has no .panopticon "
+                         "segment" % out_file, reason)
+
     def test_the_refusal_reason_is_masked_and_capped(self):
         # #3632 review 2: agent-written capability names reach the reason.
         token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"

@@ -236,16 +236,22 @@ def accepts(entry, data):
         errs = coverage._scout_shape_errors(data)
         return (not errs), ("; ".join(errs) if errs else "")
     if role == "setup-scan":
+        from scripts.tools.base import inert_text
         # #3631: the same validator ingest applies, so an empty or shapeless proposal
         # (`{}` from an agent whose reads were refused) is a failed dispatch HERE,
         # naming the role, not an accepted reply that setup rejects later.
         from scripts import claim_scope, setup_proposal
-        errors = setup_proposal.validate_proposal(
-            data, review_root=claim_scope.review_root_of_artifact_path(entry.get("out_file") or ""))
+        out_file = entry.get("out_file") or ""
+        review_root = claim_scope.review_root_of_artifact_path(out_file)
+        if review_root is None:
+            # Fail closed (#3632 r2): without the root the absolute-glob check cannot run,
+            # so a reply nobody can place is refused, never accepted unchecked.
+            return False, ("setup-scan reply cannot be placed: out_file %r has no .panopticon "
+                           "segment" % inert_text(out_file, limit=REASON_CAP))
+        errors = setup_proposal.validate_proposal(data, review_root=review_root)
         # The errors quote agent-written text (capability names): masked and capped like
         # every reply reason FIRST (so no token is cut before the masker sees it), then made
         # inert -- no control or bidi characters reach a terminal.
-        from scripts.tools.base import inert_text
         return (not errors), ("setup-scan proposal is not valid: %s" % inert_text(
             _safe_schema_reason(errors), limit=REASON_CAP) if errors else "")
     version = _version_defect(entry, data)
