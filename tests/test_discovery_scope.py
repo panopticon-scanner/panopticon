@@ -456,9 +456,10 @@ def test_redteam_exclude_paths_keeps_fixture_code_for_sec_only(tmp_path):
     assert rc == 0
     doc = json.loads(out.read_text())
     files = sorted(f for g in doc["groups"] for f in g["files"])
-    # #1681: `panopticon.yml` is the committed root config -- an ordinary repo
-    # file this catalog claims no group for, hence the residual sink.
-    assert files == ["panopticon.yml", "src/real.py", "tests/fixtures/vuln/app.py"]
+    # #3642: `panopticon.yml`, the committed root config, is not reviewed in a
+    # full-repo scan (it used to land in the residual sink, #1681).
+    assert files == ["src/real.py", "tests/fixtures/vuln/app.py"]
+    assert doc["excluded"]["scanner_config"] == ["panopticon.yml"]
     sink = next(g for g in doc["groups"]
                 if g["name"] == groups_schema.SEC_CARVE_OUT_SINK)
     assert sink["files"] == ["tests/fixtures/vuln/app.py"]
