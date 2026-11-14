@@ -9,7 +9,13 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
   confirms an exact package/version match against both a sourceless workspace/path entry in
   Cargo.lock and one confined, in-tree member manifest publishable to crates.io (`publish` absent
   or true, or a registry list containing `crates-io`). The claim is therefore that this project's
-  own version is affected, not that a third-party dependency is used. Gate-eligible.
+  own version is affected, not that a third-party dependency is used. npm follows the same rule
+  (#3623): an exact match against a `package-lock.json` / `npm-shrinkwrap.json` (lockfile v2+)
+  entry outside `node_modules` -- the root, or a workspace / `file:` package npm linked -- whose
+  in-tree `package.json` has the same name and version and is publishable. `private: true` is
+  npm's `publish = false` (only the review root itself is exempt), and a `publishConfig.registry`
+  other than the public one is private-only. npm-audit reports a vulnerable range, not an
+  installed version, so its advisories stay with the advisor. Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
   Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
   by one advisor: the adversarial backup round is summoned only for primary-CONFIRMED findings in
