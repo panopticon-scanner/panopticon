@@ -515,9 +515,11 @@ def _npm_package_origins(lock_path, target_root, cache: IngestCache):
             if entry.get("link") is True:
                 # #3639 review: a link resolves to a RELATIVE in-lock path; a URL or an
                 # absolute path is not a local package and fails the whole lock.
+                # #3653: a real npm link carries no version or integrity of its own.
                 resolved = entry.get("resolved")
                 if (not isinstance(resolved, str) or not resolved or os.path.isabs(resolved)
-                        or _URL_SCHEME.match(resolved)):
+                        or _URL_SCHEME.match(resolved)
+                        or "version" in entry or "integrity" in entry):
                     return origins
                 linked.add(os.path.normpath(resolved))
                 continue
@@ -533,6 +535,11 @@ def _npm_package_origins(lock_path, target_root, cache: IngestCache):
             return origins
         local.append((key, entry))
     if len(local) > MAX_CARGO_MANIFESTS:
+        return origins
+    # #3653: every link must name a real local entry of this lock. A disguised
+    # registry `resolved` (leading whitespace, percent-encoded or schemeless URL)
+    # or a dangling path is not a key outside node_modules, and fails the lock.
+    if not linked <= {os.path.normpath(key) for key, _ in local}:
         return origins
     root_name = document.get("name")
     for key, entry in local:
