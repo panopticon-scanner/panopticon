@@ -1044,7 +1044,7 @@ def _repo_scan(argv=None):
     # own ROOT config -- the one setup-scan just wrote -- the same names pr-worktree
     # mode drops (`repo_config.CONFIG_NAMES`, #1681). Only the whole-repo surface:
     # `allf` stays whole for an explicit --scope-* request, and a nested
-    # `sub/panopticon.yml` is not the scanner's config and is still reviewed.
+    # config of the same name in a subdirectory is not the scanner's and is still reviewed.
     root_config = sorted(f for f in allf if f in repo_config.CONFIG_NAMES)
     whole_repo = [f for f in allf if f not in repo_config.CONFIG_NAMES]
     impl, tests = partition_test_files(whole_repo)
