@@ -765,10 +765,21 @@ class TestTheKeychainRuleHoldsAgainstSpellingsLinksAndUnreadableDirs(_KeychainTr
         os.symlink(os.path.join(user, "Library"), towards)
         plain = os.path.join(self.deep, "plain")
         os.symlink(self.outside, plain)
+        # The same user Library spelled as APFS also opens it (NFD, upper case): the link check
+        # is string math, so it folds (NFC + casefold) rather than stat the Keychain side.
+        accent = os.path.join(user, "Us\u00e9r")
+        os.makedirs(os.path.join(accent, "Library"))
+        spelled = os.path.join(user, unicodedata.normalize("NFD", "Us\u00e9r"), "LIBRARY")
+        aliased = os.path.exists(spelled) and os.path.samefile(
+            spelled, os.path.join(accent, "Library"))
+        folded = os.path.join(self.deep, "folded")
+        os.symlink(spelled if aliased else os.path.join(accent, "Library"), folded)
         with mock.patch.dict(os.environ, {"HOME": user}):
             escapes, keychains, _ = guard_rules.grant_walk([self.home])
             scope = self._arm(rg.scope_from_plan([{"id": "e1", "scope": {
                 "files": [], "dirs": [self.home], "reads": []}}]))
+        with mock.patch.dict(os.environ, {"HOME": accent}):
+            self.assertIn(folded, guard_rules.grant_walk([self.home])[1][self.home])
         for link in (to_file, up, towards):
             self.assertIn(link, keychains[self.home])
         self.assertNotIn(plain, keychains[self.home])

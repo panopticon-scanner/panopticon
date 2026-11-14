@@ -278,16 +278,17 @@ def _same(a_stat, path):
 
 
 def _on_line(target, path, grant, below=False):
-    """True when `path` lies at or under directory `target` -- or, with `below`, when `target`
-    lies under `path` -- by folded name or by FILE IDENTITY (#3616: a case or NFD spelling of
-    an ancestor is the same directory on APFS). `path` is a walk record under `grant`."""
-    if _under(_fold(path), _fold(target)) or (below and _under(_fold(target), _fold(path))):
-        return True
+    """True when `path` lies under directory `target` -- or, with `below`, when it is `target`
+    or `target` lies under it -- by FILE IDENTITY, never by string (#3616: a case or NFD
+    spelling of an ancestor is the same directory on APFS). `path` is a walk record under
+    `grant`. A Keychain record itself is never stat'd: only the directories above it are, and
+    a Keychain named directly is refused by name already (`_in_dir_grant`)."""
     try:
         target_stat = os.stat(target)
     except (OSError, ValueError):
         return False                # nothing there to search
-    if any(_same(target_stat, step) for step in _chain(grant, path)):
+    steps = _chain(grant, path) if below else _chain(grant, path)[:-1]
+    if any(_same(target_stat, step) for step in steps):
         return True
     if below:
         try:
