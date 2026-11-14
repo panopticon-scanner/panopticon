@@ -16,6 +16,7 @@ import os
 import stat
 
 from scripts import codex_read_tools
+from scripts import guard_rules
 
 
 # The walk's bound, per pattern (§5.1): ENTRIES, never depth (#3645). A depth
@@ -87,75 +88,32 @@ class Walk:
         return self.capped is not None
 
 
-def scan_directory(directory, on_error):
-    """(real subdirectory names, every other name) in `directory`, each sorted,
-    or None when it could not be listed.
-
-    `is_dir(follow_symlinks=False)`: nothing is ever stat'd THROUGH a link, so
-    a symlinked directory lands among the other names -- listed, and therefore
-    reportable as a hit, but never a directory to descend. Every failure goes
-    to `on_error`: the listing itself, and a single entry's stat on a
-    filesystem that does not say what an entry is. `os.walk` read that second
-    failure as "a file" and walked on, which left a directory unvisited with
-    nothing said about it.
-    """
-    subdirs: list[str] = []
-    others: list[str] = []
-    try:
-        with os.scandir(directory) as entries:
-            for entry in entries:
-                try:
-                    real_dir = entry.is_dir(follow_symlinks=False)
-                except OSError as exc:
-                    on_error(exc)
-                    real_dir = False
-                (subdirs if real_dir else others).append(entry.name)
-    except OSError as exc:
-        on_error(exc)
-        return None
-    return sorted(subdirs), sorted(others)
-
-
 def walk_tree(root, walk):
     """(directory, entry names) for every directory at or under `root`.
 
-    Never follows a link (R3): a symlinked directory is listed -- and
-    therefore reportable as a hit by the caller -- but never descended: a link
-    back to the review root would otherwise be an endless walk that only the
-    entry cap ended, turning an ordinary tree into a refusal.
+    The walk itself is `guard_rules.iter_tree` (#3658): one definition, shared
+    with the read guard's grant walk. It never follows a link (R3): a
+    symlinked directory is listed -- and therefore reportable as a hit by the
+    caller -- but never descended: a link back to the review root would
+    otherwise be an endless walk that only the entry cap ended, turning an
+    ordinary tree into a refusal. And it keeps its own stack rather than
+    recursing as `os.walk` does before Python 3.12 (#3645): with no depth cap,
+    a planted tree a thousand levels deep would end this probe in a
+    RecursionError instead of a sentence. Here a tree of any depth costs
+    entries, and the entry cap is what ends it.
 
-    An explicit stack rather than `os.walk` (#3645), which recurses one frame
-    per level before Python 3.12: with no depth cap, a planted tree a thousand
-    levels deep would end this probe in a RecursionError instead of a sentence.
-    Here a tree of any depth costs entries, and the entry cap is what ends it.
-
-    Pruning is by NAME, on the same list discovery prunes, and the cap stops
-    the walk here rather than inside the caller's loop: nothing more is queued
-    once it is reached, so a cap reached mid-tree stops the descent instead of
-    merely being noticed afterwards.
+    What stays HERE is this probe's own: pruning by NAME, on the same list
+    discovery prunes, the entry count, and the cap -- which stops the walk
+    rather than merely being noticed afterwards, because returning leaves
+    everything still queued unvisited. `root` is the caller's own path and is
+    walked whatever it is: a symlinked `.claude/hooks` is still the directory
+    the host would load from.
     """
-    pending = [root]
-    while pending:
-        directory = pending.pop()
-        # Asked again at the moment of descent, as `os.walk` did: the entry was
-        # a real directory when its parent was listed, and a tree that is being
-        # written to can have swapped it for a link since. It stays listed in
-        # its parent and is not descended. `root` is the caller's own path and
-        # is walked whatever it is -- a symlinked `.claude/hooks` is still the
-        # directory the host would load from.
-        if directory != root and os.path.islink(directory):
-            continue
-        listing = scan_directory(directory, walk.failed)
-        if listing is None:
-            continue
-        subdirs = [name for name in listing[0] if name not in PRUNED_DIRS]
-        yield directory, walk.count(subdirs + listing[1])
+    for directory, subdirs, others in guard_rules.iter_tree(root, walk.failed):
+        subdirs[:] = [name for name in subdirs if name not in PRUNED_DIRS]
+        yield directory, walk.count(subdirs + others)
         if walk.stop():
             return
-        # Reversed, so the stack pops them in sorted order: the same tree is
-        # walked in the same order on every run and every filesystem.
-        pending.extend(os.path.join(directory, name)
-                       for name in reversed(subdirs))
 
 
 def candidates(review_root, segments, walk):
