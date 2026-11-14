@@ -1083,6 +1083,12 @@ class TestNpmFirstPartyAdvisory(unittest.TestCase):
                 _npm_tree(self.root, lock=_npm_lock(**{
                     "node_modules/@acme/lib": {"resolved": resolved, "link": True}}))
                 self.assertEqual("first_party", self._origin(NPM_MEMBER))
+        # The lock key is normalised the same way the link is matched to it later.
+        with self.subTest(key="./packages/lib"):
+            _npm_tree(self.root, lock=_npm_lock(**{
+                "packages/lib": None,
+                "./packages/lib": {"name": NPM_MEMBER[0], "version": NPM_MEMBER[1]}}))
+            self.assertEqual("first_party", self._origin(NPM_MEMBER))
 
     def test_only_the_review_roots_own_lock_is_the_reviewed_project(self):
         # #3639 review: npm publishes a shrinkwrap inside its tarball, and a vendored
