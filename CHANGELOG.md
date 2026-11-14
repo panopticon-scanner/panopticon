@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A link to a Keychain ancestor under a firmlink spelling is recorded (#3636).** #3616's walk
+  matched an in-grant link's target against the Keychain homes as strings, and macOS `realpath`
+  keeps the firmlink spelling (`/System/Volumes/Data/Users/<me>`), so such a link went
+  unrecorded and a directory search over it was allowed. The link check now also compares by
+  file identity against the directories above each Keychain, never the Keychain directory
+  itself. The refusal also fails closed on its own: a target it cannot measure is denied, so a
+  wildcard whose literal prefix does not exist is now refused under a grant with a Keychain
+  record.
+
 - **A recursive search over an ancestor of a Keychain directory is denied (#3616).** #3607's
   Keychain rule is checked on the path a tool call names, so a `Grep` over a granted home
   directory let the host CLI walk into `Library/Keychains` itself. Arming the read scope now walks

@@ -249,10 +249,17 @@ def grant_walk(dirs, cap=ESCAPE_WALK_CAP):
             escapes[grant] = keychains[grant] = unwalked[grant] = None
             continue
         if pointing:
-            # Only now, and only for links: the homes are string math, never a Keychain stat.
+            # Only now, and only for links. By folded name, and by FILE IDENTITY against the
+            # directories ABOVE each Keychain (#3636: realpath keeps a firmlink spelling such
+            # as `/System/Volumes/Data/Users/<me>`, which no string fold maps to `/Users/<me>`).
+            # A Keychain directory itself is never stat'd.
             targets = [_fold(p) for p in found] + [_fold(p) for p in _keychain_homes()]
+            above = _stats([step for p in found for step in _chain(grant, p)[:-1]]
+                           + [step for home in _keychain_homes()
+                              for step in _chain(os.sep, home)[:-1]])
             found += [path for path, real in pointing
-                      if any(_under(t, _fold(real)) for t in targets)]
+                      if any(_under(t, _fold(real)) for t in targets)
+                      or _identical(real, above)]
         escapes[grant] = sorted(links)
         keychains[grant] = sorted(found)
         unwalked[grant] = sorted(set(failed))
@@ -268,6 +275,26 @@ def _chain(grant, path):
     """`grant`, then every directory from it down to `path` inclusive."""
     rest = [p for p in path[len(grant.rstrip(os.sep)):].split(os.sep) if p]
     return [os.path.join(grant, *rest[:i]) for i in range(len(rest) + 1)]
+
+
+def _stats(paths):
+    """The stat of every path that has one (duplicates and unstattable paths dropped)."""
+    out = []
+    for path in dict.fromkeys(paths):
+        try:
+            out.append(os.stat(path))
+        except (OSError, ValueError):
+            continue
+    return out
+
+
+def _identical(path, stats):
+    """True when `path` is the same file as any of `stats` (False when it has no stat)."""
+    try:
+        own = os.stat(path)
+    except (OSError, ValueError):
+        return False
+    return any(os.path.samestat(own, other) for other in stats)
 
 
 def _same(a_stat, path):
@@ -286,7 +313,9 @@ def _on_line(target, path, grant, below=False):
     try:
         target_stat = os.stat(target)
     except (OSError, ValueError):
-        return False                # nothing there to search
+        # #3636: fail closed on its own. Every hook gates on `isdir` first, but the refusal
+        # must not rest on that: a target it cannot measure is on every record's line.
+        return True
     # Only the directories ABOVE the record: `below` reaches the record itself from the other
     # side, through `target`'s own chain.
     if any(_same(target_stat, step) for step in _chain(grant, path)[:-1]):
