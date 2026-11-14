@@ -1311,6 +1311,21 @@ class TestFirstPartyAdvisoryStability(unittest.TestCase):
                 entries, _ = evidence.build_verify_queue(prepared)
                 self.assertEqual(["AG-1"], [e["finding"]["id"] for e in entries])
 
+    def test_a_cross_tool_duplicate_keeps_the_most_severe_then_the_source(self):
+        # osv-scanner (CRITICAL) and cargo-audit (LOW, no CVSS) report one advisory on one
+        # package at Cargo.lock:1: the most severe survives, in either input order.
+        base = [f for f in self._ingest(["cargo-audit.json", "osv-scanner.json"])
+                if evidence.tool_rule_id(f) == "RUSTSEC-2099-0001"]
+        for members in (base, base[::-1]):
+            out = findings_mod.aggregate_tool_findings([dict(f) for f in members])
+            self.assertEqual([("tool:osv-scanner", "CRITICAL", 2)],
+                             [(f["source"], f["severity"], f["occurrences"]) for f in out])
+        # Equal severity: the source decides, not the order.
+        same = [dict(f, severity="CRITICAL") for f in base]
+        for members in (same, same[::-1]):
+            out = findings_mod.aggregate_tool_findings([dict(f) for f in members])
+            self.assertEqual(["tool:cargo-audit"], [f["source"] for f in out])
+
     def test_an_ordinary_tool_agent_pair_still_collapses(self):
         # The exemption is the first-party mark and nothing else: a registry advisory
         # alone at a locus with one agent finding still collapses to one survivor.
