@@ -1045,6 +1045,51 @@ class TestNpmFirstPartyAdvisory(unittest.TestCase):
                 self.assertIsNone(self._origin(NPM_MEMBER))
                 self.assertIsNone(self._origin(NPM_ROOT))
 
+    def test_a_disguised_or_dangling_link_fails_the_whole_lock(self):
+        # #3653: a link must name a real local entry of this lock. Each `resolved` below
+        # slips past a scheme check anchored at character 0, or names no local key; beside
+        # the real workspace link it must not leave the member first-party.
+        disguised = {
+            "leading space": " https://registry.npmjs.org/x.tgz",
+            "leading newline": "\nhttps://x",
+            "percent-encoded scheme": "https%3A//registry.npmjs.org/x.tgz",
+            "schemeless registry": "registry.npmjs.org/@acme/lib/-/lib-1.4.0.tgz",
+            "dangling": "packages/nonexistent",
+            "an install, not a local key": "node_modules/left-pad",
+            "drive letter (R13)": "C:/x",
+        }
+        for label, resolved in disguised.items():
+            with self.subTest(resolved=label):
+                _npm_tree(self.root, lock=_npm_lock(**{
+                    "node_modules/other/node_modules/@acme/lib": {"resolved": resolved,
+                                                                  "link": True}}))
+                self.assertIsNone(self._origin(NPM_MEMBER))
+                self.assertIsNone(self._origin(NPM_ROOT))
+
+    def test_a_link_carrying_its_own_version_or_integrity_fails_the_whole_lock(self):
+        # #3653: npm writes neither on a link entry; one that does is not a link.
+        for label, extra in (("version", {"version": NPM_MEMBER[1]}),
+                             ("integrity", {"integrity": "sha512-x"})):
+            with self.subTest(field=label):
+                _npm_tree(self.root, lock=_npm_lock(**{"node_modules/@acme/lib": dict(
+                    {"resolved": "packages/lib", "link": True}, **extra)}))
+                self.assertIsNone(self._origin(NPM_MEMBER))
+                self.assertIsNone(self._origin(NPM_ROOT))
+
+    def test_a_link_is_matched_to_its_local_entry_after_normalisation(self):
+        for resolved in ("packages/lib", "./packages/lib", "packages/lib/",
+                         "packages/x/../lib"):
+            with self.subTest(resolved=resolved):
+                _npm_tree(self.root, lock=_npm_lock(**{
+                    "node_modules/@acme/lib": {"resolved": resolved, "link": True}}))
+                self.assertEqual("first_party", self._origin(NPM_MEMBER))
+        # The lock key is normalised the same way the link is matched to it later.
+        with self.subTest(key="./packages/lib"):
+            _npm_tree(self.root, lock=_npm_lock(**{
+                "packages/lib": None,
+                "./packages/lib": {"name": NPM_MEMBER[0], "version": NPM_MEMBER[1]}}))
+            self.assertEqual("first_party", self._origin(NPM_MEMBER))
+
     def test_only_the_review_roots_own_lock_is_the_reviewed_project(self):
         # #3639 review: npm publishes a shrinkwrap inside its tarball, and a vendored
         # project carries its own lock; either names somebody else's root.

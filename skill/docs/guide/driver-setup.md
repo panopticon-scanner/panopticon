@@ -193,6 +193,13 @@ To drop a path from SEC too, the exclusion has to stop being yours to make: remo
 the repository, or run with `--security standard`, which prunes a recognised
 deliberately-vulnerable fixture corpus at discovery — before `exclude_paths` is consulted at all.
 
+**The scanner's own config is not reviewed (#3642).** A full-repo scan leaves the root
+`panopticon.yml` / `.panopticon.yml` (`repo_config.CONFIG_NAMES`, the names a `--pr` review already
+drops) out of every group, and discloses it under `excluded.scanner_config` in `groups.json` and on
+the scan's stderr. A nested `sub/panopticon.yml` is not the scanner's config and is reviewed as
+usual. An explicit `--scope-files panopticon.yml`, and a plain `-c`/`--base` delta that changes it,
+still review it. Tool scans are unchanged.
+
 **What these settings do to the letter (#3548).** On a full review, a per-group `exclude:` that
 removes a domain the run would otherwise have used makes the letter provisional, the same way a
 non-default `--max-per-group` does (#1495). Here "would otherwise have used" means the committed

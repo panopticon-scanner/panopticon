@@ -12,7 +12,8 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
   own version is affected, not that a third-party dependency is used. npm follows the same rule
   (#3623): an exact match against the review root's own `package-lock.json` /
   `npm-shrinkwrap.json` (lockfile v2+; a nested or vendored lock is somebody else's root) entry
-  outside `node_modules` -- the root, or a workspace / `file:` package npm linked -- whose in-tree
+  outside `node_modules` -- the root, or a workspace / `file:` package npm linked (#3653: every
+  link must name such an entry and carry no `version` or `integrity`, or the lock fails) -- whose in-tree
   `package.json` has the same name and version and is publishable. `private: true` is npm's
   `publish = false` (only the review root itself is exempt), and a `publishConfig.registry` other
   than the public one is private-only. Only osv-scanner and Trivy are classified, because they

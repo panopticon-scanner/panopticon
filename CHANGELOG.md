@@ -11,6 +11,15 @@
   The setup-scan brief says how to write such a segment, and a test-scope literal prefix
   decodes the escape.
 
+- **A full-repo scan no longer reviews the scanner's own root config (#3642).** The root
+  `panopticon.yml` / `.panopticon.yml` -- including the one setup-scan just wrote -- was reviewed
+  like target code, and an owner-observed run graded a HIGH finding against the matrix itself.
+  Discovery now leaves the same `repo_config.CONFIG_NAMES` that `--pr` mode drops (#1681) out of
+  the whole-repo surface and discloses them under `excluded.scanner_config` and on stderr. A nested
+  `sub/panopticon.yml` is still reviewed; an explicit `--scope-files` and a plain delta that
+  changes the root config are unchanged, as are tool scans. This supersedes #1681 Task 7's
+  grouping of the root config under Commons `Config` in full-repo scans.
+
 - **agy's `Individual quota reached` response now pauses as a host outage (#3640).** The
   free-text classifier recognizes that account-level sentence with or without agy's reset tail
   and a leading 429, so the failed launch is not charged to an entry. The match keeps agy's
@@ -23,6 +32,13 @@
   operator-visible exhaustion count, while a later tool output that only reuses the completed
   fail-closed origin result must not inherit that count. The report schema now describes the
   optional per-output disposition field and its absent-key meaning.
+- **An npm link must name a real local entry of the lock (#3653).** A `link: true` entry whose
+  `resolved` is not itself a lock key outside `node_modules` -- a leading-space, newline,
+  percent-encoded or schemeless registry URL, a dangling path, or an install path -- now fails
+  the whole lock, as does a link that carries its own `version` or `integrity`, which npm never
+  writes on a link. Before, such an entry was skipped as a link, so a disguised registry copy
+  beside a linked workspace member left the member first-party.
+
 - **npm advisories against the project's own packages are first-party (#3623).** #3593's
   Cargo rule now has an npm twin. An osv-scanner or Trivy advisory naming an exact name and
   version from the review root's own `package-lock.json` / `npm-shrinkwrap.json` (lockfile v2+;
