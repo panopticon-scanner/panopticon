@@ -1040,7 +1040,14 @@ def _repo_scan(argv=None):
         return exclude_carve_out.split(fs, _exclude_re)
 
     allf, excluded_files, carved_files = _apply_exclude(allf)
-    impl, tests = partition_test_files(allf)
+    # #3642 (owner ruling 2026-11-14): a full-repo scan does not review the scanner's
+    # own ROOT config -- the one setup-scan just wrote -- the same names pr-worktree
+    # mode drops (`repo_config.CONFIG_NAMES`, #1681). Only the whole-repo surface:
+    # `allf` stays whole for an explicit --scope-* request, and a nested
+    # config of the same name in a subdirectory is not the scanner's and is still reviewed.
+    root_config = sorted(f for f in allf if f in repo_config.CONFIG_NAMES)
+    whole_repo = [f for f in allf if f not in repo_config.CONFIG_NAMES]
+    impl, tests = partition_test_files(whole_repo)
     # Group impl AND real test sources so tests aren't silently dropped (only
     # their __pycache__ artifacts used to reach a group); counts stay impl-only.
     result = build_result(repo, "repo", ".", None, impl, tests, args.max_per_group,
@@ -1085,6 +1092,13 @@ def _repo_scan(argv=None):
                               args.max_per_group, group_files=impl + tests,
                               security_mode=args.security)
         result["discovery"] = _discovery_block(info)
+    else:
+        allf = whole_repo
+        if root_config:
+            result.setdefault("excluded", {})["scanner_config"] = root_config
+            print("scanner config: not reviewed: %s -- panopticon's own matrix config "
+                  "(#3642); name it with --scope-files to review it"
+                  % ", ".join(root_config), file=sys.stderr)
     _say_pruned(result["discovery"]["pruned"], result["discovery"]["surface"])
     writes = [w for w in (args.out, _delta and _hunks_path_for(args.out, repo)) if w]
     try:
@@ -1114,7 +1128,7 @@ def _repo_scan(argv=None):
             os.remove(_stale_hunks)
     _group_by_catalog(result, allf, catalog, args, carved_files)
     if pruned_fixtures:
-        result["excluded"] = {"fixture_dirs": sorted(pruned_fixtures)}
+        result.setdefault("excluded", {})["fixture_dirs"] = sorted(pruned_fixtures)
         print("fixture exclusion (%s mode): pruned %d fixture corpus dir(s): %s "
               "— intentionally-vulnerable test corpora do not gate a standard "
               "scan; use --security redteam to include them"

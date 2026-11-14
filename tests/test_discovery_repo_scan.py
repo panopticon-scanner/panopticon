@@ -235,6 +235,81 @@ class TestFixtureExclusion(unittest.TestCase):
             self.assertIn("groups", data)
 
 
+class TestScannerConfigIsNotReviewed(unittest.TestCase):
+    """#3642 (owner ruling 2026-11-14): a full-repo scan does not review the scanner's
+    own ROOT config (`repo_config.CONFIG_NAMES`, the names pr-worktree mode drops) --
+    it is disclosed instead. A nested config is somebody's file and is reviewed, and
+    every --scope-* mode is unchanged."""
+
+    CONFIG = "version: 1\ngroups:\n  src:\n    match: ['src/**']\n"
+
+    def _tree(self, d):
+        touch(d, "src/app.py")
+        for name in discovery.repo_config.CONFIG_NAMES:
+            with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                fh.write(self.CONFIG)
+        touch(d, "sub/panopticon.yml")
+        touch(d, "sub/.panopticon.yml")
+
+    def test_neither_root_spelling_is_reviewed_and_both_are_disclosed(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d)
+            out, err = run_scan_with_err(d)
+            reviewed = set(grouped(out)) | set(out.get("ungrouped_files") or []) \
+                | set(out.get("tests") or [])
+            for name in discovery.repo_config.CONFIG_NAMES:
+                self.assertNotIn(name, reviewed)
+            self.assertEqual(out["excluded"]["scanner_config"],
+                             sorted(discovery.repo_config.CONFIG_NAMES))
+            self.assertIn("scanner config: not reviewed", err)
+            self.assertIn("#3642", err)
+
+    def test_the_disclosure_sits_beside_the_fixture_disclosure(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d)
+            touch(d, "tests/fixtures/vuln/app.py")
+            out = run_scan(d)
+            self.assertEqual(out["excluded"], {
+                "fixture_dirs": ["tests/fixtures"],
+                "scanner_config": sorted(discovery.repo_config.CONFIG_NAMES)})
+
+    def test_a_nested_config_is_still_reviewed(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d)
+            out = run_scan(d)
+            reviewed = set(grouped(out)) | set(out.get("ungrouped_files") or [])
+            self.assertIn("sub/panopticon.yml", reviewed)
+            self.assertIn("sub/.panopticon.yml", reviewed)
+            self.assertIn("src/app.py", reviewed)
+
+    def test_a_tree_without_a_root_config_discloses_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            touch(d, "src/app.py")
+            out = run_scan(d)
+            self.assertNotIn("excluded", out)
+
+    def test_an_explicit_scope_still_reviews_the_root_config(self):
+        # The universe the --scope-* modes narrow from is unchanged.
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d)
+            out = run_scan(d, "--scope-files", "panopticon.yml", "src/app.py")
+            reviewed = set(grouped(out)) | set(out.get("ungrouped_files") or [])
+            self.assertIn("panopticon.yml", reviewed)
+            self.assertNotIn("scanner_config", out.get("excluded") or {})
+
+    def test_a_plain_delta_still_reviews_a_changed_root_config(self):
+        # Only --pr-worktree drops the names from a delta (#1681); a real change to
+        # the root config in a -c/--base review stays reviewable.
+        repo = make_git_repo(test_case=self, files={"src/app.py": "x = 1\n",
+                                                    "panopticon.yml": self.CONFIG})
+        with open(os.path.join(repo, "panopticon.yml"), "a", encoding="utf-8") as fh:
+            fh.write("# edited\n")
+        git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "cfg")
+        out = run_scan(repo, "--scope-changed", "--base", "HEAD~1")
+        reviewed = set(grouped(out)) | set(out.get("ungrouped_files") or [])
+        self.assertIn("panopticon.yml", reviewed)
+
+
 class TestGitAwareDiscovery(unittest.TestCase):
     """#500: discovery respects the TARGET's own ignore rules. A raw walk swept
     17,253 files on an ordinary project (94% gitignored runtime data, including
