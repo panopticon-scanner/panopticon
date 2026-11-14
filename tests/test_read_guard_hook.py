@@ -28,10 +28,10 @@ def _scope(files=(), dirs=(), reads=()):
     """A scope as `scope_from_plan` builds it, with the arm-time walk: #2063's escapes and
     #3616's Keychain paths."""
     grants = [os.path.realpath(p) for p in dirs]
-    escapes, keychains = rg.guard_rules.grant_walk(grants)
+    escapes, keychains, unwalked = rg.guard_rules.grant_walk(grants)
     return {"files": [os.path.realpath(p) for p in files], "dirs": grants,
             "reads": [os.path.realpath(p) for p in reads],
-            "escapes": escapes, "keychains": keychains}
+            "escapes": escapes, "keychains": keychains, "unwalked": unwalked}
 
 
 class TestMarker(unittest.TestCase):
@@ -92,7 +92,8 @@ class TestScopeFromPlan(unittest.TestCase):
         # A well-typed-but-malformed dispatch plan must degrade to an empty
         # scope for that key, never raise.
         out = rg.scope_from_plan([{"id": "e", "scope": {"files": 5}}])
-        self.assertEqual({"files": [], "dirs": [], "reads": [], "escapes": {}, "keychains": {}}, out["e"])
+        self.assertEqual({"files": [], "dirs": [], "reads": [], "escapes": {}, "keychains": {},
+                          "unwalked": {}}, out["e"])
 
 class TestDecide(unittest.TestCase):
     def setUp(self):
@@ -917,7 +918,8 @@ class TestInstallUninstall(unittest.TestCase):
                            settings_path=self.settings, scope_path=self.scope_path)
         self.assertEqual({"e1"}, set(added))
         self.assertEqual({"e1": {"files": [os.path.realpath(self.a)], "dirs": [],
-                                 "reads": [], "escapes": {}, "keychains": {}}},
+                                 "reads": [], "escapes": {}, "keychains": {},
+                          "unwalked": {}}},
                          rg._read_scope_file(self.scope_path))
         hooks = self._settings()["hooks"]["PreToolUse"]
         self.assertEqual(1, len(hooks))
@@ -982,7 +984,8 @@ class TestInstallUninstall(unittest.TestCase):
         # what an intentionally-empty scope means (R-P5-2), not a hole.
         rg.install([_entry("e1")], settings_path=self.settings, scope_path=self.scope_path)
         self.assertEqual((True, 1), rg.is_armed(settings_path=self.settings, scope_path=self.scope_path))
-        self.assertEqual({"e1": {"files": [], "dirs": [], "reads": [], "escapes": {}, "keychains": {}}},
+        self.assertEqual({"e1": {"files": [], "dirs": [], "reads": [], "escapes": {}, "keychains": {},
+                          "unwalked": {}}},
                          rg._read_scope_file(self.scope_path))
 
     def test_install_overwrites_a_planted_row_under_a_dispatched_empty_scope_id(self):
@@ -995,7 +998,8 @@ class TestInstallUninstall(unittest.TestCase):
             json.dump({"verify-tool-X": _scope(dirs=[self.tmp.name])}, fh)
         rg.install([_entry("verify-tool-X")], settings_path=self.settings, scope_path=self.scope_path)
         on_disk = rg._read_scope_file(self.scope_path)
-        self.assertEqual({"files": [], "dirs": [], "reads": [], "escapes": {}, "keychains": {}},
+        self.assertEqual({"files": [], "dirs": [], "reads": [], "escapes": {}, "keychains": {},
+                          "unwalked": {}},
                          on_disk["verify-tool-X"])
         # ...and adjudicate() actually denies a read of a file that used to be
         # inside the planted grant, for a subagent bound to that id.

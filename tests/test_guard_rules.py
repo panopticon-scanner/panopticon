@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import unicodedata
 from unittest import mock
 
 import scripts.agy_guard_hook as ag
@@ -500,17 +501,15 @@ class TestNoGrantCoversTheKeychain(unittest.TestCase):
         self.assertNotIn("keychain", found.casefold())
 
 
-class TestASearchOverAKeychainAncestorIsDenied(unittest.TestCase):
-    """#3616: the Keychain rule (#3607) is checked on the path a call names, so a recursive
-    search over an ANCESTOR of a Keychain directory let the host CLI walk into it. The scope's
-    arm-time walk records each grant's Keychain paths, and every host's directory-level search
-    and listing over one is denied; a capped, failed or missing walk denies them all. Exact
-    reads under the same grant are untouched. A fixture tree in a temp dir, never the real
-    Keychain, and no real home is walked."""
+class _KeychainTree(unittest.TestCase):
+    """#3616 fixture: a home with `Library/Keychains`, a loose `.keychain-db`, a clean `src/`,
+    and every host's directory-level tools. Temp dirs only. No tests of its own."""
+
 
     ENV = {"PANOPTICON_ENTRY_ID": "e1"}
     SEARCH = "a macOS Keychain path lies under"
-    WALK = "was capped, failed or is missing"
+    WALK = "was capped or is missing"
+    UNWALKED = "could not be read when the scope was armed"
 
     def setUp(self):
         d = tempfile.mkdtemp()
@@ -599,10 +598,19 @@ class TestASearchOverAKeychainAncestorIsDenied(unittest.TestCase):
                 scope, self.allowlist, env=env)),
         )
 
+class TestASearchOverAKeychainAncestorIsDenied(_KeychainTree):
+    """#3616: the Keychain rule (#3607) is checked on the path a call names, so a recursive
+    search over an ANCESTOR of a Keychain directory let the host CLI walk into it. The scope's
+    arm-time walk records each grant's Keychain paths, and every host's directory-level search
+    and listing over one is denied; a capped, failed or missing walk denies them all. Exact
+    reads under the same grant are untouched. A fixture tree in a temp dir, never the real
+    Keychain, and no real home is walked."""
+
     def test_the_walk_records_keychain_paths_without_descending_or_following(self):
-        escapes, keychains = guard_rules.grant_walk([self.home])
+        escapes, keychains, unwalked = guard_rules.grant_walk([self.home])
         self.assertEqual({self.home: sorted([self.kdir, self.loose])}, keychains)
         self.assertEqual({self.home: []}, escapes)      # the link inside the Keychain is unseen
+        self.assertEqual({self.home: []}, unwalked)
         self.assertEqual(escapes, guard_rules.grant_escapes([self.home]))
 
     def test_every_host_denies_a_search_or_listing_over_an_ancestor(self):
@@ -636,15 +644,17 @@ class TestASearchOverAKeychainAncestorIsDenied(unittest.TestCase):
                 if not allowed:
                     self.assertIn(self.SEARCH, reason)
 
-    def test_a_capped_failed_or_missing_walk_denies_every_directory_tool(self):
-        escapes, capped = guard_rules.grant_walk([self.home], cap=1)
-        gone = os.path.join(self.home, "gone")
-        self.assertEqual(({gone: None}, {gone: None}), guard_rules.grant_walk([gone]))
+    def test_a_capped_or_missing_walk_denies_every_directory_tool(self):
+        escapes, capped, unwalked = guard_rules.grant_walk([self.home], cap=1)
+        self.assertEqual(({self.home: None},) * 3, (escapes, capped, unwalked))
         armed = rg.scope_from_plan([{"id": "e1", "scope": {"files": [], "dirs": [self.home],
                                                            "reads": []}}])
-        cases = {"capped": dict(armed["e1"], escapes=escapes, keychains=capped),
+        cases = {"capped": dict(armed["e1"], escapes=escapes, keychains=capped,
+                                unwalked=unwalked),
                  "missing": {k: v for k, v in armed["e1"].items() if k != "keychains"},
-                 "malformed": dict(armed["e1"], keychains={self.home: "x"})}
+                 "missing unwalked": {k: v for k, v in armed["e1"].items() if k != "unwalked"},
+                 "malformed": dict(armed["e1"], keychains={self.home: "x"}),
+                 "malformed unwalked": dict(armed["e1"], unwalked={self.home: "x"})}
         for label, scope in cases.items():
             path = self._arm({"e1": scope})
             for tool, call in self._dir_tools(self.clean, path):
@@ -673,9 +683,148 @@ class TestASearchOverAKeychainAncestorIsDenied(unittest.TestCase):
                                                            "reads": []}}])["e1"]
         armed["keychains"][self.home] = None
         armed["escapes"][self.home] = None
+        armed["unwalked"][self.home] = None
         scope = self._arm({"e1": armed})
         for tool, call in self._dir_tools(other, scope):
             with self.subTest(tool=tool, home_walk="unknown"):
+                self.assertEqual((True, ""), call())
+
+
+class TestTheKeychainRuleHoldsAgainstSpellingsLinksAndUnreadableDirs(_KeychainTree):
+    """#3635 review: a case or NFD spelling of an ancestor is the same directory on APFS, so the
+    rule compares by file identity; an in-grant link into a Keychain (or to an ancestor of one)
+    is recorded; agy's find_by_name is checked whatever its Pattern; and a directory the walk
+    could not read denies only searches on its own line. Fixtures only."""
+
+    def _aliases(self, path):
+        """`path`'s spellings that open the same directory on THIS volume (APFS: all)."""
+        rel = os.path.relpath(path, self.home)
+        out = []
+        for spelled in (rel.lower(), rel.upper(), unicodedata.normalize("NFD", rel)):
+            alias = os.path.join(self.home, spelled)
+            if alias != path and os.path.exists(alias) and os.path.samefile(alias, path):
+                out.append(alias)
+        return out
+
+    def test_a_case_or_nfd_spelling_of_an_ancestor_is_denied_on_every_host(self):
+        accented = os.path.join(self.home, "Caf\u00e9")
+        os.makedirs(os.path.join(accented, "Library", "Keychains"))
+        scope = self._arm(rg.scope_from_plan([{"id": "e1", "scope": {
+            "files": [], "dirs": [self.home], "reads": []}}]))
+        spellings = (self._aliases(self.library) + self._aliases(accented)
+                     + self._aliases(os.path.join(accented, "Library")))
+        if not spellings:
+            self.skipTest("this volume is case- and normalization-sensitive: no alias exists")
+        for alias in spellings:
+            for tool, call in self._dir_tools(alias, scope):
+                with self.subTest(tool=tool, alias=os.path.relpath(alias, self.home)):
+                    allow, reason = call()
+                    self.assertFalse(allow)
+                    self.assertIn(self.SEARCH, reason)
+
+    def test_a_glob_prefix_spelled_differently_is_denied(self):
+        env = dict(self.ENV)
+        aliases = [os.path.relpath(a, self.home) for a in self._aliases(self.library)]
+        if not aliases:
+            self.skipTest("this volume is case-sensitive: no alias exists")
+        for prefix in aliases:
+            pattern = prefix + "/**"
+            calls = (
+                ("claude Glob", lambda: rg.adjudicate(
+                    {"tool_name": "Glob", "tool_input": {"path": self.home, "pattern": pattern}},
+                    self.scope, env)),
+                ("kimi Glob", lambda: kg.adjudicate(
+                    {"tool_name": "Glob", "tool_input": {"path": self.home, "pattern": pattern}},
+                    "read", self.scope, env)),
+                ("gemini glob", lambda: gg.adjudicate(
+                    {"tool_name": "glob", "tool_input": {"dir_path": self.home,
+                                                         "pattern": pattern}},
+                    self.scope, self.allowlist, env=env)),
+                ("gemini grep_search include", lambda: gg.adjudicate(
+                    {"tool_name": "grep_search", "tool_input": {
+                        "dir_path": self.clean, "pattern": "x",
+                        "include_pattern": "../" + pattern}},
+                    self.scope, self.allowlist, env=env)))
+            for tool, call in calls:
+                with self.subTest(tool=tool, pattern=pattern):
+                    self.assertFalse(call()[0])
+
+    def test_an_in_grant_link_into_a_keychain_or_to_its_ancestor_is_recorded(self):
+        docs = os.path.join(self.home, "docs")
+        os.makedirs(docs)
+        to_file = os.path.join(docs, "kc")
+        os.symlink(os.path.join(self.kdir, "login.keychain-db"), to_file)
+        up = os.path.join(self.clean, "up")
+        os.symlink(self.home, up)
+        # Outside the grant: a link toward the user's Library (HOME is a fixture here, so
+        # this is string math on a temp path, never the real home or Keychain).
+        user = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, user, True)
+        os.makedirs(os.path.join(user, "Library"))
+        towards = os.path.join(self.deep, "lib")
+        os.symlink(os.path.join(user, "Library"), towards)
+        plain = os.path.join(self.deep, "plain")
+        os.symlink(self.outside, plain)
+        with mock.patch.dict(os.environ, {"HOME": user}):
+            escapes, keychains, _ = guard_rules.grant_walk([self.home])
+            scope = self._arm(rg.scope_from_plan([{"id": "e1", "scope": {
+                "files": [], "dirs": [self.home], "reads": []}}]))
+        for link in (to_file, up, towards):
+            self.assertIn(link, keychains[self.home])
+        self.assertNotIn(plain, keychains[self.home])
+        self.assertIn(plain, escapes[self.home])
+        for path in (docs, self.clean):
+            for tool, call in self._dir_tools(path, scope):
+                with self.subTest(tool=tool, path=os.path.relpath(path, self.home)):
+                    allow, reason = call()
+                    self.assertFalse(allow)
+                    self.assertIn(self.SEARCH, reason)
+
+    def test_find_by_name_is_checked_whatever_its_pattern(self):
+        for pattern in ("login.keychain-db", "a.py", "*"):
+            with self.subTest(pattern=pattern):
+                allow, reason = ag.adjudicate(
+                    {"toolCall": {"name": "find_by_name", "arguments": {
+                        "SearchDirectory": self.home, "Pattern": pattern}}},
+                    self.scope, self.allowlist, env=dict(self.ENV))
+                self.assertFalse(allow)
+                self.assertIn(self.SEARCH, reason)
+
+    def _unreadable(self, grant, name):
+        """grant_walk over `grant` as if `grant/name` could not be read (EACCES), without
+        changing any permission: os.walk is wrapped to prune it and report the error."""
+        real_walk = os.walk
+
+        def walk(top, followlinks=False, onerror=None):
+            for root, subdirs, files in real_walk(top, followlinks=followlinks, onerror=onerror):
+                if root == grant and name in subdirs:
+                    subdirs.remove(name)
+                    onerror(PermissionError(13, "Permission denied", os.path.join(grant, name)))
+                yield root, subdirs, files
+        return mock.patch.object(guard_rules.os, "walk", walk)
+
+    def test_an_unreadable_directory_denies_only_searches_on_its_line(self):
+        repo = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, repo, True)
+        data = os.path.join(repo, "data")
+        for p in (os.path.join(data, "inner"), os.path.join(repo, "src")):
+            os.makedirs(p)
+        with self._unreadable(repo, "data"):
+            walked = guard_rules.grant_walk([repo])
+            scope = self._arm(rg.scope_from_plan([{"id": "e1", "scope": {
+                "files": [], "dirs": [repo], "reads": []}}]))
+        self.assertEqual(({repo: []}, {repo: []}, {repo: [data]}), walked)
+        for path in (repo, data, os.path.join(data, "inner")):          # above, at, below
+            for tool, call in self._dir_tools(path, scope):
+                with self.subTest(tool=tool, path=os.path.relpath(path, repo)):
+                    allow, reason = call()
+                    self.assertFalse(allow)
+                    if "Glob" in tool or "glob" in tool or "find" in tool:
+                        continue
+                    self.assertIn(self.UNWALKED, reason)
+                    self.assertIn(data, reason)
+        for tool, call in self._dir_tools(os.path.join(repo, "src"), scope):
+            with self.subTest(tool=tool, path="src (beside it)"):
                 self.assertEqual((True, ""), call())
 
 

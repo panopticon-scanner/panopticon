@@ -55,7 +55,8 @@ class TestDirectoryGrants(GuardCase):
         _write(self.scope_path,
                {"entry-1": {"files": [self.inside], "dirs": [], "reads": []},
                 "entry-dir": {"files": [], "dirs": [self.cell], "reads": [],
-                              "escapes": {self.cell: []}, "keychains": {self.cell: []}}})
+                              "escapes": {self.cell: []}, "keychains": {self.cell: []},
+                              "unwalked": {self.cell: []}}})
 
     def scan(self, tool, **tool_input):
         return guard.adjudicate({"tool_name": tool, "tool_input": tool_input,

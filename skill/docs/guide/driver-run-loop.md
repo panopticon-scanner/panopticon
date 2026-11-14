@@ -408,11 +408,18 @@ on Claude hooks, and always uses the return-persist path.
   inside a granted directory, named exactly or reached through a symlink. A repository's own
   `*.keychain`/`*.keychain-db` files are unreadable to reviewers for the same reason. A host's own
   recursive search walks the tree itself, so the rule also covers ancestors (#3616): arming walks
-  each directory grant once and records its Keychain paths, and a directory-level search or
-  listing (Grep, Glob, `grep_search`, `list_dir`, `list_directory`, `find_by_name`, `glob`) whose
-  target, or a wildcard's literal prefix, has one at or under it is denied. A walk that hits the
-  cap or fails denies every directory-level search under that grant; exact file reads are
-  unaffected. No host child has a shell
+  each directory grant once and records its Keychain paths, plus any in-grant link into a Keychain
+  or to an ancestor of one. A directory-level search or listing (Grep, Glob, `grep_search`,
+  `list_dir`, `list_directory`, `find_by_name`, `glob`) whose target, or a wildcard's literal
+  prefix, has one at or under it is denied. Paths are compared by file identity, so a case or
+  Unicode spelling of an ancestor (`library`, an NFD name) is the same directory, as APFS treats
+  it. A walk that hits the cap denies every directory-level search under that grant; a directory
+  the walk could not read denies only searches at, above or below it. Exact file reads are
+  unaffected. This over-blocks a repository that ships its own `Library/Keychains` or a committed
+  `*.keychain` (a Swift or iOS test fixture): directory search over that path and its ancestors
+  is refused, so search a narrower directory beside it, or name files by path. A Keychain or link
+  created after the scope is built is a known residual, as for #2063's link walk. No host child
+  has a shell
   (pinned in `tests/test_guard_rules.py`), so there is no `security` call to refuse. Write
   confinement is
   **per entry, not per batch** (#1571): the allowlist is a version-2 document keyed by entry id —

@@ -58,7 +58,7 @@ _MATCHER = "|".join(_READ_TOOLS_LIST)
 _GUARD_RULES_USED = (
     "MARKER_PREFIX", "SCOPE_KEYS", "ENV_ENTRY_ID", "GLOB_PATTERN_DENIAL", "GIT_STORE_DENIAL",
     "_resolve_path", "_readable", "_in_dir_grant", "_glob_pattern_climbs", "_names_git_store",
-    "_glob_refusal", "grant_escapes", "ESCAPES_KEY", "grant_walk", "KEYCHAINS_KEY",
+    "_glob_refusal", "grant_escapes", "ESCAPES_KEY", "grant_walk", "KEYCHAINS_KEY", "UNWALKED_KEY",
     "_keychain_refusal",
     "_load_scope", "bind", "hook_command", "_trusted_hook_argv", "_is_our_entry", "_load",
     "atomic_write_json", "_write_hook_entry", "_remove_hook_entry", "_armed",
@@ -162,8 +162,8 @@ def scope_from_plan(plan):
         out[eid] = {k: _realpaths(scope.get(k)) for k in guard_rules.SCOPE_KEYS}
         # #2063: each dir grant's symlinks out of it, for the Glob rule; #3616: and its
         # Keychain paths, for every directory-level search and listing. One walk per grant.
-        (out[eid][guard_rules.ESCAPES_KEY],
-         out[eid][guard_rules.KEYCHAINS_KEY]) = guard_rules.grant_walk(out[eid]["dirs"])
+        (out[eid][guard_rules.ESCAPES_KEY], out[eid][guard_rules.KEYCHAINS_KEY],
+         out[eid][guard_rules.UNWALKED_KEY]) = guard_rules.grant_walk(out[eid]["dirs"])
     return out
 
 

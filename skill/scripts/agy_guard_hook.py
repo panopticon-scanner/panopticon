@@ -209,8 +209,11 @@ def _decide_read(tool_name, tool_input, scope):
         if os.path.isdir(target) and any(
                 guard_rules._in_dir_grant(target, d) for d in scope["dirs"]):
             pattern = tool_input.get("Pattern")
-            refusal = guard_rules._glob_refusal(
-                target, "*" if pattern is None else pattern, scope)
+            # #3616: Pattern matches BASENAMES at any depth, so even a literal one searches
+            # the whole tree under SearchDirectory.
+            refusal = (guard_rules._keychain_refusal("find_by_name over %s" % raw, target, scope)
+                       or guard_rules._glob_refusal(
+                           target, "*" if pattern is None else pattern, scope))
             return (False, refusal) if refusal else (True, "")
         return False, ("find_by_name is not available in a confined cell: your "
                        "file list is in your prompt")
