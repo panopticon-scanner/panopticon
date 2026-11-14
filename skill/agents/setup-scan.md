@@ -117,6 +117,11 @@ Return ONLY a raw JSON object (no markdown fence, no prose):
   optional. Caps: at most 12 layers per group; profile strings at most 512
   characters; profile lists at most 32 items; an unknown surface or profile
   field is a validation error.
+- Globs have no character classes: a bare `[` is refused. To name a path
+  segment that contains brackets (a Next.js route directory such as
+  `users/[id]`), write each `[` as `[[]` and each `]` as `[]]` or a bare `]`:
+  `users/[[]id]/route.ts` matches exactly `users/[id]/route.ts`. Or match
+  that segment with `*`.
 - Emit VALID JSON: escape every `"`, backslash, and newline inside string
   values. One unescaped quote makes the whole proposal unparseable.
 - Never write files, never modify anything, never run code. You explore and

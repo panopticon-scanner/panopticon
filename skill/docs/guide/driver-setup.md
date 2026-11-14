@@ -119,7 +119,10 @@ any depth, a leading `/` anchors to the repo root, a trailing `/` claims a direc
 under it (`docs/` == `docs/**`), and `!` re-excludes with last-match-wins in `match:`/`tests:` (a
 committed `exclude_paths:` entry may not start with `!`; it is refused, not dropped). Character
 classes (`*.[ch]`, `file[0-9].txt`) are **not** supported — write each spelling as its own glob, or
-use `?` for a single character. One in a setup proposal fails the proposal outright; one in a
+use `?` for a single character. A literal bracket is the one exception (#3644): fnmatch's escapes
+`[[]` (a literal `[`) and `[]]` (a literal `]`) each match exactly one character, so a Next.js
+route directory is `app/users/[[]id]/**`, which claims `app/users/[id]/...` and nothing else.
+Any other `[` is a class. One in a setup proposal fails the proposal outright; one in a
 committed `panopticon.yml` is reported to stderr, and what happens next depends on the field. In
 `match:`/`tests:` it is a per-entry error that does not block a run: the pattern matches nothing,
 loudly, instead of matching the wrong files (#1501). In `exclude_paths:` it refuses the run
