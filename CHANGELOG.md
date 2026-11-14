@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **Own-package advisories are stable across identical runs (#3649).** On identical tool output a
+  first-party advisory (#3593) could vanish or flip between `tool_confirmed` and
+  `needs_more_info`. Trivy reports each package at its own Cargo.lock line, so its advisory can
+  sit alone at a locus; when an agent flagged the same line, synthesis collapsed the tool+agent
+  pair to the MORE SEVERE member, which was the agent's claim whenever it was more severe -- so
+  the advisory disappeared, or was queued to the advisor in its place. A first-party advisory is
+  now never collapsed into an agent finding: both survive, the advisory stays first-party (and
+  reinforced when the agent agrees on category), and the agent claim queues on its own.
+  Separately, two tools reporting one advisory on one package at one locus (osv-scanner and
+  cargo-audit at `Cargo.lock:1`) kept whichever came first in input order, so the survivor's
+  severity and source moved with the order; the most severe now wins, then the source, then the
+  fingerprint.
+
 - **agy's `Individual quota reached` response now pauses as a host outage (#3640).** The
   free-text classifier recognizes that account-level sentence with or without agy's reset tail
   and a leading 429, so the failed launch is not charged to an entry. The match keeps agy's

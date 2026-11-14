@@ -1,5 +1,6 @@
 """#3593: advisories against a Cargo workspace package are controller facts."""
 
+import itertools
 import json
 import os
 import tempfile
@@ -11,6 +12,7 @@ import scripts.first_party_advisory as first_party_advisory
 import scripts.ingest_tools as ingest_tools
 import scripts.phases.runio as runio
 import scripts.phases.verify_tools as verify_tools
+import scripts.synth.corroborate as corroborate
 import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
 
@@ -1209,6 +1211,116 @@ class TestNpmFirstPartyAdvisory(unittest.TestCase):
             "Cargo.lock", "Cargo.toml"))
         self.assertEqual(first_party_advisory.MAX_CARGO_MANIFEST_INGEST_BYTES - spent,
                          cache.manifest_bytes_remaining)
+
+
+def _cargo_audit_document():
+    return {"vulnerabilities": {"list": [{
+        "advisory": {"id": "RUSTSEC-2099-0001", "title": "affected", "cvss": None},
+        "package": {"name": WORKSPACE_NAME, "version": WORKSPACE_VERSION},
+        "versions": {}}]}}
+
+
+class TestFirstPartyAdvisoryStability(unittest.TestCase):
+    """#3649: on identical tool output, a first-party advisory's presence and status
+    may not depend on which tools reported, their order, or what an agent claimed at
+    the same locus. Trivy reports each package at its own Cargo.lock line, so its
+    advisory can sit alone at a locus; an agent finding there made an exactly-two
+    tool+agent pair, and `dedupe` kept the MORE SEVERE member -- the agent's claim,
+    when it was more severe -- so the advisory either vanished or was queued to the
+    advisor as `needs_more_info`. Every queued finding gets NEEDS_MORE_INFO here, as
+    an advisor that cannot confirm would give it."""
+
+    TRIVY_LINE = 3
+
+    def _tools(self):
+        trivy = _trivy_document()
+        trivy["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"][
+            "startLine"] = self.TRIVY_LINE
+        return {"cargo-audit.json": _cargo_audit_document(),
+                "osv-scanner.json": _osv_document(), "trivy.sarif": trivy}
+
+    @staticmethod
+    def _agent(line, severity, category="dependency_vulnerability"):
+        return {"id": "AG-1", "title": "workspace-app is pinned in the lock",
+                "severity": severity, "confidence": "LIKELY", "panel": "security",
+                "category": category, "description": "an agent's own claim",
+                "location": {"file": "Cargo.lock", "line_start": line}}
+
+    def _ingest(self, names):
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        _write_lock(root.name)
+        _write_manifest(root.name)
+        tools = os.path.join(root.name, "tools")
+        os.mkdir(tools)
+        documents = self._tools()
+        for name in names:
+            with open(os.path.join(tools, name), "w", encoding="utf-8") as fh:
+                json.dump(documents[name], fh)
+        return ingest_tools.ingest_dir(tools, "g1", target_root=root.name)
+
+    @staticmethod
+    def _report(findings):
+        prepared, _ = corroborate.prepare_for_queue([dict(f) for f in findings])
+        entries, _cut = evidence.build_verify_queue(prepared)
+        verdicts = {entry["queue_id"]: {"finding_id": entry["finding"]["id"],
+                                        "verdict": "NEEDS_MORE_INFO",
+                                        "reasoning": "cannot confirm"}
+                    for entry in entries}
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="project", fail_on="high",
+                                     timestamp="2026-11-14T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=[dict(f) for f in findings],
+                                             verdicts=verdicts, verdicts_supplied=True)))
+        return {(f.get("source"), evidence.tool_rule_id(f)): f["evidence"]["status"]
+                for f in report["findings"] if evidence.is_tool_sourced(f)
+                and evidence.tool_rule_id(f) != "RUSTSEC-2099-0002"}
+
+    def test_status_never_depends_on_an_agent_claim_or_the_tool_subset(self):
+        names = sorted(self._tools())
+        for r in range(1, len(names) + 1):
+            for subset in itertools.combinations(names, r):
+                base = self._ingest(subset)
+                expected = self._report(base)
+                self.assertTrue(expected)
+                self.assertEqual({"tool_confirmed"}, set(expected.values()), subset)
+                for line in (1, self.TRIVY_LINE):
+                    for severity in ("CRITICAL", "LOW"):
+                        for category in ("dependency_vulnerability", "configuration"):
+                            agent = self._agent(line, severity, category)
+                            with self.subTest(tools=subset, line=line, severity=severity,
+                                              category=category):
+                                self.assertEqual(expected, self._report(base + [agent]))
+                                self.assertEqual(expected,
+                                                 self._report([agent] + base[::-1]))
+
+    def test_the_agent_claim_survives_beside_the_advisory_as_its_own_claim(self):
+        # cargo-audit's category is the agent's, so the pair corroborates; Trivy's
+        # legacy-SARIF category is its rule id, so it does not -- both keep both.
+        for tool, line, reinforced in (("cargo-audit.json", 1, True),
+                                       ("trivy.sarif", self.TRIVY_LINE, False)):
+            with self.subTest(tool=tool):
+                base = self._ingest([tool])
+                agent = self._agent(line, "CRITICAL")
+                prepared, _ = corroborate.prepare_for_queue(
+                    [dict(f) for f in base + [agent]])
+                self.assertEqual(2, len(prepared))
+                advisory = next(f for f in prepared if evidence.is_tool_sourced(f))
+                self.assertTrue(evidence.is_first_party_advisory(advisory))
+                self.assertEqual(reinforced, bool(advisory.get("reinforced")))
+                entries, _ = evidence.build_verify_queue(prepared)
+                self.assertEqual(["AG-1"], [e["finding"]["id"] for e in entries])
+
+    def test_an_ordinary_tool_agent_pair_still_collapses(self):
+        # The exemption is the first-party mark and nothing else: a registry advisory
+        # alone at a locus with one agent finding still collapses to one survivor.
+        base = [f for f in self._ingest(["osv-scanner.json"])
+                if not evidence.is_first_party_advisory(f)]
+        for f in base:
+            f["location"] = {"file": "Cargo.lock", "line_start": 9}
+        prepared, _ = corroborate.prepare_for_queue(
+            [dict(f) for f in base + [self._agent(9, "CRITICAL")]])
+        self.assertEqual(1, len(prepared))
 
 
 class TestFirstPartyAdvisoryVerification(unittest.TestCase):

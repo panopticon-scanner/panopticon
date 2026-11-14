@@ -600,7 +600,14 @@ def aggregate_tool_findings(findings):
         loc = f.get("location") or {}
         line = _norm_line(loc.get("line_start"))
         corroborated = (evidence_mod.norm_path(loc.get("file")), line) in agent_loci
-        return (0 if corroborated else 1, line if isinstance(line, int) else 0)
+        # #3649: two TOOLS reporting one advisory on one artifact at one locus
+        # (osv-scanner and cargo-audit both at `Cargo.lock:1`) used to keep whichever
+        # came first in input order -- so its severity, source and identity moved
+        # with the order. Content decides instead: the most severe, then the source,
+        # then the fingerprint.
+        return (0 if corroborated else 1, line if isinstance(line, int) else 0,
+                _sev_rank(f), str(f.get("source") or ""),
+                evidence_mod.finding_fingerprint(f))
 
     out = []
     groups: dict[tuple[str, str, str, str, str | None],

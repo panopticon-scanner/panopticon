@@ -193,7 +193,14 @@ def dedupe(findings):
         group = by_locus[key]
         tool_srcd = [f for f in group if _is_tool_sourced(f)]
         agent_srcd = [f for f in group if not _is_tool_sourced(f)]
-        if len(group) == 2 and len(tool_srcd) == 1 and len(agent_srcd) == 1:
+        # #3649: never the exactly-two collapse for an ingest-proved first-party
+        # advisory. Keeping the more severe member let an agent's claim -- which
+        # varies run to run -- absorb the advisory, so on identical tool output it
+        # was first-party in one run and queued to the advisor (or gone) in the
+        # next. The general branch below keeps both: the advisory stays first-party
+        # (reinforced when the agent agrees on category), the agent claim its own.
+        if (len(group) == 2 and len(tool_srcd) == 1 and len(agent_srcd) == 1
+                and not evidence_mod.is_first_party_advisory(tool_srcd[0])):
             best = min(group, key=lambda f: (findings_mod._sev_rank(f), _conf_rank(f)))
             other = agent_srcd[0] if _is_tool_sourced(best) else tool_srcd[0]
             best["reinforced"] = True
