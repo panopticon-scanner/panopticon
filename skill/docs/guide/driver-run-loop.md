@@ -413,8 +413,9 @@ on Claude hooks, and always uses the return-persist path.
   `list_dir`, `list_directory`, `find_by_name`, `glob`) whose target, or a wildcard's literal
   prefix, has one at or under it is denied. Paths are compared by file identity, so a case or
   Unicode spelling of an ancestor (`library`, an NFD name) or a firmlink spelling
-  (`/System/Volumes/Data/...`, #3636) is the same directory, as APFS treats it. A walk that hits the cap denies every directory-level search under that grant; a directory
-  the walk could not read denies only searches at, above or below it. Exact file reads are
+  (`/System/Volumes/Data/...`, #3636) is the same directory, as APFS treats it. A walk that hits
+  the cap denies every directory-level search under that grant; a directory the walk could not
+  read denies only searches at, above or below it. Exact file reads are
   unaffected. This over-blocks a repository that ships its own `Library/Keychains` or a committed
   `*.keychain` (a Swift or iOS test fixture): directory search over that path and its ancestors
   is refused, so search a narrower directory beside it, or name files by path. A Keychain or link
