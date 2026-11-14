@@ -18,6 +18,8 @@ decisions so they can be tested exhaustively without a repo.
 import os
 import re
 
+from scripts import groups_schema
+
 TEST_TOKENS = frozenset({"test", "tests", "spec", "specs"})
 # What discovery_catalog._glob_to_re treats as a wildcard: `*`, `**` and `?`. It has
 # no character classes, so `[ab]` is a literal there and must be one here --
@@ -122,12 +124,14 @@ def is_literal_glob(glob):
 
 def literal_prefix(glob):
     """Leading wildcard-free segments of a glob (`internal/auth/**/*_test.go` ->
-    `internal/auth`; `**/*_test.go` -> ''). A literal path is its own prefix."""
+    `internal/auth`; `**/*_test.go` -> ''). A literal path is its own prefix.
+    An escaped bracket is decoded (#3644): `app/[[]id]/**` -> `app/[id]`, the
+    path the compiler matches, not the glob's spelling of it."""
     kept = []
     for segment in glob.removeprefix("!").split("/"):
         if _WILDCARD.search(segment):
             break
-        kept.append(segment)
+        kept.append(groups_schema.unescape_brackets(segment))
     return "/".join(s for s in kept if s)
 
 

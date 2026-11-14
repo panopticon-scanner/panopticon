@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A glob may name a bracketed directory with fnmatch's escapes (#3644).** Setup on a
+  Next.js-style target proposed `users/[[]id]/route.ts` for a `[id]` route directory, and
+  the glob compiler refused every `[`, so the whole proposal was rejected. `[[]` (a literal
+  `[`) and `[]]` (a literal `]`) are now exact literals in the shared compiler, so a
+  proposal, a committed `match:`/`tests:` entry and `exclude_paths:` all accept them and
+  claim exactly the bracketed path. Every other `[` is still a refused character class.
+  The setup-scan brief says how to write such a segment, and a test-scope literal prefix
+  decodes the escape.
+
 - **Setup no longer refuses a target for being more than 12 directories deep (#3645).** The
   `target-discovery-surface` probe bounded its instruction-file walk by depth, so any tree with a
   deep fixture was refused with `**/CLAUDE.md was not scanned past the cap (12 levels)` and ran

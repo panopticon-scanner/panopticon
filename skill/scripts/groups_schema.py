@@ -86,6 +86,31 @@ _CHUNK_SUFFIX_RE = re.compile(r"(?P<base>.+)_\d+\Z")
 # Lives here, in the pure schema module, because this is where authored globs
 # are validated; `discovery` imports it for the same reason `setup_proposal`
 # does -- one rule, three callers, never a second copy.
+#
+# #3644 (ruling: pure fnmatch): the two escaped-literal forms are the exception.
+# `[[]` is a literal `[` and `[]]` a literal `]` -- each matches exactly one
+# character, so neither carries a class's breadth, and a Next.js route directory
+# such as `users/[id]` can be named exactly as `users/[[]id]`. Nothing between a
+# decoded pair is inspected. Every other `[` is still a class, and refused.
+_BRACKET_ESCAPES = {"[[]": "[", "[]]": "]"}
+
+
+def _bracket_escape_at(pattern, i):
+    """The literal bracket an fnmatch escape starting at `pattern[i]` stands for, or None."""
+    return _BRACKET_ESCAPES.get(pattern[i:i + 3])
+
+
+def unescape_brackets(text):
+    """`text` with each escaped bracket decoded to the literal it names, scanned left
+    to right the way the compiler reads it (#3644). Anything else is unchanged."""
+    out, i = [], 0
+    while i < len(text):
+        literal = _bracket_escape_at(text, i) if text[i] == "[" else None
+        out.append(literal or text[i])
+        i += 3 if literal else 1
+    return "".join(out)
+
+
 def glob_defect(pattern):
     """The reason `pattern` cannot be compiled faithfully, or None.
 
@@ -93,10 +118,17 @@ def glob_defect(pattern):
     """
     if not isinstance(pattern, str):
         return None
-    if "[" in pattern:
-        return ("character classes are not supported -- write each spelling "
-                "as its own glob ('*.c' and '*.h', not '*.[ch]'), or use '?' "
-                "for a single character")
+    i = 0
+    while i < len(pattern):
+        if pattern[i] != "[":
+            i += 1
+        elif _bracket_escape_at(pattern, i) is not None:
+            i += 3
+        else:
+            return ("character classes are not supported -- write each spelling "
+                    "as its own glob ('*.c' and '*.h', not '*.[ch]'), or use '?' "
+                    "for a single character; a literal bracket is written '[[]' "
+                    "or '[]]' ('users/[[]id]/route.ts' names 'users/[id]/route.ts')")
     return None
 
 
@@ -289,6 +321,11 @@ def _compile_glob(pat: str, anchored: bool) -> _GlobMatcher:
             tokens.append("?")
             out.append(r"[^/]")
             i += 1
+        elif c == "[" and _bracket_escape_at(pat, i) is not None:
+            literal = _bracket_escape_at(pat, i)
+            tokens.append(literal)
+            out.append(re.escape(literal))
+            i += 3
         else:
             tokens.append(c)
             out.append(re.escape(c))

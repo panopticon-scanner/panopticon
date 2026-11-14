@@ -377,6 +377,53 @@ class TestGlobsAreRefusedRatherThanMiscompiled(unittest.TestCase):
                 self.assertIsNone(gs.glob_defect(glob))
 
 
+class TestEscapedBracketsAreExactLiterals(unittest.TestCase):
+    """#3644 (ruling: pure fnmatch): `[[]` is a literal `[` and `[]]` a literal `]`,
+    each matching exactly one character -- so a Next.js route directory can be named
+    exactly. Nothing between a decoded pair is checked; every other `[` is a class
+    and is still refused."""
+
+    PATHS = ("users/[id]/route.ts", "users/i/route.ts", "users/d/route.ts",
+             "users/x/route.ts", "users/[[]id]/route.ts", "[a-z]", "a", "b", "[post-id]",
+             "p", "x/]y", "[]", "]")
+
+    def _claims(self, glob):
+        self.assertIsNone(gs.glob_defect(glob))
+        return [p for p in self.PATHS if gs.glob_to_re(glob, "t").match(p)]
+
+    def test_each_escape_matches_only_its_literal(self):
+        self.assertEqual(["users/[id]/route.ts"], self._claims("users/[[]id]/route.ts"))
+        self.assertEqual(["[a-z]"], self._claims("[[]a-z]"))
+        self.assertEqual(["[post-id]"], self._claims("[[]post-id]"))
+        self.assertEqual(["x/]y"], self._claims("x/[]]y"))
+        self.assertEqual(["[]"], self._claims("[[]]"))       # `[[]` then a bare `]`
+        self.assertEqual(["[]"], self._claims("[[][]]"))
+        self.assertEqual(["]"], self._claims("[]]"))
+        self.assertEqual([], self._claims("src/[[]"))          # the literal `src/[`
+
+    def test_every_other_bracket_is_still_a_refused_class(self):
+        for glob in ("[a-z]", "[!x]", "users/[id]/route.ts", "*.[ch]", "[[[]", "[]]x[",
+                     "[[]id][ab]", "[]"):
+            with self.subTest(glob=glob):
+                defect = gs.glob_defect(glob)
+                self.assertIn("character classes are not supported", defect)
+                self.assertIn("'[[]'", defect)
+                self.assertIsNone(gs.glob_to_re(glob, "t").match("[a-z]"))
+
+    def test_a_config_may_carry_the_escape(self):
+        _groups, errors = gs.parse_groups({"groups": {"Users": {
+            "match": ["app/users/[[]id]/**"], "tests": ["app/users/[[]id]/*.test.ts"]}}})
+        self.assertEqual([], errors)
+        self.assertEqual([], gs.parse_exclude_paths({"exclude_paths": ["x/[[]gen]/**"]})[1])
+
+    def test_unescape_brackets_reads_left_to_right_like_the_compiler(self):
+        for text, plain in (("users/[[]id]", "users/[id]"), ("[[]]", "[]"),
+                            ("[]]", "]"), ("[[][]]", "[]"), ("[a]", "[a]"), ("", ""),
+                            ("a[[]b[[]c", "a[b[c")):
+            with self.subTest(text=text):
+                self.assertEqual(plain, gs.unescape_brackets(text))
+
+
 @pytest.mark.parametrize(("pattern", "path", "matches"), [
     ("src/*.py", "src/file.py", True),
     ("src/*.py", "nested/src/file.py", False),
