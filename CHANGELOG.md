@@ -2,17 +2,27 @@
 
 ## Unreleased
 
-- **Documented model fallbacks: a per-role ladder per route, never silent (#3582).** A role in
-  `model-profiles.yml` may name `fallbacks: {<route>: [...]}`, tried in order only when the
-  route's live model list lacks the requested model. Today only agy's API-key route has such a
+- **Documented model fallbacks: a per-role ladder per route, never silent (#3582).**
+  A role in `model-profiles.yml` may name `fallbacks: {<route>: [...]}`, tried in order only when
+  the route's live model list lacks the requested model. Today only agy's API-key route has such a
   list, and #3576's Carbon -> `gemini-4-argon-high` choice is now that ladder's first rung. A
-  ladder anywhere else, or a malformed one, is refused at run start, not ignored. Every substitution is recorded on the ledger row,
-  in the run manifest (`model_substitutions`, beside the effective `model_strict`), in
-  `meta.model_substitutions` with a "Model fallbacks" line in the markdown and HTML reports, and
-  in the `agy-model-bound` proof. `PANOPTICON_MODEL_STRICT=1` turns ladders off, and CI is strict
-  by default. A resume under a different strict state is refused as flag drift. An
-  operator-named model never falls back, and quota never triggers a fallback. The
-  host-capabilities guide gains a dated "Access and fallbacks" table.
+  ladder anywhere else, or a malformed one, is refused at run start, not ignored. Every
+  substitution is recorded on the ledger row, in the run manifest (`model_substitutions`, beside
+  the effective `model_strict`), in `meta.model_substitutions` with a "Model fallbacks" line in
+  the markdown and HTML reports, and in the `agy-model-bound` proof. `PANOPTICON_MODEL_STRICT=1`
+  turns ladders off, and CI is strict by default. A resume under a different strict state is
+  refused as flag drift. An operator-named model never falls back, and quota never triggers a
+  fallback. The host-capabilities guide gains a dated "Access and fallbacks" table.
+- **Stable branches keep their tools image on an immutable digest (#3618).**
+  Scanner readiness and dispatch now share one branch-owned image reference.
+  Main retains the local development tag; a release-cut commit replaces it
+  with the GHCR manifest digest and every 5.5.x patch either reuses that digest
+  or rebuilds from the release branch and repins it. A missing release image
+  offers only the exact digest pull or the disclosed `--no-tools` path, never
+  main's moving `:latest`/`:weekly` tags or an unpinned local build. The
+  target-authored `panopticon.yml` cannot select scanner bytes. CONTRIBUTING
+  now records the main-first, one-fix-per-PR `git cherry-pick -x` backport flow.
+
 - **agy's preflight no longer refuses a signed-in run (#3620).** Since #3613 every sign-in run
   refused with `AgyAuthUnreachable`: the preflight read agy's run log for "You are not logged
   into Antigravity", but `agy agents` writes that line there without signing in and the turn
@@ -20,6 +30,20 @@
   interactive-auth stop and its envelope; a failed turn with a key set still names the key
   route. Every preflight refusal now ends `[preflight step: ...]`, naming the check that
   refused.
+
+- **First-party Cargo advisories no longer depend on a third-party-usage verdict (#3593).**
+  Tool ingest now matches an advisory's exact package and version against its
+  Cargo.lock entry. When every matching entry is sourceless and exactly one
+  confined in-tree member manifest has the same name/version and is publishable
+  to crates.io (`publish` absent or true, or a list containing `crates-io`),
+  the finding is reframed as an advisory against this
+  project's own version, retained as `tool_confirmed`, and omitted from the
+  tool-advisor queue; remediation calls for fixing and releasing the project
+  instead of upgrading a dependency. Registry, ambiguous, outside-tree,
+  unpublishable, unreadable, and malformed matches keep the existing advisor
+  path. The shared ingest and queue predicates cover OSV Scanner, cargo-audit,
+  and Trivy SARIF findings without changing Trivy's cross-run identity.
+
 - **agy keeps the operator's HOME and isolates its configuration with `--gemini_dir` (#3613).**
   agy's 2026-11-13 self-update moved its consumer sign-in into the macOS login Keychain, which an
   isolated HOME cannot reach (#3605). Every agy launch now keeps the operator's HOME, so agy reads

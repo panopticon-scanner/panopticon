@@ -32,13 +32,19 @@ import sys
 
 import scripts.executable as executable
 
-# The image and mount names, spelled once (#3407). `LOCAL_NAME` is the tag
-# every scan dispatches by; `REGISTRY_IMAGE` is where CI publishes it (the
-# org also lives in `scripts/gh_transport.REPO_SLUG`, which skill/ cannot
-# import -- a test pins the two agree). The fixtures image and the root it
-# bakes its targets under are the adapter-vetting rig's.
+# The image and mount names, spelled once (#3407). `DEFAULT_IMAGE` is the
+# branch-owned reference every scan resolves before dispatch: main keeps the
+# local development name, while a release branch replaces this ONE assignment
+# with `REGISTRY_REPOSITORY + "@sha256:<manifest digest>"` when it is cut
+# (#3618). Target-authored repository config must never select executable
+# scanner bytes. `REGISTRY_IMAGE` is main's moving publish ref (the org also
+# lives in `scripts/gh_transport.REPO_SLUG`, which skill/ cannot import -- a test pins
+# the two agree). The fixtures image and the root it bakes its targets under
+# are the adapter-vetting rig's.
 LOCAL_NAME = "panopticon-tools"
-REGISTRY_IMAGE = "ghcr.io/panopticon-scanner/" + LOCAL_NAME + ":latest"
+REGISTRY_REPOSITORY = "ghcr.io/panopticon-scanner/" + LOCAL_NAME
+REGISTRY_IMAGE = REGISTRY_REPOSITORY + ":latest"
+DEFAULT_IMAGE = LOCAL_NAME
 FIXTURES_NAME = "panopticon-fixtures"
 FIXTURES_IMAGE = FIXTURES_NAME + ":latest"
 FIXTURES_ROOT = "/opt/" + FIXTURES_NAME

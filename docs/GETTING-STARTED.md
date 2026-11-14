@@ -42,7 +42,11 @@ Every report carries its own ledger under `meta.cost` (launches, tokens, dollars
 ## How to run it
 
 Prerequisites: Python 3.11+ with `pyyaml`, `defusedxml` and `jsonschema`, an agent host on `PATH`, and optionally Docker with the `panopticon-tools` image (`docker pull ghcr.io/panopticon-scanner/panopticon-tools:latest`, a public package, then tag it `panopticon-tools`; or `docker build -t panopticon-tools .` from the checkout, which takes over an hour).
-That pull follows a mutable tag by design. The published image is attested:
+That main-branch pull follows a mutable tag by design. A supported `release/*`
+branch instead carries an exact digest in `scripts.tools_image.DEFAULT_IMAGE`;
+use the pull command its `driver readiness` prints, without substituting
+`:latest`. The target-authored `panopticon.yml` cannot change that reference.
+The published image is attested:
 `gh attestation verify oci://<image ref> --repo panopticon-scanner/panopticon` says where it came
 from, and no run checks it for you.
 

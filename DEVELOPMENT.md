@@ -260,12 +260,15 @@ characters, and matching consumes the whole path.
   route is to fix the finding itself in the moved code, which is a behaviour
   change and belongs in its own PR, not in a verbatim extraction.
 
-  **One residual to know about**: the tools image
+  **One residual to know about on `main`**: the tools image
   (`ghcr.io/…-tools:latest`) is unpinned, so an image that re-grades a semgrep
   rule from `warning` to `error` promotes every standing occurrence at once —
   severity is not part of the identity, so those are disclosed as pre-existing
   rather than counted, on every route. A scheduled strict full-tree lane that
   would count them is a follow-up.
+  Supported release branches do not inherit that cost: their
+  `scripts.tools_image.DEFAULT_IMAGE` is a GHCR manifest digest, and both
+  readiness and scanner dispatch resolve that exact reference.
   After that gate reads the unchanged raw captures and manifest, the workflow
   runs `devtools/code_scanning_reports.py` in runner temporary storage. It
   keeps only the two named, note-level AI-usage rules from the exact supported
@@ -409,6 +412,24 @@ flag list). `--epss` enables EPSS lookups; `--fail-on high`
 gates CI (keys off `summary.gate` in the JSON). Tool layer: build the image once (above);
 normal runs require Docker and the tools image at readiness, or `--no-tools` to
 skip the layer explicitly. `driver readiness` prints a read-only preflight.
+
+### Stable tools-image pins
+
+The image reference is trusted branch policy, not target configuration.
+`skill/scripts/tools_image.py` owns `DEFAULT_IMAGE`; `setup_preflight` and the
+readiness phase inspect it, and `run_tools.py` resolves that same reference to
+the immutable local image ID it records and dispatches. `panopticon.yml` is
+target-authored grouping policy and deliberately has no image key. User-facing
+setup docs describe main's moving tag and direct release users to the exact
+pull command printed from the branch-owned default.
+
+At a stable cut, replace main's `DEFAULT_IMAGE = LOCAL_NAME` with
+`DEFAULT_IMAGE = REGISTRY_REPOSITORY + "@sha256:<manifest-digest>"` on the
+release branch. A patch that does not alter the image keeps that digest. A
+patch that does must build from the release branch, publish without moving
+main's `:latest` or `:weekly` tags, and repin the new manifest digest in the
+same backport PR. A digest-pinned readiness failure offers only the exact pull
+or the disclosed `--no-tools` path; it does not offer a local rebuild.
 
 ### Comparing repeat runs
 `python3 devtools/compare_runs.py A-report.json B-report.json [...] [--out cmp.json]` measures

@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import tempfile
 import unittest
 from unittest import mock
@@ -107,12 +108,24 @@ class TestTheImageIsNamedAndDispatchedById(unittest.TestCase):
             with open(docker, "rb") as fh:
                 body = fh.read()
         self.assertEqual([os.path.realpath(docker), "image", "inspect", "--format",
-                          tools_image.INSPECT_FORMAT, "panopticon-tools"], seen[0])
-        self.assertEqual({"ref": "panopticon-tools", "id": FOUND_IMAGE_ID, "repo_digests": [],
+                          tools_image.INSPECT_FORMAT, tools_image.DEFAULT_IMAGE], seen[0])
+        self.assertEqual({"ref": tools_image.DEFAULT_IMAGE, "id": FOUND_IMAGE_ID,
+                          "repo_digests": [],
                           "apps": [{"name": "docker", "path": os.path.realpath(docker),
                                     "version": "Docker version 27.1.1, build 6312585",
                                     "sha256": hashlib.sha256(body).hexdigest(),
                                     "size": len(body)}]}, found)
+
+    def test_default_probe_uses_the_branch_owned_image_reference(self):
+        pinned = tools_image.REGISTRY_REPOSITORY + "@sha256:" + "d" * 64
+        with tempfile.TemporaryDirectory() as bin_dir, tempfile.TemporaryDirectory() as target:
+            self._docker(bin_dir)
+            seen = []
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                    mock.patch.object(tools_image, "DEFAULT_IMAGE", pinned):
+                found = rt.docker_available(runner=self._runner(seen=seen), target=target)
+        self.assertEqual(pinned, seen[0][-1])
+        self.assertEqual(pinned, found["ref"])
 
     def test_registry_digests_ride_beside_the_id_and_a_local_build_has_none(self):
         digest = "ghcr.io/o/t@sha256:" + "b" * 64
@@ -126,8 +139,10 @@ class TestTheImageIsNamedAndDispatchedById(unittest.TestCase):
                     tempfile.TemporaryDirectory() as target:
                 self._docker(bin_dir)
                 with mock.patch.dict(os.environ, {"PATH": bin_dir}):
-                    with self.assertRaisesRegex(ValueError,
-                                                "^tools image panopticon-tools cannot be named"):
+                    with self.assertRaisesRegex(
+                            ValueError,
+                            "^" + re.escape(tools_image.UNNAMEABLE
+                                            % tools_image.DEFAULT_IMAGE)):
                         rt.docker_available(runner=self._runner(inspect=stdout), target=target)
 
     def test_the_cli_halts_with_one_fixed_line_and_the_halt_exit(self):
@@ -135,15 +150,15 @@ class TestTheImageIsNamedAndDispatchedById(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d, \
                 mock.patch.object(rt, "docker_available",
                                   side_effect=tools_image.ImageIdentityError(
-                                      tools_image.UNNAMEABLE % "panopticon-tools")), \
+                                      tools_image.UNNAMEABLE % tools_image.DEFAULT_IMAGE)), \
                 mock.patch.object(rt, "run_tools") as scan, contextlib.redirect_stderr(err):
             rc = tools_image.halting(rt.main)(["--tools", "semgrep", "--target", d,
                                                "--out", os.path.join(d, "out")])
         self.assertEqual(tools_image.HALT_EXIT, rc)
         scan.assert_not_called()
-        self.assertIn("run_tools: HALT: tools image panopticon-tools cannot be named: docker "
-                      "reported no image id; refusing to scan with an image nobody can identify\n",
-                      err.getvalue())
+        self.assertEqual(tools_image.HALT_PREFIX
+                         + tools_image.UNNAMEABLE % tools_image.DEFAULT_IMAGE + "\n",
+                         err.getvalue())
 
     def test_a_path_entry_inside_the_target_halts_the_probe(self):
         with tempfile.TemporaryDirectory() as target:
@@ -157,7 +172,7 @@ class TestTheImageIsNamedAndDispatchedById(unittest.TestCase):
     def test_main_dispatches_by_the_id_and_records_it(self):
         docker_app = {"name": "docker", "path": "/usr/bin/docker", "version": "Docker version 27.1.1",
                       "sha256": "c" * 64, "size": 3}
-        found = dict(FOUND_IMAGE, apps=[docker_app])
+        found = dict(FOUND_IMAGE, ref=tools_image.DEFAULT_IMAGE, apps=[docker_app])
         with tempfile.TemporaryDirectory() as d:
             manifest = os.path.join(d, "m", "tools-manifest.json")
             with mock.patch.object(rt, "docker_available", return_value=found), \
@@ -168,21 +183,27 @@ class TestTheImageIsNamedAndDispatchedById(unittest.TestCase):
             with open(manifest, encoding="utf-8") as fh:
                 written = json.load(fh)
         self.assertEqual(FOUND_IMAGE_ID, scan.call_args.kwargs["image"])
-        self.assertEqual({"ref": "panopticon-tools", "id": FOUND_IMAGE_ID, "repo_digests": [],
+        self.assertEqual({"ref": tools_image.DEFAULT_IMAGE, "id": FOUND_IMAGE_ID,
+                          "repo_digests": [],
                           "adapter_code": tools_image.adapter_code(SCRIPTS_DIR)}, written["image"])
         self.assertEqual([docker_app], written["apps"])
         self.assertEqual([docker_app], found["apps"])       # the probe's answer is not mutated
 
     def test_a_skipped_scan_records_that_the_image_was_not_available(self):
+        pinned = tools_image.REGISTRY_REPOSITORY + "@sha256:" + "e" * 64
+        err = io.StringIO()
         with tempfile.TemporaryDirectory() as d:
             manifest = os.path.join(d, "m", "tools-manifest.json")
-            with mock.patch.object(rt, "docker_available", return_value=False), \
-                    contextlib.redirect_stderr(io.StringIO()):
+            with mock.patch.object(tools_image, "DEFAULT_IMAGE", pinned), \
+                    mock.patch.object(rt, "docker_available", return_value=False), \
+                    contextlib.redirect_stderr(err):
                 self.assertEqual(0, rt.main(["--tools", "semgrep", "--target", d, "--out",
                                              os.path.join(d, "out"), "--manifest", manifest]))
             with open(manifest, encoding="utf-8") as fh:
                 written = json.load(fh)
-        self.assertEqual({"ref": "panopticon-tools", "id": None}, written["image"])
+        self.assertEqual({"ref": pinned, "id": None}, written["image"])
+        self.assertEqual(pinned + " image not available; skipping tool scan\n",
+                         err.getvalue())
         self.assertNotIn("apps", written)
 
 

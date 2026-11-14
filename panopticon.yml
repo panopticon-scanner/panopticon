@@ -3,6 +3,10 @@
 # matching group wins. A group whose keys are names (no match:) is a
 # parent; its subgroups are its layers and roll up to it in the report.
 # settings: max_per_group / max_groups / max_verify (positive ints).
+# Scanner-image policy deliberately does not live here: this file is read from
+# the target, so allowing it to select executable scanner bytes would cross the
+# trust boundary. The installed branch owns that reference in
+# skill/scripts/tools_image.py (`DEFAULT_IMAGE`); release branches pin a digest.
 #
 # 2026-09-06: re-proposed from scratch by the 5.2 grouping engine
 # (`driver setup .`, setup-scan on Opus; spine 72 code / 31 commons /
@@ -250,6 +254,7 @@ groups:
       - skill/scripts/tools/legacy_sarif.py
       - skill/scripts/tools/egress.py
       - skill/scripts/tools/__init__.py
+      - skill/scripts/first_party_advisory.py
       tests:
       - tests/tools/__init__.py
       - tests/tools/git_repo.py
@@ -258,6 +263,7 @@ groups:
       - tests/tools/test_legacy_sarif.py
       - tests/tools/test_legacy_sarif_integration.py
       - tests/tools/test_normalization_contract.py
+      - tests/test_first_party_advisories.py
       - tests/tools/test_prefix_registry.py
       - tests/tools/test_egress.py
       - tests/tools/test_adapter_cwd_confinement.py

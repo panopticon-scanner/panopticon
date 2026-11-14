@@ -311,9 +311,20 @@ class TestDockerTimeouts(unittest.TestCase):
         self.assertEqual(cmd[1], "build")
         self.assertEqual(cmd[cmd.index("-f") + 1], str(dockerfile))
         self.assertEqual(cmd[cmd.index("-t") + 1], "mytag")
+        tools_ref = rft.tools_image.DEFAULT_IMAGE
+        if tools_ref == rft.tools_image.LOCAL_NAME:
+            tools_ref += ":latest"
         self.assertEqual(cmd[cmd.index("--build-arg") + 1],
-                         "TOOLS_IMAGE=panopticon-tools:latest")
+                         "TOOLS_IMAGE=" + tools_ref)
         self.assertIn(str(repo_root), cmd)
+
+    def test_build_image_uses_the_branch_owned_digest_on_a_release_cut(self):
+        pinned = rft.tools_image.REGISTRY_REPOSITORY + "@sha256:" + "c" * 64
+        with mock.patch.object(rft.tools_image, "DEFAULT_IMAGE", pinned), \
+                mock.patch.object(rft.subprocess, "run", return_value=_Res(0)) as run:
+            rft.build_image("fixtures")
+        cmd = run.call_args.args[0]
+        self.assertEqual(cmd[cmd.index("--build-arg") + 1], "TOOLS_IMAGE=" + pinned)
 
     def test_probe_timeout_is_unavailable_not_crash(self):
         with mock.patch.object(rft.subprocess, "run",

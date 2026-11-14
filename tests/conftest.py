@@ -137,7 +137,7 @@ import scripts.tools_manifest as _tools_manifest  # noqa: E402
 REAL_DOCKER_AVAILABLE = _run_tools.docker_available
 
 
-def _refuse_docker(image="panopticon-tools", runner=None, target=None):
+def _refuse_docker(image=None, runner=None, target=None):
     """Answer "no docker here" -- unless the caller injected its own runner.
 
     tests/test_run_tools_docker.py unit-tests this gate by handing it a fake

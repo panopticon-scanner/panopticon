@@ -59,6 +59,16 @@ SCOPE_LIMITED_FIELD = "_backup_missing_evidence"
 # #3231: how many of a tool advisor's `missing_evidence` names the report carries.
 SCOPE_NAMES_SHOWN = 12
 
+# #3593: a dependency scanner can report an advisory against the reviewed
+# Cargo workspace's OWN package. In Cargo.lock, workspace and local path
+# packages are the entries with no `source`; ingest then requires the exact
+# name/version in one confined, bounded, in-tree Cargo.toml whose package is
+# publishable. That combined match is a controller-checkable fact, not the tool
+# advisor's usual question of whether a third-party dependency is actually
+# used. Ingest is the sole writer. The exact value keeps malformed/near-miss
+# tool evidence on the normal advisor path.
+FIRST_PARTY_PACKAGE_ORIGIN = "first_party"
+
 
 # Identity an advisor may not assert about its own verdict. `stage` decides how
 # the verdict is READ rather than what it says: it picks which candidate is
@@ -170,6 +180,20 @@ def _tool_evidence(finding):
     """`tool_evidence` as a dict, `{}` for absent or malformed (#2359)."""
     te = finding.get("tool_evidence")
     return te if isinstance(te, dict) else {}
+
+
+def is_first_party_advisory(finding):
+    """Whether ingest proved this tool advisory names the project's own package.
+
+    Tool sourcing is part of the predicate: an agent-authored finding cannot
+    self-assert the marker and acquire either the queue exemption or confirmed
+    evidence. `agent_finding` strips `source`, and ingest writes the marker only
+    after an exact sourceless Cargo.lock identity and in-tree publishable
+    Cargo.toml package/version match (#3593).
+    """
+    return (is_tool_sourced(finding)
+            and _tool_evidence(finding).get("package_origin")
+            == FIRST_PARTY_PACKAGE_ORIGIN)
 
 
 def location_of(finding):
@@ -349,6 +373,15 @@ def derive_evidence(finding, verdict=None):
             derived["missing_evidence"] = named[:SCOPE_NAMES_SHOWN]
         return derived
 
+    if is_first_party_advisory(finding):
+        return {
+            "status": "tool_confirmed",
+            "verified_by": origin,
+            "reasoning": ("Advisory database matched the exact name and version "
+                          "of this project's in-tree publishable Cargo member."),
+            "citation_quality": quality,
+        }
+
     if tool_like:
         return {"status": "tool_reported", "verified_by": origin,
                 "reasoning": ("Same locus reported independently by a tool and "
@@ -414,20 +447,25 @@ def _queue_tiebreak(f):
 
 
 def build_verify_queue(findings, max_verify=None):
-    """Return (entries, cut) for ALL findings, priority-sorted.
+    """Return (entries, cut) for findings that need an advisor, priority-sorted.
 
     Entries hold REFERENCES to the original finding dicts (verdict application
     must mutate the real objects); tool-sourced and reinforced findings queue
-    too, as claims like any other (P2, #446).
+    too, as claims like any other (P2, #446). The sole exception is #3593's
+    ingest-proved first-party Cargo advisory: a sourceless lock identity also
+    matched one in-tree publishable member manifest, so its claim is that THIS
+    project version matches the advisory, not that a third-party dependency is
+    used. `derive_evidence` confirms that deterministic match without an advisor.
     P2 (#443/#438): the sort key and queue_id are pure functions of finding
     CONTENT — no input index anywhere, including in the collision-suffix
     assignment (see `_queue_tiebreak`) — so both passes of a run compute the
     same ids and a --max-verify cut cannot depend on filename order.
     """
-    ordered = sorted(findings, key=lambda f: (triage_priority(f), sev_rank(f),
-                                              finding_fingerprint(f),
-                                              str(f.get("id") or ""),
-                                              _queue_tiebreak(f)))
+    ordered = sorted((f for f in findings if not is_first_party_advisory(f)),
+                     key=lambda f: (triage_priority(f), sev_rank(f),
+                                    finding_fingerprint(f),
+                                    str(f.get("id") or ""),
+                                    _queue_tiebreak(f)))
     cut = 0
     if max_verify is not None and max_verify >= 0 and len(ordered) > max_verify:
         cut = len(ordered) - max_verify

@@ -165,9 +165,12 @@ def image_exists(tag: str) -> bool:
 
 def build_image(tag: str) -> None:
     validate_image_reference(tag)
+    tools_ref = tools_image.DEFAULT_IMAGE
+    if tools_ref == tools_image.LOCAL_NAME:
+        tools_ref += ":latest"
     run([
         _docker_bin(), "build",
-        "--build-arg", "TOOLS_IMAGE=" + tools_image.LOCAL_NAME + ":latest",
+        "--build-arg", "TOOLS_IMAGE=" + tools_ref,
         "-f", str(DOCKERFILE),
         "-t", tag,
         str(REPO_ROOT),
