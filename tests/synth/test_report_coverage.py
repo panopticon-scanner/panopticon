@@ -1,8 +1,10 @@
 """Coverage, inventory, resume, and summary contracts."""
 
+import copy
 import os
 import json
 import tempfile
+import types
 import unittest
 import pytest
 import scripts.synth.coverage_io as coverage_io
@@ -11,6 +13,8 @@ import scripts.synthesize as syn
 import scripts.dispatch as dispatch_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.codes as codes_mod
+import scripts.synth.corroborate as corroborate_mod
+import scripts.synth.grading as grading_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.cost as cost_mod
 import scripts.synth.tool_axis as tool_axis_mod
@@ -486,7 +490,9 @@ class TestResumeDisclosure(unittest.TestCase):
         ))
         self.assertIsNone(r["meta"]["coverage"]["resume"])
 
-    def _cut_short_report(self, failure_class, max_verify=None):
+    def _cut_short_report(self, failure_class=outage_mod.HOST_FAILURE, max_verify=None,
+                          include_cell=True, tool_names=("bandit", "semgrep"),
+                          answer_all=False, host_target="cell", ledger_unreadable=False):
         groups = [{"name": "app", "files": ["app.py"]}]
         finding = _agentic(
             fid="SEC-001", sev="HIGH", _group="app", domain="SEC",
@@ -503,13 +509,32 @@ class TestResumeDisclosure(unittest.TestCase):
             "description": "d",
             "location": {"file": "app.py", "line_start": n + 1},
             "provenance": {"confirmation_reasoning": "RULE-%d" % n},
-        } for n, name in enumerate(("bandit", "semgrep"), start=1)]
+        } for n, name in enumerate(tool_names, start=1)]
+        findings = ([finding] if include_cell else []) + tools
+        prepared, _ = corroborate_mod.prepare_for_queue(copy.deepcopy(findings))
+        queue, _ = evidence_mod.build_verify_queue(prepared, max_verify=max_verify)
+        tool_qids = [entry["queue_id"] for entry in queue
+                     if evidence_mod.is_tool_sourced(entry["finding"])]
+        verdicts = ({entry["queue_id"]: {
+            "finding_id": entry["finding"]["id"],
+            "verdict": "CONFIRMED",
+            "reasoning": "fixture answer",
+        } for entry in queue} if answer_all else {})
+        cell_entry = "verify-app-SEC-primary"
+        host_entry = (cell_entry if host_target == "cell"
+                      else "verify-tool-%s" % tool_qids[0])
+        verify_ledger = cost_mod.VerifyLedger(
+            launched_entries=(host_entry,),
+            host_failure_entries=((host_entry,)
+                                  if failure_class == outage_mod.HOST_FAILURE else ()),
+            unreadable=ledger_unreadable,
+        )
         with _target_with_files(groups) as target:
             return report_mod.build_report(report_mod.ReportInputs(
                 run=report_mod.RunConfig(
                     target=target, root=target, fail_on="high", timestamp=self.TS,
                     max_verify=max_verify),
-                findings=findings_mod.FindingSet(findings=[finding] + tools),
+                findings=findings_mod.FindingSet(findings=findings, verdicts=verdicts),
                 plan=plan_mod.PlanInputs(
                     groups_meta=groups,
                     resume={
@@ -517,7 +542,36 @@ class TestResumeDisclosure(unittest.TestCase):
                         "verify": {"total": 3, "done": 1, "pending": 2},
                     },
                 ),
-                cost=cost_mod.CostInputs(verify_failure_classes=(failure_class,)),
+                cost=cost_mod.CostInputs(verify_ledger=verify_ledger),
+            ))
+
+    def _cell_report(self, domains, ledger, answered=()):
+        groups = [{"name": "app", "files": ["app.py"]}]
+        findings = [
+            _agentic(
+                fid="%s-001" % domain, sev="HIGH", _group="app", domain=domain,
+                location={"file": "app.py", "line_start": n},
+            )
+            for n, domain in enumerate(domains, start=1)
+        ]
+        prepared, _ = corroborate_mod.prepare_for_queue(copy.deepcopy(findings))
+        queue, _ = evidence_mod.build_verify_queue(prepared)
+        answered = set(answered)
+        verdicts = {
+            entry["queue_id"]: {
+                "finding_id": entry["finding"]["id"],
+                "verdict": "CONFIRMED",
+                "reasoning": "fixture answer",
+            }
+            for entry in queue if entry["finding"].get("domain") in answered
+        }
+        with _target_with_files(groups) as target:
+            return report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target=target, root=target, fail_on="high", timestamp=self.TS),
+                findings=findings_mod.FindingSet(findings=findings, verdicts=verdicts),
+                plan=plan_mod.PlanInputs(groups_meta=groups),
+                cost=cost_mod.CostInputs(verify_ledger=ledger),
             ))
 
     def test_host_cut_short_verify_is_not_certified_on_every_grade_surface(self):
@@ -527,7 +581,8 @@ class TestResumeDisclosure(unittest.TestCase):
         self.assertEqual([], validate_schema_mod.schema_errors(report))
         note = summary["coverage_note"]
         self.assertIn("host-class failure", note)
-        self.assertIn("1 verify cell", note)
+        self.assertRegex(note, r"\b1 verify cell\b")
+        self.assertNotRegex(note, r"\b1 verify cells\b")
         self.assertIn("2 tool-advisor entries", note)
         self.assertIn("re-run the same command", note)
 
@@ -545,10 +600,18 @@ class TestResumeDisclosure(unittest.TestCase):
         self.assertTrue(report["summary"]["coverage_certified"])
         self.assertNotIn("host-class failure", report["summary"].get("coverage_note") or "")
 
-    def test_host_shortfall_keeps_the_band_grade_math_unchanged(self):
+    def test_host_shortfall_keeps_the_band_math_but_holds_the_letter_back(self):
         host = self._cut_short_report(outage_mod.HOST_FAILURE)
         entry = self._cut_short_report(outage_mod.ENTRY_FAILURE)
-        self.assertEqual(host["summary"]["overall_grade"], entry["summary"]["overall_grade"])
+        self.assertIsNone(host["summary"]["overall_grade"])
+        self.assertEqual(
+            host["summary"]["provisional_grade"], entry["summary"]["overall_grade"])
+        self.assertEqual(host["summary"]["health"], entry["summary"]["health"])
+        self.assertEqual("INCONCLUSIVE", host["summary"]["gate"])
+        self.assertTrue(any(
+            "host-class failure" in reason
+            for reason in host["summary"]["grade_shortfalls"]
+        ))
 
     def test_findings_deliberately_cut_from_verify_are_not_counted_as_undone(self):
         report = self._cut_short_report(outage_mod.HOST_FAILURE, max_verify=2)
@@ -558,22 +621,160 @@ class TestResumeDisclosure(unittest.TestCase):
         self.assertIn("1 tool-advisor entry", note)
         self.assertNotIn("2 tool-advisor entries", note)
 
-    def test_complete_run_stays_certified_despite_historical_host_class(self):
-        report = report_mod.build_report(report_mod.ReportInputs(
-            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
-            findings=findings_mod.FindingSet(findings=[]),
-            plan=plan_mod.PlanInputs(
-                groups_meta=self.G,
-                resume={
-                    "fan_out": {"total": 1, "done": 1, "pending": 0},
-                    "verify": {"total": 0, "done": 0, "pending": 0},
-                },
-            ),
-            cost=cost_mod.CostInputs(
-                verify_failure_classes=(outage_mod.HOST_FAILURE,)),
-        ))
+    def test_complete_resume_with_real_answers_retires_historical_host_class(self):
+        # The historical host row belongs to a tool advisor. If matching tool
+        # verdicts stopped retiring pending ids, this would become a shortfall.
+        report = self._cut_short_report(answer_all=True, host_target="tool")
         self.assertTrue(report["summary"]["coverage_certified"])
         self.assertNotIn("host-class failure", report["summary"].get("coverage_note") or "")
+
+    def test_each_single_kind_of_host_shortfall_is_named(self):
+        cell = self._cut_short_report(tool_names=())
+        self.assertFalse(cell["summary"]["coverage_certified"])
+        self.assertRegex(cell["summary"]["coverage_note"], r"\b1 verify cell\b")
+        self.assertNotIn("tool-advisor", cell["summary"]["coverage_note"])
+
+        tool = self._cut_short_report(
+            include_cell=False, tool_names=("bandit",), host_target="tool")
+        self.assertFalse(tool["summary"]["coverage_certified"])
+        self.assertIn("1 tool-advisor entry", tool["summary"]["coverage_note"])
+        self.assertNotIn("verify cell", tool["summary"]["coverage_note"])
+
+    def test_answered_host_cell_does_not_taint_an_entry_failed_cell(self):
+        groups = [{"name": "app", "files": ["app.py"]}]
+        answered = _agentic(
+            fid="SEC-001", sev="HIGH", _group="app", domain="SEC",
+            location={"file": "app.py", "line_start": 1},
+        )
+        pending = _agentic(
+            fid="ACC-001", sev="HIGH", _group="app", domain="ACC",
+            location={"file": "app.py", "line_start": 2},
+        )
+        prepared, _ = corroborate_mod.prepare_for_queue(copy.deepcopy([answered, pending]))
+        queue, _ = evidence_mod.build_verify_queue(prepared)
+        sec = next(entry for entry in queue if entry["finding"]["id"] == "SEC-001")
+        verdicts = {sec["queue_id"]: {
+            "finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "answered",
+        }}
+        ledger = cost_mod.VerifyLedger(
+            launched_entries=("verify-app-SEC-primary", "verify-app-ACC-primary"),
+            host_failure_entries=("verify-app-SEC-primary",),
+        )
+        with _target_with_files(groups) as target:
+            report = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target=target, root=target, fail_on="high", timestamp=self.TS),
+                findings=findings_mod.FindingSet(
+                    findings=[answered, pending], verdicts=verdicts),
+                plan=plan_mod.PlanInputs(groups_meta=groups),
+                cost=cost_mod.CostInputs(verify_ledger=ledger),
+            ))
+        self.assertNotIn("host-class failure", report["summary"].get("coverage_note") or "")
+
+    def test_unmapped_success_does_not_suppress_the_never_launched_tail(self):
+        base = cost_mod.VerifyLedger(
+            launched_entries=("verify-app-SEC-primary",),
+            host_failure_entries=("verify-app-SEC-primary",),
+        )
+        with_unmapped_success = cost_mod.VerifyLedger(
+            launched_entries=("verify-app-SEC-primary", "verify-app-Z-primary"),
+            host_failure_entries=("verify-app-SEC-primary",),
+        )
+        for ledger in (base, with_unmapped_success):
+            with self.subTest(unmapped=len(ledger.launched_entries) == 2):
+                report = self._cell_report(
+                    ("SEC", "ACC", "ARC", "COD"), ledger, answered=("COD",))
+                note = report["summary"]["coverage_note"]
+                self.assertIn("3 verify cells", note)
+                self.assertNotIn("1 verify cell ", note)
+
+    def test_entry_failed_pending_cell_is_not_counted_as_host_stranded(self):
+        report = self._cell_report(
+            ("SEC", "ACC", "ARC"),
+            cost_mod.VerifyLedger(
+                launched_entries=("verify-app-SEC-primary", "verify-app-ACC-primary"),
+                host_failure_entries=("verify-app-SEC-primary",),
+            ),
+        )
+        note = report["summary"]["coverage_note"]
+        self.assertIn("2 verify cells", note)
+        self.assertNotIn("3 verify cells", note)
+
+    def test_ambiguous_launch_marks_every_candidate_as_launched(self):
+        # This synthetic id can name both the (tool, SEC) matrix cell and tool
+        # queue id SEC-primary. Neither candidate belongs to the never-launched
+        # tail, even though the launch cannot be attributed to only one of them.
+        ambiguous = "verify-tool-SEC-primary"
+        resolved = types.SimpleNamespace(
+            verify_matrix={
+                "unverified_engaged": [["tool", "SEC"], ["app", "ACC"]],
+            },
+            verify_engaged_cells=(("tool", "SEC"), ("app", "ACC")),
+            tool_advisor_queue_ids=("SEC-primary",),
+            tool_advisor_pending_ids=("SEC-primary",),
+        )
+        note = grading_mod.verify_host_shortfall(
+            resolved,
+            cost_mod.VerifyLedger(
+                launched_entries=(ambiguous, "verify-app-ACC-primary"),
+                host_failure_entries=("verify-app-ACC-primary",),
+            ),
+        )
+        self.assertRegex(note, r"\b1 verify cell\b")
+        self.assertNotIn("2 verify cells", note)
+        self.assertNotIn("tool-advisor", note)
+
+    def test_complete_run_stays_certified_with_an_unknown_host_entry(self):
+        report = self._cell_report(
+            ("SEC",),
+            cost_mod.VerifyLedger(
+                launched_entries=("verify-future-layout",),
+                host_failure_entries=("verify-future-layout",),
+            ),
+            answered=("SEC",),
+        )
+        self.assertTrue(report["summary"]["coverage_certified"])
+        self.assertNotIn("host-class failure", report["summary"].get("coverage_note") or "")
+
+    def test_backup_and_partitioned_primary_entries_map_to_their_cell(self):
+        for entry_id in ("verify-app-SEC-backup", "verify-app-SEC-primary-part1"):
+            with self.subTest(entry_id=entry_id):
+                report = self._cell_report(
+                    ("SEC",),
+                    cost_mod.VerifyLedger(
+                        launched_entries=(entry_id,), host_failure_entries=(entry_id,)),
+                )
+                self.assertFalse(report["summary"]["coverage_certified"])
+                self.assertRegex(report["summary"]["coverage_note"], r"\b1 verify cell\b")
+
+    def test_unreadable_ledger_names_unknown_failure_class_and_all_pending_work(self):
+        report = self._cut_short_report(ledger_unreadable=True)
+        note = report["summary"]["coverage_note"]
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertIn("failure class unknown (ledger unreadable)", note)
+        self.assertRegex(note, r"\b1 verify cell\b")
+        self.assertIn("2 tool-advisor entries", note)
+
+    def test_tool_entry_absent_from_the_queue_is_disclosed_as_unknown_shape(self):
+        groups = [{"name": "app", "files": ["app.py"]}]
+        finding = _agentic(
+            fid="SEC-001", sev="HIGH", _group="app", domain="SEC",
+            location={"file": "app.py", "line_start": 1},
+        )
+        ledger = cost_mod.VerifyLedger(
+            launched_entries=("verify-tool-not-in-the-queue",),
+            host_failure_entries=("verify-tool-not-in-the-queue",),
+        )
+        with _target_with_files(groups) as target:
+            report = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(
+                    target=target, root=target, fail_on="high", timestamp=self.TS),
+                findings=findings_mod.FindingSet(findings=[finding]),
+                plan=plan_mod.PlanInputs(groups_meta=groups),
+                cost=cost_mod.CostInputs(verify_ledger=ledger),
+            ))
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertIn("1 verify entry of unknown shape", report["summary"]["coverage_note"])
 
     def test_main_tolerates_non_list_verify_queue_entries(self):
         # A verify-queue.json with a truthy non-list `entries` (e.g. an int)

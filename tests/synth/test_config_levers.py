@@ -161,6 +161,16 @@ def test_a_biting_exclude_beside_panel_gaps_keeps_the_1495_composition():
     assert gate["coverage_note"].startswith(grading.GATE_GAP_NOTE + "; " + BITE)
 
 
+def test_verify_shortfall_cannot_hide_an_unrelated_gate_gap_from_custom_profile_note():
+    result = grading.certify(
+        "B", [], "high", {"security"}, [], custom_profile="custom scan.",
+        shortfalls=["verify phase cut short by a host-class failure"],
+    )
+    assert result["coverage_note"].startswith(
+        grading.GATE_GAP_NOTE + "; grade provisional: custom scan.; ")
+    assert result["coverage_note"].endswith("host-class failure")
+
+
 def test_certify_takes_one_reason_or_a_list_and_ignores_empty_ones():
     one = grading.certify("B", [], "high", set(), [], custom_profile="x happened.")
     many = grading.certify("B", [], "high", set(), [], custom_profile=["x happened.", ""])

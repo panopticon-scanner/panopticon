@@ -203,6 +203,10 @@ def verify_host_shortfall(resolved, verify_ledger):
         target for entry_id, candidates in targets.items()
         if entry_id in launched_entries for target in candidates
     }
+    # A host row is attributable only when its identity has exactly one
+    # candidate. An ambiguous host row remains unknown and cannot be retired by
+    # a verdict for either candidate, while both candidates still count as
+    # launched above and therefore cannot inflate the never-launched tail.
     host_targets = {
         next(iter(candidates)) for entry_id, candidates in targets.items()
         if entry_id in host_entries and len(candidates) == 1
@@ -214,12 +218,13 @@ def verify_host_shortfall(resolved, verify_ledger):
         return None
 
     stranded = set(active_host_targets)
+    # An id with zero candidates cannot name a pending item. An ambiguous id's
+    # full candidate set is already in launched_targets. What remains really
+    # was never launched before the active/unknown host failure cut the phase.
     stranded.update(pending - launched_targets)
     counts = _verify_shortfall_counts(stranded, unknown=unknown_host_entries)
     return ("verify phase cut short by a host-class failure — %s left undone; %s"
             % (counts, outage_mod.RESUME_ADVICE))
-
-
 def grade_shortfalls(resolved, backups=None, verify_ledger=None):
     """#3667 (owner ruling 2026-11-15): verify work this run left UNDONE, one
     reason per entry. ONE shared rule reads this list: any reason here holds the
@@ -357,8 +362,7 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
 
     coverage_certified = not (gate_relevant_gap or any_incomplete
                               or tools_manifest_invalid
-                              or delta_scope_suppressed_git_drivers or tools_file_partial
-                              or verify_host_shortfall)
+                              or delta_scope_suppressed_git_drivers or tools_file_partial)
 
     note = None
     if tools_manifest_invalid:
@@ -375,8 +379,6 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         tail = sorted(p for p in panels_incomplete if p not in findings_mod.HIGH_VALUE_PANELS)
         note = ("gate certified; grade provisional — low-value panel(s) incomplete: %s"
                 % ", ".join(tail))
-    if verify_host_shortfall:
-        note = "; ".join(filter(None, (note, verify_host_shortfall)))
     if custom_profile:
         # #1495 review: the profile reason sits BESIDE any coverage reason, never in its place.
         # A gate-relevant gap with no named reason gets the generic one here, or the profile text
