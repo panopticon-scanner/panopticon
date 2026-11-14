@@ -287,8 +287,9 @@ def _on_line(target, path, grant, below=False):
         target_stat = os.stat(target)
     except (OSError, ValueError):
         return False                # nothing there to search
-    steps = _chain(grant, path) if below else _chain(grant, path)[:-1]
-    if any(_same(target_stat, step) for step in steps):
+    # Only the directories ABOVE the record: `below` reaches the record itself from the other
+    # side, through `target`'s own chain.
+    if any(_same(target_stat, step) for step in _chain(grant, path)[:-1]):
         return True
     if below:
         try:

@@ -635,6 +635,7 @@ class TestASearchOverAKeychainAncestorIsDenied(_KeychainTree):
     def test_a_glob_is_judged_on_its_literal_prefix(self):
         env = dict(self.ENV)
         for pattern, allowed in (("src/*", True), ("src/a.py", True), ("notes.txt", True),
+                                 ("missing/*", True),           # nothing there to list
                                  ("*", False), ("deep/**", False)):
             with self.subTest(pattern=pattern):
                 allow, reason = rg.adjudicate(
@@ -790,6 +791,21 @@ class TestTheKeychainRuleHoldsAgainstSpellingsLinksAndUnreadableDirs(_KeychainTr
                     allow, reason = call()
                     self.assertFalse(allow)
                     self.assertIn(self.SEARCH, reason)
+
+    def test_a_refusal_never_stats_a_keychain_path(self):
+        # #3616/#3607: panopticon does not touch the Keychain in any form, metadata included:
+        # identity is checked on the directories ABOVE each record, never on the record.
+        real_stat, statted = os.stat, []
+
+        def spy(path, *a, **k):
+            statted.append(os.fspath(path))
+            return real_stat(path, *a, **k)
+        for path in (self.home, self.library, self.clean):
+            for tool, call in self._dir_tools(path, self.scope):
+                with mock.patch.object(guard_rules.os, "stat", spy):
+                    call()
+        self.assertTrue(statted)
+        self.assertEqual([], [p for p in statted if guard_rules._names_keychain(p)])
 
     def test_find_by_name_is_checked_whatever_its_pattern(self):
         for pattern in ("login.keychain-db", "a.py", "*"):
