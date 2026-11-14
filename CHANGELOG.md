@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A confirmed CRITICAL or HIGH caps the letter grade (#3652).** The grade is the health band
+  (#3328, unchanged), so a large codebase could grade A or B beside open confirmed CRITICALs. A
+  severity cap now sits on top of the band: a confirmed CRITICAL caps the letter at D and a
+  confirmed HIGH at B (proposed levels; the owner rules on them). The cap only lowers, and it is
+  disclosed beside the band letter -- `summary.grade_cap` in the JSON, and "D (capped from A by 2
+  confirmed CRITICAL)" in the terminal and HTML grade. Confirmed means tool- or
+  advisor-confirmed under every gate policy, so an unconfirmed finding never caps. Per-group
+  panel grades were already the max-severity rollup of each group's own findings.
+
 - **A full-repo scan no longer reviews the scanner's own root config (#3642).** The root
   `panopticon.yml` / `.panopticon.yml` -- including the one setup-scan just wrote -- was reviewed
   like target code, and an owner-observed run graded a HIGH finding against the matrix itself.

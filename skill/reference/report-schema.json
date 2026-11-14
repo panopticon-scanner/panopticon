@@ -1206,6 +1206,61 @@
             null
           ]
         },
+        "grade_cap": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "#3652: the severity cap that lowered the band grade, or null when nothing was lowered. A confirmed CRITICAL caps the letter at D and a confirmed HIGH at B (levels pending the owner's ruling); confirmed means tool- or advisor-confirmed (the default gate's population), so an unconfirmed finding never caps. overall_grade / provisional_grade already carry the capped letter; band_grade is the letter the health bands gave.",
+          "required": [
+            "band_grade",
+            "grade",
+            "severity",
+            "count",
+            "note"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "band_grade": {
+              "type": "string",
+              "enum": [
+              "S",
+              "A",
+              "B",
+              "C",
+              "D",
+              "F",
+              "X"
+            ]
+            },
+            "grade": {
+              "type": "string",
+              "enum": [
+              "S",
+              "A",
+              "B",
+              "C",
+              "D",
+              "F",
+              "X"
+            ]
+            },
+            "severity": {
+              "type": "string",
+              "enum": [
+                "CRITICAL",
+                "HIGH"
+              ]
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "note": {
+              "type": "string"
+            }
+          }
+        },
         "coverage_certified": {
           "type": "boolean"
         },

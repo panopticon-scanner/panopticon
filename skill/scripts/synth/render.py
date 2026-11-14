@@ -27,10 +27,12 @@ def _grade_text(summary):
     format produced for that case -- reads as a grade rather than as the absence
     of one.
     """
+    cap = grading_mod.grade_cap_note(summary)
     if summary.get("overall_grade"):
-        return summary["overall_grade"]
+        return summary["overall_grade"] + (" (%s)" % cap if cap else "")
     if summary.get("provisional_grade"):
-        return "%s (provisional)" % summary["provisional_grade"]
+        return "%s (provisional%s)" % (summary["provisional_grade"],
+                                       "; %s" % cap if cap else "")
     return "n/a (no reviewed lines of code to grade)"
 
 def _render_severity_block(stats, roles, gate_eligible_stats=None):
