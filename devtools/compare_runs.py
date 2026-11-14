@@ -17,6 +17,11 @@ means unknown, never clean). `--allow-unknown-commit` accepts runs that
 recorded neither fact, and the summary's first line then says the commit is
 unverified. Anything mixed is refused with exit 2, naming each run's value.
 
+Models are disclosed, never refused (#3626): when the runs' `meta.model_strict`
+differ, or any run ran a dispatch on a fallback rung (`meta.model_substitutions`,
+#3582), the summary says so per entry, requested and bound shown apart. A report
+from before #3582 reads as "not recorded", never as strict or as no fallbacks.
+
 The population is the active findings (`findings`, continuation parts
 included); discarded claims are not compared.
 
@@ -63,6 +68,7 @@ if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
     import runpy
     runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_skill_bootstrap.py"))
 import scripts.evidence as evidence
+import scripts.model_disclosure as model_disclosure
 import scripts.synth.render as render
 from scripts.tools.base import inert_text
 
@@ -80,6 +86,9 @@ IDENTITY = (
     ("profile", lambda r: _basis(r).get("profile")),
 )
 TITLE_LIMIT = 100
+# #3626: a run's model line names its request, bound model, route and reason; a title's
+# bound would cut the disclosure mid-sentence.
+MODEL_LIMIT = 300
 # The schema's `meta.target_commit` pattern (#3560).
 COMMIT = re.compile(r"[0-9a-f]{40}|[0-9a-f]{64}")
 
@@ -375,6 +384,9 @@ def compare(paths, window=DEFAULT_LINE_WINDOW, allow_unknown_commit=False):
         "critical_high": critical_high(records),
         "scores": scores(reports),
         "cells": cells(reports),
+        # #3626: disclosed, never refused -- runs that fell back, or ran non-strict,
+        # did not run the same models (model_disclosure explains the reading).
+        "models": model_disclosure.compare_models([_meta(r) for r in reports]),
         "clusters": records,
     }
 
@@ -399,6 +411,7 @@ def summary_lines(doc):
         n_runs, _text(ident["version"]), _text(ident["target_commit"] or "unknown commit"),
         doc["line_window"]))
     lines += ["  " + _text(run, "path") for run in doc["runs"]]
+    lines += model_lines(doc["models"])
     agree = doc["agreement"]
     shares = agree["shares"]
     lines.append("findings: %d clusters; all %d runs %d (%s), majority %d (%s), only one %d (%s); "
@@ -429,6 +442,34 @@ def summary_lines(doc):
             _text(row["provisional"] or "-"), row["certified"],
             _num(cell["answered"]), _num(cell["planned"]),
             " LOST CELLS (misses may be lost coverage)" if cell["lost"] else ""))
+    return lines
+
+
+def model_lines(models):
+    """#3626: what the runs' models were, when it could change the comparison."""
+    if not models["recorded"]:
+        return ["models: model fallbacks not recorded on any run (the reports predate #3582)"]
+    if not models["disclose"]:
+        return ["models: every run %s, and none ran on a fallback"
+                % model_disclosure.strict_word(models["strict"][0])]
+    lines = ["MODELS DIFFER OR FELL BACK: %s; %d entr%s ran on a fallback in %s" % (
+        ", ".join("run%d %s" % (i + 1, model_disclosure.strict_word(s))
+                  for i, s in enumerate(models["strict"])),
+        len(models["entries"]), "y" if len(models["entries"]) == 1 else "ies",
+        "the runs that recorded it" if models["partial"] else "some run")]
+    for i, value in enumerate(models["unreadable"]):
+        if value:
+            lines.append("  run%d: %s" % (i + 1, model_disclosure.unreadable_word(value)))
+    for row in models["entries"]:
+        shared = row["requested"]
+        lines.append("  %s%s: %s%s%s" % (
+            _text(row["entry"]), " (%s)" % _text(row["role"]) if row["role"] else "",
+            "requested %s; " % _text(shared) if shared else "",
+            "; ".join("run%d %s" % (i + 1, inert_text(model_disclosure.ran_word(
+                ran, with_requested=not shared, with_route=row["routes_differ"],
+                with_role=not row["role"]),
+                limit=MODEL_LIMIT)) for i, ran in enumerate(row["runs"])),
+            "" if row["same"] else " -- DIFFERS ACROSS RUNS"))
     return lines
 
 
