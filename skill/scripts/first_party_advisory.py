@@ -23,6 +23,7 @@ from scripts.tools.sarif_utils import SECRET_KIND
 # scanner output. An overlarge lock simply keeps the advisor in the loop.
 MAX_CARGO_LOCK_BYTES = 8 * 1024 * 1024
 MAX_CARGO_MANIFEST_BYTES = 1024 * 1024
+MAX_CARGO_MANIFEST_INGEST_BYTES = 48 * 1024 * 1024
 MAX_CARGO_MANIFESTS = 1024
 _TRIVY_PACKAGE = re.compile(
     r"(?:^|\s)Package:\s*(\S+)\s+Installed Version:\s*(\S+)(?:\s|$)")
@@ -31,6 +32,19 @@ _MISSING = object()
 
 PackageOrigins = dict[tuple[str, str], set[str]]
 OriginCache = dict[str, PackageOrigins]
+ManifestDocument = dict[str, object]
+ManifestCache = dict[str, ManifestDocument | None]
+
+
+class IngestCache:
+    """Cargo advisory facts and bounded manifest parses for one ingest."""
+
+    def __init__(self) -> None:
+        self.package_origins: OriginCache = {}
+        self.manifests: ManifestCache = {}
+        self.manifest_bytes_remaining = MAX_CARGO_MANIFEST_INGEST_BYTES
+        self.manifest_budget_exhausted = False
+        self.budget_exhaustion_count = 0
 
 
 def _cargo_lock_path(target_root, finding):
@@ -47,7 +61,7 @@ def _cargo_lock_path(target_root, finding):
     if (not rel or rel.startswith("/") or os.path.basename(rel) != "Cargo.lock"
             or any(part in ("", ".", "..") for part in rel.split("/"))):
         return None
-    root = os.path.realpath(target_root)
+    root = target_root
     candidate = os.path.realpath(os.path.join(root, *rel.split("/")))
     try:
         if os.path.commonpath((root, candidate)) != root:
@@ -68,19 +82,57 @@ def _manifest_path(target_root, base, package_dir):
     """A Cargo.toml below *target_root*, resolved from one manifest path."""
     if not isinstance(package_dir, str) or not package_dir or os.path.isabs(package_dir):
         return None
-    root = os.path.realpath(target_root)
+    root = target_root
     candidate = os.path.realpath(os.path.join(base, package_dir, "Cargo.toml"))
     return candidate if _inside(root, candidate) else None
 
 
-def _read_toml(path, limit):
-    """Read one regular TOML document without following its leaf or exceeding *limit*."""
+def _read_budgeted_bytes(path, file_limit, cache: IngestCache):
+    """Read one file while charging the shared advisory-ingest byte budget."""
+    if cache.manifest_budget_exhausted or cache.manifest_bytes_remaining <= 0:
+        cache.manifest_bytes_remaining = 0
+        cache.manifest_budget_exhausted = True
+        cache.budget_exhaustion_count += 1
+        return None
+
+    limit = min(file_limit, cache.manifest_bytes_remaining)
     try:
         raw = safe_write.read_regular_bytes(path, limit)
-        document = tomllib.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeError, ValueError, RecursionError):
+    except safe_write.ReadLimitExceeded:
+        cache.manifest_bytes_remaining -= limit
+        if cache.manifest_bytes_remaining == 0:
+            cache.manifest_budget_exhausted = True
+            cache.budget_exhaustion_count += 1
         return None
-    return document if isinstance(document, dict) else None
+    except OSError:
+        return None
+
+    cache.manifest_bytes_remaining -= len(raw)
+    if cache.manifest_bytes_remaining == 0:
+        cache.manifest_budget_exhausted = True
+    return raw
+
+
+def _read_toml(path, target_root, cache: IngestCache):
+    """Return one confined, cached TOML document within the ingest budget."""
+    root = target_root
+    real_path = os.path.realpath(path)
+    if not _inside(root, real_path):
+        return None
+    if real_path in cache.manifests:
+        return cache.manifests[real_path]
+    raw = _read_budgeted_bytes(real_path, MAX_CARGO_MANIFEST_BYTES, cache)
+    if raw is None:
+        cache.manifests[real_path] = None
+        return None
+    try:
+        document = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError, RecursionError):
+        cache.manifests[real_path] = None
+        return None
+    cached = document if isinstance(document, dict) else None
+    cache.manifests[real_path] = cached
+    return cached
 
 
 def _expand_member_pattern(workspace_dir, pattern, target_root):
@@ -102,7 +154,7 @@ def _expand_member_pattern(workspace_dir, pattern, target_root):
             expanded = []
             for directory in candidates:
                 real_dir = os.path.realpath(directory)
-                if not _inside(os.path.realpath(target_root), real_dir):
+                if not _inside(target_root, real_dir):
                     raise ValueError("Cargo workspace member escapes target")
                 try:
                     entries = sorted(os.scandir(real_dir), key=lambda entry: entry.name)
@@ -236,7 +288,7 @@ def _manifest_package(package, workspace_package):
     return (name, version), publishable
 
 
-def _publishable_manifest_identities(lock_path, target_root):
+def _publishable_manifest_identities(lock_path, target_root, cache: IngestCache):
     """Exact identities proved by one in-tree publishable Cargo.toml."""
     root_manifest = _manifest_path(target_root, os.path.dirname(lock_path), ".")
     if root_manifest is None:
@@ -254,7 +306,7 @@ def _publishable_manifest_identities(lock_path, target_root):
             if prior != inherited:
                 return set()
             continue
-        document = _read_toml(manifest_path, MAX_CARGO_MANIFEST_BYTES)
+        document = _read_toml(manifest_path, target_root, cache)
         if document is None:
             return set()
         seen[manifest_path] = inherited
@@ -291,22 +343,25 @@ def _publishable_manifest_identities(lock_path, target_root):
     }
 
 
-def _cargo_package_origins(path, target_root, cache):
+def _cargo_package_origins(path, target_root, cache: IngestCache):
     """Map Cargo package identities to fail-closed lock/manifest origin classes."""
-    if path in cache:
-        return cache[path]
+    if path in cache.package_origins:
+        return cache.package_origins[path]
     origins: PackageOrigins = {}
+    raw = _read_budgeted_bytes(path, MAX_CARGO_LOCK_BYTES, cache)
+    if raw is None:
+        cache.package_origins[path] = origins
+        return origins
     try:
-        raw = safe_write.read_regular_bytes(path, MAX_CARGO_LOCK_BYTES)
         document = tomllib.loads(raw.decode("utf-8"))
-    except (OSError, UnicodeError, ValueError, RecursionError):
-        cache[path] = origins
+    except (UnicodeError, ValueError, RecursionError):
+        cache.package_origins[path] = origins
         return origins
     packages = document.get("package") if isinstance(document, dict) else None
     if not isinstance(packages, list):
-        cache[path] = origins
+        cache.package_origins[path] = origins
         return origins
-    publishable = _publishable_manifest_identities(path, target_root)
+    publishable = _publishable_manifest_identities(path, target_root, cache)
     for package in packages:
         if not isinstance(package, dict):
             continue
@@ -323,7 +378,7 @@ def _cargo_package_origins(path, target_root, cache):
         else:
             origin = "unknown"
         origins.setdefault(identity, set()).add(origin)
-    cache[path] = origins
+    cache.package_origins[path] = origins
     return origins
 
 
@@ -342,7 +397,7 @@ def _advisory_package(finding):
     return (match.group(1), match.group(2)) if match else None
 
 
-def mark(findings, target_root, cache: OriginCache):
+def mark(findings, target_root, cache: IngestCache):
     """Mark and reframe exact in-tree publishable Cargo package advisories.
 
     An ambiguous identity, a malformed lock/manifest, an unpublishable or
@@ -357,6 +412,7 @@ def mark(findings, target_root, cache: OriginCache):
         return
     if not target_root:
         return
+    target_root = os.path.realpath(target_root)
     for finding in findings:
         try:
             _mark_finding(finding, target_root, cache)

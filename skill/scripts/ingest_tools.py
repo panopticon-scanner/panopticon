@@ -798,7 +798,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     dispositions = {}
     root = target_root or _target_root_for(tools_dir)
     venv_cache: dict[str, bool] = {}   # per-run memo of the pyvenv.cfg lookups
-    cargo_lock_cache: first_party_advisory.OriginCache = {}
+    cargo_advisory_cache = first_party_advisory.IngestCache()
     gl_excluded = 0   # dropped by an explicit exclude_glob (operator policy)
     suppressed: dict[str, int] = {}   # {reason: count} controlled body drops
     for path in _output_files(tools_dir, allowed_outputs=allowed_outputs,
@@ -885,7 +885,12 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         # ordinary registry dependency. Both the driver's recomputed tool queue
         # and synthesis ingest through this one point, so the marker and the
         # resulting queue exemption cannot drift between them.
-        first_party_advisory.mark(parsed, root, cargo_lock_cache)
+        prior_budget_exhaustions = cargo_advisory_cache.budget_exhaustion_count
+        first_party_advisory.mark(parsed, root, cargo_advisory_cache)
+        budget_exhaustions = (
+            cargo_advisory_cache.budget_exhaustion_count
+            - prior_budget_exhaustions
+        )
         raw_count = len(parsed)
         scanned = _scanned_files(raw)
         # #1741: filter BEFORE capping. `_cap_findings` used to run first, so a
@@ -914,6 +919,9 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         if coverage_reason:
             status, reason = "failed", coverage_reason
         dispositions[tool] = {"status": status, "findings": raw_count}
+        if budget_exhaustions:
+            dispositions[tool]["advisory_manifest_budget_exhausted"] = (
+                budget_exhaustions)
         if policy["suppressed_in_source"]:
             # #1839: what this mode honoured, per tool. Absent means nothing
             # was suppressed in the tree's own source -- deliberately not the
