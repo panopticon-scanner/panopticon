@@ -34,11 +34,12 @@ cap only lowers; `summary.grade_cap` carries the band letter and the cap that lo
 terminal and HTML grade say "D (capped from A by 2 confirmed CRITICAL)". Confirmed means tool- or
 advisor-confirmed under every gate policy, so an unconfirmed finding never caps, even under
 `--gate-unverified`. Per-group panel grades are already the max-severity rollup of the group's own
-gate-eligible findings, so they need no cap. When `meta.coverage.resume` shows pending work in
-either phase, the terminal summary also prints a `**Resume:**` line (fan-out/verify done vs. total)
-directly under the Grade/Gate line; a fully-complete or resume-absent run prints no such line, so a
-resumed run never reads as a fresh full scan. Every `meta.integrity` key that sinks certification
-is also NAMED on that summary, as an `**Integrity:**` line saying what the key measured and that the run is not certified (#1761):
+gate-eligible findings, so they need no cap.
+When `meta.coverage.resume` shows pending work in either phase, the terminal summary also
+prints a `**Resume:**` line (fan-out/verify done vs. total) directly under the Grade/Gate line; a
+fully-complete or resume-absent run prints no such line, so a resumed run never reads as a fresh
+full scan. Every `meta.integrity` key that sinks certification is also NAMED on that summary, as an
+`**Integrity:**` line saying what the key measured and that the run is not certified (#1761):
 `synth/integrity.INTEGRITY_KEYS` is the one table both the gate and the renderer read, so no sinking
 key reaches that summary as the bare word `incomplete`. The keys that report without gating — a
 cross-domain filing, the planned-file and hash counters, the unenforced-ack disclosure, and the two
