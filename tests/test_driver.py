@@ -576,7 +576,13 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
             status = driver.run(self._args(d))
         self.assertEqual("error", status["status"])
         self.assertIn("flag drift", status["message"])
-        self.assertIn("model_strict: this run was started with model fallbacks off", status["message"])
+        self.assertIn("model_strict: this run was started with model fallbacks off, and "
+                      "PANOPTICON_MODEL_STRICT='0' now turns them on", status["message"])
+        with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_STRICT": "", "CI": "",
+                                          "GITHUB_ACTIONS": ""}):
+            status = driver.run(self._args(d))
+        self.assertIn("PANOPTICON_MODEL_STRICT unset (strict by default only under CI)",
+                      status["message"])
         with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_STRICT": "1"}):
             self.assertNotIn("model_strict", driver.run(self._args(d)).get("message", ""))
 

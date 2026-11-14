@@ -1727,3 +1727,40 @@ class TestTheOutputSchemaShapeSurvivesEveryReProbe(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()):
             driver.main(["readiness", d])
         self.assertEqual(0, probe.call_count)
+
+
+class TestEveryEntryBuilderReadsStrictFromTheManifest(unittest.TestCase):
+    """#3582 (#3627 round 2): all four phase call sites pass the manifest to
+    requests.bound_policy, so the run's recorded `model_strict` -- not the
+    environment a resume happens to run in -- decides whether an entry carries a
+    fallback ladder. Every agy role is given a ladder here so each site is measured."""
+
+    LADDER = {"key": ["gemini-4-argon-high"]}
+
+    def _entries(self, manifest):
+        from scripts.phases import coverage, review, verify, verify_tools
+        import scripts.ocrdb as ocrdb
+        with tempfile.TemporaryDirectory() as root:
+            return {
+                "scout": coverage._scout_entry(root, manifest, "g", ["a.py"], "agy"),
+                "review": review._cell_entry(root, manifest, "g", "SEC", ["a.py"], [], "agy",
+                                             ocrdb.load_bundle()),
+                "verify": verify._verify_entry(root, manifest, "g", "SEC", ["a.py"], [], "agy",
+                                               ocrdb.load_bundle(), "primary"),
+                "tool": verify_tools._tool_verify_entry(root, manifest, "q1",
+                                                        {"id": "T-1", "severity": "HIGH"},
+                                                        "agy"),
+            }
+
+    def test_a_strict_manifest_wins_over_a_permissive_env_and_back(self):
+        import scripts.model_resolver as mr
+        table = {role: dict(cfg, fallbacks=self.LADDER) if cfg.get("model") else dict(cfg)
+                 for role, cfg in mr._AGY_FALLBACK.items()}
+        base = {"host": "agy", "run_id": "r" * 8, "security_mode": "standard"}
+        with mock.patch.object(mr, "_PROFILES", {"hosts": {"agy": table}}):
+            for env, recorded, carries in (("0", True, False), ("1", False, True)):
+                with mock.patch.dict(os.environ, {"PANOPTICON_MODEL_STRICT": env}):
+                    entries = self._entries(dict(base, model_strict=recorded))
+                for site, entry in entries.items():
+                    with self.subTest(site=site, env=env, recorded=recorded):
+                        self.assertIs(carries, "fallbacks" in entry, entry.get("fallbacks"))

@@ -976,11 +976,15 @@ def _render_sec_carve_out(meta):
 
 def _render_model_fallbacks(meta):
     """#3582: never silent -- the run's strict state and one line per dispatch that ran
-    on a fallback rung, as the markdown summary says it. Empty when neither is recorded."""
+    on a fallback rung, as the markdown summary says it. Shown when there is a
+    substitution, or on an agy run (the only host with a ladder) that recorded its
+    strict state; a claude/codex/kimi run, where no ladder can exist, shows nothing."""
     subs = meta.get("model_substitutions")
     subs = [s for s in subs if isinstance(s, dict)] if isinstance(subs, list) else []
     strict = meta.get("model_strict")
-    if not subs and not isinstance(strict, bool):
+    caps = meta.get("host_capabilities")
+    host = caps.get("host") if isinstance(caps, dict) else None
+    if not subs and not (host == "agy" and isinstance(strict, bool)):
         return ""
     state = ("off (strict run)" if strict is True else "on" if strict is False
              else "state not recorded")

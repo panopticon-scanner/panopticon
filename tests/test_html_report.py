@@ -1044,8 +1044,13 @@ class TestModelFallbackDisclosure(unittest.TestCase):
            "bound": "gemini-4-argon-high", "route": "key", "rung": 1,
            "reason": "not listed on route key"}
 
-    def test_each_fallback_and_the_strict_state_are_disclosed(self):
+    def _agy(self):
         report = _minimal_report()
+        report["meta"]["host_capabilities"] = {"host": "agy", "capabilities": {}}
+        return report
+
+    def test_each_fallback_and_the_strict_state_are_disclosed(self):
+        report = self._agy()
         report["meta"]["model_strict"] = False
         report["meta"]["model_substitutions"] = [dict(self.SUB),
                                                  dict(self.SUB, entry="<b>x</b>")]
@@ -1057,12 +1062,25 @@ class TestModelFallbackDisclosure(unittest.TestCase):
         self.assertNotIn("<b>x</b>", out)
 
     def test_a_strict_run_says_so_and_an_unrecorded_run_says_nothing(self):
-        report = _minimal_report()
+        report = self._agy()
         report["meta"]["model_strict"] = True
         self.assertIn("Model fallbacks: off (strict run) &mdash; 0 dispatch(es)",
                       hr._render_header(report))
         report["meta"].pop("model_strict")
         self.assertNotIn("Model fallbacks", hr._render_header(report))
+
+    def test_a_host_with_no_ladder_shows_no_line_unless_something_fell_back(self):
+        # #3627 round 2: "on - 0 dispatch(es)" would be noise on claude/codex/kimi runs.
+        for host in ("claude", "codex", "kimi", None):
+            with self.subTest(host=host):
+                report = _minimal_report()
+                if host:
+                    report["meta"]["host_capabilities"] = {"host": host, "capabilities": {}}
+                report["meta"]["model_strict"] = False
+                self.assertNotIn("Model fallbacks", hr._render_header(report))
+                report["meta"]["model_substitutions"] = [dict(self.SUB)]
+                self.assertIn("Model fallbacks: on &mdash; 1 dispatch(es)",
+                              hr._render_header(report))
 
 
 class TestChartAggregations(unittest.TestCase):
