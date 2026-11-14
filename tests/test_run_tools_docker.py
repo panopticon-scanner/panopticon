@@ -114,6 +114,17 @@ class TestTheImageIsNamedAndDispatchedById(unittest.TestCase):
                                     "sha256": hashlib.sha256(body).hexdigest(),
                                     "size": len(body)}]}, found)
 
+    def test_default_probe_uses_the_branch_owned_image_reference(self):
+        pinned = tools_image.REGISTRY_REPOSITORY + "@sha256:" + "d" * 64
+        with tempfile.TemporaryDirectory() as bin_dir, tempfile.TemporaryDirectory() as target:
+            self._docker(bin_dir)
+            seen = []
+            with mock.patch.dict(os.environ, {"PATH": bin_dir}), \
+                    mock.patch.object(tools_image, "DEFAULT_IMAGE", pinned):
+                found = rt.docker_available(runner=self._runner(seen=seen), target=target)
+        self.assertEqual(pinned, seen[0][-1])
+        self.assertEqual(pinned, found["ref"])
+
     def test_registry_digests_ride_beside_the_id_and_a_local_build_has_none(self):
         digest = "ghcr.io/o/t@sha256:" + "b" * 64
         got = tools_image.identity("t", ("%s [\"%s\", \"not a digest\"]" % (FOUND_IMAGE_ID, digest)).encode())

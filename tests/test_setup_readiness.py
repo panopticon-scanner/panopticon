@@ -11,6 +11,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.probes.common as probes_common
 import scripts.setup_preflight as setup_preflight
+import scripts.tools_image as tools_image
 
 
 from tests.setup_helpers import (
@@ -47,6 +48,19 @@ class TestSetupFlow(SetupFixtureBase):
         check_dict = {c[0]: (c[1], c[2]) for c in checks}
         self.assertIn("target-root", check_dict)
         self.assertTrue(check_dict["target-root"][0])
+
+    def test_docker_preflight_inspects_the_branch_owned_image_reference(self):
+        pinned = tools_image.REGISTRY_REPOSITORY + "@sha256:" + "e" * 64
+        seen = []
+
+        def runner(cmd, **_kw):
+            seen.append(list(cmd))
+            return type("R", (), {"returncode": 0})()
+
+        with mock.patch.object(tools_image, "DEFAULT_IMAGE", pinned):
+            checks = setup_preflight._check_docker(runner)
+        self.assertEqual(("tools-image", True, "ok"), checks[-1])
+        self.assertEqual(["docker", "image", "inspect", pinned], seen[-1])
 
     def test_nvd_readiness_uses_target_env_and_ambient_fallback_without_secret(self):
         d = _repo(self)

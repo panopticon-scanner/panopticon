@@ -81,6 +81,17 @@ class TestDocsMatchTheTree(unittest.TestCase):
             "CONTRIBUTING says %r but ci.yml runs %s"
             % (sentence[0].strip(), ", ".join(versions)))
 
+    def test_contributing_pins_the_release_and_backport_contract(self):
+        root = os.path.join(ROOT, os.pardir)
+        with open(os.path.join(root, "CONTRIBUTING.md"), encoding="utf-8") as fh:
+            contributing = fh.read()
+        for token in ("## Releases and backports", "release/5.5", "backport:5.5",
+                      "git cherry-pick -x", "one fix per backport PR", "## 5.5.x",
+                      "Feature work never lands", "DEFAULT_IMAGE", "@sha256:",
+                      "`panopticon.yml` cannot override"):
+            with self.subTest(token=token):
+                self.assertIn(token, contributing)
+
     def test_checkpoint_comment_does_not_restate_the_kinds(self):
         # The comment listed three of the four CHECKPOINT_KINDS. A comment that
         # COPIES a constant drifts from it; one that names it cannot.

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **Stable branches keep their tools image on an immutable digest (#3618).**
+  Scanner readiness and dispatch now share one branch-owned image reference.
+  Main retains the local development tag; a release-cut commit replaces it
+  with the GHCR manifest digest and every 5.5.x patch either reuses that digest
+  or rebuilds from the release branch and repins it. A missing release image
+  offers only the exact digest pull or the disclosed `--no-tools` path, never
+  main's moving `:latest`/`:weekly` tags or an unpinned local build. The
+  target-authored `panopticon.yml` cannot select scanner bytes. CONTRIBUTING
+  now records the main-first, one-fix-per-PR `git cherry-pick -x` backport flow.
+
 - **agy's preflight no longer refuses a signed-in run (#3620).** Since #3613 every sign-in run
   refused with `AgyAuthUnreachable`: the preflight read agy's run log for "You are not logged
   into Antigravity", but `agy agents` writes that line there without signing in and the turn

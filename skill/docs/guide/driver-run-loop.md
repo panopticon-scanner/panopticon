@@ -777,9 +777,12 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   invocation, before any phase runs), and its pass is re-evaluated whenever the manifest's `tools`
   flag differs from the one the artifact was written under, so a `--no-tools` pass can never stand
   in for a tools-enabled run.
-  The remedy names a MUTABLE tag on purpose — it has to be runnable from the line it is printed on
-  (`skill/scripts/phases/readiness_checks.py:40-44`), and DEVELOPMENT.md's "One residual to know
-  about" accepts the unpinned tools image as a standing cost. The trust step is there for an
+  On `main`, the remedy names a MUTABLE tag on purpose — it has to be runnable from the line it is
+  printed on, and DEVELOPMENT.md's "One residual to know about" accepts the unpinned tools image
+  as a development-line cost. A supported release branch instead sets
+  `scripts.tools_image.DEFAULT_IMAGE` to its cut's manifest digest; the same readiness row names
+  only that exact pull and never offers main's moving tag or a local rebuild. `panopticon.yml`
+  cannot override the branch-owned reference. The trust step is there for an
   operator who wants one, and readiness does not take it for them: CI attests every
   `panopticon-tools` image it publishes (`docker-publish.yml`'s `attest-build-provenance` step,
   subject `ghcr.io/panopticon-scanner/panopticon-tools`, pushed to the registry), so

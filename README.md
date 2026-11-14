@@ -64,6 +64,11 @@ docker tag ghcr.io/panopticon-scanner/panopticon-tools:latest panopticon-tools
 ```
 
 `latest` moves with every push to `main` and a daily asset refresh. To pin what you reviewed with, pull by digest instead; the digest behind `latest` when this README was written was `sha256:b5250bf0723a5dd65b715e02e4d0f172764051ca466c44439b23df8de77be5ef`, and `docker image inspect` prints the one you have.
+Those `:latest` commands are for `main`. A supported `release/*` branch names
+its exact image digest in `skill/scripts/tools_image.py`'s `DEFAULT_IMAGE`;
+`driver readiness` prints the matching pull command. Do not substitute main's
+moving tag or retag a different image. A target's `panopticon.yml` cannot
+override the branch-owned image reference.
 CI attests every `panopticon-tools` image it publishes, so an operator who wants a provenance check
 can run `gh attestation verify oci://<image ref> --repo panopticon-scanner/panopticon`; no run does
 it for you.

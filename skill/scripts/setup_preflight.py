@@ -63,12 +63,15 @@ def _check_docker(runner):
                    "ok" if docker_ok else
                    "docker unavailable -- install/start Docker or run with --no-tools"))
     if docker_ok:
-        r2 = _probe(runner, ["docker", "image", "inspect", tools_image.LOCAL_NAME])
+        r2 = _probe(runner, ["docker", "image", "inspect", tools_image.DEFAULT_IMAGE])
         img_ok = getattr(r2, "returncode", 1) == 0
+        action = ("build/pull it" if tools_image.DEFAULT_IMAGE == tools_image.LOCAL_NAME
+                  else "pull that exact release digest")
         checks.append(("tools-image", img_ok,
                        "ok" if img_ok else
-                       "%s image absent for this arch -- build/pull "
-                       "it (see DEVELOPMENT.md; multi-arch: #461)" % tools_image.LOCAL_NAME))
+                       "%s image absent for this arch -- %s "
+                       "(see DEVELOPMENT.md; multi-arch: #461)"
+                       % (tools_image.DEFAULT_IMAGE, action)))
     return checks
 
 

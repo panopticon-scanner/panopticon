@@ -36,21 +36,32 @@ from scripts.tools import egress
 _SKILL_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _REPO_ROOT = os.path.dirname(_SKILL_DIR)
 
-# Exact and paste-able, all three ways out in one line. `setup_flow`'s own
-# tools-image detail points at DEVELOPMENT.md, which is the right register for
-# a preflight report an operator reads at leisure and the wrong one for a
-# refusal that just stopped a run: the remedy has to be runnable from the line
-# it is printed on.
-IMAGE_REMEDY = (
-    "the %s image is absent, so every scanner would produce "
-    "nothing and every review panel would run without scanner evidence. "
-    "Pull it: `docker pull %s && docker tag %s %s:latest` -- "
-    "or build it: `docker build -t %s %s` -- or re-run with "
-    "--no-tools to review without scanner evidence, which is disclosed in the "
-    "report (meta.tools.panels_with_scanner_context and the tool coverage "
-    "line)." % (tools_image.LOCAL_NAME, tools_image.REGISTRY_IMAGE,
-                tools_image.REGISTRY_IMAGE, tools_image.LOCAL_NAME,
-                tools_image.LOCAL_NAME, _REPO_ROOT))
+# Exact and paste-able. Main's local development name keeps all three ways out;
+# a release branch's digest default offers ONLY that exact pull (or the
+# disclosed --no-tools opt-out), never main's moving tag or an unpinned local
+# rebuild. `setup_flow`'s own detail points at DEVELOPMENT.md, which is the
+# right register for a preflight report an operator reads at leisure and the
+# wrong one for a refusal that just stopped a run: this remedy has to be
+# runnable from the line it is printed on.
+def image_remedy(image):
+    prefix = (
+        "the %s image is absent, so every scanner would produce nothing and "
+        "every review panel would run without scanner evidence. " % image)
+    if image == tools_image.LOCAL_NAME:
+        acquire = (
+            "Pull it: `docker pull %s && docker tag %s %s:latest` -- or build "
+            "it: `docker build -t %s %s` -- "
+            % (tools_image.REGISTRY_IMAGE, tools_image.REGISTRY_IMAGE,
+               tools_image.LOCAL_NAME, tools_image.LOCAL_NAME, _REPO_ROOT))
+    else:
+        acquire = "Pull the release pin: `docker pull %s` -- " % image
+    return (prefix + acquire
+            + "or re-run with --no-tools to review without scanner evidence, "
+              "which is disclosed in the report "
+              "(meta.tools.panels_with_scanner_context and the tool coverage line).")
+
+
+IMAGE_REMEDY = image_remedy(tools_image.DEFAULT_IMAGE)
 
 _NOT_APPLICABLE = "not applicable (--no-tools)"
 

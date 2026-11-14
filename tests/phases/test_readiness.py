@@ -31,6 +31,7 @@ from tests._test_helpers import (PLANTED_ARTIFACT_DIRS, PLANTED_REFUSALS, plant_
                                  plant_latest_link)
 import scripts.driver as driver
 import scripts.phases.readiness as readiness
+import scripts.phases.readiness_checks as readiness_checks
 import scripts.phases.runio as runio
 import scripts.run_manifest as run_manifest
 
@@ -100,6 +101,15 @@ class _ReadinessCase(unittest.TestCase):
 
 
 class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
+
+    def test_release_digest_remedy_never_falls_back_to_main_or_a_local_build(self):
+        pinned = "ghcr.io/panopticon-scanner/panopticon-tools@sha256:" + "f" * 64
+        remedy = readiness_checks.image_remedy(pinned)
+        self.assertIn("`docker pull " + pinned + "`", remedy)
+        self.assertNotIn(":latest", remedy)
+        self.assertNotIn("docker tag", remedy)
+        self.assertNotIn("docker build", remedy)
+        self.assertIn("--no-tools", remedy)
 
     def test_online_sidecar_warning_precedes_scouting_and_names_the_pull(self):
         from scripts.tools import egress
