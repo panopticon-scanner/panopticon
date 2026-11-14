@@ -111,7 +111,12 @@ by setup, readiness and every run with the same remedy.
 
 A repo with no capability vocabulary falls back to a flat top-dir seed + a readiness gate and
 completes without a checkpoint. `driver setup --reset` clears the setup artifacts (brief, spine,
-proposal, draft, report, manifest) and starts over.
+proposal, draft, report, manifest) and starts over. It also rotates the top-level spend record
+(#3647): `.panopticon/dispatch-ledger.jsonl` and `usage.json` move aside as
+`dispatch-ledger.<run_id>.jsonl` and `usage.<run_id>.json`, named by the outgoing setup run's
+id, so the next setup's usage counts its own launches only and the previous cycle's spend is
+kept, not deleted. Rotation was chosen over scoping `usage.json` by run tag: a setup run has no
+`runs/<tag>/` folder, and the ledger is the one source both files are read from.
 
 **Glob semantics.** `match:`, `tests:` and `exclude_paths:` take gitignore-flavored globs: `*` and
 `?` stay inside a path segment, `**` crosses segments, a pattern with no `/` matches the basename at

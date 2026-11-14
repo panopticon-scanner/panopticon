@@ -2306,3 +2306,87 @@ class TestSetupDonePredicatesBindToThisRun(unittest.TestCase):
             status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
         self.assertIn("git rm -r --cached .panopticon", status["message"])     # #3271: H1
         self.assertNotIn("--reset", status["message"])
+
+
+class TestSetupResetRotatesTheSpendRecord(unittest.TestCase):
+    """#3647: `--setup --reset` starts a new setup run, but the flat
+    `.panopticon/dispatch-ledger.jsonl` and `usage.json` were left in place, so across
+    repeated setups `usage.json` -- derived from the WHOLE ledger -- reported the running
+    total. Reset now rotates both aside, named by the outgoing setup run's id."""
+
+    RUN_ID = "0123456789abcdef0123456789abcdef"
+
+    def setUp(self):
+        import scripts.ledger as ledger_mod
+        import scripts.phases.persist as persist
+        self._d = tempfile.TemporaryDirectory()
+        self.addCleanup(self._d.cleanup)
+        self.root = os.path.realpath(self._d.name)
+        os.makedirs(os.path.join(self.root, ".panopticon"))
+        self.run_dir = persist.run_dir(self.root, "setup")
+        self.assertEqual(self.run_dir, os.path.dirname(setup._setup_manifest_path(self.root)))
+        self.ledger_mod = ledger_mod
+
+    def _cycle(self, tokens, run_id=None):
+        """One setup cycle's spend: a manifest, one ledgered launch, and usage.json."""
+        runio._write_json(setup._setup_manifest_path(self.root),
+                          {"schema_version": 1, "run_id": run_id or self.RUN_ID})
+        ledger = self.ledger_mod.Ledger(self.run_dir)
+        result = runners_base.RunResult(
+            entry_id="setup-scan", ok=True, text="x", usage={"input_tokens": tokens},
+            cost_usd=0.1, model=None, session_id=None, denials=[], error=None)
+        ledger.record({"id": "setup-scan"}, "setup", result, "headless", "claude")
+        loop_batch.write_usage(self.root, ledger, "setup")
+        return runio._load_json(os.path.join(self.run_dir, "usage.json"))
+
+    def test_two_reset_cycles_leave_the_second_cycle_s_usage_its_own(self):
+        first = self._cycle(10)
+        self.assertEqual(10, first["total"])
+        setup._clear_setup_artifacts(self.root)
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, runners_base.LEDGER_FILE)))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "usage.json")))
+        second = self._cycle(7, run_id="f" * 32)
+        self.assertEqual(7, second["total"])
+        rows = self.ledger_mod.Ledger(self.run_dir).lines()
+        self.assertEqual([7], [row["usage"]["input_tokens"] for row in rows])
+
+    def test_the_previous_cycle_is_kept_under_its_run_id(self):
+        self._cycle(10)
+        setup._clear_setup_artifacts(self.root)
+        ledger = os.path.join(self.run_dir, "dispatch-ledger.%s.jsonl" % self.RUN_ID)
+        usage = os.path.join(self.run_dir, "usage.%s.json" % self.RUN_ID)
+        with open(ledger, encoding="utf-8") as fh:
+            rows = [json.loads(line) for line in fh if line.strip()]
+        self.assertEqual([10], [row["usage"]["input_tokens"] for row in rows
+                                if "usage" in row])
+        self.assertEqual(10, runio._load_json(usage)["total"])
+
+    def test_a_planted_run_id_never_names_a_path(self):
+        # The manifest is in the reviewed tree: only a 32-hex id becomes a filename.
+        for planted in ("../../escape", "x/y", "", None, 5, "A" * 32, "0" * 31):
+            with self.subTest(planted=planted):
+                for name in os.listdir(self.run_dir):
+                    os.remove(os.path.join(self.run_dir, name))
+                self._cycle(3)
+                runio._write_json(setup._setup_manifest_path(self.root),
+                                  {"schema_version": 1, "run_id": planted})
+                setup._clear_setup_artifacts(self.root)
+                rotated = sorted(n for n in os.listdir(self.run_dir)
+                                 if n.startswith(("dispatch-ledger.", "usage.")))
+                self.assertEqual(2, len(rotated), rotated)
+                for name in rotated:
+                    tag = name.split(".")[1]
+                    self.assertEqual(32, len(tag))
+                    self.assertTrue(all(c in "0123456789abcdef" for c in tag), name)
+                self.assertEqual([], [n for n in os.listdir(os.path.dirname(self.run_dir))
+                                      if n == "escape"])
+
+    def test_a_rotation_never_overwrites_an_earlier_one(self):
+        self._cycle(10)
+        setup._clear_setup_artifacts(self.root)
+        self._cycle(20)                                  # the same run_id again
+        setup._clear_setup_artifacts(self.root)
+        totals = sorted(runio._load_json(os.path.join(self.run_dir, n))["total"]
+                        for n in os.listdir(self.run_dir) if n.startswith("usage."))
+        self.assertEqual([10, 20], totals)
+

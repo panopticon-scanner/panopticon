@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`--setup --reset` rotates the top-level ledger and usage (#3647).** A setup run lives in
+  the flat `.panopticon/`, so its `dispatch-ledger.jsonl` and `usage.json` accumulated across
+  repeated setups, and `usage.json` -- derived from the whole ledger -- reported the running
+  total. Reset now moves both aside as `dispatch-ledger.<run_id>.jsonl` / `usage.<run_id>.json`,
+  named by the outgoing setup run's id (only a 32-hex id becomes a filename; anything else gets a
+  fresh one, and a rotation never overwrites an earlier one). The next cycle's usage is its own
+  rows only, and the previous cycle's spend is kept.
+
 - **A glob may name a bracketed directory with fnmatch's escapes (#3644).** Setup on a
   Next.js-style target proposed `users/[[]id]/route.ts` for a `[id]` route directory, and
   the glob compiler refused every `[`, so the whole proposal was rejected. `[[]` (a literal

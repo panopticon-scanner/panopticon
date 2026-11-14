@@ -449,6 +449,51 @@ def _stale_batch_records(run_dir):
         keep.append(path)
     return keep
 
+# #3647: what `--setup --reset` rotates rather than deletes. Both accumulate across setup
+# cycles in the flat `.panopticon/` (a review run gets a fresh `runs/<tag>/` instead), so
+# without this the second cycle's `usage.json` -- derived from the WHOLE ledger -- reported
+# the running total. Rotated, never deleted: they are the spend record of a finished cycle.
+_SETUP_ROTATED = ((runners_base.LEDGER_FILE, "dispatch-ledger", ".jsonl"),
+                  ("usage.json", "usage", ".json"))
+
+
+def _rotation_tag(setup_dir):
+    """The outgoing setup run's id, to name its rotated ledger and usage by. The manifest
+    lives in the reviewed tree, so only `run_manifest.new_run_id()`'s own shape (32 hex)
+    is trusted as a filename; anything else gets a fresh id."""
+    doc = runio._load_json(os.path.join(setup_dir, SETUP_MANIFEST))
+    run_id = doc.get("run_id") if isinstance(doc, dict) else None
+    if isinstance(run_id, str) and len(run_id) == 32 and all(
+            c in "0123456789abcdef" for c in run_id):
+        return run_id
+    return run_manifest.new_run_id()
+
+
+def _rotate_setup_spend(setup_dir):
+    """#3647: move the previous setup cycle's ledger and usage aside, as
+    `dispatch-ledger.<run_id>.jsonl` / `usage.<run_id>.json`, so the next cycle's
+    usage is its own rows only. Never overwrites: a name already taken gets a fresh id.
+    Returns the rotated destinations."""
+    tag = _rotation_tag(setup_dir)
+    rotated = []
+    for name, stem, suffix in _SETUP_ROTATED:
+        source = os.path.join(setup_dir, name)
+        if not os.path.lexists(source):
+            continue
+        target = os.path.join(setup_dir, "%s.%s%s" % (stem, tag, suffix))
+        while os.path.lexists(target):
+            target = os.path.join(setup_dir, "%s.%s%s" % (stem, run_manifest.new_run_id(),
+                                                          suffix))
+        try:
+            os.rename(source, target)
+        except OSError as exc:
+            print("driver setup: could not rotate %s: %s" % (source, exc),
+                  file=sys.stderr, flush=True)
+            continue
+        rotated.append(target)
+    return rotated
+
+
 def _clear_setup_artifacts(review_root):
     """Remove derived setup artifacts + the setup-manifest for --reset. NEVER
     touches the committed root config -- only the DRAFT beside it, which this
@@ -476,6 +521,8 @@ def _clear_setup_artifacts(review_root):
     # `setup_ack` -- which reaches `loop_batch` through `requests` -- is only
     # partially initialized while this module's body runs (test_layout rule 1).
     names = _SETUP_ARTIFACTS + (setup_ack.SETUP_UNENFORCED_ACK,)
+    # #3647: BEFORE the manifest goes -- its run_id names the rotated pair.
+    _rotate_setup_spend(setup_dir)
     for path in ([os.path.join(setup_dir, name) for name in names]
                  + _stale_batch_records(setup_dir)
                  + ([draft] if os.path.isfile(draft) else [])):
