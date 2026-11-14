@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **A glob may name a bracketed directory with fnmatch's escapes (#3644).** Setup on a
+  Next.js-style target proposed `users/[[]id]/route.ts` for a `[id]` route directory, and
+  the glob compiler refused every `[`, so the whole proposal was rejected. `[[]` (a literal
+  `[`) and `[]]` (a literal `]`) are now exact literals in the shared compiler, so a
+  proposal, a committed `match:`/`tests:` entry and `exclude_paths:` all accept them and
+  claim exactly the bracketed path. Every other `[` is still a refused character class.
+  The setup-scan brief says how to write such a segment, and a test-scope literal prefix
+  decodes the escape.
+
 - **agy's `Individual quota reached` response now pauses as a host outage (#3640).** The
   free-text classifier recognizes that account-level sentence with or without agy's reset tail
   and a leading 429, so the failed launch is not charged to an entry. The match keeps agy's
