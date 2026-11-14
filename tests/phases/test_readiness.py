@@ -102,6 +102,11 @@ class TestFailsClosedBeforeAnyPaidScouting(_ReadinessCase):
 
     def test_main_local_remedy_keeps_pull_tag_build_and_opt_out_paths(self):
         remedy = readiness_checks.image_remedy(tools_image.LOCAL_NAME)
+        self.assertIn(
+            "docker pull ghcr.io/panopticon-scanner/panopticon-tools:latest "
+            "&& docker tag ghcr.io/panopticon-scanner/panopticon-tools:latest "
+            "panopticon-tools:latest",
+            remedy)
         self.assertIn("docker pull " + tools_image.REGISTRY_IMAGE, remedy)
         self.assertIn("docker tag", remedy)
         self.assertIn("docker build -t " + tools_image.LOCAL_NAME, remedy)
