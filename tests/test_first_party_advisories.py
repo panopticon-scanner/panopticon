@@ -1376,6 +1376,23 @@ class TestFirstPartyAdvisoryStability(unittest.TestCase):
             out = findings_mod.aggregate_tool_findings([dict(f) for f in members])
             self.assertEqual(["tool:cargo-audit"], [f["source"] for f in out])
 
+    def test_the_more_severe_duplicate_gates_by_owner_ruling(self):
+        # #3655 owner ruling: severity wins among same-locus duplicates, even when that
+        # turns a gate from PASS to FAIL. osv CRITICAL + cargo-audit LOW at Cargo.lock:1
+        # with --fail-on high now FAILs in either input order; cargo-audit alone PASSes.
+        def gate(findings):
+            report = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="project", fail_on="high",
+                                         timestamp="2026-11-14T00:00:00Z"),
+                findings=findings_mod.FindingSet(findings=[dict(f) for f in findings])))
+            return report["summary"]["gate"]
+        both = [f for f in self._ingest(["cargo-audit.json", "osv-scanner.json"])
+                if evidence.tool_rule_id(f) == "RUSTSEC-2099-0001"]
+        self.assertEqual({"CRITICAL", "LOW"}, {f["severity"] for f in both})
+        self.assertEqual("FAIL", gate(both))
+        self.assertEqual("FAIL", gate(both[::-1]))
+        self.assertEqual("PASS", gate([f for f in both if f["severity"] == "LOW"]))
+
     def test_the_lowest_line_wins_before_severity(self):
         # The order is corroborated locus, then the LOWEST LINE, then severity: a LOW at
         # line 1 beats a CRITICAL at line 5, in either input order.

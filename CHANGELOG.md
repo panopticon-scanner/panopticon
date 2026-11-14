@@ -17,6 +17,10 @@
   reported version and the title. And the first-party mark is part of the grouping key, so the
   project's own `workspace-app 1.2.3` and a registry `workspace-app 0.9.0` in the same lock stay
   two findings: before, one copy was dropped by input order or by an agent's line.
+  **Intended gating change (owner ruling):** because the most severe duplicate now survives, a
+  gate can turn from PASS to FAIL on the same tool output -- osv-scanner CRITICAL plus
+  cargo-audit LOW for one advisory at one locus, with `--fail-on high`, now FAILs, where the
+  input order used to let the LOW survive and PASS.
 
 - **A full-repo scan no longer reviews the scanner's own root config (#3642).** The root
   `panopticon.yml` / `.panopticon.yml` -- including the one setup-scan just wrote -- was reviewed
