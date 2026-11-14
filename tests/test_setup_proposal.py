@@ -1010,6 +1010,45 @@ class TestProposalGlobsAreRefused(unittest.TestCase):
                                       "match": ["src/", "docs/"]}]), [])
 
 
+class TestEscapedBracketProposalRoundTrip(unittest.TestCase):
+    """#3644: setup on a Next.js-style target proposed `users/[[]id]/route.ts` and the
+    whole proposal was refused. The escaped forms are accepted, the config they write
+    compiles, and the glob claims exactly the bracketed directory."""
+
+    def setUp(self):
+        self.vocab, _ = sp.load_vocabulary(VOCAB)
+        self.affinity, _ = sp.load_affinity(AFFINITY, self.vocab)
+
+    def test_accepted_written_compiled_and_exact(self):
+        proposal = {"groups": [{"capability": "custom:Users",
+                                "match": ["app/users/[[]id]/route.ts", "app/[[]post-id]/**",
+                                          "app/[[]a-z]/**"],
+                                "tests": ["app/users/[[]id]/*.test.ts"]}]}
+        self.assertEqual([], sp.validate_proposal(proposal))
+        groups, _disc = sp.assemble(proposal, self.vocab, self.affinity)
+        document = yaml.safe_load(sp.dump_config_yaml(groups))
+        parsed, errors = groups_schema.parse_groups(document)
+        self.assertEqual([], errors)
+        (name,) = groups
+        match = parsed[name]["match"]
+        self.assertEqual(["app/users/[[]id]/route.ts", "app/[[]post-id]/**", "app/[[]a-z]/**"],
+                         match)
+        claimed = [p for p in ("app/users/[id]/route.ts", "app/users/i/route.ts",
+                               "app/users/x/route.ts", "app/[post-id]/page.tsx",
+                               "app/p/page.tsx", "app/[a-z]/page.tsx", "app/b/page.tsx")
+                   if any(groups_schema.glob_to_re(g, "t").match(p) for g in match)]
+        self.assertEqual(["app/users/[id]/route.ts", "app/[post-id]/page.tsx",
+                          "app/[a-z]/page.tsx"], claimed)
+
+    def test_a_class_or_a_bare_bracket_is_still_refused(self):
+        for glob in ("app/[a-z]/**", "app/[!x]/**", "app/users/[id]/route.ts"):
+            with self.subTest(glob=glob):
+                errs = sp.validate_proposal({"groups": [{"capability": "custom:g",
+                                                         "match": [glob]}]})
+                self.assertTrue(any("character classes are not supported" in e
+                                    for e in errs), errs)
+
+
 class TestAbsoluteGlobsUnderTheRoot(unittest.TestCase):
     """#3631/#3632: with `review_root`, a glob naming that root by absolute path is refused
     in every glob field; a bare leading `/` (an anchored glob) and other paths stay legal."""
