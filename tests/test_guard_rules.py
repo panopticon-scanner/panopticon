@@ -668,6 +668,15 @@ class TestASearchOverAKeychainAncestorIsDenied(unittest.TestCase):
         for tool, call in self._dir_tools(other, scope):
             with self.subTest(tool=tool):
                 self.assertEqual((True, ""), call())
+        # Even when the home's walk is unknown: only the grant that covers the target counts.
+        armed = rg.scope_from_plan([{"id": "e1", "scope": {"files": [], "dirs": [self.home, other],
+                                                           "reads": []}}])["e1"]
+        armed["keychains"][self.home] = None
+        armed["escapes"][self.home] = None
+        scope = self._arm({"e1": armed})
+        for tool, call in self._dir_tools(other, scope):
+            with self.subTest(tool=tool, home_walk="unknown"):
+                self.assertEqual((True, ""), call())
 
 
 SHELL_TOOLS = ("run_command", "run_shell_command", "Bash", "BashOutput", "KillShell",
