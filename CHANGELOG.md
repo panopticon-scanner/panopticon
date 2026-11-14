@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Setup no longer refuses a target for being more than 12 directories deep (#3645).** The
+  `target-discovery-surface` probe bounded its instruction-file walk by depth, so any tree with a
+  deep fixture was refused with `**/CLAUDE.md was not scanned past the cap (12 levels)` and ran
+  only under `--allow-unenforced`. The walk is now bounded by its entry cap alone (unchanged:
+  20,000 per pattern), still prunes the directories the review excludes, and still never follows a
+  link. It no longer recurses, so a very deep tree cannot crash it on Python 3.11. An incomplete
+  walk still refuses and says why: the entry cap, a directory it could not read, or -- new -- an
+  entry whose stat failed, which the old walk silently treated as a file. One listing change: a
+  symlink to a directory that is named like an excluded directory is now listed like any other
+  link instead of being dropped.
+
 - **A full-repo scan no longer reviews the scanner's own root config (#3642).** The root
   `panopticon.yml` / `.panopticon.yml` -- including the one setup-scan just wrote -- was reviewed
   like target code, and an owner-observed run graded a HIGH finding against the matrix itself.

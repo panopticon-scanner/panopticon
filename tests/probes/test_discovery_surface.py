@@ -10,9 +10,13 @@ Three things are under test here and they fail for different reasons:
 
 No host binary, no docker, no network: every fixture is a temp directory.
 """
+import contextlib
+import errno
+import inspect
 import io
 import json
 import os
+import sys
 import tempfile
 import threading
 from types import SimpleNamespace
@@ -329,6 +333,43 @@ def _plant(root, relative, body="x"):
     return path
 
 
+def _scandir_failing_stat_on(name):
+    """`os.scandir`, except that the entry called `name` cannot be stat'd.
+
+    What a filesystem with no `d_type` does when the `lstat` behind
+    `DirEntry.is_dir` fails: the entry is listed, and asking what it is raises.
+    """
+    real = os.scandir
+
+    class _NoStat:
+        def __init__(self, entry):
+            self.name, self.path = entry.name, entry.path
+
+        def is_dir(self, *, follow_symlinks=True):
+            raise OSError(errno.EIO, os.strerror(errno.EIO), self.path)
+
+    @contextlib.contextmanager
+    def scandir(path):
+        with real(path) as entries:
+            yield [_NoStat(entry) if entry.name == name else entry
+                   for entry in entries]
+
+    return scandir
+
+
+def _walk_before_3645(root):
+    """`surface.walk_tree` as it was before #3645, without its depth cap.
+
+    The reference the rewrite is compared against: `os.walk(followlinks=False)`
+    with the same pruning. Kept here, and only here, so the differential test
+    below proves the explicit-stack walk lists what this one listed.
+    """
+    for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = [name for name in dirnames
+                       if name not in probes_surface.PRUNED_DIRS]
+        yield directory, sorted(dirnames) + sorted(filenames)
+
+
 # One OPEN and one CONTROLLED file per host with a surface, with the cell and
 # control each must be reported under. Per host rather than claude-only: the
 # probe is registry-driven, and a host whose rows were never exercised is a
@@ -468,14 +509,28 @@ class TestTheScan(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("could not read", detail)
 
-    def test_the_depth_cap_refutes_rather_than_giving_up_quietly(self):
-        deep = self.root
-        for level in range(probes_surface.DEPTH_CAP + 2):
-            deep = os.path.join(deep, "d%d" % level)
-        os.makedirs(deep)
+    def test_a_twenty_level_tree_with_no_instruction_file_is_not_refused(self):
+        # #3645: the walk used to stop at 12 levels and REFUTE, so every
+        # target with a deep fixture tree was refused in seconds -- whether or
+        # not an instruction file was anywhere near the cut-off -- and the only
+        # way past it was `--allow-unenforced`.
+        _plant(self.root, "/".join("d%d" % level for level in range(20))
+               + "/fixture.txt")
+        state, _by, detail = probes_common.probe_discovery_surface("claude", self.root)
+        self.assertEqual(hosts.UNKNOWN, state, detail)
+        self.assertNotIn("past the cap", detail)
+
+    def test_an_instruction_file_twenty_levels_down_is_found(self):
+        # ...and the other half of the same change: depth hides nothing. The
+        # scan reads all twenty levels, so the file down there is a HIT with
+        # its own sentence rather than a cap sentence.
+        relative = ("/".join("d%d" % level for level in range(20))
+                    + "/CLAUDE.md")
+        _plant(self.root, relative)
         state, _by, detail = probes_common.probe_discovery_surface("claude", self.root)
         self.assertEqual(hosts.REFUTED, state)
-        self.assertIn("past the cap", detail)
+        self.assertIn(os.path.join(*relative.split("/")), detail)
+        self.assertNotIn("past the cap", detail)
 
     def test_the_entry_cap_refutes_rather_than_giving_up_quietly(self):
         for index in range(6):
@@ -484,7 +539,89 @@ class TestTheScan(unittest.TestCase):
             state, _by, detail = probes_common.probe_discovery_surface(
                 "claude", self.root)
         self.assertEqual(hosts.REFUTED, state)
-        self.assertIn("past the cap", detail)
+        # Which cap, and for which pattern: the sentence an operator reads.
+        self.assertIn("**/CLAUDE.md was not scanned past the cap (4 entries)",
+                      detail)
+
+    def test_a_deep_tree_is_still_bounded_by_the_entry_cap(self):
+        # No depth cap is not no bound: every level costs an entry, so a
+        # planted bottomless tree runs into the entry cap and is refused.
+        _plant(self.root, "/".join("d%d" % level for level in range(30))
+               + "/fixture.txt")
+        with mock.patch.object(probes_surface, "ENTRY_CAP", 10):
+            state, _by, detail = probes_common.probe_discovery_surface(
+                "claude", self.root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("past the cap (10 entries)", detail)
+
+    def test_an_excluded_directory_is_not_walked(self):
+        # Not merely "its hits are dropped": nothing under it is listed or
+        # counted, so a huge `node_modules` cannot spend the entry cap and
+        # refuse a target on the strength of files the review excludes anyway.
+        for index in range(12):
+            _plant(self.root, "node_modules/pkg/file%d.js" % index)
+        _plant(self.root, "src/app.py")
+        with mock.patch.object(probes_surface, "ENTRY_CAP", 3):
+            state, _by, detail = probes_common.probe_discovery_surface(
+                "claude", self.root)
+        self.assertEqual(hosts.UNKNOWN, state, detail)
+
+    def test_an_unreadable_directory_inside_the_walk_refutes_and_is_named(self):
+        # The `**` walk's own listing, not the single-`*` listdir above: a
+        # directory the walk could not open is a subtree nobody looked at.
+        import getpass
+        if getpass.getuser() == "root":
+            self.skipTest("running as root, os.scandir ignores permissions")
+        locked = os.path.join(self.root, "src", "locked")
+        os.makedirs(locked)
+        os.chmod(locked, 0o000)
+        self.addCleanup(os.chmod, locked, 0o700)
+        state, _by, detail = probes_common.probe_discovery_surface("claude", self.root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("could not read %s" % locked, detail)
+
+    def test_an_entry_whose_stat_fails_refutes_and_is_named(self):
+        # A filesystem that does not say what an entry is makes the walk stat
+        # it, and that stat can fail. `os.walk` read the failure as "a file"
+        # and walked on: the directory was never visited and nothing said so.
+        _plant(self.root, "flaky/CLAUDE.md")
+        with mock.patch.object(probes_surface.os, "scandir",
+                               _scandir_failing_stat_on("flaky")):
+            state, _by, detail = probes_common.probe_discovery_surface(
+                "claude", self.root)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn("could not read %s (%s)"
+                      % (os.path.join(self.root, "flaky"),
+                         os.strerror(errno.EIO)), detail)
+
+    def test_a_tree_deeper_than_the_recursion_budget_is_walked_not_crashed(self):
+        # `os.walk` recurses a frame per level before Python 3.12, so without
+        # a depth cap a deep enough tree ended this probe in a RecursionError.
+        # The walk keeps its own stack: with far fewer frames to spare than
+        # the tree has levels, it still reaches the file at the bottom.
+        levels, spare = 200, 80
+        relative = "/".join("d" for _level in range(levels)) + "/CLAUDE.md"
+        _plant(self.root, relative)
+        limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(len(inspect.stack(0)) + spare)
+        try:
+            state, _by, detail = probes_common.probe_discovery_surface(
+                "claude", self.root)
+        finally:
+            sys.setrecursionlimit(limit)
+        self.assertEqual(hosts.REFUTED, state)
+        self.assertIn(os.path.join(*relative.split("/")), detail)
+
+    def test_a_file_behind_a_directory_symlink_is_not_reached(self):
+        # The link is never descended, so what sits behind it -- here a tree
+        # outside the review root altogether -- is not the target's surface.
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        _plant(outside.name, "CLAUDE.md")
+        os.makedirs(os.path.join(self.root, "src"))
+        os.symlink(outside.name, os.path.join(self.root, "src", "elsewhere"))
+        state, _by, detail = probes_common.probe_discovery_surface("claude", self.root)
+        self.assertEqual(hosts.UNKNOWN, state, detail)
 
     def test_a_planted_fifo_is_skipped_and_does_not_hang_the_scan(self):
         if not hasattr(os, "mkfifo"):
@@ -673,6 +810,93 @@ class TestTheScan(unittest.TestCase):
         self.assertIn("could not read", detail)
         self.assertEqual([], _live_control_bytes(detail), repr(detail))
         self.assertIn(r"s\x1b[2Jhadow\x0d", detail)
+
+
+class TestTheWalk(unittest.TestCase):
+    """#3645: `walk_tree` itself. The rewrite changed the BOUND -- entries, no
+    depth -- and how the tree is traversed; what it lists must not have moved."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = self.tmp.name
+
+    def _ordinary_tree(self):
+        _plant(self.root, "README.md")
+        _plant(self.root, "pkg/api/src/handler.py")
+        _plant(self.root, "pkg/api/CLAUDE.md")
+        _plant(self.root, "pkg/lib/util.py")
+        _plant(self.root, "node_modules/dep/index.js")       # pruned by name
+        _plant(self.root, "pkg/api/__pycache__/handler.pyc")  # and at depth
+        os.makedirs(os.path.join(self.root, "pkg", "empty"))
+        os.symlink(os.path.join(self.root, "pkg", "lib"),
+                   os.path.join(self.root, "pkg", "api", "linked-dir"))
+        os.symlink(os.path.join(self.root, "README.md"),
+                   os.path.join(self.root, "pkg", "linked-file"))
+        os.symlink(os.path.join(self.root, "nowhere"),
+                   os.path.join(self.root, "pkg", "dangling"))
+
+    def test_it_lists_exactly_what_the_os_walk_version_listed(self):
+        self._ordinary_tree()
+        walk = probes_surface.Walk("**")
+        after = {directory: frozenset(names) for directory, names
+                 in probes_surface.walk_tree(self.root, walk)}
+        before = {directory: frozenset(names) for directory, names
+                  in _walk_before_3645(self.root)}
+        self.assertEqual(before, after)
+        # And the reference is not trusted blind: the three things the walk
+        # must do with this tree, said outright.
+        api = os.path.join(self.root, "pkg", "api")
+        self.assertIn("linked-dir", after[api])                # listed...
+        self.assertNotIn(os.path.join(api, "linked-dir"), after)   # ...only
+        self.assertNotIn(os.path.join(self.root, "node_modules"), after)
+        self.assertNotIn("node_modules", after[self.root])
+        self.assertNotIn(os.path.join(api, "__pycache__"), after)
+        # The bookkeeping is the same too: every listed name counted once,
+        # nothing unreadable, no cap.
+        self.assertEqual(sum(len(names) for names in after.values()),
+                         walk.entries)
+        self.assertEqual([], walk.unreadable)
+        self.assertIsNone(walk.capped)
+
+    def test_it_walks_the_same_order_on_every_run(self):
+        # Sorted at every level, so the order of the sentences in a refusal
+        # does not depend on the filesystem's directory order.
+        self._ordinary_tree()
+        visited = [os.path.relpath(directory, self.root) for directory, _names
+                   in probes_surface.walk_tree(self.root,
+                                               probes_surface.Walk("**"))]
+        self.assertEqual([os.curdir, "pkg", os.path.join("pkg", "api"),
+                          os.path.join("pkg", "api", "src"),
+                          os.path.join("pkg", "empty"),
+                          os.path.join("pkg", "lib")], visited)
+
+    def test_the_cap_stops_the_descent_where_it_is_reached(self):
+        # Refusing is half of the cap; the other half is that the walk STOPS.
+        # A cap that only set the flag would still read a planted tree to its
+        # end before saying no.
+        for name in ("a", "b", "c"):
+            _plant(self.root, "%s/deeper/file" % name)
+        walk = probes_surface.Walk("**")
+        with mock.patch.object(probes_surface, "ENTRY_CAP", 2):
+            visited = [directory for directory, _names
+                       in probes_surface.walk_tree(self.root, walk)]
+        self.assertEqual([self.root], visited)
+        self.assertEqual("2 entries", walk.capped)
+
+    def test_a_link_named_like_a_pruned_directory_is_listed_like_any_link(self):
+        # The one place the listing differs from the `os.walk` version, and on
+        # purpose: that version stat'd THROUGH a link to learn it was a
+        # directory, then pruned it by name, so `node_modules -> elsewhere`
+        # vanished from the listing while every other link stayed in it. The
+        # walk no longer looks through links at all; a link is a link.
+        os.makedirs(os.path.join(self.root, "real"))
+        os.symlink(os.path.join(self.root, "real"),
+                   os.path.join(self.root, "node_modules"))
+        listed = dict(probes_surface.walk_tree(self.root,
+                                               probes_surface.Walk("**")))
+        self.assertIn("node_modules", listed[self.root])
+        self.assertNotIn(os.path.join(self.root, "node_modules"), listed)
 
 
 def _register_perfect_shells(directory):
