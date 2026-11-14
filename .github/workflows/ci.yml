@@ -1,10 +1,12 @@
 name: CI
 
 on:
+  # #3618: release/** is the stable line (release/5.5 first); it gets the same
+  # gate as main, on push and on the backport PRs that target it.
   push:
-    branches: [main]
+    branches: [main, 'release/**']
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']
 
 # #1784 (ARC-3955973987): stated here, not inherited. This file's package
 # installs are safe because its token is read-only, and until this block that

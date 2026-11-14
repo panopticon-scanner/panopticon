@@ -2,7 +2,7 @@ name: CodeQL
 
 on:
   pull_request:
-    branches: [main]
+    branches: [main, 'release/**']   # #3618: backport PRs to the stable line
   # No `push` (#3292). Nightly, one hour before security.yml's `main-audit`,
   # whose alert audit needs this analysis at main's current SHA. Crons fire
   # late, so main-audit's `codeql-current` job dispatches this workflow when
