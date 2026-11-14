@@ -246,8 +246,9 @@ def accepts(entry, data):
         if review_root is None:
             # Fail closed (#3632 r2): without the root the absolute-glob check cannot run,
             # so a reply nobody can place is refused, never accepted unchecked.
-            return False, ("setup-scan reply cannot be placed: out_file %r has no .panopticon "
-                           "segment" % inert_text(out_file, limit=REASON_CAP))
+            from scripts import plan_contract
+            return False, ("setup-scan reply cannot be placed: out_file %r has no %s segment"
+                           % (inert_text(out_file, limit=REASON_CAP), plan_contract.ARTIFACT_DIR))
         errors = setup_proposal.validate_proposal(data, review_root=review_root)
         # The errors quote agent-written text (capability names): masked and capped like
         # every reply reason FIRST (so no token is cut before the masker sees it), then made
