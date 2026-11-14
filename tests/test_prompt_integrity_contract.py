@@ -312,7 +312,10 @@ class TheDeliveredPromptsTest(unittest.TestCase):
                         self.assertIn("Repo root: %s\n" % root, text)
                     if label == "setup-scan":
                         self.assertIn("repository spine below resolves against this root", text)
-                        self.assertIn(setup_spine.SETUP_PATH_NOTE.strip(), text)
+                        # The literal, not the constant (#3632 review 3).
+                        self.assertIn("Read, grep and glob with absolute paths under that root. "
+                                      "The globs you return stay relative to it (`src/**`, "
+                                      "never the absolute path).", text)
                         self.assertLess(text.index("Repo root: "), text.index("## Repository spine"))
 
     def test_the_legacy_queue_path_on_every_host(self):

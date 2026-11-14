@@ -1008,3 +1008,32 @@ class TestProposalGlobsAreRefused(unittest.TestCase):
     def test_trailing_slash_proposal_globs_are_accepted(self):
         self.assertEqual(self._errs([{"capability": "custom:g",
                                       "match": ["src/", "docs/"]}]), [])
+
+
+class TestAbsoluteGlobsUnderTheRoot(unittest.TestCase):
+    """#3631/#3632: with `review_root`, a glob naming that root by absolute path is refused
+    in every glob field; a bare leading `/` (an anchored glob) and other paths stay legal."""
+
+    def test_every_glob_field_and_both_spellings(self):
+        with tempfile.TemporaryDirectory() as root:
+            for spelled in (os.path.abspath(root), os.path.realpath(root)):
+                for where, group in (
+                        ("match", {"match": [spelled + "/src/**"]}),
+                        ("match", {"match": ["src/**", "!" + spelled + "/src/gen/**"]}),
+                        ("tests", {"match": ["src/**"], "tests": [spelled + "/tests/**"]}),
+                        ("layer", {"match": ["src/**"], "layers": [
+                            {"layer": "API", "match": [spelled + "/src/api/**"]}]})):
+                    with self.subTest(spelled=spelled, where=where):
+                        errors = sp.validate_proposal(
+                            {"groups": [dict(group, capability="Auth")]}, review_root=root)
+                        self.assertTrue(any("globs must be root-relative" in e for e in errors),
+                                        errors)
+                        # Without a root nothing about absoluteness is checked (old callers).
+                        self.assertFalse(any("root-relative" in e for e in sp.validate_proposal(
+                            {"groups": [dict(group, capability="Auth")]})))
+            for legal in ("/src/**", "src/**", "/elsewhere/src/**", root + "x/src/**"):
+                with self.subTest(legal=legal):
+                    self.assertEqual([], sp.validate_proposal(
+                        {"groups": [{"capability": "Auth", "match": [legal]}]},
+                        review_root=root))
+

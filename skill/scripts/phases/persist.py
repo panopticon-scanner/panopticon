@@ -239,10 +239,15 @@ def accepts(entry, data):
         # #3631: the same validator ingest applies, so an empty or shapeless proposal
         # (`{}` from an agent whose reads were refused) is a failed dispatch HERE,
         # naming the role, not an accepted reply that setup rejects later.
-        from scripts import setup_proposal
-        errors = setup_proposal.validate_proposal(data)
-        return (not errors), ("setup-scan proposal is not valid: %s"
-                              % "; ".join(errors[:5]) if errors else "")
+        from scripts import claim_scope, setup_proposal
+        errors = setup_proposal.validate_proposal(
+            data, review_root=claim_scope.review_root_of_artifact_path(entry.get("out_file") or ""))
+        # The errors quote agent-written text (capability names): masked and capped like
+        # every reply reason FIRST (so no token is cut before the masker sees it), then made
+        # inert -- no control or bidi characters reach a terminal.
+        from scripts.tools.base import inert_text
+        return (not errors), ("setup-scan proposal is not valid: %s" % inert_text(
+            _safe_schema_reason(errors), limit=REASON_CAP) if errors else "")
     version = _version_defect(entry, data)
     if version:
         return False, version

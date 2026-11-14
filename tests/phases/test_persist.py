@@ -457,8 +457,32 @@ class TestASetupProposalIsValidatedAtPersist(unittest.TestCase):
         with mock.patch.object(setup_proposal, "validate_proposal",
                                return_value=["sentinel rule"]) as rule:
             ok, reason = persist.accepts(self._entry(), MIN_PROPOSAL)
-        rule.assert_called_once_with(MIN_PROPOSAL)
+        rule.assert_called_once_with(MIN_PROPOSAL, review_root="/r")
         self.assertEqual((False, "setup-scan proposal is not valid: sentinel rule"), (ok, reason))
+
+    def test_an_absolute_glob_under_the_root_is_refused_at_persist(self):
+        # #3632 review 1: the root comes from the reply's own artifact path.
+        for glob in ("/r/src/**", "!/r/src/gen/**"):
+            with self.subTest(glob=glob):
+                data = {"groups": [{"capability": "Auth", "match": ["src/**", glob]}]}
+                ok, reason = persist.accepts(self._entry(), data)
+                self.assertFalse(ok)
+                self.assertIn("is an absolute path under the review root; globs must be "
+                              "root-relative", reason)
+        ok, _ = persist.accepts(self._entry(), {"groups": [{"capability": "Auth",
+                                                             "match": ["/src/**"]}]})
+        self.assertTrue(ok)                                  # an anchored glob, not the root
+
+    def test_the_refusal_reason_is_masked_and_capped(self):
+        # #3632 review 2: agent-written capability names reach the reason.
+        token = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        data = {"groups": [{"capability": "x\x1b[31m%s" % token + "y" * 4000}]}
+        ok, reason = persist.accepts(self._entry(), data)
+        self.assertFalse(ok)
+        self.assertNotIn(token, reason)
+        self.assertNotIn("\x1b", reason)
+        self.assertLessEqual(len(reason), len("setup-scan proposal is not valid: ")
+                             + persist.REASON_CAP)
 
     def test_a_refused_proposal_is_a_failed_write_and_nothing_lands(self):
         with tempfile.TemporaryDirectory() as d:

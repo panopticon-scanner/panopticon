@@ -176,7 +176,8 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     except (OSError, ValueError) as e:
         return {"ok": False, "errors": [
             "cannot read proposal %s: %s" % (proposal_path, e)]}
-    assembled, disclosure = sp.assemble(proposal, vocab, affinity, layers=layers)
+    assembled, disclosure = sp.assemble(proposal, vocab, affinity, layers=layers,
+                                        review_root=repo)   # #3631: no absolute globs
     if assembled is None:
         return {"ok": False, "errors": (
             ["proposal rejected -- no draft written:"]
