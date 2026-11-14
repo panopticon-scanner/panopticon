@@ -1,14 +1,24 @@
-"""Classify dependency advisories against the reviewed Cargo project (#3593).
+"""Classify dependency advisories against the reviewed project's own packages.
 
-Cargo workspace and local path packages have no ``source`` in Cargo.lock. An
-exact scanner package/version match against only those entries is first-party
-only when one confined, bounded Cargo.toml read also proves an in-tree,
-publishable package with that identity. The claim then changes from "a
-third-party dependency is used" to "this project version is affected" before
-the advisor queue is built. Ambiguity and unreadable input fail closed onto the
-ordinary advisor path.
+Cargo (#3593): workspace and local path packages have no ``source`` in
+Cargo.lock. An exact scanner package/version match against only those entries is
+first-party only when one confined, bounded Cargo.toml read also proves an
+in-tree, publishable package with that identity.
+
+npm (#3623): a package-lock.json / npm-shrinkwrap.json (lockfile v2+) lists the
+root project and every workspace / ``file:`` package at a key outside
+``node_modules``. An exact match against only those entries is first-party when
+the package is the root or one npm linked, its realpath is inside the review
+root, and its own package.json proves the same name and version and is
+publishable: ``private: true`` is npm's ``publish = false``, except for the
+review root itself.
+
+The claim then changes from "a third-party dependency is used" to "this project
+version is affected" before the advisor queue is built. Ambiguity and unreadable
+input fail closed onto the ordinary advisor path.
 """
 import fnmatch
+import json
 import os
 import re
 import tomllib
@@ -25,6 +35,13 @@ MAX_CARGO_LOCK_BYTES = 8 * 1024 * 1024
 MAX_CARGO_MANIFEST_BYTES = 1024 * 1024
 MAX_CARGO_MANIFEST_INGEST_BYTES = 48 * 1024 * 1024
 MAX_CARGO_MANIFESTS = 1024
+# npm (#3623): a lockfile is controller input like Cargo.lock, larger in practice;
+# every read still spends the one shared ingest budget above.
+NPM_LOCKS = ("package-lock.json", "npm-shrinkwrap.json")
+MAX_NPM_LOCK_BYTES = 16 * 1024 * 1024
+MAX_NPM_MANIFEST_BYTES = 1024 * 1024
+NPM_PUBLIC_REGISTRY = "https://registry.npmjs.org"
+NPM_INSTALLED_VERSION_TOOLS = frozenset({"osv-scanner", "trivy"})
 _TRIVY_PACKAGE = re.compile(
     r"(?:^|\s)Package:\s*(\S+)\s+Installed Version:\s*(\S+)(?:\s|$)")
 _DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
@@ -33,7 +50,9 @@ _MISSING = object()
 PackageOrigins = dict[tuple[str, str], set[str]]
 OriginCache = dict[str, PackageOrigins]
 ManifestDocument = dict[str, object]
-ManifestCache = dict[str, ManifestDocument | None]
+# #3639 review: keyed by (format, realpath) -- a Cargo.toml symlinked to a package.json
+# must never be answered from the other parser's cache entry.
+ManifestCache = dict[tuple[str, str], ManifestDocument | None]
 
 
 class IngestCache:
@@ -49,6 +68,11 @@ class IngestCache:
 
 def _cargo_lock_path(target_root, finding):
     """Return a confined Cargo.lock path for *finding*, else None."""
+    return _lock_path(target_root, finding, ("Cargo.lock",))
+
+
+def _lock_path(target_root, finding, names):
+    """Return a confined lockfile path named one of *names* for *finding*, else None."""
     location = finding.get("location")
     rel = location.get("file") if isinstance(location, dict) else None
     if not isinstance(rel, str):
@@ -58,7 +82,7 @@ def _cargo_lock_path(target_root, finding):
     rel = rel.replace(os.sep, "/")
     while rel.startswith("./"):
         rel = rel[2:]
-    if (not rel or rel.startswith("/") or os.path.basename(rel) != "Cargo.lock"
+    if (not rel or rel.startswith("/") or os.path.basename(rel) not in names
             or any(part in ("", ".", "..") for part in rel.split("/"))):
         return None
     root = target_root
@@ -119,19 +143,20 @@ def _read_toml(path, target_root, cache: IngestCache):
     real_path = os.path.realpath(path)
     if not _inside(root, real_path):
         return None
-    if real_path in cache.manifests:
-        return cache.manifests[real_path]
+    key = ("toml", real_path)
+    if key in cache.manifests:
+        return cache.manifests[key]
     raw = _read_budgeted_bytes(real_path, MAX_CARGO_MANIFEST_BYTES, cache)
     if raw is None:
-        cache.manifests[real_path] = None
+        cache.manifests[key] = None
         return None
     try:
         document = tomllib.loads(raw.decode("utf-8"))
     except (UnicodeError, ValueError, RecursionError):
-        cache.manifests[real_path] = None
+        cache.manifests[key] = None
         return None
     cached = document if isinstance(document, dict) else None
-    cache.manifests[real_path] = cached
+    cache.manifests[key] = cached
     return cached
 
 
@@ -382,6 +407,150 @@ def _cargo_package_origins(path, target_root, cache: IngestCache):
     return origins
 
 
+def _unique_object(pairs):
+    """A JSON object hook that refuses duplicate keys: a repeated `packages` key could
+    hide a registry entry behind a local one (json keeps only the last)."""
+    out = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError("duplicate JSON key %r" % key)
+        out[key] = value
+    return out
+
+
+def _read_json(path, file_limit, target_root, cache: IngestCache):
+    """One confined, cached, budgeted JSON object, else None."""
+    real_path = os.path.realpath(path)
+    if not _inside(target_root, real_path):
+        return None
+    key = ("json", real_path)
+    if key in cache.manifests:
+        return cache.manifests[key]
+    raw = _read_budgeted_bytes(real_path, file_limit, cache)
+    document = None
+    if raw is not None:
+        try:
+            document = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
+        except (UnicodeError, ValueError, RecursionError):
+            document = None
+    cached = document if isinstance(document, dict) else None
+    cache.manifests[key] = cached
+    return cached
+
+
+_URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def _npm_node_modules_name(key):
+    """The package name a `node_modules/...` lock key installs, else None."""
+    parts = key.split("/")
+    if "node_modules" not in parts:
+        return None
+    rest = parts[len(parts) - 1 - parts[::-1].index("node_modules") + 1:]
+    if len(rest) == 1 and rest[0] and not rest[0].startswith("@"):
+        return rest[0]
+    if len(rest) == 2 and rest[0].startswith("@") and len(rest[0]) > 1 and rest[1]:
+        return "/".join(rest)
+    return None
+
+
+def _npm_manifest_fact(package_dir, target_root, cache: IngestCache):
+    """``((name, version), publishable)`` from one in-tree package.json, else None.
+
+    ``private: true`` is npm's ``publish = false``: never first-party, except for
+    the review root itself (#3623 ruling). A ``publishConfig.registry`` other than
+    the public registry is private-only, like a Cargo publish list without
+    crates-io. Anything malformed is None."""
+    real_dir = os.path.realpath(package_dir)
+    # _read_json confines the realpath to the review root, cache hits included.
+    document = _read_json(os.path.join(real_dir, "package.json"), MAX_NPM_MANIFEST_BYTES,
+                          target_root, cache)
+    if document is None:
+        return None
+    name, version = document.get("name"), document.get("version")
+    if not (isinstance(name, str) and name and isinstance(version, str) and version):
+        return None
+    private = document.get("private", False)
+    if not isinstance(private, bool):
+        return None
+    publishable = not private or real_dir == target_root
+    config = document.get("publishConfig", _MISSING)
+    if config is not _MISSING:
+        if not isinstance(config, dict):
+            return None
+        registry = config.get("registry", _MISSING)
+        if registry is not _MISSING:
+            if not isinstance(registry, str):
+                return None
+            publishable = publishable and registry.rstrip("/") == NPM_PUBLIC_REGISTRY
+    return (name, version), publishable
+
+
+def _npm_package_origins(lock_path, target_root, cache: IngestCache):
+    """Map npm lock identities to fail-closed origin classes (#3623).
+
+    A key outside ``node_modules`` is a local package: the root (``""``), a
+    workspace member or a ``file:`` target. It is first-party only when it is the
+    root or the target of a ``link: true`` entry, and its in-tree package.json
+    proves the same identity and is publishable. Every ``node_modules`` package
+    that is not a link is external. A malformed lock classifies nothing."""
+    if lock_path in cache.package_origins:
+        return cache.package_origins[lock_path]
+    origins: PackageOrigins = {}
+    cache.package_origins[lock_path] = origins
+    document = _read_json(lock_path, MAX_NPM_LOCK_BYTES, target_root, cache)
+    packages = document.get("packages") if document is not None else None
+    if not isinstance(packages, dict) or len(packages) > 64 * MAX_CARGO_MANIFESTS:
+        return origins
+    lock_dir = os.path.dirname(lock_path)
+    linked, local = set(), []
+    found: PackageOrigins = {}
+    for key, entry in packages.items():
+        if not isinstance(entry, dict):
+            return origins
+        installed = _npm_node_modules_name(key)
+        if installed is None and "node_modules" in key.split("/"):
+            return origins
+        if installed is not None:
+            if entry.get("link") is True:
+                # #3639 review: a link resolves to a RELATIVE in-lock path; a URL or an
+                # absolute path is not a local package and fails the whole lock.
+                resolved = entry.get("resolved")
+                if (not isinstance(resolved, str) or not resolved or os.path.isabs(resolved)
+                        or _URL_SCHEME.match(resolved)):
+                    return origins
+                linked.add(os.path.normpath(resolved))
+                continue
+            # #3639 review: a scanner names an install from its key path, so a registry
+            # entry whose own name or version cannot be read would hide that copy.
+            name = entry.get("name", installed)
+            version = entry.get("version")
+            if not (isinstance(name, str) and name and isinstance(version, str) and version):
+                return origins
+            found.setdefault((name, version), set()).add("external")
+            continue
+        if "name" in entry and not (isinstance(entry["name"], str) and entry["name"]):
+            return origins
+        local.append((key, entry))
+    if len(local) > MAX_CARGO_MANIFESTS:
+        return origins
+    root_name = document.get("name")
+    for key, entry in local:
+        name = entry.get("name", root_name if key == "" else None)
+        version = entry.get("version")
+        if not (isinstance(name, str) and name and isinstance(version, str) and version):
+            continue
+        identity = (name, version)
+        fact = None
+        if key == "" or os.path.normpath(key) in linked:
+            fact = _npm_manifest_fact(os.path.join(lock_dir, key), target_root, cache)
+        origin = (evidence.FIRST_PARTY_PACKAGE_ORIGIN if fact == (identity, True)
+                  else "unknown")
+        found.setdefault(identity, set()).add(origin)
+    origins.update(found)
+    return origins
+
+
 def _advisory_package(finding):
     """Return the advisory's package/version, including Trivy's SARIF prose."""
     tool_evidence = finding.get("tool_evidence")
@@ -428,12 +597,25 @@ def _mark_finding(finding, target_root, cache):
     tool_evidence = finding.get("tool_evidence")
     if not isinstance(tool_evidence, dict) or tool_evidence.get("kind") == SECRET_KIND:
         return
-    lock_path = _cargo_lock_path(target_root, finding)
     package = _advisory_package(finding)
-    if lock_path is None or package is None:
+    if package is None:
         return
-    origins = _cargo_package_origins(
-        lock_path, target_root, cache).get(package, set())
+    lock_path = _lock_path(target_root, finding, ("Cargo.lock",) + NPM_LOCKS)
+    if lock_path is None:
+        return
+    if os.path.basename(lock_path) == "Cargo.lock":
+        ecosystem, member = "Cargo", "workspace/path member"
+        origins = _cargo_package_origins(lock_path, target_root, cache).get(package, set())
+    else:
+        # #3639 review: only the review root's own lock is the reviewed project -- a
+        # shrinkwrap npm published inside a tarball (`node_modules/x/`) or a vendored
+        # project's lock is somebody else's root. Members are proved through the root
+        # lock's links. And only scanners that report an INSTALLED version: npm-audit's
+        # `vulnerable_versions` is a range, which may happen to equal one version.
+        if os.path.dirname(lock_path) != target_root or tool not in NPM_INSTALLED_VERSION_TOOLS:
+            return
+        ecosystem, member = "npm", "workspace/local package"
+        origins = _npm_package_origins(lock_path, target_root, cache).get(package, set())
     if origins != {evidence.FIRST_PARTY_PACKAGE_ORIGIN}:
         return
     name, version = package
@@ -447,10 +629,9 @@ def _mark_finding(finding, target_root, cache):
     finding["tool_evidence"] = marked
     advisory = evidence.tool_rule_id(finding) or "the reported advisory"
     finding["impact"] = inert_text(
-        "%s applies to this project's in-tree publishable %s %s Cargo package."
-        % (advisory, name, version), mode="body")
+        "%s applies to this project's in-tree publishable %s %s %s package."
+        % (advisory, name, version, ecosystem), mode="body")
     finding["remediation"] = inert_text(
         "Fix the affected first-party code and release a patched project "
-        "version; the matched publishable workspace/path member is not an "
-        "external dependency.",
+        "version; the matched publishable %s is not an external dependency." % member,
         mode="body")

@@ -189,7 +189,8 @@ def is_first_party_advisory(finding):
     self-assert the marker and acquire either the queue exemption or confirmed
     evidence. `agent_finding` strips `source`, and ingest writes the marker only
     after an exact sourceless Cargo.lock identity and in-tree publishable
-    Cargo.toml package/version match (#3593).
+    Cargo.toml package/version match (#3593), or the npm equivalent: a local
+    package-lock entry and its in-tree publishable package.json (#3623).
     """
     return (is_tool_sourced(finding)
             and _tool_evidence(finding).get("package_origin")
