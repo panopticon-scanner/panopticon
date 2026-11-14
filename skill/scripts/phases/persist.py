@@ -236,7 +236,13 @@ def accepts(entry, data):
         errs = coverage._scout_shape_errors(data)
         return (not errs), ("; ".join(errs) if errs else "")
     if role == "setup-scan":
-        return isinstance(data, dict), "a setup proposal must be a JSON object"
+        # #3631: the same validator ingest applies, so an empty or shapeless proposal
+        # (`{}` from an agent whose reads were refused) is a failed dispatch HERE,
+        # naming the role, not an accepted reply that setup rejects later.
+        from scripts import setup_proposal
+        errors = setup_proposal.validate_proposal(data)
+        return (not errors), ("setup-scan proposal is not valid: %s"
+                              % "; ".join(errors[:5]) if errors else "")
     version = _version_defect(entry, data)
     if version:
         return False, version

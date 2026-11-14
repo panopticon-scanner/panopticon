@@ -113,7 +113,7 @@ def confine_claim_location(review_root, loc):
     return loc
 
 
-def root_pin_paragraph(review_root, *, plural=False):
+def root_pin_paragraph(review_root, *, plural=False, subject=None):
     """The `Repo root:` paragraph an advisor prompt opens with (#975).
 
     Advisors inherit the session cwd, never review_root or the `--pr` worktree,
@@ -122,9 +122,11 @@ def root_pin_paragraph(review_root, *, plural=False):
     happened to start in. `plural` picks the claimS wording the cell advisor
     (a list of claims) uses; the default is the single-claim form. It is
     keyword-only: a bare `True` at a call site names neither the switch nor
-    the noun it selects."""
+    the noun it selects. `subject` names what the paths are in for a prompt
+    that is not about claims -- the setup-scan brief's "repository spine"
+    (#3631) -- and wins over `plural`."""
     return _ROOT_PIN % (os.path.abspath(review_root),
-                        "claims" if plural else "claim")
+                        subject or ("claims" if plural else "claim"))
 
 
 def review_root_of_artifact_path(path):

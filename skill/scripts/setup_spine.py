@@ -374,6 +374,12 @@ def load_bundled_layers(layers_path=None):
     return layers, True
 
 
+SPINE_SUBJECT = "repository spine"
+# #3631: read by absolute path; the proposal's globs stay root-relative, as ingest expects.
+SETUP_PATH_NOTE = ("Read, grep and glob with absolute paths under that root. The globs you "
+                   "return stay relative to it (`src/**`, never the absolute path).\n\n")
+
+
 def render_scan_brief(repo, vocabulary, layers=None, spine=None, host=None):
     """Render the setup-scan agent brief to .panopticon/setup-scan-brief.md
     (spec §5.1): the spine and size arithmetic, both catalogs in full prose,
@@ -396,6 +402,12 @@ def render_scan_brief(repo, vocabulary, layers=None, spine=None, host=None):
         "layer_catalog": render_layer_catalog(layers),
         "surfaces": ", ".join(sorted(coverage_model.SURFACES)),
     }, host=host)
+    # #3631: pin the absolute review root, as every other prompt site does. A host
+    # whose runner starts the agent in a scratch workspace (agy: `<run>/workspace`,
+    # the confinement design) resolved the spine's relative paths there; the read
+    # guard refused them, and the agent returned `{}`.
+    from scripts import claim_scope
+    brief = claim_scope.root_pin_paragraph(repo, subject=SPINE_SUBJECT) + SETUP_PATH_NOTE + brief
     path = os.path.join(os.path.abspath(repo), plan_contract.ARTIFACT_DIR, "setup-scan-brief.md")
     with runio._open_w_nofollow(path) as fh:   # #1577
         fh.write(brief)

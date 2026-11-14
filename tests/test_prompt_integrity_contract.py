@@ -294,6 +294,27 @@ class TheDeliveredPromptsTest(unittest.TestCase):
                         dispatch.load_template(role_file)[0], host).strip(), text)
                     self.assertTrue(text.startswith(requests.entry_marker(entry["id"])))
 
+    def test_every_delivered_prompt_names_the_absolute_review_root(self):
+        # #3631: a runner that starts its agent in a scratch workspace (agy) resolves a
+        # relative path there, and the read guard refuses it. So every role on every host
+        # carries the absolute root: the `Repo root:` pin (setup-scan, both advisors) or
+        # absolute file paths (scout, panel).
+        pinned = {"setup-scan", "domain-advisor", "tool-advisor"}
+        for host in sorted(hosts.HOSTS):
+            root, entries = self._entries(host)
+            delivered = self._delivered(root, entries)
+            for label in entries:
+                with self.subTest(host=host, role=label):
+                    text = delivered[label]
+                    self.assertTrue(root + os.sep in text or "Repo root: %s\n" % root in text,
+                                    "no absolute review root in the %s prompt" % label)
+                    if label in pinned:
+                        self.assertIn("Repo root: %s\n" % root, text)
+                    if label == "setup-scan":
+                        self.assertIn("repository spine below resolves against this root", text)
+                        self.assertIn(setup_spine.SETUP_PATH_NOTE.strip(), text)
+                        self.assertLess(text.index("Repo root: "), text.index("## Repository spine"))
+
     def test_the_legacy_queue_path_on_every_host(self):
         # #1767's assembly path: `dispatch.render_advisor_prompts` writes the prompt files itself.
         for host in sorted(hosts.HOSTS):
