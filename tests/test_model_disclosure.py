@@ -76,6 +76,13 @@ class TestAcrossRuns(unittest.TestCase):
         self.assertIsNone(got["entries"][0]["runs"][1])
         self.assertFalse(got["entries"][0]["same"])
 
+    def test_fallbacks_without_a_strict_state_still_count_as_recorded(self):
+        # A report synthesized with no manifest has ledger substitutions but no model_strict.
+        got = md.compare_models([{"model_substitutions": [SUB]}, {"model_substitutions": [SUB]}])
+        self.assertTrue(got["recorded"])
+        self.assertTrue(got["disclose"])
+        self.assertEqual([None, None], got["strict"])
+
     def test_no_run_recorded_anything(self):
         got = md.compare_models([{}, {}])
         self.assertEqual((False, False), (got["disclose"], got["recorded"]))
