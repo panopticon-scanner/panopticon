@@ -67,6 +67,10 @@ _KINDS = (
     r"permission_error",              # Anthropic's own type for the same refusal
     r"insufficient{s}quota",
     r"quota{s}(?:exceeded|exhausted)",
+    # #3640: agy's account-level prose. Keep both its leading scope word and
+    # its sentence boundary: kimi and codex pass whole stderr here, where a
+    # tool may say bare "quota reached" or discuss a quota-reached branch.
+    r"individual\s+quota\s+reached(?=$|[.!](?:\s|$)|\s+resets\b)",
     r"exceeded{s}your{s}current{s}quota",
     r"resource{s}exhausted",
     r"credit{s}balance{s}is{s}too{s}low",

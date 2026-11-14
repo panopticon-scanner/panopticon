@@ -44,6 +44,14 @@ CLASSIFIER_CASES = (
         "quota exceeded for this organization", "Your credit balance is too low",
         "503 Service Unavailable", "upstream connect error", "Overloaded", "rate_limit_error",
         "insufficient_quota")),
+    *(("#3640", s, H, None) for s in (
+        "Individual quota reached",
+        "Error: Individual quota reached. Resets at 13:00",
+        "429 Individual quota reached")),
+    *(("#3640", s, E, None) for s in (
+        "kimi stderr: mypy: quota reached while checking src/billing.py",
+        "codex stderr: pytest: quota reached in the fixture output",
+        "codex stderr: Individual quota reached handling is untested")),
     # #1623: real entry-class failures whose text merely MENTIONS the vocabulary
     *(("#1623", s, E, None) for s in (
         'claude -p exited 1: {"findings": [{"title": "Missing authentication on /admin"}]}',
