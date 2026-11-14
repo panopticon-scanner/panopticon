@@ -681,11 +681,13 @@ groups:
       - skill/scripts/synth/render.py
       - devtools/replay_report.py
       - devtools/compare_runs.py
+      - skill/scripts/model_disclosure.py
       tests:
       - tests/synth/test_report*.py
       - tests/test_synthesize.py
       - tests/test_replay_report.py
       - tests/test_compare_runs.py
+      - tests/test_model_disclosure.py
       - tests/test_report_redaction_e2e.py
       - tests/test_lone_surrogates.py
     Synth:
