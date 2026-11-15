@@ -1496,6 +1496,8 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
             with self.subTest(member=member):
                 _py_tree(self.root, member=member)
                 self.assertIsNone(self._origin(PY_MEMBER))
+                # Only that identity: the root in the same lock is still proved.
+                self.assertEqual("first_party", self._origin(PY_ROOT))
 
     def test_a_version_mismatch_stays_on_the_advisor_path(self):
         _py_tree(self.root, member=_pyproject(PY_MEMBER[0], "1.2.1"))
@@ -1520,7 +1522,20 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
         _py_tree(self.root, lock=_uv_lock(member='{ directory = "packages/lib" }'))
         self.assertEqual("first_party", self._origin(PY_MEMBER))
 
+    def test_an_archive_source_is_never_local_even_when_it_names_a_project(self):
+        # uv's `path` and Poetry's `file` are archive sources; naming a directory that
+        # holds a matching pyproject.toml does not make them a local project.
+        _py_tree(self.root, lock=_uv_lock(member='{ path = "packages/lib" }'))
+        self.assertIsNone(self._origin(PY_MEMBER))
+        _py_tree(self.root, lock=_poetry_lock('type = "file"\nurl = "packages/lib"\n'),
+                 lock_name="poetry.lock")
+        self.assertIsNone(self._origin(PY_MEMBER, path="poetry.lock"))
+
     def test_an_absolute_or_url_path_is_not_local(self):
+        # Both resolve to a real in-tree project: the absolute one directly, the URL one
+        # because a directory with that literal name exists. Neither is a lock's local path.
+        _write_text(os.path.join(self.root, "file:packages", "lib", "pyproject.toml"),
+                    _pyproject(*PY_MEMBER))
         for path in (os.path.join(self.root, "packages", "lib"), "file:packages/lib"):
             with self.subTest(path=path):
                 _py_tree(self.root, lock=_uv_lock(member='{ editable = %s }'
@@ -1550,6 +1565,9 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
             "not toml": "[[package]\n",
             "package not a list": 'package = "x"\n',
             "entry not a table": 'package = [1]\n',
+            "entry not a table beside real ones": (
+                'package = [{ name = "acme-app", version = "0.3.0", '
+                'source = { editable = "." } }, 1]\n'),
             "entry without a name": _uv_lock(extra='[[package]]\nversion = "1"\n'
                                                    'source = %s\n\n' % _UV_REGISTRY),
             "registry entry without a version": _uv_lock(
@@ -1585,6 +1603,26 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
             with self.subTest(malformed=label):
                 _py_tree(self.root, lock=_poetry_lock(source), lock_name="poetry.lock")
                 self.assertIsNone(self._origin(PY_MEMBER, path="poetry.lock"))
+
+    def test_another_entrys_source_decides_the_whole_lock_only_when_malformed(self):
+        other = '[[package]]\nname = "other"\nversion = "1"\n%s\n'
+        for label, lock_name, lock, expected in (
+                ("poetry type not a string", "poetry.lock",
+                 _poetry_lock(extra=other % '\n[package.source]\ntype = 1\n'), None),
+                ("poetry source not a table", "poetry.lock",
+                 _poetry_lock(extra=other % 'source = "pypi"'), None),
+                ("poetry url source", "poetry.lock",
+                 _poetry_lock(extra=other % '\n[package.source]\ntype = "url"\n'
+                                            'url = "https://example.invalid/x.whl"\n'),
+                 "first_party"),
+                ("pdm url source", "pdm.lock",
+                 _pdm_lock(extra=other % 'url = "https://example.invalid/x.whl"'),
+                 "first_party"),
+                ("pdm git source", "pdm.lock",
+                 _pdm_lock(extra=other % 'git = "https://example.invalid/x"'), "first_party")):
+            with self.subTest(lock=label):
+                _py_tree(self.root, lock=lock, lock_name=lock_name)
+                self.assertEqual(expected, self._origin(PY_MEMBER, path=lock_name))
 
     def test_poetry_registry_copy_of_a_path_member_is_ambiguous(self):
         extra = '[[package]]\nname = "acme_lib"\nversion = "1.2.0"\n\n'
