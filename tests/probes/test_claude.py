@@ -1488,6 +1488,19 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
             return mock.Mock(returncode=returncode, stdout=json.dumps(envelope), stderr="")
         return launch, seen
 
+    def limited_after(self, behaviour, *, envelope=True):
+        """#3646 review: the CLI plays `behaviour` (files written, denials recorded),
+        then the turn ends on a host 429 -- the seat's repro."""
+        launch, seen = self.fake(behaviour)
+
+        def limited(cmd, **kwargs):
+            done = launch(cmd, **kwargs)
+            body = json.loads(done.stdout or "{}")
+            body.update(is_error=True, result="API Error: 429 Too Many Requests")
+            return mock.Mock(returncode=1, stderr="",
+                             stdout=json.dumps(body) if envelope else "429 Too Many Requests")
+        return limited, seen
+
     def canary(self, *behaviours):
         import scripts.probes.claude_write_canary as canary
         launch, seen = self.fake(*behaviours)
@@ -1576,6 +1589,54 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
                     self.assertEqual(canary.HOST_LIMITED, verdict)
                     self.assertTrue(detail.startswith(hosts.HOST_LIMITED_LEAD), detail)
                 self.assertEqual(canary.ATTEMPTS, seen["calls"])
+
+    def test_refuting_evidence_wins_over_a_host_limit(self):
+        # The seat's repro: the PEER out_file was written and the sentinel reached,
+        # then a 429 ended the turn. That is a real breakage, never "host-limited".
+        import scripts.probes.claude_write_canary as canary
+        for label, envelope in (("envelope", True), ("no envelope", False)):
+            with self.subTest(label):
+                launch, _seen = self.limited_after("wide-open", envelope=envelope)
+                with mock.patch.object(canary, "_launch", side_effect=launch):
+                    measured = canary.measure()
+                self.assertEqual(canary.REFUTED, measured["write"][0], measured)
+                self.assertIn("PEER", measured["write"][1])
+                self.assertEqual(canary.REFUTED, measured["read"][0], measured)
+                self.assertIn("sentinel", measured["read"][1])
+
+    def test_a_denial_row_still_proves_under_a_host_limit(self):
+        import scripts.probes.claude_write_canary as canary
+        launch, _seen = self.limited_after("always-deny")
+        with mock.patch.object(canary, "_launch", side_effect=launch):
+            measured = canary.measure()
+        self.assertEqual(canary.REFUTED, measured["write"][0], measured)
+        self.assertIn("DENIED through the real CLI", measured["write"][1])
+        self.assertEqual(canary.PROVEN, measured["read"][0], measured)
+
+    def test_a_host_limit_names_only_what_would_otherwise_be_unmeasured(self):
+        import scripts.probes.claude_write_canary as canary
+        launch, seen = self.limited_after("no-attempt")
+        with mock.patch.object(canary, "_launch", side_effect=launch):
+            measured = canary.measure()
+        for capability in ("write", "read"):
+            verdict, detail = measured[capability]
+            self.assertEqual(canary.HOST_LIMITED, verdict)
+            self.assertTrue(detail.startswith(hosts.HOST_LIMITED_LEAD), detail)
+        self.assertEqual(canary.ATTEMPTS, seen["calls"])
+
+    def test_a_successful_launch_carrying_a_host_shaped_error_is_not_host_limited(self):
+        # `not launched.ok`: only a FAILED launch can be host-limited.
+        import scripts.probes.claude_write_canary as canary
+        launch, _seen = self.limited({"type": "result", "is_error": False, "result": "done",
+                                      "error": {"type": "rate_limit_error",
+                                                "message": "usage limit reached"}},
+                                     returncode=0)
+        with mock.patch.object(canary, "_launch", side_effect=launch):
+            measured = canary.measure()
+        for capability in ("write", "read"):
+            verdict, detail = measured[capability]
+            self.assertEqual(canary.NOT_MEASURED, verdict)
+            self.assertFalse(detail.startswith(hosts.HOST_LIMITED_LEAD), detail)
 
     def test_an_entry_class_failure_stays_plain_not_measured(self):
         # A failed launch the host did not cause (the agent's own reply quoting a 429)

@@ -607,6 +607,16 @@ class TestAnUnmeasuredCanaryAsksForARerunFirst(unittest.TestCase):
         self.assertIn("so re-run first", message)
         self.assertLess(message.index("so re-run first"), message.index("--allow-unenforced"))
 
+    def test_a_host_limited_canary_asks_to_wait_for_the_host_not_to_accept(self):
+        # #3646 review: a rate limit measured nothing; the remedy is a healthy host.
+        message = self._message(hosts.UNKNOWN, hosts.HOST_LIMITED_LEAD + " (exit 1)")
+        self.assertIn("hit a host limit", message)
+        self.assertIn("wait for the host to recover and re-run", message)
+        self.assertLess(message.index("wait for the host to recover"),
+                        message.index("--allow-unenforced"))
+        self.assertIn("Only if it stays unknown on a healthy host", message)
+        self.assertNotIn("declared out_file. Re-run with --allow-unenforced", message)
+
     def test_every_other_refusal_keeps_its_sentence(self):
         for state, detail in ((hosts.UNKNOWN, "no PreToolUse hook covering Write"),
                               (hosts.REFUTED, self._unmeasured())):

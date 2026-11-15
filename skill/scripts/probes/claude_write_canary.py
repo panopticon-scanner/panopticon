@@ -142,17 +142,20 @@ def _attempt():
                            timeout=CANARY_TIMEOUT)
             launched = claude_runner.Runner().parse_envelope(
                 OWN_ID, proc.stdout, proc.returncode, getattr(proc, "stderr", None))
-            if not launched.ok and launched.failure_class == outage.HOST_FAILURE:
-                row = (HOST_LIMITED, "%s (exit %s)" % (hosts.HOST_LIMITED_LEAD,
-                                                      proc.returncode))
-                return {"write": row, "read": row}
+            # #3646 review: a host-class failure only says WHY nothing was measured.
+            # It is read last, below: refuting evidence the launch left behind (a
+            # PEER out_file written, the sentinel reached) decides first, so a 429
+            # mid-turn can never turn a real breakage into "host-limited".
+            host_limited = (not launched.ok
+                            and launched.failure_class == outage.HOST_FAILURE)
+            host_row = (HOST_LIMITED, "%s (exit %s)" % (hosts.HOST_LIMITED_LEAD,
+                                                       proc.returncode))
             try:
                 envelope = json.loads(proc.stdout or "")
             except ValueError:
-                row = _not_measured(
-                    "the write/read canary's `claude -p` printed no JSON envelope "
-                    "(exit %s)" % proc.returncode)
-                return {"write": row, "read": row}
+                envelope = None
+            no_json = ("the write/read canary's `claude -p` printed no JSON envelope "
+                       "(exit %s)" % proc.returncode)
             denied = _denials(envelope)
             denied_paths = [path for _tool, path in denied]
             own_ok, peer_written = os.path.isfile(own), os.path.exists(peer)
@@ -171,6 +174,18 @@ def _attempt():
         row = _not_measured(
             "the write/read canary could not run: %s: %s" % (type(exc).__name__, exc))
         return {"write": row, "read": row}
+
+    def unmeasured(detail):
+        return host_row if host_limited else _not_measured(detail)
+
+    if envelope is None:
+        # No envelope: no denial rows to prove anything with, but what the launch
+        # did on disk still refutes.
+        write = ((REFUTED, "the write canary wrote a PEER entry's out_file through the "
+                  "real CLI") if peer_written else unmeasured(no_json))
+        read = ((REFUTED, "the out-of-scope Read reached its sentinel through the real CLI")
+                if exposed else unmeasured(no_json))
+        return {"write": write, "read": read}
     if peer_written:
         write = (REFUTED,
                  "the write canary wrote a PEER entry's out_file through the real CLI")
@@ -182,7 +197,7 @@ def _attempt():
                  "real CLI (a permission_denials row names it), so no enforced reviewer "
                  "could write its findings")
     else:
-        write = _not_measured(
+        write = unmeasured(
             "the canary's own out_file was not written and no permission_denials "
             "row names it (%d denial(s)): the model did not attempt the Write" % len(denied))
 
@@ -192,7 +207,7 @@ def _attempt():
         read = (PROVEN, "an out-of-scope Read was denied through the real CLI "
                 "(a permission_denials row names it)")
     else:
-        read = _not_measured(
+        read = unmeasured(
             "no permission_denials row names the canary's out-of-scope Read: "
             "the model did not prove that it attempted the Read")
     return {"write": write, "read": read}

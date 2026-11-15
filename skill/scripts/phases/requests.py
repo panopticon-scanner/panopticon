@@ -612,8 +612,12 @@ def require_unenforced_ack(review_root, manifest, entries):
         row = evidence.get(hosts.ARTIFACT_WRITE_GUARD) or {}
         # #3220: an UNKNOWN the write canary left unmeasured is worth a second
         # probe before it is worth accepting -- the next run launches it again.
-        unmeasured = (posture[hosts.ARTIFACT_WRITE_GUARD] == hosts.UNKNOWN and str(
-            row.get("detail") or "").startswith(write_canary.NOT_MEASURED_LEAD))
+        detail = str(row.get("detail") or "")
+        unknown = posture[hosts.ARTIFACT_WRITE_GUARD] == hosts.UNKNOWN
+        unmeasured = unknown and detail.startswith(write_canary.NOT_MEASURED_LEAD)
+        # #3646 review: a canary a host limit stopped measured nothing either, and
+        # accepting an unproven boundary is never the answer to a rate limit.
+        host_limited = unknown and detail.startswith(hosts.HOST_LIMITED_LEAD)
         raise runio.DriverError(
             "%s is %s on host %r -- probe %s: %s. %s use templates that request Write, and "
             "this run has not proven that reviewer-controlled artifact writes "
@@ -624,7 +628,11 @@ def require_unenforced_ack(review_root, manifest, entries):
                manifest.get("host"), row.get("by") or "none ran",
                row.get("detail") or "no evidence",
                ", ".join(sorted(write_capable_roles())),
-               ("The write canary measured nothing, so re-run first: the next run "
+               ("The write canary's launch hit a host limit (a rate limit or an outage), "
+                "so it measured nothing: wait for the host to recover and re-run, and the "
+                "next run probes again. Only if it stays unknown on a healthy host, re-run"
+                if host_limited else
+                "The write canary measured nothing, so re-run first: the next run "
                 "probes again. Only if it stays unknown, re-run" if unmeasured else "Re-run"),
                UNENFORCED_ACK, alternative))
     return _record_unenforced_ack(review_root, manifest, entries, evidence, posture)
