@@ -13,6 +13,7 @@ import re
 import shutil
 import tempfile
 
+import scripts.config_schema as config_schema
 import scripts.discovery as discovery
 import scripts.dispatch as dispatch
 import scripts.probes.common as probes_common
@@ -50,10 +51,16 @@ def flags_row(plan):
 
 def gate_row(plan):
     fail_on = (plan.get("flags") or {}).get("fail_on")
+    if fail_on == config_schema.FAIL_ON_OFF:
+        return {"ok": "warn", "fail_on": fail_on,
+                "detail": "--fail-on off: the run ends `gate: OFF`, which fails nothing, and the "
+                          "report says the operator disabled it. Drop it to gate on %s"
+                          % config_schema.DEFAULT_FAIL_ON}
     if not fail_on:
-        return {"ok": "warn", "fail_on": None,
-                "detail": "no --fail-on and none committed: the run ends `gate: OFF`, which fails "
-                          "nothing. Pass --fail-on to gate on findings"}
+        # #3673: no flag and nothing committed is the default, not an unarmed gate.
+        return {"ok": None, "fail_on": config_schema.DEFAULT_FAIL_ON,
+                "detail": "fails on %s and above (the default; no --fail-on given or committed)"
+                          % config_schema.DEFAULT_FAIL_ON}
     return {"ok": None, "fail_on": fail_on, "detail": "fails on %s and above" % fail_on}
 
 

@@ -10,6 +10,7 @@ import scripts.inert as inert
 import scripts.redact as redact
 import scripts.safe_write as safe_write
 import scripts.build_disclosure as build_disclosure
+import scripts.config_schema as config_schema
 import scripts.tool_cleanup as tool_cleanup
 import scripts.tools.base as tool_base
 from . import coverage_io as coverage_io
@@ -579,6 +580,10 @@ def render_summary(report):
                 it.get("severity", ""), loc.get("file", "?"),
                 loc.get("line_start", "?"), ", ".join(it.get("panels") or []),
                 ", ".join(it.get("categories") or [])))
+    # #3673: an OFF gate, or a refused request for one, is said FIRST: above the grade line
+    # and above every insert made at index 3. Done last, so no other index moves.
+    notices = config_schema.gate_notices(s, report["meta"].get("config"))
+    lines[2:2] = [line for notice in notices for line in ("**%s**" % notice, "")]
     return "\n".join(lines)
 
 def redact_report_secrets(report):

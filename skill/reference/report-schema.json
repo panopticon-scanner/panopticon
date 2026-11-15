@@ -1405,12 +1405,39 @@
         },
         "gate": {
           "type": "string",
+          "description": "#3673: the gate is armed at CRITICAL unless --fail-on or a committed fail_on names another severity. OFF is reached only by the operator's `--fail-on off`, and gate_disabled then says so.",
           "enum": [
             "PASS",
             "FAIL",
             "OFF",
             "INCONCLUSIVE"
           ]
+        },
+        "gate_disabled": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "#3673: null while the gate is armed. When gate is OFF, who switched it off and how: only the operator can, with `--fail-on off`. A committed `fail_on: off` is refused (meta.config.refused) and the gate stays at CRITICAL.",
+          "required": [
+            "disabled_by_operator",
+            "source"
+          ],
+          "properties": {
+            "disabled_by_operator": {
+              "type": "boolean",
+              "enum": [
+                true
+              ]
+            },
+            "source": {
+              "type": "string",
+              "enum": [
+                "--fail-on off"
+              ]
+            }
+          },
+          "additionalProperties": false
         },
         "gate_policy": {
           "type": "string",

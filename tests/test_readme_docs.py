@@ -92,11 +92,14 @@ class TestDeltaDocs(unittest.TestCase):
         self.assertIn("session root", self.skill)
         self.assertNotIn("install the write-guard from\n     that same cwd", self.skill)
 
-    def test_delta_docs_warn_gate_needs_fail_on(self):
-        # #957: without --fail-on the gate reads OFF; the delta pipeline notes
-        # must say so where the synthesize commands are given (exact phrase —
-        # a loose regex matched the Global-flags line vacuously).
-        self.assertIn("or the gate stays OFF", self.skill)
+    def test_delta_docs_say_the_gate_is_armed_unless_switched_off(self):
+        # #957 pinned "pass --fail-on or the gate stays OFF" here. #3673 made the gate
+        # CRITICAL by default, so the delta pipeline notes say that, and name the one way
+        # to OFF (exact phrases — a loose regex matched the Global-flags line vacuously).
+        self.assertIn("The gate is armed at CRITICAL unless `--fail-on` says otherwise",
+                      self.skill)
+        self.assertIn("only `--fail-on off` leaves it OFF", self.skill)
+        self.assertNotIn("or the gate stays OFF", self.skill)
 
     def test_readme_quick_start_shows_pr_and_base(self):
         # Reuse TestReadmeQuickStart's Quick start boundary — the brief's

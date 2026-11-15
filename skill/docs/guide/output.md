@@ -7,8 +7,8 @@ own `dispatch-plan-driver.json` (declares every review cell → `reconcile_findi
 `out-file-hashes.json` fan-out snapshot (per-cell sha256 → `verify_out_file_hashes`)) — treat it as
 NOT certified, distinct from a real `FAIL`. Another cause (#2178, narrowed by #2222): under the
 default `--gate-scope on-diff`, an ACTIVE delta review whose hunk map has no ranges while
-gate-eligible findings exist (active, admitted by the evidence policy and by `--fail-on` when one
-is set) reads `INCONCLUSIVE`, and `coverage_note` names the map and the remedy; an empty change
+gate-eligible findings exist (active, admitted by the evidence policy and by `--fail-on`, which
+is `critical` unless set) reads `INCONCLUSIVE`, and `coverage_note` names the map and the remedy; an empty change
 with no such finding passes, and the gate never falls back to the wider scope. A further cause
 (#2405, widened by #2517): under that same scope, an ACTIVE delta whose map is PROVABLY damaged — a
 non-zero `paths_emptied_by_drops`, `ranges_dropped` or `paths_dropped` — reads `INCONCLUSIVE` too,
