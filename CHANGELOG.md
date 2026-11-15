@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Changed: `driver setup` writes a proposal one way, whatever order and spelling the agent
+  returned it in (#3651, phase 2b).** The same matrix used to come out as a different draft each
+  run: groups in the agent's order, globs in the agent's order, the same glob spelled two ways.
+  Now each group's globs are sorted and de-duplicated (unless one negates, where order is
+  meaning), new groups are in name order, and four glob spellings the matcher provably reads
+  alike are unified (`dir/sub/` and `dir/sub/**`; repeated `**/`; `**/**`; a leading `/` beside
+  another `/`). Two groups whose globs both match some file keep the order the proposal gave
+  them, because groups claim files first-match-wins. **No file moves between groups:** setup
+  plans the proposal both ways and keeps the canonical form only when every group ends up with
+  the same files; otherwise it uses the proposal as written and the report says so. Committed
+  groups are never rewritten or moved. Two drafts that differ only in those ways are now
+  byte-equal and share one `config_sha256`. This removes noise from comparing drafts; it does
+  not make two drafts that cut the tree differently agree.
+  - **Visible change:** a custom capability the agent spelled two ways (`custom:lib` and
+    `custom:Lib`) is one group named by the spelling that sorts first. It used to be named by
+    whichever the agent listed first, so setup may now write a different spelling than before.
+
 - **A report says which matrix it ran under (#3651, phase 3).** Setup proposes a different matrix
   nearly every time it is asked, and a review's results move with it, so two reports could not
   be compared honestly. Every report now carries `meta.matrix`, and a `Matrix:` line among the

@@ -497,8 +497,10 @@ def assemble(proposal, vocabulary, affinity, layers=None, review_root=None):
     and keep Auth's affinity floor; #run7 COD-C2D's case/whitespace fold is
     the degenerate case (every known name is its own alias). A label that
     resolves to nothing is custom (`custom:` prefix or not); custom spellings
-    that fold to one alias_key are one group, named by the first spelling. Each
-    fixup is disclosed as that group's `normalized` {"from", "to"}, None when none.
+    that fold to one alias_key are one group, named by the spelling that sorts
+    first (#3651: "first seen" followed the agent's output order, which is the
+    noise canonicalising removes). Each fixup is disclosed as that group's
+    `normalized` {"from", "to"}, None when none.
 
     Floor outcomes (`floor_source`):
     - affinity row present                -> `"affinity"`
@@ -531,7 +533,15 @@ def assemble(proposal, vocabulary, affinity, layers=None, review_root=None):
         aliases.setdefault(alias_key(n), n)
     layer_aliases = dict((layers or {}).get("aliases") or {})
     out = {}
-    custom_seen: dict[str, str] = {}     # alias_key -> first spelling of a custom name
+    # alias_key -> the one spelling a custom name is written with: the first in sorted
+    # order of every spelling this proposal gives it, so it does not depend on which group
+    # the agent happened to list first (#3651).
+    custom_seen: dict[str, str] = {}
+    for g in proposal["groups"]:
+        label = _group_name(g["capability"]).strip()
+        if aliases.get(alias_key(label)) is None:
+            key = alias_key(label)
+            custom_seen[key] = min(custom_seen.get(key, label), label)
     disclosure: dict[str, list[Any]] = {"groups": [], "errors": [], "collisions": [], "warnings": []}
     for g in proposal["groups"]:
         raw = g["capability"]
@@ -546,7 +556,7 @@ def assemble(proposal, vocabulary, affinity, layers=None, review_root=None):
             cap, name, is_custom = canonical, canonical, False
         else:
             cap, is_custom = raw, True
-            name = custom_seen.setdefault(alias_key(label), label)
+            name = custom_seen[alias_key(label)]
         normalized = None if name == _group_name(raw) else {"from": raw, "to": name}
         profile = _clean_profile(g.get("profile") or {})
         kept_layers = _keep_layers(name, g.get("layers") or [], layer_aliases,
@@ -653,6 +663,108 @@ def _all_globs(body, field):
     for leaf in subs.values():
         _union_into(out, [g for g in (leaf.get(field) or [])
                           if not (g.startswith("!") and g[1:] in siblings)])
+    return out
+
+
+# --- #3651: canonicalise a proposal ---------------------------------------------------
+#
+# Setup's agent returns the same matrix in a different order and spelling from one run to
+# the next. Everything here changes how a proposal is WRITTEN and nothing about what it
+# claims: `setup_flow.ingest_proposal` plans the proposal both ways and keeps the canonical
+# form only when every group ends up with the same files.
+
+_MAX_GLOB_CHARS, _MAX_GLOB_STARS = 256, 20       # `groups_schema.glob_to_re`'s own limits
+
+
+def normalize_glob(glob):
+    """`glob` in the one spelling its compiler reads it as, or `glob` itself.
+
+    Four rewrites. The first three are read off `groups_schema.glob_to_re`, which performs
+    the same step before it compiles; the fourth follows from what it compiles to:
+
+    - a run of `**/` segments, or of three or more stars, is one `**/` or `**`;
+    - `**/**` is `**`: "any directories, then anything" is "anything";
+    - a trailing `/` on a pattern that holds another `/` is `/**`. Without another `/` the
+      pattern is unanchored ("a docs directory at any depth") and `docs/**` would anchor
+      it, so `docs/` is left alone;
+    - a leading `/` is dropped when the rest still holds a `/`. Alone it is what anchors
+      the pattern (`/README` is the root's, `README` is anyone's), so it is kept then.
+
+    A pattern the compiler cannot translate (`glob_defect`) is returned untouched, and so is
+    one whose rewritten form would cross the compiler's length or wildcard limit: that
+    limit is checked before the trailing `/` is expanded, so a pattern just under it means
+    something as written and nothing once expanded.
+    """
+    if not isinstance(glob, str):
+        return glob
+    negated = glob.startswith("!")
+    pat = glob[1:] if negated else glob
+    if not pat or groups_schema.glob_defect(pat):
+        return glob
+    new = re.sub(r"\*\*\*+", "**", re.sub(r"(?:\*\*/)+", "**/", pat))
+    new = re.sub(r"\*\*/\*\*", "**", new)
+    if new.endswith("/") and "/" in new[:-1]:
+        new += "**"
+    if new.startswith("/") and "/" in new[1:]:
+        new = new[1:]
+    if len(new) > _MAX_GLOB_CHARS or new.count("*") > _MAX_GLOB_STARS:
+        return glob
+    return ("!" if negated else "") + new
+
+
+def canonical_globs(globs):
+    """One group's glob list in canonical form. Each glob is normalised; then, when none
+    negates, the list is sorted and de-duplicated, because it is a plain union. With a `!`
+    glob the last match wins, so the order and every repeat are kept exactly."""
+    normalised = [normalize_glob(g) for g in globs or []]
+    if any(isinstance(g, str) and g.startswith("!") for g in normalised):
+        return normalised
+    return sorted(set(normalised))
+
+
+def _reach(body):
+    """Every glob list a group can claim a file through: its own, and each layer's."""
+    return [list(body.get("match") or []) + list(body.get("tests") or [])] + [
+        list(layer.get("match") or []) for layer in body.get("layers") or []]
+
+
+def canonical_order(assembled, files):
+    """The proposal's group names in canonical order: by name, except that two groups whose
+    globs both match some file keep the order the proposal gave them. Groups claim files
+    first-match-wins, so for those two the order decides who gets the file; for any others
+    it decides nothing."""
+    from scripts import discovery_catalog          # lazy: it imports this module
+    names = list(assembled)
+    touched = {name: {path for path in files
+                      if any(discovery_catalog.match_patterns(path, globs)
+                             for globs in _reach(assembled[name]))}
+               for name in names}
+    after: dict[str, set] = {name: set() for name in names}      # name -> names it must follow
+    for index, first in enumerate(names):
+        for second in names[index + 1:]:
+            if touched[first] & touched[second]:
+                after[second].add(first)
+    ordered: list[str] = []
+    waiting = set(names)
+    while waiting:
+        ready = min(name for name in waiting if not (after[name] & waiting))
+        ordered.append(ready)
+        waiting.discard(ready)
+    return ordered
+
+
+def canonicalise(assembled, files):
+    """`assembled` (from `assemble`) rewritten canonically: each group's and each layer's
+    globs through `canonical_globs`, and the groups in `canonical_order`. A new mapping;
+    the bodies' other fields ride along untouched."""
+    out = {}
+    for name in canonical_order(assembled, files):
+        body = dict(assembled[name])
+        body["match"] = canonical_globs(body.get("match"))
+        body["tests"] = canonical_globs(body.get("tests"))
+        body["layers"] = [dict(layer, match=canonical_globs(layer.get("match")))
+                          for layer in body.get("layers") or []]
+        out[name] = body
     return out
 
 
