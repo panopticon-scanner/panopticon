@@ -110,8 +110,9 @@ class FakeRunner(base.HostRunner):
         if mode == FAULT_TIMEOUT:
             return base.RunResult.failed(eid, "claude -p timed out after 1s",
                                          text='{"findings": [')
-        text = MALFORMED_TEXT if mode == FAULT_MALFORMED else ""
-        if text and entry.get("delivery") != "return_json":
+        malformed = mode == FAULT_MALFORMED
+        text = MALFORMED_TEXT if malformed else ""
+        if malformed and entry.get("delivery") != "return_json":
             # An agent that writes its own artifact and is cut off leaves the cut-off file.
             os.makedirs(os.path.dirname(entry["out_file"]), exist_ok=True)
             with open(entry["out_file"], "w", encoding="utf-8") as fh:

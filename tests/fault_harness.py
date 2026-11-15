@@ -15,6 +15,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -293,31 +294,49 @@ class Outcome:
         return [e for e in self.unanswered if phase_of(e) in phases]
 
 
+_PART = re.compile(r"_part(\d+)\.json\Z")
+
+
 def read_report(root):
-    """(report, part files): the report as one document, every continuation read back in.
+    """(report, continuation files): the report as one document, every part read back in.
 
     `render.write_report` moves `findings[]` past the first chunk into `<stem>_partN.json`
     and, for a large report, `discarded_claims` into `<stem>-discarded.json`. A reader that
-    stops at the main file sees those findings as missing (#3667's first diagnosis did)."""
-    path = runio._pano(root, "report.json")
+    stops at the main file sees those findings as missing (#3667's first diagnosis did).
+
+    The continuation files are found ON DISK, beside the report, and then held against what
+    the report names: a part the report does not name, or a named part that is not there, is
+    a loss in its own right, so it raises here before any invariant is asked."""
+    return read_report_at(runio._pano(root, "report.json"))
+
+
+def read_report_at(path):
+    """`read_report` for the report at `path` (which may be the compat link to it)."""
     if not os.path.isfile(path):
         return None, []
     with open(path, encoding="utf-8") as fh:
         report = json.load(fh)
-    directory = os.path.dirname(os.path.realpath(path))
+    directory, main = os.path.split(os.path.realpath(path))
+    stem = main[:-len(".json")]
+    beside = sorted(os.listdir(directory))
+    parts = sorted((name for name in beside
+                    if name.startswith(stem) and _PART.fullmatch(name[len(stem):])),
+                   key=lambda name: int(_PART.fullmatch(name[len(stem):]).group(1)))
+    siblings = [name for name in beside if name == stem + "-discarded.json"]
     meta = report.get("meta") or {}
-    named = list(meta.get("parts") or [])
+    named = list(meta.get("parts") or []) + [
+        name for name in [meta.get("discarded_claims_file")] if name]
+    if named != parts + siblings:
+        raise AssertionError("the report names %r; beside it are %r" % (named, parts + siblings))
     findings = list(report.get("findings") or [])
     discarded = list(report.get("discarded_claims") or [])
-    for name in named:
+    for name in parts:
         with open(os.path.join(directory, name), encoding="utf-8") as fh:
             findings.extend(json.load(fh)["findings"])
-    sibling = meta.get("discarded_claims_file")
-    if sibling:
-        named.append(sibling)
-        with open(os.path.join(directory, sibling), encoding="utf-8") as fh:
+    for name in siblings:
+        with open(os.path.join(directory, name), encoding="utf-8") as fh:
             discarded.extend(json.load(fh)["discarded_claims"])
-    return dict(report, findings=findings, discarded_claims=discarded), named
+    return dict(report, findings=findings, discarded_claims=discarded), parts + siblings
 
 
 def _loop_once(root, runner, split_bytes):

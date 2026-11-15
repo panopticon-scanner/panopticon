@@ -27,6 +27,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import sys
 
 import pytest
@@ -639,3 +640,39 @@ def test_a_report_split_into_parts_is_read_whole(lab, plan):
     assert counts_reconcile(lab.control, split) == []
     assert _comparable(split)["findings"] == _comparable(whole)["findings"]
     assert _comparable(split)["discarded"] == _comparable(whole)["discarded"]
+
+
+def test_the_reader_holds_the_files_on_disk_against_the_ones_the_report_names(lab, tmp_path):
+    """A part the report does not name, or a named part that is gone, is a loss before any
+    invariant is asked: the reader refuses to assemble a report from a set that disagrees."""
+    split = lab.outcome(None, SPLIT_BYTES)
+    source = os.path.realpath(runio._pano(split.root, "report.json"))
+    stem = os.path.basename(source)[:-len(".json")]
+    for name in [os.path.basename(source)] + split.part_files:
+        shutil.copy(os.path.join(os.path.dirname(source), name), tmp_path / name)
+    copy = str(tmp_path / os.path.basename(source))
+    report, named = fh.read_report_at(copy)
+    assert named == split.part_files
+    assert _comparable_findings(report) == _comparable_findings(split.report)
+    # Other files beside it are not parts of it.
+    (tmp_path / (stem + "-report-x0x.json")).write_text("{}")
+    (tmp_path / ("other" + stem + "_part2.json")).write_text("{}")
+    assert fh.read_report_at(copy)[1] == split.part_files
+    stray = tmp_path / ("%s_part%d.json" % (stem, len(split.part_files) + 5))
+    stray.write_text(json.dumps({"findings": []}))
+    with pytest.raises(AssertionError, match="the report names"):
+        fh.read_report_at(copy)
+    stray.unlink()
+    for name in split.part_files:
+        held = (tmp_path / name).read_bytes()
+        (tmp_path / name).unlink()
+        with pytest.raises(AssertionError, match="the report names"):
+            fh.read_report_at(copy)
+        (tmp_path / name).write_bytes(held)
+    assert fh.read_report_at(copy)[1] == split.part_files
+    assert fh.read_report_at(str(tmp_path / "absent.json")) == (None, [])
+
+
+def _comparable_findings(report):
+    return (sorted(f["id"] for f in report["findings"]),
+            sorted(f["id"] for f in report["discarded_claims"]))
