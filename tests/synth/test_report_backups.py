@@ -168,6 +168,27 @@ class TestUnansweredBackupsHoldTheLetterBack(unittest.TestCase):
         self.assertIn("5 backup advisors unanswered", summary["coverage_note"])
         self.assertEqual(self.ALL_FAILED, r["meta"]["coverage"]["backups"])
 
+    def test_a_backup_shortfall_is_not_also_a_verify_advisor_one(self):
+        # #3674 review: the verify-advisor reason is `unanswered_gate` less the tool
+        # ones. A finding whose PRIMARY answered is matched, so an unanswered backup on
+        # it never reaches `unanswered_gate`: one reason, never two.
+        import scripts.evidence as evidence_mod2
+        from tests.synth.helpers import _agentic
+        finding = _agentic(sev="CRITICAL", location={"file": "a.py", "line_start": 1})
+        verdicts = {evidence_mod2.finding_fingerprint(finding): {
+            "finding_id": finding["id"], "verdict": "CONFIRMED", "reasoning": "v"}}
+        with _target_with_files(GROUPS, lines=5000) as tgt:
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=tgt, fail_on="high",
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=findings_mod.FindingSet(findings=[finding], verdicts=verdicts,
+                                                 verdicts_supplied=True),
+                plan=plan_mod.PlanInputs(groups_meta=GROUPS, backups={
+                    "summoned": 1, "answered": 0, "unanswered": 1, "unloadable": 0,
+                    "record_unreadable": False})))
+        self.assertEqual(["1 backup advisor unanswered"], r["summary"]["grade_shortfalls"])
+        self.assertEqual(0, r["meta"]["coverage"]["verdicts"].get("unanswered", 0))
+
     def test_unloadable_backups_are_named_too(self):
         summary = _build({"summoned": 2, "answered": 0, "unanswered": 0, "unloadable": 2,
                           "record_unreadable": False})["summary"]
