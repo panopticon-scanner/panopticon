@@ -98,7 +98,10 @@ def origin(review_root, relpath, runner=subprocess.run):
                               runner=runner)
         if tree.returncode != 0 or not _GIT_OID.fullmatch((tree.stdout or "").strip()):
             return matrix_identity.ORIGIN_UNKNOWN
-        held = safe_git.probe(review_root, ["rev-parse", "--verify", "HEAD:" + relpath],
+        # `HEAD:./name`, not `HEAD:name`: the second is resolved from the repository's top
+        # level, so a review root that is a SUBDIRECTORY holding an untracked copy of the
+        # committed root config would read as committed. `./` anchors it to the review root.
+        held = safe_git.probe(review_root, ["rev-parse", "--verify", "HEAD:./" + relpath],
                               runner=runner)
     except (OSError, subprocess.SubprocessError, safe_git.RepositoryRefused):
         return matrix_identity.ORIGIN_UNKNOWN
@@ -149,12 +152,18 @@ def _load_drafts():
 
 def record_draft(review_root, digest):
     """Remember that setup's latest draft for this target hashes to `digest`. Best effort:
-    a state directory that cannot be written costs the "setup's proposal" note, never setup."""
-    if not matrix_identity._sha(digest):
-        return False
+    a state directory that cannot be written costs the "setup's proposal" note, never setup.
+
+    A draft with no digest (one that does not parse) FORGETS the target's record: the last
+    draft is then not the one on record, and a stale record would call an older config
+    "setup's last draft". Returns whether a digest was recorded."""
     drafts = _load_drafts()
-    drafts.pop(_target_key(review_root), None)
-    drafts[_target_key(review_root)] = digest           # newest last
+    known = drafts.pop(_target_key(review_root), None)
+    if not matrix_identity._sha(digest):
+        if known is None:
+            return False                                 # nothing on record, nothing to write
+    else:
+        drafts[_target_key(review_root)] = digest       # newest last
     drafts = dict(list(drafts.items())[-_MAX_TARGETS:])
     path = _drafts_path()
     directory = os.path.dirname(path)
@@ -173,7 +182,7 @@ def record_draft(review_root, digest):
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(staging, path)
-        return True
+        return bool(matrix_identity._sha(digest))
     except (OSError, ValueError):
         return False
     finally:

@@ -168,7 +168,11 @@ of the HTML header:
 - `origin` — `committed` when the config file is part of the reviewed commit, byte for byte (a
   **reused** matrix, pinned with the repository); `working_tree` when it is not (a **fresh** one,
   written after the commit by setup or by hand); `unknown` when that could not be measured, which
-  is never reported as reused. The driver measures it once, when the run starts.
+  is never reported as reused. The driver measures it once, when the run starts. The bytes on
+  disk are compared raw with the commit's blob, so a checkout that rewrites line endings
+  (`core.autocrlf`, or `eol=crlf` in `.gitattributes`) reads an untouched config as fresh. That
+  fails safe: commit the config with the line endings your checkout produces, or disable the
+  conversion for it.
 - `setup_draft` — for a `working_tree` config, whether it is the draft this target's last
   `driver setup` wrote (`unchanged`) or not (`differs`); `null` when setup recorded none. That
   record lives in the operator's state directory, never in the target.

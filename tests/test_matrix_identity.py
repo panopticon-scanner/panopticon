@@ -112,9 +112,13 @@ class TestTheFingerprintIsOfTheMatrixAsApplied(unittest.TestCase):
         self.assertRegex(base, r"\Asha256:[0-9a-f]{64}\Z")
         shuffled = [{"name": "b", "files": ["z.py"]}, {"name": "a", "files": ["y.py", "x.py", "x.py"]}]
         self.assertEqual(base, mi.matrix_fingerprint(shuffled, list(reversed(coverages))))
+        # A coverage record as the driver writes it: what the scout added is beside the
+        # floor (`scout_added`) and inside `effective`, and is in neither case the matrix.
         self.assertEqual(base, mi.matrix_fingerprint(shuffled, [
-            {"group": "a", "floor": ["COD", "SEC"], "effective": ["COD", "SEC", "TST", "DBA"]},
-            {"group": "b", "floor": ["ARC"], "effective": ["ARC", "SEC"]}]))
+            {"group": "a", "floor": ["COD", "SEC"], "scout_added": ["TST", "DBA"],
+             "effective": ["COD", "SEC", "TST", "DBA"]},
+            {"group": "b", "floor": ["ARC"], "scout_added": ["SEC"],
+             "effective": ["ARC", "SEC"]}]))
         # A floor panel the group excludes does not run, so it is not in the matrix.
         self.assertEqual(
             mi.matrix_fingerprint(groups, [{"group": "a", "floor": ["SEC"]},
@@ -326,6 +330,25 @@ class TestWhetherTheConfigIsInTheReviewedCommit(unittest.TestCase):
             self.assertEqual({"origin": "unknown", "config": None, "config_sha256": None,
                               "setup_draft": None}, mp.describe(root))
 
+    def test_a_review_root_below_the_repository_top_asks_about_its_own_file(self):
+        # #3680 review: `HEAD:<name>` is resolved from the repository's top level. A review
+        # root of `sub/`, holding an untracked copy with the committed root config's exact
+        # bytes, would then read as committed. It is anchored to the review root.
+        root = self._repo()
+        sub = os.path.join(root, "sub")
+        os.makedirs(sub)
+        shutil.copy(os.path.join(root, "panopticon.yml"), os.path.join(sub, "panopticon.yml"))
+        self.assertEqual("committed", mp.origin(root, "panopticon.yml"))
+        self.assertEqual("working_tree", mp.origin(sub, "panopticon.yml"))
+        self.assertEqual("working_tree", mp.describe(sub)["origin"])
+        # ...and once that copy is itself committed, it is the subdirectory's committed config.
+        _git(root, "add", "sub/panopticon.yml")
+        _git(root, "commit", "-qm", "a config for the subdirectory")
+        self.assertEqual("committed", mp.origin(sub, "panopticon.yml"))
+        self._write(sub, "version: 1\n" + self.GROUPS + "# edited\n")
+        self.assertEqual(("working_tree", "committed"),
+                         (mp.origin(sub, "panopticon.yml"), mp.origin(root, "panopticon.yml")))
+
     def test_only_rev_parse_is_asked_of_the_target(self):
         root = self._repo()
         asked = []
@@ -338,7 +361,7 @@ class TestWhetherTheConfigIsInTheReviewedCommit(unittest.TestCase):
         with mock.patch.object(safe_git, "probe", side_effect=probe):
             self.assertEqual("committed", mp.origin(root, "panopticon.yml"))
         self.assertEqual([["rev-parse", "--verify", "HEAD^{tree}"],
-                          ["rev-parse", "--verify", "HEAD:panopticon.yml"]], asked)
+                          ["rev-parse", "--verify", "HEAD:./panopticon.yml"]], asked)
 
 
 class _StateDir(unittest.TestCase):
@@ -375,6 +398,18 @@ class TestSetupsDraftIsRememberedOutsideTheTarget(_StateDir):
         self.assertTrue(mp.record_draft(root, self.OTHER))           # the latest draft wins
         self.assertEqual(("differs", "unchanged"),
                          (mp.draft_state(root, SHA), mp.draft_state(root, self.OTHER)))
+
+    def test_a_draft_with_no_digest_forgets_the_record_it_replaces(self):
+        # #3680 review: setup's latest draft did not parse. The one on record is then no
+        # longer "setup's last draft", and keeping it would say so of an older config.
+        root, other = self._target(), self._target()
+        mp.record_draft(root, SHA)
+        mp.record_draft(other, self.OTHER)
+        self.assertFalse(mp.record_draft(root, None))
+        self.assertIsNone(mp.draft_state(root, SHA))
+        self.assertEqual("unchanged", mp.draft_state(other, self.OTHER))    # only its own
+        self.assertFalse(mp.record_draft(root, "not-a-hash"))               # nothing left to forget
+        self.assertEqual("unchanged", mp.draft_state(other, self.OTHER))
 
     def test_the_record_is_private_and_holds_no_path(self):
         root = self._target()
@@ -489,6 +524,16 @@ class TestSetupRecordsWhatItDrafted(_StateDir, SetupFixtureBase):
             _git(repo, "commit", "-qm", "adopt the matrix")
             self.assertEqual(("committed", None),
                              (mp.describe(repo)["origin"], mp.describe(repo)["setup_draft"]))
+
+    def test_a_draft_that_does_not_parse_clears_the_last_one(self):
+        with self._ingest_fixture() as (repo, proposal):
+            self.assertTrue(setup_flow.ingest_proposal(repo, proposal)["ok"])
+            with open(os.path.join(repo, "panopticon.yml.draft"), encoding="utf-8") as fh:
+                digest = mp.text_digest(fh.read())
+            self.assertEqual("unchanged", mp.draft_state(repo, digest))
+            with mock.patch.object(mp, "text_digest", return_value=None):
+                self.assertTrue(setup_flow.ingest_proposal(repo, proposal)["ok"])
+            self.assertIsNone(mp.draft_state(repo, digest))
 
     def test_a_refused_ingest_records_nothing(self):
         with self._ingest_fixture() as (repo, proposal):
