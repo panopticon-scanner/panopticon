@@ -314,10 +314,15 @@ class TestASplitReportExplainsItself(unittest.TestCase):
         paths = render_mod.write_report(report, out, max_bytes=max_bytes)
         with open(out, encoding="utf-8") as fh:
             main = json.load(fh)
+        # The part files are read off the writer's own returned paths, never a name
+        # taken back out of the JSON.
+        named = set(main["meta"].get("parts") or [])
         parts = {}
-        for name in main["meta"].get("parts") or []:
-            with open(os.path.join(d.name, name), encoding="utf-8") as fh:
-                parts[name] = json.load(fh)["findings"]
+        for path in paths:
+            if os.path.basename(path) in named:
+                with open(path, encoding="utf-8") as fh:
+                    parts[os.path.basename(path)] = json.load(fh)["findings"]
+        self.assertEqual(named, set(parts))
         return main, parts, paths
 
     def test_the_split_keeps_the_same_findings_and_puts_the_worst_in_the_main_file(self):
