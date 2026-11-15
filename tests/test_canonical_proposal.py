@@ -280,6 +280,15 @@ class TestGroupsAreWrittenInOneOrder(unittest.TestCase):
         # A negation takes paths away and gives none: it is no reason to keep an order.
         self.assertEqual(["Alpha", "Zeta"], sp.canonical_order(
             {"Zeta": _group(["lib/**", "!src/auth/**"]), "Alpha": _group(["src/auth/**"])}))
+        # ...whatever it is spelled like: read as a claim, `!**/*.md` would reach every path.
+        for negation in ("!**/*.md", "!*.md", "!b/**", "!**"):
+            with self.subTest(negation=negation):
+                self.assertEqual(["Alpha", "Zeta"], sp.canonical_order(
+                    {"Zeta": _group(["a/**", negation]), "Alpha": _group(["b/**"])}))
+                self.assertEqual(["Alpha", "Zeta"], sp.canonical_order(
+                    {"Zeta": _group(["a/**"], tests=[negation],
+                                    layers=[{"layer": "L", "match": ["a/x/**", negation]}]),
+                     "Alpha": _group(["b/**"])}))
 
     def test_two_globs_are_apart_only_when_their_fixed_leading_segments_part_ways(self):
         apart = (("lib/**", "src/auth/**"), ("a/x.py", "a/b/**"), ("/lib/", "src/x/"),
