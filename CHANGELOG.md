@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- **A confirmed CRITICAL or HIGH caps the letter grade (#3652).** The grade is the health band
+  (#3328, unchanged), so a large codebase could grade A or B beside open confirmed CRITICALs. A
+  severity cap now sits on top of the band: a confirmed CRITICAL caps the letter at D and a
+  confirmed HIGH at B (owner ruling). The cap only lowers, and it is disclosed beside the band
+  letter -- `summary.grade_cap` in the JSON, and "D (capped from A by 2 confirmed CRITICAL)" in
+  the terminal and HTML grade. Confirmed means the default gate's population (`tool_confirmed`,
+  `advisor_confirmed` or `backup_scope_limited`) under every gate policy, so an unconfirmed
+  finding never caps. `devtools/compare_runs.py` records each run's band letter. Per-group
+  panel grades were already the max-severity rollup of each group's own findings.
+
 - **Own-package advisories are stable across identical runs (#3649).** On identical tool output a
   first-party advisory (#3593) could vanish or flip between `tool_confirmed` and
   `needs_more_info`. Trivy reports each package at its own Cargo.lock line, so its advisory can

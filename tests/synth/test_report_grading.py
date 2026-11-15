@@ -112,7 +112,9 @@ class TestHealthLetterGrade(unittest.TestCase):
         small, large = graded(50), graded(50000)
         self.assertNotEqual(small, large)
         # 25 (HIGH) x 4 lines = 100 weighted defect either way.
-        self.assertEqual(large, "A")   # ... against 50,000 clean lines -> 99.8
+        # ... against 50,000 clean lines -> 99.8, band A -- capped at B by the
+        # confirmed HIGH (#3652), which still keeps the two codebases apart.
+        self.assertEqual(large, "B")
         self.assertEqual(small, "F")   # ... against 50 -> 33.33
         # Not S: S needs ZERO gate-eligible weighted defect, so a confirmed
         # finding of any severity can never reach it however large the codebase.
@@ -151,3 +153,229 @@ class TestHealthLetterGrade(unittest.TestCase):
             ))
         s = r["summary"]
         self.assertEqual(s["overall_grade"], grading_mod.health_grade(s["health"]["score"]))
+
+
+def _graded_report(findings, confirmed=(), lines=50000, gate_unverified=False):
+    """A built report over one 'a.py' group; `confirmed` findings get a CONFIRMED verdict."""
+    groups = [{"name": "g1", "files": ["a.py"]}]
+    verdicts = {evidence_mod.finding_fingerprint(f): {
+        "finding_id": f["id"], "verdict": "CONFIRMED", "reasoning": "v"} for f in confirmed}
+    with _target_with_files(groups, lines=lines) as tgt:
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target=tgt, fail_on="high",
+                                     timestamp="2026-01-01T00:00:00Z",
+                                     gate_unverified=gate_unverified),
+            findings=findings_mod.FindingSet(findings=list(findings) + list(confirmed),
+                                             verdicts=verdicts),
+            plan=plan_mod.PlanInputs(groups_meta=groups)))
+
+
+def _at_line(fid, sev, line=1):
+    return _agentic(fid=fid, sev=sev, location={"file": "a.py", "line_start": line})
+
+
+class TestSeverityCapOverTheBandGrade(unittest.TestCase):
+    """#3652 (owner ruling 2026-11-14; the #3328 bands are not reopened): a confirmed
+    CRITICAL caps the letter at D and a confirmed HIGH at B (levels ruled 2026-11-15), so "A"
+    never sits beside an open confirmed CRITICAL. The cap only lowers, is disclosed
+    beside the band letter, and an unconfirmed finding never caps."""
+
+    def test_a_confirmed_critical_caps_a_band_a_at_d(self):
+        r = _graded_report([], confirmed=[_at_line("AG-001", "CRITICAL")])
+        summary = r["summary"]
+        self.assertEqual("A", grading_mod.health_grade(summary["health"]["score"]))
+        self.assertEqual("D", summary["overall_grade"])
+        self.assertEqual({"band_grade": "A", "grade": "D", "severity": "CRITICAL", "count": 1,
+                          "note": "capped from A by 1 confirmed CRITICAL"},
+                         summary["grade_cap"])
+
+    def test_a_confirmed_high_caps_at_b_and_critical_outranks_high(self):
+        r = _graded_report([], confirmed=[_at_line("AG-001", "HIGH"),
+                                          _at_line("AG-002", "HIGH", 2)])
+        self.assertEqual("B", r["summary"]["overall_grade"])
+        self.assertEqual(("HIGH", 2, "A"), (r["summary"]["grade_cap"]["severity"],
+                                            r["summary"]["grade_cap"]["count"],
+                                            r["summary"]["grade_cap"]["band_grade"]))
+        both = _graded_report([], confirmed=[_at_line("AG-001", "HIGH"),
+                                             _at_line("AG-002", "CRITICAL", 2)])
+        self.assertEqual(("D", "CRITICAL", 1), (both["summary"]["overall_grade"],
+                                                both["summary"]["grade_cap"]["severity"],
+                                                both["summary"]["grade_cap"]["count"]))
+
+    def test_an_unconfirmed_critical_never_caps(self):
+        # Default policy: the unverified claim is not gate-eligible, so the band is S.
+        r = _graded_report([_at_line("AG-001", "CRITICAL")])
+        self.assertEqual("S", r["summary"]["overall_grade"])
+        self.assertIsNone(r["summary"]["grade_cap"])
+        # --gate-unverified: it now weighs on health, and still does not cap.
+        r = _graded_report([_at_line("AG-001", "CRITICAL")], gate_unverified=True)
+        self.assertEqual("A", r["summary"]["overall_grade"])
+        self.assertIsNone(r["summary"]["grade_cap"])
+
+    def test_the_band_grade_stands_when_no_cap_applies(self):
+        for label, confirmed, lines, letter in (
+                ("only MEDIUM", [_at_line("AG-001", "MEDIUM")], 50000, "A"),
+                ("band already below the cap", [_at_line("AG-001", "CRITICAL")], 50, "F"),
+                ("band exactly at the CRITICAL cap", [_at_line("AG-001", "CRITICAL")], 200, "D"),
+                ("band exactly at the HIGH cap", [_at_line("AG-001", "HIGH")], 150, "B")):
+            with self.subTest(label):
+                r = _graded_report([], confirmed=confirmed, lines=lines)
+                self.assertEqual(letter, r["summary"]["overall_grade"])
+                self.assertEqual(letter, grading_mod.health_grade(r["summary"]["health"]["score"]))
+                self.assertIsNone(r["summary"]["grade_cap"])
+
+    def test_the_cap_shows_in_the_terminal_and_html_summaries(self):
+        r = _graded_report([], confirmed=[_at_line("AG-001", "CRITICAL")])
+        self.assertIn("**Grade:** D (capped from A by 1 confirmed CRITICAL)",
+                      render_mod.render_summary(r))
+        import scripts.html_report as html_report
+        self.assertIn("Grade: D (capped from A by 1 confirmed CRITICAL)",
+                      html_report.render(r))
+
+    def test_per_group_grades_are_already_severity_bound(self):
+        # A group's panel grade is the max-severity rollup of its own gate-eligible
+        # findings, so a confirmed CRITICAL already grades that panel F -- stricter
+        # than the cap -- and an unconfirmed one does not touch it.
+        r = _graded_report([], confirmed=[_at_line("AG-001", "CRITICAL")])
+        self.assertEqual("F", r["groups"][0]["panel_grades"]["security"])
+        r = _graded_report([_at_line("AG-001", "CRITICAL")])
+        self.assertEqual("A", r["groups"][0]["panel_grades"]["security"])
+
+
+class TestSeverityCapReadsTheGatePopulation(unittest.TestCase):
+    def test_a_redteam_gated_drop_fails_the_gate_but_never_caps_the_grade(self):
+        # #1701: under redteam a directory-name drop (here a CRITICAL in a vendored
+        # path) still joins the gate population, so the gate FAILs. It was never
+        # confirmed, so it must not cap the letter: the band A stands, undisclosed.
+        import scripts.synth.tool_axis as tool_axis_mod
+        dropped = _at_line("AG-009", "CRITICAL")
+        groups = [{"name": "g1", "files": ["a.py"]}]
+        with _target_with_files(groups, lines=50000) as tgt:
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=tgt, fail_on="high",
+                                         timestamp="2026-01-01T00:00:00Z",
+                                         security_mode="redteam",
+                                         gate_security_mode="redteam"),
+                findings=findings_mod.FindingSet(findings=[]),
+                tools=tool_axis_mod.ToolAxis(gated_suppressed=[dropped]),
+                plan=plan_mod.PlanInputs(groups_meta=groups)))
+        summary = r["summary"]
+        self.assertEqual("FAIL", summary["gate"])
+        self.assertEqual("A", summary["overall_grade"])
+        self.assertIsNone(summary["grade_cap"])
+
+    def test_a_held_back_letter_is_capped_too(self):
+        # A panel ran fewer cells than planned: the letter is held back as
+        # provisional_grade, and it carries the cap like overall_grade.
+        groups = [{"name": "g1", "files": ["a.py"]}]
+        critical = _at_line("AG-001", "CRITICAL")
+        verdicts = {evidence_mod.finding_fingerprint(critical): {
+            "finding_id": "AG-001", "verdict": "CONFIRMED", "reasoning": "v"}}
+        with _target_with_files(groups, lines=50000) as tgt:
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=tgt, fail_on="high",
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=findings_mod.FindingSet(findings=[critical], verdicts=verdicts),
+                plan=plan_mod.PlanInputs(
+                    groups_meta=groups,
+                    fan_out={"planned": {"quality": 2}, "executed": {"quality": 1}})))
+        summary = r["summary"]
+        self.assertIsNone(summary["overall_grade"])
+        self.assertEqual("D", summary["provisional_grade"])
+        self.assertEqual(("A", "D"), (summary["grade_cap"]["band_grade"],
+                                      summary["grade_cap"]["grade"]))
+        self.assertIn("D (provisional; capped from A by 1 confirmed CRITICAL)",
+                      render_mod.render_summary(r))
+
+    def test_a_capped_report_matches_the_report_schema(self):
+        import copy
+        import json
+        import os
+        import jsonschema
+        schema_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "skill", "reference", "report-schema.json")
+        with open(schema_path, encoding="utf-8") as fh:
+            validator = jsonschema.Draft7Validator(json.load(fh))
+        r = _graded_report([], confirmed=[_at_line("AG-001", "CRITICAL")])
+        self.assertIsNotNone(r["summary"]["grade_cap"])
+        self.assertEqual([], [e.message for e in validator.iter_errors(r)])
+        for label, change in (("count below 1", {"count": 0}),
+                              ("an undeclared key", {"extra": 1}),
+                              ("an unknown band letter", {"band_grade": "E"})):
+            with self.subTest(label):
+                bad = copy.deepcopy(r)
+                bad["summary"]["grade_cap"].update(change)
+                self.assertNotEqual([], list(validator.iter_errors(bad)))
+
+    def test_an_off_diff_confirmed_critical_does_not_cap_an_on_diff_grade(self):
+        # Under `--gate-scope on-diff` the grade, the health and the gate are about the
+        # change; a confirmed CRITICAL in pre-existing code is active but outside that
+        # population, so it caps nothing -- the cap reads the gate's own population.
+        import scripts.synth.delta as delta_mod
+        groups = [{"name": "g1", "files": ["a.py"]}]
+        critical = _at_line("AG-001", "CRITICAL", 1)
+        verdicts = {evidence_mod.finding_fingerprint(critical): {
+            "finding_id": "AG-001", "verdict": "CONFIRMED", "reasoning": "v"}}
+        for hunk, letter, capped in (([400, 410], "S", False), ([1, 2], "D", True)):
+            with self.subTest(hunk=hunk), _target_with_files(groups, lines=50000) as tgt:
+                r = report_mod.build_report(report_mod.ReportInputs(
+                    run=report_mod.RunConfig(target=tgt, fail_on="high",
+                                             timestamp="2026-01-01T00:00:00Z",
+                                             gate_scope="on-diff"),
+                    findings=findings_mod.FindingSet(findings=[dict(critical)],
+                                                     verdicts=verdicts),
+                    delta=delta_mod.DeltaContext(
+                        diff_hunks={"base": "main", "hunks": {"a.py": [hunk]}}),
+                    plan=plan_mod.PlanInputs(groups_meta=groups)))
+                self.assertEqual(letter, r["summary"]["overall_grade"]
+                                 or r["summary"]["provisional_grade"])
+                self.assertEqual(capped, r["summary"]["grade_cap"] is not None)
+
+
+class TestSeverityCapUnits(unittest.TestCase):
+    def test_the_cap_table_runs_worst_first_and_is_monotone(self):
+        # severity_cap returns the FIRST severity present, so a reordered or
+        # non-monotone table would let a HIGH outrank a CRITICAL's cap.
+        order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+        severities = [sev for sev, _ in grading_mod.SEVERITY_GRADE_CAPS]
+        caps = [grading_mod._GRADE_ORDER.index(cap) for _, cap in grading_mod.SEVERITY_GRADE_CAPS]
+        self.assertEqual(sorted(severities, key=order.index), severities)
+        self.assertEqual(sorted(caps, reverse=True), caps)
+        self.assertEqual((("CRITICAL", "D"), ("HIGH", "B")), grading_mod.SEVERITY_GRADE_CAPS)
+
+    def test_confirmed_is_the_default_gate_population(self):
+        for status, caps in (("tool_confirmed", True), ("advisor_confirmed", True),
+                             (evidence_mod.BACKUP_SCOPE_LIMITED, True),
+                             ("tool_reported", False), ("unverified", False),
+                             ("needs_more_info", False), ("corroborated", False), (None, False)):
+            with self.subTest(status=status):
+                f = {"severity": "CRITICAL", "evidence": {"status": status}}
+                cap = grading_mod.severity_cap([f])
+                self.assertEqual(caps, cap is not None)
+
+    def test_apply_only_ever_lowers(self):
+        cap = {"severity": "CRITICAL", "count": 3, "cap": "D"}
+        for band, expected in (("S", "D"), ("A", "D"), ("C", "D"), ("D", "D"), ("F", "F"),
+                               ("X", "X"), (None, None)):
+            with self.subTest(band=band):
+                grade, disclosure = grading_mod.apply_severity_cap(band, cap)
+                self.assertEqual(expected, grade)
+                self.assertEqual(expected != band, disclosure is not None)
+        self.assertEqual(("A", None), grading_mod.apply_severity_cap("A", None))
+
+    def test_the_text_surfaces_carry_the_band_and_the_cap(self):
+        cap = {"band_grade": "A", "grade": "D", "severity": "CRITICAL", "count": 2,
+               "note": "capped from A by 2 confirmed CRITICAL"}
+        import scripts.html_report as html_report
+        for summary, terminal, badge in (
+                ({"overall_grade": "D", "grade_cap": cap},
+                 "D (capped from A by 2 confirmed CRITICAL)",
+                 "D (capped from A by 2 confirmed CRITICAL)"),
+                ({"overall_grade": None, "provisional_grade": "D", "grade_cap": cap},
+                 "D (provisional; capped from A by 2 confirmed CRITICAL)",
+                 "D (provisional; capped from A by 2 confirmed CRITICAL)"),
+                ({"overall_grade": "C", "grade_cap": None}, "C", "C"),
+                ({"overall_grade": "C"}, "C", "C")):
+            with self.subTest(summary=summary):
+                self.assertEqual(terminal, render_mod._grade_text(summary))
+                self.assertEqual(badge, html_report._grade_badge(summary))
