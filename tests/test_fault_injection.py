@@ -9,7 +9,7 @@ against every single phase at 100%, every mode against all three verification ph
 every mode against every phase after the scout at 50% and at 10%, one mode per phase at 50% and
 at 10%, and every mode as a transient fault. Set `PANOPTICON_FAULT_MATRIX=full` for the whole
 cross (5 modes x 8 targets x 3 rates, plus the transient and control cases); a default run
-prints how many of those it left out.
+shows them as skipped, by name, so pytest's summary line counts what a default run left out.
 
 One departure from the design note, approved by the coordinator: the partial-rate cases that
 span phases target the four phases AFTER the scout, not all five. A scout that never answers
@@ -28,7 +28,6 @@ import json
 import os
 import re
 import shutil
-import sys
 
 import pytest
 
@@ -80,8 +79,16 @@ def default_cases():
 
 
 FULL = os.environ.get(MATRIX_SWITCH) == "full"
-CASES = full_cases() if FULL else default_cases()
-SKIPPED = len(full_cases()) - len(CASES)
+SKIP_REASON = "not in the default run: set %s=full" % MATRIX_SWITCH
+
+
+def _params():
+    """Every case of the full matrix, the ones a default run leaves out marked as skipped: so
+    pytest's own summary line counts them, and a green default run never reads as the cross."""
+    run_by_default = set(default_cases())
+    return [pytest.param(plan, id=_name(plan), marks=(
+                [] if FULL or plan in run_by_default else [pytest.mark.skip(reason=SKIP_REASON)]))
+            for plan in full_cases() if plan is not None]
 
 
 class Lab:
@@ -123,14 +130,14 @@ def lab():
     made.close()
 
 
-def test_a_default_run_says_how_much_of_the_matrix_it_left_out():
-    """So a green default run is never read as the full cross."""
-    if FULL:
-        assert SKIPPED == 0
-        return
-    assert SKIPPED > 0
-    print("fault injection: %d of %d cases run by default; %d more with %s=full"
-          % (len(CASES), len(CASES) + SKIPPED, SKIPPED, MATRIX_SWITCH), file=sys.stderr)
+def test_the_default_run_is_a_named_subset_of_the_full_matrix():
+    full, default = full_cases(), default_cases()
+    assert len(set(full)) == len(full) and len(set(default)) == len(default)
+    assert set(default) < set(full)
+    assert (len(default), len(full)) == (56, 126)
+    skipped = [param for param in _params() if param.marks]
+    assert len(skipped) == (0 if FULL else len(full) - len(default))
+    assert len({param.id for param in _params()}) == len(full) - 1      # every id is distinct
 
 
 # --- reading a report --------------------------------------------------------------------
@@ -227,7 +234,12 @@ def _unnamed(text, phases):
 # is the fault-free run of the same fixture.
 LOSS, COUNTS, GATE = "1.loss", "2.counts", "4.gate"
 CERTIFIED, LETTER = "3.certified", "3.letter"
-IN_JSON, ON_TERMINAL, IN_HTML = "5.json", "5.terminal", "5.html"
+# Invariant 5 asks two things of each surface, and they are different defects: whether it
+# SAYS the run is not certified at all, and whether it NAMES the work beside that. A known
+# gap in the second must never excuse the first (#3678 review).
+JSON_SAYS, JSON_COUNTS = "5.json.says", "5.json.counts"
+TERMINAL_SAYS, TERMINAL_NAMES = "5.terminal.says", "5.terminal.names"
+HTML_SAYS, HTML_NAMES = "5.html.says", "5.html.names"
 
 def no_silent_loss(control, outcome):
     """1. Every tool finding ingested, and every agent claim a cell persisted, is in the
@@ -367,28 +379,27 @@ def shortfall_is_disclosed(control, outcome):
     undone = sorted({fh.phase_of(e) for e in outcome.unanswered})
     terminal, page = _not_certified_text(outcome)
     summary = outcome.report["summary"]
+    surfaces = ((TERMINAL_SAYS, TERMINAL_NAMES, "terminal", terminal),
+                (HTML_SAYS, HTML_NAMES, "HTML", page))
     if not undone:
-        return [(check, None, "%s says NOT CERTIFIED and nothing was left undone" % where)
-                for check, where, text in ((ON_TERMINAL, "terminal", terminal),
-                                           (IN_HTML, "HTML", page))
+        return [(says, None, "%s says NOT CERTIFIED and nothing was left undone" % where)
+                for says, _names, where, text in surfaces
                 if control.report["summary"]["coverage_certified"] and "NOT CERTIFIED" in text]
     wrong = []
     for phase in undone:
         if summary["coverage_certified"] is not False:
-            wrong.append((IN_JSON, phase, "JSON: coverage_certified is %r with %s work undone"
+            wrong.append((JSON_SAYS, phase, "JSON: coverage_certified is %r with %s work undone"
                           % (summary["coverage_certified"], phase)))
-        elif not _json_counts(outcome, phase) and _unnamed(summary.get("coverage_note"),
-                                                           [phase]):
-            wrong.append((IN_JSON, phase, "JSON: no field counts the undone %s work and "
+        if not _json_counts(outcome, phase) and _unnamed(summary.get("coverage_note"), [phase]):
+            wrong.append((JSON_COUNTS, phase, "JSON: no field counts the undone %s work and "
                           "coverage_note (%r) does not name it"
                           % (phase, summary.get("coverage_note"))))
-        for check, where, text in ((ON_TERMINAL, "terminal", terminal),
-                                   (IN_HTML, "HTML", page)):
+        for says, names, where, text in surfaces:
             if "NOT CERTIFIED" not in text:
-                wrong.append((check, phase, "%s does not say NOT CERTIFIED with %s work undone"
+                wrong.append((says, phase, "%s does not say NOT CERTIFIED with %s work undone"
                               % (where, phase)))
             elif _unnamed(text, [phase]):
-                wrong.append((check, phase, "%s does not name the undone %s work beside NOT "
+                wrong.append((names, phase, "%s does not name the undone %s work beside NOT "
                               "CERTIFIED (it says %r)" % (where, phase, text[:120])))
     return wrong
 
@@ -444,8 +455,13 @@ def _backup_left_no_trace(outcome):
             and outcome.plan.mode != FAULT_MALFORMED)
 
 
+def _backup_was_noticed(outcome):
+    """The report is not certified, by the cut-off backup files or by other undone work."""
+    return not _backup_left_no_trace(outcome)
+
+
 def _backup_left_a_trace(outcome):
-    return _no_review_gap(outcome) and not _backup_left_no_trace(outcome)
+    return _no_review_gap(outcome) and _backup_was_noticed(outcome)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -466,17 +482,23 @@ class Gap:
 #: #3677: the HTML report does not name an exhausted review cell; the terminal does.
 KNOWN_GAPS = (
     Gap("#3641", fh.ADVISOR, LETTER, _no_review_gap),
-    Gap("#3641", fh.ADVISOR, ON_TERMINAL),
-    Gap("#3641", fh.ADVISOR, IN_HTML),
+    Gap("#3641", fh.ADVISOR, TERMINAL_NAMES),
+    Gap("#3641", fh.ADVISOR, HTML_NAMES),
     Gap("#3667", fh.TOOL, LETTER, _no_review_gap),
-    Gap("#3667", fh.TOOL, ON_TERMINAL),
-    Gap("#3667", fh.TOOL, IN_HTML),
+    Gap("#3667", fh.TOOL, TERMINAL_NAMES),
+    Gap("#3667", fh.TOOL, HTML_NAMES),
+    # Backup advisors that left no trace: the report is certified and no surface says a word.
     Gap("#3676", fh.BACKUP, CERTIFIED, _backup_left_no_trace),
+    Gap("#3676", fh.BACKUP, JSON_SAYS, _backup_left_no_trace),
+    Gap("#3676", fh.BACKUP, TERMINAL_SAYS, _backup_left_no_trace),
+    Gap("#3676", fh.BACKUP, HTML_SAYS, _backup_left_no_trace),
+    # ...and ones that did, or that failed beside other work: not certified, but unnamed.
     Gap("#3676", fh.BACKUP, LETTER, _backup_left_a_trace),
-    Gap("#3676", fh.BACKUP, IN_JSON),
-    Gap("#3676", fh.BACKUP, ON_TERMINAL),
-    Gap("#3676", fh.BACKUP, IN_HTML),
-    Gap("#3677", fh.REVIEW, IN_HTML, _some_cells_answered),
+    Gap("#3676", fh.BACKUP, TERMINAL_NAMES, _backup_was_noticed),
+    Gap("#3676", fh.BACKUP, HTML_NAMES, _backup_was_noticed),
+    # No field counts backup work in either case.
+    Gap("#3676", fh.BACKUP, JSON_COUNTS),
+    Gap("#3677", fh.REVIEW, HTML_NAMES, _some_cells_answered),
 )
 
 
@@ -514,7 +536,8 @@ def test_the_known_gap_table_can_neither_hide_a_problem_nor_outlive_its_fix():
     assert triage([], [gap]) == ([], [gap])
     assert triage([], []) == ([], [])
     # Every row names a real check and a phase that can leave work undone.
-    checks = {LOSS, COUNTS, GATE, CERTIFIED, LETTER, IN_JSON, ON_TERMINAL, IN_HTML}
+    checks = {LOSS, COUNTS, GATE, CERTIFIED, LETTER, JSON_SAYS, JSON_COUNTS, TERMINAL_SAYS,
+              TERMINAL_NAMES, HTML_SAYS, HTML_NAMES}
     for row in KNOWN_GAPS:
         assert row.check in checks and row.phase in fh.PHASES and row.issue.startswith("#")
     assert len({(row.phase, row.check, row.when) for row in KNOWN_GAPS}) == len(KNOWN_GAPS)
@@ -588,7 +611,7 @@ def test_each_fault_is_the_kind_of_failure_it_claims_to_be():
     assert [mode for _entry, mode in runner.injected] == list(FAULT_MODES)
 
 
-@pytest.mark.parametrize("plan", CASES[1:], ids=_name)
+@pytest.mark.parametrize("plan", _params())
 def test_a_host_failure_is_never_silent(lab, plan, request):
     control, outcome = lab.control, lab.outcome(plan)
     assert outcome.injected, "the plan failed no launch: the case would pass for nothing"
@@ -635,7 +658,9 @@ def test_a_report_split_into_parts_is_read_whole(lab, plan):
         main = json.load(fh_)
     assert len(main["findings"]) < len(split.report["findings"])
     assert main["discarded_claims"] == [] and split.report["discarded_claims"]
-    assert not any(_is_tool(f) for f in main["findings"]) or len(parts) >= 1
+    # Tool findings are appended last, so at least one of them is in a part file.
+    assert (sum(1 for f in main["findings"] if _is_tool(f))
+            < sum(1 for f in split.report["findings"] if _is_tool(f)))
     assert no_silent_loss(lab.control, split) == []
     assert counts_reconcile(lab.control, split) == []
     assert _comparable(split)["findings"] == _comparable(whole)["findings"]
