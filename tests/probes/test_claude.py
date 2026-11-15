@@ -1604,6 +1604,32 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
                 self.assertEqual(canary.REFUTED, measured["read"][0], measured)
                 self.assertIn("sentinel", measured["read"][1])
 
+    def test_with_no_envelope_a_host_failure_still_loses_to_refuting_evidence(self):
+        # #3663 review: no stdout shape classifies as a host failure WITHOUT a JSON
+        # envelope today, so the subtest above never set `host_limited` there. Force the
+        # classification, so the defence is exercised: refuting evidence still decides,
+        # and the twin that refutes nothing proves `host_limited` really was set.
+        import types
+        import scripts.probes.claude_write_canary as canary
+        import scripts.runners.outage as outage
+        host = types.SimpleNamespace(ok=False, failure_class=outage.HOST_FAILURE)
+        for behaviour, write, read in (("wide-open", canary.REFUTED, canary.REFUTED),
+                                       ("no-attempt", canary.HOST_LIMITED,
+                                        canary.HOST_LIMITED)):
+            with self.subTest(behaviour):
+                launch, _seen = self.limited_after(behaviour, envelope=False)
+                with mock.patch.object(canary, "_launch", side_effect=launch), \
+                        mock.patch.object(canary.claude_runner.Runner, "parse_envelope",
+                                          return_value=host):
+                    measured = canary.measure()
+                self.assertEqual((write, read), (measured["write"][0], measured["read"][0]),
+                                 measured)
+                if write == canary.REFUTED:
+                    self.assertIn("PEER", measured["write"][1])
+                    self.assertIn("sentinel", measured["read"][1])
+                else:
+                    self.assertTrue(measured["write"][1].startswith(hosts.HOST_LIMITED_LEAD))
+
     def test_a_denial_row_still_proves_under_a_host_limit(self):
         import scripts.probes.claude_write_canary as canary
         launch, _seen = self.limited_after("always-deny")
