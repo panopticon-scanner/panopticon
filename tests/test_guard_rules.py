@@ -1114,6 +1114,22 @@ class TestTheGrantWalkKeepsItsOwnStack(unittest.TestCase):
                          guard_rules.grant_escapes([three]))
         self.assertTrue(os.path.isdir(os.path.join(outside, "store")))
 
+    def test_the_git_store_is_pruned_whatever_its_case(self):
+        # #3665 review nit: on case-insensitive APFS `.GIT` IS the store, so the prune folds
+        # case -- for the directory and for the link to one. A link out of the grant inside the
+        # directory, and the link itself, would each be an escape if the prune missed them.
+        outside = self._tmp()
+        os.makedirs(os.path.join(outside, "store"))
+        as_directory, as_link = self._tmp(), self._tmp()
+        os.makedirs(os.path.join(as_directory, ".GIT"))
+        os.symlink(outside, os.path.join(as_directory, ".GIT", "unseen"))
+        os.symlink(os.path.join(outside, "store"), os.path.join(as_link, ".GIT"))
+        for grant in (as_directory, as_link):
+            with self.subTest(grant=os.listdir(grant)):
+                self.assertEqual({grant: []}, guard_rules.grant_escapes([grant]))
+                # Pruned means not counted either: nothing else is in the grant.
+                self.assertEqual(({grant: []},) * 3, guard_rules.grant_walk([grant], cap=0))
+
     def test_exactly_the_cap_is_not_over_the_cap(self):
         # `a/`, `a/f`, `b`: three entries. A cap of three has seen the whole grant.
         grant = self._tmp()

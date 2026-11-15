@@ -131,8 +131,10 @@ The host contract (5.2, plan 6):
   hash its manifest recorded, in which case the row says why), `cli` (each host whose registry row
   names a headless binary, plus the selected host always, and whether it is on PATH), `tools_image`
   (the daemon, the image, and the same copy-pasteable remedy the readiness checkpoint refuses with)
-  and `capabilities` (what the last run MEASURED, read back from
-  `runs/latest/host-capabilities.json`, never re-probed). The host the document is ABOUT is resolved
+  and `capabilities` (what the stored run MEASURED, read back from
+  `runs/latest/host-capabilities.json`, never re-probed; shown only when that run measured the host
+  this document is about and `--reset` is not given, and `not measured` otherwise, because another
+  host's posture, or one `--reset` discards, is not this run's). The host the document is ABOUT is resolved
   by `runio.resolve_host` — the very function `driver loop` asks, in the same order: `--host`, else
   this run's manifest, else the driver's default. So a BARE `driver readiness <target>` reports on
   the same host a bare `driver loop <target>` would drive, and `selected_from` (`"--host"` |
