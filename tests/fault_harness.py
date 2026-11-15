@@ -122,7 +122,8 @@ MATRIX = ("version: 1\ngroups:\n"
 GROUP_FILE = {"app": "src/app.py", "lib": "lib/util.py"}
 #: One claim per review cell, each at its own line and category so none merges with another.
 _CLAIM = {"SEC": (5, "authz"), "COD": (20, "error-handling"), "ARC": (35, "coupling")}
-#: The advisory scanner: several findings on one package, as the issue asks.
+#: The advisory scanner: several findings on one package, as the issue asks. Its findings are
+#: CRITICAL, so tool findings are in play at the default gate and not only agent claims.
 ADVISORIES = {"alpha-dep": ("1.0.0", ("RUSTSEC-2099-0001", "RUSTSEC-2099-0002",
                                        "RUSTSEC-2099-0003")),
               "beta-dep": ("2.0.0", ("RUSTSEC-2099-0004", "RUSTSEC-2099-0005"))}
@@ -204,7 +205,7 @@ def _semgrep_document():
 def _osv_document():
     packages = [{"package": {"name": name, "version": version, "ecosystem": "crates.io"},
                  "vulnerabilities": [{"id": advisory, "summary": "affected package",
-                                      "database_specific": {"severity": "HIGH"}}
+                                      "database_specific": {"severity": "CRITICAL"}}
                                      for advisory in advisories],
                  "groups": []}
                 for name, (version, advisories) in ADVISORIES.items()]
@@ -320,7 +321,8 @@ def read_report(root):
 
 
 def _loop_once(root, runner, split_bytes):
-    args = driver.build_parser().parse_args(["loop", root, "--fail-on", "high"])
+    # No `--fail-on`: every case runs under the default gate (#3673), which is CRITICAL.
+    args = driver.build_parser().parse_args(["loop", root])
     err = io.StringIO()
     with mock.patch("scripts.phases.child._run_child", side_effect=_children(split_bytes)), \
             mock.patch("scripts.runners.base.runner_for", return_value=runner), \

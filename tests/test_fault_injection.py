@@ -34,6 +34,7 @@ import pytest
 from scripts import evidence
 import scripts.loop_progress as loop_progress
 import scripts.phases.runio as runio
+import scripts.run_manifest as run_manifest
 import scripts.runners.outage as outage
 from tests import fault_harness as fh
 from tests.orchestrate_helpers import (FAULT_EMPTY, FAULT_EXIT, FAULT_MALFORMED, FAULT_MODES,
@@ -527,7 +528,12 @@ def test_the_control_certifies_and_shows_every_state(lab):
     summary, coverage = control.report["summary"], control.report["meta"]["coverage"]
     assert summary["coverage_certified"] is True and summary["coverage_note"] is None
     assert summary["overall_grade"] is not None and summary["provisional_grade"] is None
-    assert summary["gate"] == "FAIL" and _gate_eligible(control.report)
+    # The default gate: no `--fail-on` was passed and none is committed (#3673).
+    assert summary["gate_severities"]["fail_on"] == "CRITICAL" and summary["gate_disabled"] is None
+    assert run_manifest.load_manifest(control.root)["flags"]["fail_on"] is None
+    eligible = _gate_eligible(control.report)
+    assert summary["gate"] == "FAIL" and eligible
+    assert {len(issue) for issue in eligible} == {2, 3}, "agent claims and advisories both gate"
     axis = coverage["tool_axis"]
     assert axis["queued"] == len(tool_claims()) and axis["unanswered"] == 0
     assert min(axis["confirmed"], axis["rejected"], axis["needs_more_info"]) >= 1
