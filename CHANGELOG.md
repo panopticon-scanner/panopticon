@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`driver readiness` no longer shows another run's posture as this one's (#3668).** Its
+  `capabilities` row read back whatever posture the target's run folder held. So
+  `driver readiness . --host agy --reset`, over a folder left by a claude run, reported "all
+  measured and PROVEN ... on host 'claude'" for an agy run that had measured nothing. The row now
+  shows a stored posture only when it was measured on the host the document is about and `--reset`
+  is not given. Otherwise it says `not measured`, reports `measured: false` with no states under
+  `--json`, and shows none of the stored text.
+
 - **The read guard's grant walk no longer recurses, and reports an entry it cannot stat
   (#3658).** `guard_rules.grant_walk` ran on `os.walk`, which recurses a frame per directory
   level before Python 3.12: a grant nested deeper than the recursion budget stopped setup with a

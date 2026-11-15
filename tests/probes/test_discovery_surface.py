@@ -1196,7 +1196,7 @@ class TestTheRoundTrip(unittest.TestCase):
         folder = os.path.join(self.root, ".panopticon", "runs", tag)
         os.makedirs(folder, exist_ok=True)
         runio._write_json(os.path.join(folder, runio.HOST_CAPABILITIES), envelope)
-        row = readiness._capabilities_row(self.root, tag)
+        row = readiness._capabilities_row(self.root, tag, envelope["host"], False)
         self.assertTrue(row["measured"])
         self.assertEqual(hosts.REFUTED, row["states"][hosts.TOOL_POLICY_ENFORCED])
         self.assertIn(hosts.TOOL_POLICY_ENFORCED, row["detail"])
