@@ -8,7 +8,9 @@
   total. Reset now moves both aside as `dispatch-ledger.<run_id>.jsonl` / `usage.<run_id>.json`,
   named by the outgoing setup run's id (only a 32-hex id becomes a filename; anything else gets a
   fresh one, and a rotation never overwrites an earlier one). The next cycle's usage is its own
-  rows only, and the previous cycle's spend is kept.
+  rows only, and the previous cycle's spend is kept. Both files of a cycle share one tag. Under a
+  still-running `driver loop --setup` the pair stays in place (its `--budget` reads the ledger),
+  and a failed move stops the reset with an error before anything else is removed.
 
 - **The instruction-file walk re-checks a directory for a link before descending it (#3645
   follow-up).** The entry-capped walk decided "real directory" when it listed the parent and
