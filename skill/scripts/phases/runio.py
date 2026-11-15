@@ -660,7 +660,12 @@ def _manifest_committed(review_root, manifest_file):
         # the target's own config still applied to the one check that decides
         # whether its manifest is forged. `safe_git.probe` carries all of it.
         rel = os.path.relpath(manifest_file, review_root)
-        r = safe_git.probe(review_root, ["ls-files", "--error-unmatch", "--", rel],
+        # #3671 F1: `:(icase)`. A git pathspec is case-sensitive whatever the filesystem
+        # is. On a case-insensitive one (APFS, NTFS) a target that commits
+        # `.panopticon/RUN-MANIFEST.json`, or `.Panopticon/run-manifest.json`, has
+        # committed the very file this reads, and the exact spelling found no such path:
+        # tracked read as untracked, and only the forgeable stamp was left.
+        r = safe_git.probe(review_root, ["ls-files", "--error-unmatch", "--", ":(icase)" + rel],
                            timeout=30)
     except executable.ExecutableResolutionError as exc:
         raise DriverError("manifest provenance cannot be checked: no trusted git: %s" % exc)

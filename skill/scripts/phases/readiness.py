@@ -255,6 +255,8 @@ NOT_MEASURED_NOT_THIS_RUN = ("not measured for this run — the stored run folde
                              "this checkout wrote; first `driver run` probes")
 NO_RUN_OF_THIS_CHECKOUT = ("none -- no run of this checkout found; the stored run folder is not one "
                            "a run here wrote")
+OUR_RUN_FOLDER_MISSING = ("none -- this checkout's run manifest names a run folder that is not "
+                          "there, so there is no run to resume")
 NOT_MEASURED_ON_HOST = ("not measured on host %s — the stored run measured another host; first "
                         "`driver run` probes")
 
@@ -488,7 +490,11 @@ def _existing_run_row(review_root):
     # symlink in the reviewed tree, so the target can point it at a folder it committed; read
     # through it, this row said "complete" for a run nobody here did.
     tag = run_manifest.run_tag(_trusted_manifest(review_root))
-    if not tag or not os.path.isdir(os.path.join(runs, tag)):
+    if tag and not os.path.isdir(os.path.join(runs, tag)):
+        # Our own manifest, and the folder it names is gone: not a run to resume, and not
+        # something the target shipped either.
+        return {"tag": None, "status": "none", "pending": 0, "detail": OUR_RUN_FOLDER_MISSING}
+    if not tag:
         return {"tag": None, "status": "none", "pending": 0,
                 "detail": NO_RUN_OF_THIS_CHECKOUT if _anything_stored(runs)
                 else "none -- no previous run in this tree"}

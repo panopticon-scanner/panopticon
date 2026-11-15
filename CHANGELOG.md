@@ -17,6 +17,10 @@
   Under `--reset`, and for a host other than the stored run's, `tool-findings` and
   `egress-proxy` no longer describe the stored run either, and a bare `readiness --reset` now
   reports on the host `driver loop --reset` would drive, not the outgoing manifest's.
+  The "is this manifest git-tracked" check now asks whatever the path's case: on a
+  case-insensitive filesystem a committed `.panopticon/RUN-MANIFEST.json`, or
+  `.Panopticon/run-manifest.json`, is the file being read, and the exact spelling had found
+  no such tracked path.
 
 - **`--setup --reset` rotates the top-level ledger and usage (#3647).** A setup run lives in
   the flat `.panopticon/`, so its `dispatch-ledger.jsonl` and `usage.json` accumulated across

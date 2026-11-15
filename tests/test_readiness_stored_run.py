@@ -13,6 +13,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import unittest
 from unittest import mock
@@ -105,6 +106,40 @@ class _Case(unittest.TestCase):
 
     def _git(self, *argv):
         subprocess.run(["git", "-C", self.root, *argv], check=True, capture_output=True)
+
+    def _plant_under_another_case(self, directory, manifest_name, complete=True):
+        """The whole planted tree, committed under a spelling that differs only in case:
+        `directory` for `.panopticon`, `manifest_name` for `run-manifest.json`. The manifest
+        forges this checkout's path, so being tracked is all that gives it away.
+
+        On a case-insensitive filesystem those ARE the files readiness reads. On a
+        case-sensitive one they are not, so the same bytes are also put at the exact
+        spelling, untracked: either way the files read are the target's, and the only
+        tracked copy is the one spelled differently."""
+        manifest = self._planted_manifest(self.root)
+        tag = run_manifest.run_tag(manifest)
+        there = os.path.join(self.root, directory)
+        folder = os.path.join(there, "runs", tag)
+        os.makedirs(folder)
+        self._envelope(folder, "claude", note=PLANTED_NOTE, flag=PLANTED_FLAG)
+        os.symlink(tag, os.path.join(there, "runs", "latest"))
+        if complete:
+            with open(os.path.join(there, "%s-report.json" % tag), "w", encoding="utf-8") as fh:
+                json.dump({"meta": {}, "findings": []}, fh)
+        with open(os.path.join(there, manifest_name), "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh)
+        self._git("add", "-f", "--", directory)
+        self._git("commit", "-q", "-m", "ship a run folder, spelled another way")
+        tracked = subprocess.run(["git", "-C", self.root, "ls-files", "--", directory],
+                                 check=True, capture_output=True, text=True).stdout.split()
+        self.assertIn("%s/%s" % (directory, manifest_name), tracked)
+        if not os.path.isdir(self.pano):                       # a case-sensitive filesystem
+            shutil.copytree(there, self.pano, symlinks=True)
+        exact = os.path.join(self.pano, "run-manifest.json")
+        if not os.path.isfile(exact):
+            shutil.copyfile(os.path.join(there, manifest_name), exact)
+        self.assertTrue(os.path.isfile(exact))
+        return tag
 
     def _planted_manifest(self, review_root, run_id="deadbeef0000", host="claude", **more):
         return dict({"schema_version": 1, "run_id": run_id, "host": host,
@@ -239,6 +274,37 @@ class TestAPlantedRunFolderIsNobodysRun(_Case):
         doc, table = self._both()
         self._assert_nothing_stored_is_shown(doc, table, planted=(tag, "deadbeef"))
 
+    def test_a_committed_manifest_whose_file_name_differs_only_in_case(self):
+        # #3671 F1. A git pathspec is case-sensitive; APFS and NTFS are not. Asked for the
+        # exact spelling, git said "no such tracked path" about the very file being read.
+        tag = self._plant_under_another_case(".panopticon", "RUN-MANIFEST.json")
+        manifest_file = run_manifest.manifest_path(self.root)
+        self.assertTrue(runio._manifest_committed(self.root, manifest_file))
+        self.assertIsNone(readiness._trusted_manifest(self.root))
+        doc, table = self._both()
+        self._assert_nothing_stored_is_shown(doc, table, planted=(tag, "deadbeef"))
+        self.assertEqual(readiness.NOT_MEASURED_NOT_THIS_RUN, doc["capabilities"]["detail"])
+        self.assertEqual(readiness.NO_RUN_OF_THIS_CHECKOUT, doc["existing_run"]["detail"])
+        self.assertEqual(("claude", "default"), (doc["host"], doc["selected_from"]))
+
+    def test_a_committed_manifest_whose_directory_differs_only_in_case(self):
+        tag = self._plant_under_another_case(".Panopticon", "run-manifest.json")
+        self.assertTrue(runio._manifest_committed(self.root, run_manifest.manifest_path(self.root)))
+        self.assertIsNone(readiness._trusted_manifest(self.root))
+        doc, table = self._both()
+        self._assert_nothing_stored_is_shown(doc, table, planted=(tag, "deadbeef"))
+        self.assertEqual(readiness.NOT_MEASURED_NOT_THIS_RUN, doc["capabilities"]["detail"])
+        self.assertEqual(readiness.NO_RUN_OF_THIS_CHECKOUT, doc["existing_run"]["detail"])
+
+    def test_an_untracked_manifest_is_still_untracked_whatever_else_is_committed(self):
+        # The control for the two above: the case-blind question does not call our own,
+        # untracked manifest tracked because other files of the tree are.
+        self._our_run()
+        self.assertFalse(runio._manifest_committed(self.root, run_manifest.manifest_path(self.root)))
+        self._plant()                                        # tracked files beside it
+        self.assertFalse(runio._manifest_committed(self.root, run_manifest.manifest_path(self.root)))
+        self.assertIsNotNone(readiness._trusted_manifest(self.root))
+
     def test_a_planted_host_does_not_become_the_host_the_document_is_about(self):
         manifest = self._planted_manifest(self.root, host="kimi")
         self._plant(tag=run_manifest.run_tag(manifest), host="kimi", manifest=manifest)
@@ -274,6 +340,24 @@ class TestTheFolderIsTheOneTheManifestNames(_Case):
         self.assertNotIn(PLANTED_NOTE, table)
         self.assertNotIn(PLANTED_FLAG, table)
 
+    def test_our_manifest_with_its_folder_gone_is_no_run_to_resume(self):
+        tag = self._our_run()
+        shutil.rmtree(os.path.join(self.runs, tag))
+        doc, table = self._both()
+        self.assertEqual({"tag": None, "status": "none", "pending": 0},
+                         {key: doc["existing_run"][key] for key in ("tag", "status", "pending")})
+        self.assertEqual(readiness.OUR_RUN_FOLDER_MISSING, doc["existing_run"]["detail"])
+        self.assertIs(False, doc["capabilities"]["measured"])
+        self.assertEqual(readiness.NOT_MEASURED, doc["capabilities"]["detail"])
+        # ...and it is said the same way whatever else the tree holds: the folder that is
+        # missing is ours, so "not one a run here wrote" would be the wrong thing to say.
+        self._plant(complete=True)
+        doc, table = self._both()
+        self.assertEqual(("none", readiness.OUR_RUN_FOLDER_MISSING),
+                         (doc["existing_run"]["status"], doc["existing_run"]["detail"]))
+        self.assertNotIn(PLANTED_TAG, table)
+        self.assertNotIn("complete", table.lower().split("existing-run", 1)[1].splitlines()[0])
+
     def test_a_folder_one_run_id_away_from_ours_is_not_ours(self):
         tag = self._our_run(posture=False)
         near = tag[:-8] + ("0" * 8 if not tag.endswith("0" * 8) else "1" * 8)
@@ -300,6 +384,17 @@ class TestAnotherHostsRunAndAResetRun(_Case):
         self.assertNotIn("PROVEN", table)
         # The run is still this checkout's, and the row that describes it still does.
         self.assertEqual(tag, doc["existing_run"]["tag"])
+
+    def test_a_bare_invocation_holds_the_envelope_to_the_manifests_host(self):
+        # No `--host`: the document is about the manifest's host. A posture in that run's
+        # folder that says it was measured on another host is not that host's posture.
+        tag = self._our_run(host="agy", posture=False)
+        self._envelope(os.path.join(self.runs, tag), "claude", note="fixture")
+        doc, table = self._both()
+        self.assertEqual(("agy", "manifest"), (doc["host"], doc["selected_from"]))
+        self.assertIs(False, doc["capabilities"]["measured"])
+        self.assertEqual(readiness.NOT_MEASURED_ON_HOST % "agy", doc["capabilities"]["detail"])
+        self.assertNotIn("PROVEN", table)
 
     def test_reset_reads_none_of_the_stored_runs_rows(self):
         tag = self._our_run(flags={"online": True, "tools": True}, tools_ran=True)
