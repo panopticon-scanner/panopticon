@@ -240,6 +240,8 @@ CERTIFIED, LETTER = "3.certified", "3.letter"
 JSON_SAYS, JSON_COUNTS = "5.json.says", "5.json.counts"
 TERMINAL_SAYS, TERMINAL_NAMES = "5.terminal.says", "5.terminal.names"
 HTML_SAYS, HTML_NAMES = "5.html.says", "5.html.names"
+# #3677: beside naming the kind of work, the HTML names each review cell that went unanswered.
+HTML_CELLS = "5.html.cells"
 
 def no_silent_loss(control, outcome):
     """1. Every tool finding ingested, and every agent claim a cell persisted, is in the
@@ -401,7 +403,16 @@ def shortfall_is_disclosed(control, outcome):
             elif _unnamed(text, [phase]):
                 wrong.append((names, phase, "%s does not name the undone %s work beside NOT "
                               "CERTIFIED (it says %r)" % (where, phase, text[:120])))
+    unnamed = [cell for cell in _cells(outcome.unanswered_in(fh.REVIEW)) if cell not in page]
+    if unnamed and "NOT CERTIFIED" in page:
+        wrong.append((HTML_CELLS, fh.REVIEW, "HTML does not name the unanswered review cell(s) "
+                      "%s beside NOT CERTIFIED (it says %r)" % (", ".join(unnamed), page[:160])))
     return wrong
+
+
+def _cells(entries):
+    """Review entries as the cells a reader is told about: `review-app-COD` -> `app/COD`."""
+    return sorted("/".join(entry.split("-")[1:]) for entry in entries)
 
 
 INVARIANTS = (no_silent_loss, counts_reconcile, no_false_certification, gate_fails_closed,
@@ -442,12 +453,6 @@ def _no_review_gap(outcome):
     return not outcome.unanswered_in(fh.REVIEW)
 
 
-def _some_cells_answered(outcome):
-    """With every cell gone the report says "no review cell answered" on every surface."""
-    return len(outcome.unanswered_in(fh.REVIEW)) < sum(
-        1 for e in set(outcome.launched) if fh.phase_of(e) == fh.REVIEW)
-
-
 def _backup_left_no_trace(outcome):
     """Backup advisors alone went unanswered and left no file behind: nothing in the report
     moves. A cut-off backup file counts as an unloadable verdict, which does sink it."""
@@ -476,7 +481,6 @@ class Gap:
 
 #: #3676: backup advisors that never answer leave the report fully certified, and ones that
 #:        write a cut-off file sink certification with no reason; neither is named anywhere.
-#: #3677: the HTML report does not name an exhausted review cell; the terminal does.
 KNOWN_GAPS = (
     # #3641 and #3667's rows are closed by #3667's shared `grading.grade_shortfalls` rule:
     # unanswered verify and tool advisors hold the letter back and are named on every surface.
@@ -491,7 +495,6 @@ KNOWN_GAPS = (
     Gap("#3676", fh.BACKUP, HTML_NAMES, _backup_was_noticed),
     # No field counts backup work in either case.
     Gap("#3676", fh.BACKUP, JSON_COUNTS),
-    Gap("#3677", fh.REVIEW, HTML_NAMES, _some_cells_answered),
 )
 
 
@@ -530,7 +533,7 @@ def test_the_known_gap_table_can_neither_hide_a_problem_nor_outlive_its_fix():
     assert triage([], []) == ([], [])
     # Every row names a real check and a phase that can leave work undone.
     checks = {LOSS, COUNTS, GATE, CERTIFIED, LETTER, JSON_SAYS, JSON_COUNTS, TERMINAL_SAYS,
-              TERMINAL_NAMES, HTML_SAYS, HTML_NAMES}
+              TERMINAL_NAMES, HTML_SAYS, HTML_NAMES, HTML_CELLS}
     for row in KNOWN_GAPS:
         assert row.check in checks and row.phase in fh.PHASES and row.issue.startswith("#")
     assert len({(row.phase, row.check, row.when) for row in KNOWN_GAPS}) == len(KNOWN_GAPS)

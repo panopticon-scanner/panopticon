@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **The HTML report names each review cell that returned no answer (#3677).** With one review
+  cell exhausted, the terminal said `panels COD 1/2` and the JSON listed the cell under
+  `meta.coverage.cells.missing_floor`, but the HTML header said only "gate-relevant coverage
+  did not complete". Its NOT CERTIFIED line now ends `review cell with no answer: 1 (app/COD)`:
+  the count, then each cell as `group/domain`, at most twelve named and the rest counted. The
+  fault-injection harness's known-gap row for this is removed, and the harness now checks that
+  the HTML names every unanswered review cell exactly.
+
 - **Changed: `driver setup` writes a proposal one way, whatever order and spelling the agent
   returned it in (#3651, phase 2b).** The same matrix used to come out as a different draft each
   run: groups in the agent's order, globs in the agent's order, the same glob spelled two ways.

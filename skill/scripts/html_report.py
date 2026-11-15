@@ -18,6 +18,7 @@ import scripts.ocrdb as ocrdb
 import scripts.synth.grading as grading
 import scripts.synth.health_basis as health_basis
 import scripts.synth.render as render_mod
+import scripts.tools.base as tool_base
 from scripts import build_disclosure, safe_write, tool_cleanup
 
 _CSS = """
@@ -306,6 +307,38 @@ def _escape(value):
     return html.escape(str(value))
 
 
+# #3677: how many unreviewed cells the header names, and how long one name may be. A group
+# name is the target's own, out of its config.
+CELLS_NAMED_MAX, CELL_NAME_MAX = 12, 60
+
+
+def unreviewed_cells(meta):
+    """The floor review cells that returned no answer: sorted, distinct (group, domain)
+    pairs out of `meta.coverage.cells.missing_floor`. A report that states none, or states
+    it in another shape, has none to name."""
+    cells = meta.get("coverage") if isinstance(meta, dict) else None
+    cells = cells.get("cells") if isinstance(cells, dict) else None
+    pairs = cells.get("missing_floor") if isinstance(cells, dict) else None
+    return sorted({(pair[0], pair[1]) for pair in (pairs if isinstance(pairs, list) else ())
+                   if isinstance(pair, (list, tuple)) and len(pair) == 2
+                   and all(isinstance(part, str) and part for part in pair)})
+
+
+def unreviewed_cells_text(meta):
+    """`review cells with no answer: 2 (app/COD, lib/ARC)`, or "" when there are none.
+    The count first, so it can be read off without the names; each cell as `group/domain`,
+    as the loop's own status line writes it; a long list is cut and says by how many."""
+    cells = unreviewed_cells(meta)
+    if not cells:
+        return ""
+    named = ["%s/%s" % tuple(tool_base.inert_text(part, limit=CELL_NAME_MAX) for part in cell)
+             for cell in cells[:CELLS_NAMED_MAX]]
+    more = len(cells) - len(named)
+    return "review cell%s with no answer: %d (%s%s)" % (
+        "" if len(cells) == 1 else "s", len(cells), ", ".join(named),
+        ", and %d more" % more if more else "")
+
+
 def _html_doc(title, body):
     """Wrap body content in a self-contained HTML document."""
     return f"""<!DOCTYPE html>
@@ -579,6 +612,9 @@ def _render_header(report):
         health_basis.rendered_note(health)))
     if summary.get("coverage_certified") is False:
         note = summary.get("coverage_note") or grading.GATE_GAP_NOTE
+        # #3677: which review cells returned no answer, as the terminal's `panels COD 1/2`
+        # and the JSON's `cells.missing_floor` say. The generic note alone named none.
+        note = "; ".join(filter(None, [note, unreviewed_cells_text(meta)]))
         details = "".join(
             "<div class='integrity-detail'>%s</div>" % _escape(sentence)
             for sentence in integrity_messages.sinking_sentences(meta.get("integrity")))
