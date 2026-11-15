@@ -18,6 +18,17 @@
   - **Visible change:** a custom capability the agent spelled two ways (`custom:lib` and
     `custom:Lib`) is one group named by the spelling that sorts first. It used to be named by
     whichever the agent listed first, so setup may now write a different spelling than before.
+- **`devtools/matrix_stability.py` measures what a different setup draft does to a review (#3651,
+  phase 1).** Review-stability numbers so far froze one draft per target, so the draft's own
+  effect was never measured. Given the reports of runs that each used its own draft, and of
+  frozen-matrix repeat runs as a baseline, the script reports how much the CRITICAL and HIGH
+  finding sets, the gate, the letter and the health score move in each group, each draft against
+  the baseline, and how far the drafts themselves differ. It reads finished reports and runs
+  nothing, and its output is aggregates only unless `--detail` is given. `devtools/compare_runs.py`
+  gains `--allow-different-layouts`, the explicit opt-in for runs whose layouts differ; without
+  it such runs are refused as before. Under it a dirty tree is accepted for a run whose report
+  says its matrix is a working-tree file, and never called verified: `commit_verified` stays
+  false, `dirty_excused` names the run, and the summary keeps its `COMMIT UNVERIFIED` line.
 
 - **A report says which matrix it ran under (#3651, phase 3).** Setup proposes a different matrix
   nearly every time it is asked, and a review's results move with it, so two reports could not
