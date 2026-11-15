@@ -130,6 +130,8 @@ ADVISORIES = {"alpha-dep": ("1.0.0", ("RUSTSEC-2099-0001", "RUSTSEC-2099-0002",
 #: are one issue seen twice: the tool finding that is merged with an agent finding.
 SEMGREP = (("rule-merged", "src/app.py", 5), ("rule-alone", "src/app.py", 58),
            ("rule-refuted", "lib/util.py", 58))
+#: The advisor that answers for `rule-merged`: once merged, the claim has no advisor of its own.
+MERGED_ADVISOR = "verify-app-SEC-primary"
 REFUTED_CLAIM = "refuted claim"
 REFUTED_RULE = "rule-refuted"
 UNSURE_ADVISORY = "RUSTSEC-2099-0005"
@@ -272,6 +274,8 @@ class Outcome:
     part_files: list          # the part and sibling files the report named
     html: str | None
     recovered: bool = False   # the plan was lifted and the loop run again
+    stalled: list = dataclasses.field(default_factory=list)   # statuses before the recovery
+    stalled_report: bool = False                              # ...and whether a report existed
 
     @property
     def status(self):
@@ -344,8 +348,10 @@ def drive(test_case, plan=None, recover=False, split_bytes=None):
                 return
 
     invoke()
-    recovered = False
+    recovered, stalled, stalled_report = False, [], False
     if recover and statuses[-1]["status"] != "complete":
+        stalled = [status["status"] for status in statuses]
+        stalled_report = os.path.lexists(runio._pano(root, "report.json"))
         runner.faults, recovered = None, True
         invoke()
     report, part_files = read_report(root)
@@ -357,7 +363,8 @@ def drive(test_case, plan=None, recover=False, split_bytes=None):
             html = fh.read()
     return Outcome(plan=plan, root=root, statuses=statuses, terminal="".join(terminal),
                    launched=list(runner.launched), injected=list(runner.injected),
-                   report=report, part_files=part_files, html=html, recovered=recovered)
+                   report=report, part_files=part_files, html=html, recovered=recovered,
+                   stalled=stalled, stalled_report=stalled_report)
 
 
 def module_patches():

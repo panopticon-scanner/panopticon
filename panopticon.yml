@@ -449,6 +449,8 @@ groups:
       - tests/test_orchestrate_session_edges.py
       - tests/test_orchestrate_usage.py
       - tests/orchestrate_helpers.py
+      - tests/fault_harness.py
+      - tests/test_fault_injection.py
       panels:
       - ARC
       - SEC

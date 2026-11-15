@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **A fault-injection harness drives the whole pipeline through host failures (#3669).** Tests
+  only. `tests/test_fault_injection.py` reviews a small fixture target end to end with
+  `driver loop` while a fake host fails a planned share of its launches: a non-zero exit, a
+  quota outage, a malformed reply, an empty reply or a timeout, aimed at the scout, the review
+  cells, the domain advisors, the backup advisors or the tool advisors, at 10%, 50% or 100%,
+  persistently or once. Each completed run is checked against five invariants and against the
+  fault-free control: no finding is lost silently, the tool-axis counts reconcile, undone work
+  is never certified, the gate never passes over undone work, and the shortfall is disclosed on
+  the terminal, in the JSON and in the HTML. No model, network or Docker is used. The default
+  run is 56 of 126 cases (about 45 s serial); `PANOPTICON_FAULT_MATRIX=full` runs them all.
+  Invariants that do not hold today are strict `xfail`s naming their issue (#3641, #3667, #3676,
+  #3677), so each fix must un-mark its own cases.
+
 - **The read guard's grant walk no longer recurses, and reports an entry it cannot stat
   (#3658).** `guard_rules.grant_walk` ran on `os.walk`, which recurses a frame per directory
   level before Python 3.12: a grant nested deeper than the recursion budget stopped setup with a
