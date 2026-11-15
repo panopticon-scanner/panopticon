@@ -31,10 +31,11 @@ on `overall_grade` alone — a tool-only coverage gap yields `INCONCLUSIVE` with
 attached. The letter is the health band with a severity cap on top (#3652): a confirmed CRITICAL
 caps it at D and a confirmed HIGH at B, so an A never sits beside an open confirmed CRITICAL. The
 cap only lowers; `summary.grade_cap` carries the band letter and the cap that lowered it, and the
-terminal and HTML grade say "D (capped from A by 2 confirmed CRITICAL)". Confirmed means tool- or
-advisor-confirmed under every gate policy, so an unconfirmed finding never caps, even under
-`--gate-unverified`. Per-group panel grades are already the max-severity rollup of the group's own
-gate-eligible findings, so they need no cap.
+terminal and HTML grade say "D (capped from A by 2 confirmed CRITICAL)". Confirmed means the
+default gate's population (`tool_confirmed`, `advisor_confirmed` or `backup_scope_limited`) under
+every gate policy, so an unconfirmed finding never caps, even under `--gate-unverified`.
+Per-group panel grades are already the max-severity rollup of the group's own gate-eligible
+findings, so they need no cap.
 When `meta.coverage.resume` shows pending work in either phase, the terminal summary also
 prints a `**Resume:**` line (fan-out/verify done vs. total) directly under the Grade/Gate line; a
 fully-complete or resume-absent run prints no such line, so a resumed run never reads as a fresh

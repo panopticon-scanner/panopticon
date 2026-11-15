@@ -554,8 +554,11 @@ def _worst_grade(grades):
 
 # #3652 (owner ruling 2026-11-14; the #3328 bands are not reopened): a severity cap
 # layered on the band grade, so "A" never sits beside an open confirmed CRITICAL.
-# Worst severity first; a level only ever LOWERS the band letter. The LEVELS are
-# a proposal the owner rules on before merge.
+# Worst severity first; a level only ever LOWERS the band letter. Owner ruling
+# 2026-11-15: CRITICAL caps at D, HIGH at B.
+# ORDER IS LOAD-BEARING: `severity_cap` returns the FIRST severity present, so
+# the tuple must run worst severity first with a cap that is never better than
+# the next one's (monotone). TestSeverityCapUnits pins both properties.
 SEVERITY_GRADE_CAPS = (("CRITICAL", "D"), ("HIGH", "B"))
 
 

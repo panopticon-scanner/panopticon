@@ -176,7 +176,7 @@ def _at_line(fid, sev, line=1):
 
 class TestSeverityCapOverTheBandGrade(unittest.TestCase):
     """#3652 (owner ruling 2026-11-14; the #3328 bands are not reopened): a confirmed
-    CRITICAL caps the letter at D and a confirmed HIGH at B (proposed levels), so "A"
+    CRITICAL caps the letter at D and a confirmed HIGH at B (levels ruled 2026-11-15), so "A"
     never sits beside an open confirmed CRITICAL. The cap only lowers, is disclosed
     beside the band letter, and an unconfirmed finding never caps."""
 
@@ -243,6 +243,70 @@ class TestSeverityCapOverTheBandGrade(unittest.TestCase):
 
 
 class TestSeverityCapReadsTheGatePopulation(unittest.TestCase):
+    def test_a_redteam_gated_drop_fails_the_gate_but_never_caps_the_grade(self):
+        # #1701: under redteam a directory-name drop (here a CRITICAL in a vendored
+        # path) still joins the gate population, so the gate FAILs. It was never
+        # confirmed, so it must not cap the letter: the band A stands, undisclosed.
+        import scripts.synth.tool_axis as tool_axis_mod
+        dropped = _at_line("AG-009", "CRITICAL")
+        groups = [{"name": "g1", "files": ["a.py"]}]
+        with _target_with_files(groups, lines=50000) as tgt:
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=tgt, fail_on="high",
+                                         timestamp="2026-01-01T00:00:00Z",
+                                         security_mode="redteam",
+                                         gate_security_mode="redteam"),
+                findings=findings_mod.FindingSet(findings=[]),
+                tools=tool_axis_mod.ToolAxis(gated_suppressed=[dropped]),
+                plan=plan_mod.PlanInputs(groups_meta=groups)))
+        summary = r["summary"]
+        self.assertEqual("FAIL", summary["gate"])
+        self.assertEqual("A", summary["overall_grade"])
+        self.assertIsNone(summary["grade_cap"])
+
+    def test_a_held_back_letter_is_capped_too(self):
+        # A panel ran fewer cells than planned: the letter is held back as
+        # provisional_grade, and it carries the cap like overall_grade.
+        groups = [{"name": "g1", "files": ["a.py"]}]
+        critical = _at_line("AG-001", "CRITICAL")
+        verdicts = {evidence_mod.finding_fingerprint(critical): {
+            "finding_id": "AG-001", "verdict": "CONFIRMED", "reasoning": "v"}}
+        with _target_with_files(groups, lines=50000) as tgt:
+            r = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=tgt, fail_on="high",
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=findings_mod.FindingSet(findings=[critical], verdicts=verdicts),
+                plan=plan_mod.PlanInputs(
+                    groups_meta=groups,
+                    fan_out={"planned": {"quality": 2}, "executed": {"quality": 1}})))
+        summary = r["summary"]
+        self.assertIsNone(summary["overall_grade"])
+        self.assertEqual("D", summary["provisional_grade"])
+        self.assertEqual(("A", "D"), (summary["grade_cap"]["band_grade"],
+                                      summary["grade_cap"]["grade"]))
+        self.assertIn("D (provisional; capped from A by 1 confirmed CRITICAL)",
+                      render_mod.render_summary(r))
+
+    def test_a_capped_report_matches_the_report_schema(self):
+        import copy
+        import json
+        import os
+        import jsonschema
+        schema_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+            os.path.abspath(__file__)))), "skill", "reference", "report-schema.json")
+        with open(schema_path, encoding="utf-8") as fh:
+            validator = jsonschema.Draft7Validator(json.load(fh))
+        r = _graded_report([], confirmed=[_at_line("AG-001", "CRITICAL")])
+        self.assertIsNotNone(r["summary"]["grade_cap"])
+        self.assertEqual([], [e.message for e in validator.iter_errors(r)])
+        for label, change in (("count below 1", {"count": 0}),
+                              ("an undeclared key", {"extra": 1}),
+                              ("an unknown band letter", {"band_grade": "E"})):
+            with self.subTest(label):
+                bad = copy.deepcopy(r)
+                bad["summary"]["grade_cap"].update(change)
+                self.assertNotEqual([], list(validator.iter_errors(bad)))
+
     def test_an_off_diff_confirmed_critical_does_not_cap_an_on_diff_grade(self):
         # Under `--gate-scope on-diff` the grade, the health and the gate are about the
         # change; a confirmed CRITICAL in pre-existing code is active but outside that
@@ -269,6 +333,16 @@ class TestSeverityCapReadsTheGatePopulation(unittest.TestCase):
 
 
 class TestSeverityCapUnits(unittest.TestCase):
+    def test_the_cap_table_runs_worst_first_and_is_monotone(self):
+        # severity_cap returns the FIRST severity present, so a reordered or
+        # non-monotone table would let a HIGH outrank a CRITICAL's cap.
+        order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+        severities = [sev for sev, _ in grading_mod.SEVERITY_GRADE_CAPS]
+        caps = [grading_mod._GRADE_ORDER.index(cap) for _, cap in grading_mod.SEVERITY_GRADE_CAPS]
+        self.assertEqual(sorted(severities, key=order.index), severities)
+        self.assertEqual(sorted(caps, reverse=True), caps)
+        self.assertEqual((("CRITICAL", "D"), ("HIGH", "B")), grading_mod.SEVERITY_GRADE_CAPS)
+
     def test_confirmed_is_the_default_gate_population(self):
         for status, caps in (("tool_confirmed", True), ("advisor_confirmed", True),
                              (evidence_mod.BACKUP_SCOPE_LIMITED, True),
