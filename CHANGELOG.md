@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **Own-package advisories are stable across identical runs (#3649).** On identical tool output a
+  first-party advisory (#3593) could vanish or flip between `tool_confirmed` and
+  `needs_more_info`. Trivy reports each package at its own Cargo.lock line, so its advisory can
+  sit alone at a locus; when an agent flagged the same line, synthesis collapsed the tool+agent
+  pair to the MORE SEVERE member, which was the agent's claim whenever it was more severe -- so
+  the advisory disappeared, or was queued to the advisor in its place. A first-party advisory is
+  now never collapsed into an agent finding: both survive, the advisory stays first-party (and
+  reinforced when the agent agrees on category), and the agent claim queues on its own.
+  Separately, two tools reporting one advisory on one package (osv-scanner and cargo-audit at
+  `Cargo.lock:1`) kept whichever came first in input order, so the survivor's severity and source
+  moved with the order. Content now decides: an agent-corroborated locus first, then the lowest
+  line (a LOW at line 1 still beats a CRITICAL at line 5), then the most severe, the source, the
+  reported version and the title. And the first-party mark is part of the grouping key, so the
+  project's own `workspace-app 1.2.3` and a registry `workspace-app 0.9.0` in the same lock stay
+  two findings: before, one copy was dropped by input order or by an agent's line.
+  **Intended gating change (owner ruling):** because the most severe duplicate now survives, a
+  gate can turn from PASS to FAIL on the same tool output -- osv-scanner CRITICAL plus
+  cargo-audit LOW for one advisory at one locus, with `--fail-on high`, now FAILs, where the
+  input order used to let the LOW survive and PASS.
+
 - **The instruction-file walk re-checks a directory for a link before descending it (#3645
   follow-up).** The entry-capped walk decided "real directory" when it listed the parent and
   descended later, so a directory swapped for a symlink in between was followed. It is now asked
