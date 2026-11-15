@@ -75,8 +75,43 @@ def app_line(app):
     return line + ("; %s" % app["reason"] if _text(app.get("reason")) else "")
 
 
+# #3651: where the review matrix came from. One `key: value` line of fixed words and hashes,
+# nothing from the target, so it reads the same in both views and can move into a report
+# header's text section unchanged. FRESH is the case two reports cannot be compared across.
+MATRIX_ORIGINS = {
+    "committed": "committed (reused: the config is in the reviewed commit, unmodified)",
+    "working_tree": "working_tree (FRESH: the config is not in the reviewed commit; %s)",
+    "unknown": "unknown (whether the config is in the reviewed commit could not be measured)",
+}
+MATRIX_DRAFTS = {"unchanged": "it is setup's last draft, unchanged",
+                 "differs": "it is not setup's last draft"}
+MATRIX_NO_DRAFT = "no setup draft is on record for this target"
+MATRIX_COMPARABLE = "comparable only with runs on the same fingerprint"
+
+
+def matrix_line(matrix):
+    """`Matrix: origin=...; fingerprint=...; config=...`, or "" when the report carries no
+    matrix block (one written before #3651)."""
+    if not isinstance(matrix, dict):
+        return ""
+    origin = _text(matrix.get("origin")) or "unknown"
+    origin = origin if origin in MATRIX_ORIGINS else "unknown"
+    said = MATRIX_ORIGINS[origin]
+    if origin == "working_tree":
+        draft = matrix.get("setup_draft")
+        said %= MATRIX_DRAFTS[draft] if isinstance(draft, str) and draft in MATRIX_DRAFTS \
+            else MATRIX_NO_DRAFT
+    parts = ["origin=" + said,
+             "fingerprint=%s" % (_text(matrix.get("matrix_fingerprint")) or "unmeasured"),
+             "config=%s" % (_text(matrix.get("config_sha256")) or "unrecorded")]
+    if origin != "committed":
+        parts.append(MATRIX_COMPARABLE)
+    return "Matrix: " + "; ".join(parts)
+
+
 def provenance_lines(meta):
-    """The image line, then one line per app; [] when neither was recorded."""
+    """The image line, one line per app, the prior run, then the matrix; [] when none of
+    them was recorded."""
     if not isinstance(meta, dict):
         return []
     tools, apps = meta.get("tools"), meta.get("apps")
@@ -86,4 +121,5 @@ def provenance_lines(meta):
     lines = [image_line(tools.get("image"))] + [app_line(app) for app in apps]
     if isinstance(prior, dict) and _text(prior.get("host")) and _text(prior.get("run_id")):
         lines.append("Prior run: " + PRIOR_RUN % (prior.get("host"), prior.get("run_id")))
+    lines.append(matrix_line(meta.get("matrix")))
     return [line for line in lines if line]

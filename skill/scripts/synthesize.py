@@ -22,6 +22,7 @@ import scripts.executable as executable
 import scripts.first_contact as first_contact
 import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
+import scripts.matrix_identity as matrix_identity
 import scripts.ocrdb as ocrdb
 import scripts.plan_contract as plan_contract
 import scripts.redact as redact
@@ -120,6 +121,17 @@ def build_parser():
     ap.add_argument("--model-strict", default=None, choices=("true", "false"),
                     help="whether the run's model fallbacks were off, off the run manifest "
                          "(#3582); copied to meta.model_strict, absent when not given")
+    # #3651: the matrix's provenance, off the run manifest. A direct invocation has no driver
+    # to ask, so each is absent then and the report says the origin is unknown.
+    ap.add_argument("--matrix-origin", default=None, choices=matrix_identity.ORIGINS,
+                    help="whether the config is in the reviewed commit, off the run manifest "
+                         "(#3651); meta.matrix.origin, `unknown` when not given")
+    ap.add_argument("--matrix-config-sha256", default=None, metavar="SHA256",
+                    help="the config's hash as written, off the run manifest (#3651); "
+                         "meta.matrix.config_sha256")
+    ap.add_argument("--matrix-setup-draft", default=None, choices=matrix_identity.DRAFTS,
+                    help="how a working-tree config compares with setup's last draft, off the "
+                         "run manifest (#3651); meta.matrix.setup_draft")
     ap.add_argument("--tools-skipped", action="store_true",
                     help="no scanner ran this run (--no-tools), so no output in "
                          "--tools-dir is bound to it: none is ingested, every one "

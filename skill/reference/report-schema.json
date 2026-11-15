@@ -108,6 +108,56 @@
         "ocrdb_version": {
           "type": ["string", "null"]
         },
+        "matrix": {
+          "type": "object",
+          "description": "#3651: what identifies the review matrix this run used, so two reports can be compared honestly. Setup proposes a different matrix nearly every time, and results move with it.",
+          "required": [
+            "origin",
+            "matrix_fingerprint",
+            "config_sha256",
+            "setup_draft"
+          ],
+          "properties": {
+            "origin": {
+              "type": "string",
+              "description": "Whether the config file is part of the reviewed commit. committed: it is, byte for byte, so the matrix is REUSED and pinned with the repository. working_tree: it is not (untracked, or modified since), so the matrix is FRESH, written by setup or by hand after the commit. unknown: not measured (not a Git checkout, a refused probe, or a direct synthesize.py run); never reported as reused.",
+              "enum": [
+                "committed",
+                "working_tree",
+                "unknown"
+              ]
+            },
+            "matrix_fingerprint": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "description": "SHA-256 over the matrix as applied: each review group's sorted files and sorted floor panels on the reviewed tree. Effect-based, so it is order-free: two configs whose groups are ordered differently hash the same exactly when they realise the same cells. Panels a scout added are not included. It is summary.health.basis.layout_fingerprint plus each group's floor panels."
+            },
+            "config_sha256": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "pattern": "^sha256:[0-9a-f]{64}$",
+              "description": "SHA-256 over the config as written: its groups and their globs in authored order, exclude_paths, and the settings that shape the cut. Key order, comments and whitespace do not count; group order does, because groups claim files first-match-wins. null when the driver recorded none."
+            },
+            "setup_draft": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "description": "For a working_tree config only: whether it equals the draft this target's last setup run wrote (unchanged) or not (differs), read from the operator's own state directory and never from the target. null when setup recorded no draft, and always null for any other origin.",
+              "enum": [
+                "unchanged",
+                "differs",
+                null
+              ]
+            }
+          },
+          "additionalProperties": false
+        },
         "target_commit": {
           "type": "string",
           "pattern": "^([0-9a-f]{40}|[0-9a-f]{64})$",
