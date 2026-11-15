@@ -215,6 +215,14 @@ class TestUnansweredBackupsHoldTheLetterBack(unittest.TestCase):
 
 
 class TestSynthesizeReadsTheRunRecord(_RunDir):
+    def test_the_finding_set_carries_the_loader_stamps(self):
+        import types
+        self.bundle("g1", "SEC", [_VERDICT])
+        fs = findings_mod.FindingSet.load(types.SimpleNamespace(verdicts_dir=self.verdicts),
+                                          [], "standard", RUN_ID, prepared=([], None, {}))
+        self.assertEqual({"verdicts-g1-SEC-backup.json":
+                          {"run_id": RUN_ID, "stage": "backup", "kept": 1}}, fs.bundle_files)
+
     def test_plan_inputs_load_carries_the_block(self):
         self.summon(("g1", "SEC"))
         accepted, unloadable = self.loaded()
