@@ -130,6 +130,37 @@ def _replace(path, text):
     safe_write.atomic_write(path, text)
 
 
+def realised_cells(planned):
+    """What a plan gives each leaf, in a form two plans can be compared by: the files each
+    proposed group claimed, every leaf's kind, panels and FILES, and the ungrouped files.
+    The files and not their count: two layers of one group can trade equal numbers."""
+    return ({name: sorted(files) for name, files in planned["claims"].items()},
+            sorted((leaf["name"], leaf["kind"], tuple(sorted(leaf["domains"])),
+                    tuple(sorted(planned["leaf_files"][leaf["name"]])))
+                   for leaf in planned["report"]["leaves"]),
+            sorted(planned["report"]["ungrouped"]))
+
+
+def _canonical(assembled, planned, disclosure, files, committed, cap, ceiling):
+    """(assembled, planned) in canonical form when that changes no cell, else as given
+    (#3651). The agent returns one matrix in a different order and spelling each run;
+    `setup_proposal.canonicalise` rewrites it one way. It is kept only when planning it
+    gives every leaf the same files as planning the proposal as written, so the rewrite can
+    never move a file -- whatever the matcher does with a pattern nobody thought of. A
+    proposal that fails that check is used as written, and the report says so."""
+    from scripts import setup_proposal as sp
+    candidate = sp.canonicalise(assembled, as_written=set(committed))
+    if candidate == assembled and list(candidate) == list(assembled):
+        return assembled, planned
+    replanned = grouping_engine.plan_groups(files, committed, candidate, cap, ceiling=ceiling)
+    if realised_cells(replanned) != realised_cells(planned):
+        disclosure["warnings"].append(
+            "proposal used as written: its canonical order and spelling would move files "
+            "between groups, so the order it was given in is kept")
+        return assembled, planned
+    return candidate, replanned
+
+
 def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups=None):
     """Ingest a setup-scan proposal -> assemble (aliases, layers, floors) ->
     stage 3 (grouping_engine.plan_groups: scoped assignment, Tests sweep,
@@ -187,8 +218,9 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
     cap = max_per_group or overrides["max_per_group"] or discovery.DEFAULT_MAX_PER_GROUP
     ceiling = max_groups or overrides["max_groups"]
     committed = committed_matrix(repo)
-    planned = grouping_engine.plan_groups(
-        discovery.discover_repo_files(repo), committed, assembled, cap, ceiling=ceiling)
+    files = discovery.discover_repo_files(repo)
+    planned = grouping_engine.plan_groups(files, committed, assembled, cap, ceiling=ceiling)
+    assembled, planned = _canonical(assembled, planned, disclosure, files, committed, cap, ceiling)
     merged, diff = sp.merge_additive(committed, planned["groups"], planned["claims"])
     report = planned["report"]
     # Serialize everything BEFORE opening any file: a serializer failure must

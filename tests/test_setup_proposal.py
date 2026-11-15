@@ -863,8 +863,10 @@ class TestAssembleV2(unittest.TestCase):
              "profile": {"surfaces": ["db_sql"]}}
         for order in ((a, b), (b, a)):
             groups, disc = sp.assemble(self._p(list(order)), self.vocab, self.affinity)
-            # one group, named by the first spelling seen
-            self.assertEqual(list(groups), [order[0]["capability"].split(":")[1]], order)
+            # One group. #3651: it used to be named by the first spelling SEEN, which
+            # followed the agent's output order. It is the spelling that sorts first now,
+            # so both orders give one name.
+            self.assertEqual(list(groups), ["Spelunking"], order)
             self.assertEqual(groups[list(groups)[0]]["panels"], ["ARC", "DAT", "SEC"], order)
             self.assertEqual(disc["groups"][0]["floor_source"], "profile")
             self.assertEqual(disc["collisions"][0]["capability"], order[1]["capability"])
