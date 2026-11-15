@@ -21,6 +21,18 @@
     agent claims no verify advisor answered are its second reason, so a run whose every verify
     launch failed no longer prints S beside an INCONCLUSIVE gate.
 
+- **`devtools/matrix_stability.py` measures what a different setup draft does to a review (#3651,
+  phase 1).** Review-stability numbers so far froze one draft per target, so the draft's own
+  effect was never measured. Given the reports of runs that each used its own draft, and of
+  frozen-matrix repeat runs as a baseline, the script reports how much the CRITICAL and HIGH
+  finding sets, the gate, the letter and the health score move in each group, each draft against
+  the baseline, and how far the drafts themselves differ. It reads finished reports and runs
+  nothing, and its output is aggregates only unless `--detail` is given. `devtools/compare_runs.py`
+  gains `--allow-different-layouts`, the explicit opt-in for runs whose layouts differ; without
+  it such runs are refused as before. Under it a dirty tree is accepted for a run whose report
+  says its matrix is a working-tree file, and never called verified: `commit_verified` stays
+  false, `dirty_excused` names the run, and the summary keeps its `COMMIT UNVERIFIED` line.
+
 - **A report says which matrix it ran under (#3651, phase 3).** Setup proposes a different matrix
   nearly every time it is asked, and a review's results move with it, so two reports could not
   be compared honestly. Every report now carries `meta.matrix`, and a `Matrix:` line among the
