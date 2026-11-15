@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- **`driver readiness` reads a stored run only when a run in this checkout wrote it (#3671).** A
+  target could commit a run folder holding a posture with every control PROVEN, and a
+  `runs/latest` symlink to it. Readiness read through the symlink and printed that posture as
+  this run's ("every control this run relies on was verified, not assumed"), and called a
+  shipped report a `complete` run, for a run `driver loop` would halt on or never resume. Now
+  every row that describes a stored run reads the folder this checkout's own manifest names,
+  and only when that manifest loads and is not foreign (not git-tracked, and stamped for this
+  checkout). `runs/latest` is never followed. Otherwise:
+  - `capabilities` says `not measured` and shows none of the stored text.
+  - `existing-run` says `none -- no run of this checkout found` and names nothing it found.
+  - `tool-findings` gives no count, and `egress-proxy` does not inherit the stored flags.
+
+  Under `--reset`, and for a host other than the stored run's, `tool-findings` and
+  `egress-proxy` no longer describe the stored run either, and a bare `readiness --reset` now
+  reports on the host `driver loop --reset` would drive, not the outgoing manifest's.
+
 - **`--setup --reset` rotates the top-level ledger and usage (#3647).** A setup run lives in
   the flat `.panopticon/`, so its `dispatch-ledger.jsonl` and `usage.json` accumulated across
   repeated setups, and `usage.json` -- derived from the whole ledger -- reported the running

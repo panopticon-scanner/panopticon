@@ -430,6 +430,7 @@ groups:
       tests:
       - tests/test_loop_progress.py
       - tests/test_readiness_plan.py
+      - tests/test_readiness_stored_run.py
       - tests/test_orchestrate.py
       - tests/test_orchestrate_batch.py
       - tests/test_orchestrate_checkpoint.py
