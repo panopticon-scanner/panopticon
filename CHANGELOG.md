@@ -11,6 +11,47 @@
   every moved guard is unknown for that host-class reason, the run stays `paused`, with the resume
   advice and the stored posture unchanged. A probe that ran and proved less is still drift.
 
+- **The read guard's grant walk no longer recurses, and reports an entry it cannot stat
+  (#3658).** `guard_rules.grant_walk` ran on `os.walk`, which recurses a frame per directory
+  level before Python 3.12: a grant nested deeper than the recursion budget stopped setup with a
+  traceback. It also read a failed is-directory stat as "a file", so a directory could go
+  unvisited with nothing said. The walk now keeps its own stack and puts such an entry in
+  `unwalked`, which denies searches on its line as an unreadable directory already did. What it
+  records is otherwise unchanged: escapes, Keychain paths, the top-level `.git` prune and the
+  entry cap all fall where they did. One difference: a top-level `.git` that is a symlink into a
+  Keychain is now recorded as a Keychain link rather than stat'd and pruned. The walk is one
+  definition (`guard_rules.iter_tree`) shared with the `target-discovery-surface` probe.
+
+- **A confirmed CRITICAL or HIGH caps the letter grade (#3652).** The grade is the health band
+  (#3328, unchanged), so a large codebase could grade A or B beside open confirmed CRITICALs. A
+  severity cap now sits on top of the band: a confirmed CRITICAL caps the letter at D and a
+  confirmed HIGH at B (owner ruling). The cap only lowers, and it is disclosed beside the band
+  letter -- `summary.grade_cap` in the JSON, and "D (capped from A by 2 confirmed CRITICAL)" in
+  the terminal and HTML grade. Confirmed means the default gate's population (`tool_confirmed`,
+  `advisor_confirmed` or `backup_scope_limited`) under every gate policy, so an unconfirmed
+  finding never caps. `devtools/compare_runs.py` records each run's band letter. Per-group
+  panel grades were already the max-severity rollup of each group's own findings.
+
+- **Own-package advisories are stable across identical runs (#3649).** On identical tool output a
+  first-party advisory (#3593) could vanish or flip between `tool_confirmed` and
+  `needs_more_info`. Trivy reports each package at its own Cargo.lock line, so its advisory can
+  sit alone at a locus; when an agent flagged the same line, synthesis collapsed the tool+agent
+  pair to the MORE SEVERE member, which was the agent's claim whenever it was more severe -- so
+  the advisory disappeared, or was queued to the advisor in its place. A first-party advisory is
+  now never collapsed into an agent finding: both survive, the advisory stays first-party (and
+  reinforced when the agent agrees on category), and the agent claim queues on its own.
+  Separately, two tools reporting one advisory on one package (osv-scanner and cargo-audit at
+  `Cargo.lock:1`) kept whichever came first in input order, so the survivor's severity and source
+  moved with the order. Content now decides: an agent-corroborated locus first, then the lowest
+  line (a LOW at line 1 still beats a CRITICAL at line 5), then the most severe, the source, the
+  reported version and the title. And the first-party mark is part of the grouping key, so the
+  project's own `workspace-app 1.2.3` and a registry `workspace-app 0.9.0` in the same lock stay
+  two findings: before, one copy was dropped by input order or by an agent's line.
+  **Intended gating change (owner ruling):** because the most severe duplicate now survives, a
+  gate can turn from PASS to FAIL on the same tool output -- osv-scanner CRITICAL plus
+  cargo-audit LOW for one advisory at one locus, with `--fail-on high`, now FAILs, where the
+  input order used to let the LOW survive and PASS.
+
 - **The instruction-file walk re-checks a directory for a link before descending it (#3645
   follow-up).** The entry-capped walk decided "real directory" when it listed the parent and
   descended later, so a directory swapped for a symlink in between was followed. It is now asked
