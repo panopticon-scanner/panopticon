@@ -176,7 +176,8 @@ a project, and the target's own `skill/` to test changes to panopticon itself.
 - `driver run [target] [flags]` — the single-step primitive `driver loop` calls; drive by hand
   only when debugging a phase.
 - Key flags: `--host NAME`, `--security {standard,redteam}`,
-  `--fail-on {critical,high,medium,low}`, `--severity {all,medium,high,critical}`,
+  `--fail-on {critical,high,medium,low,off}` (default `critical`; `off` disables the gate and
+  the report says so), `--severity {all,medium,high,critical}`,
   `--tools`, `--no-tools`, `--max-per-group N`, `--gate-scope`, `--base <ref>`,
   `--pr <n>`, `--changes`, `--max-verify N`, `--allow-unenforced` (required to
   dispatch write-capable reviewers when the artifact-write boundary is unproven).

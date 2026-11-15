@@ -481,13 +481,20 @@ class TestReport(unittest.TestCase):
         self.assertEqual(rc, 0)
         return errbuf.getvalue()
 
-    def test_delta_review_without_fail_on_warns_loudly(self):
-        # #957: a delta review is gate-first by intent; running one without
-        # --fail-on silently yields Gate: OFF. Must warn on stderr.
+    def test_delta_review_with_the_gate_off_warns_loudly(self):
+        # #957: a delta review is gate-first by intent. Since #3673 only `--fail-on off`
+        # yields Gate: OFF, and that must warn on stderr.
+        with tempfile.TemporaryDirectory() as d:
+            err = self._delta_run(d, ["--fail-on", "off"])
+            self.assertIn("Gate: OFF", err)
+            self.assertIn("--fail-on off", err)
+
+    def test_delta_review_without_fail_on_is_gated_and_does_not_warn(self):
+        # #3673: no flag used to be the forgotten-flag case #957 warned about. It is the
+        # default gate now, so there is nothing to warn of.
         with tempfile.TemporaryDirectory() as d:
             err = self._delta_run(d, [])
-            self.assertIn("Gate: OFF", err)
-            self.assertIn("--fail-on", err)
+            self.assertNotIn("Gate: OFF", err)
 
     def test_delta_review_with_fail_on_does_not_warn(self):
         with tempfile.TemporaryDirectory() as d:
