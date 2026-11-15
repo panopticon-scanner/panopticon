@@ -21,6 +21,7 @@ import os
 
 from scripts import discovery  # P6.5 Slice A: discovery primitives, moved off orchestrator
 from scripts import grouping_engine  # 5.2: stage-3 size policy + setup report
+from scripts import matrix_provenance  # #3651: the draft's hash, for a later run to compare
 from scripts import repo_config  # #1681: the one place the config names live
 from scripts import safe_write
 from scripts import tolerant_json  # #2959: the JSON depth bound
@@ -210,5 +211,8 @@ def ingest_proposal(repo=".", proposal_path=None, max_per_group=None, max_groups
                        (os.path.join(root, "setup-report.json"), report_json)):
         with runio._open_w_nofollow(path) as fh:   # #1577
             fh.write(text)
+    # #3651: remember what this draft hashes to, in the operator's state directory, so a
+    # later run can say whether its working-tree config is this proposal, unchanged.
+    matrix_provenance.record_draft(repo, matrix_provenance.text_digest(draft_text))
     return {"ok": True, "draft": draft, "diff": diff, "disclosure": disclosure,
             "report": report, "report_path": report_path}

@@ -30,6 +30,35 @@
     agent claims no verify advisor answered are its second reason, so a run whose every verify
     launch failed no longer prints S beside an INCONCLUSIVE gate.
 
+- **`devtools/matrix_stability.py` measures what a different setup draft does to a review (#3651,
+  phase 1).** Review-stability numbers so far froze one draft per target, so the draft's own
+  effect was never measured. Given the reports of runs that each used its own draft, and of
+  frozen-matrix repeat runs as a baseline, the script reports how much the CRITICAL and HIGH
+  finding sets, the gate, the letter and the health score move in each group, each draft against
+  the baseline, and how far the drafts themselves differ. It reads finished reports and runs
+  nothing, and its output is aggregates only unless `--detail` is given. `devtools/compare_runs.py`
+  gains `--allow-different-layouts`, the explicit opt-in for runs whose layouts differ; without
+  it such runs are refused as before. Under it a dirty tree is accepted for a run whose report
+  says its matrix is a working-tree file, and never called verified: `commit_verified` stays
+  false, `dirty_excused` names the run, and the summary keeps its `COMMIT UNVERIFIED` line.
+
+- **A report says which matrix it ran under (#3651, phase 3).** Setup proposes a different matrix
+  nearly every time it is asked, and a review's results move with it, so two reports could not
+  be compared honestly. Every report now carries `meta.matrix`, and a `Matrix:` line among the
+  provenance lines of the terminal summary and the HTML header:
+  - `matrix_fingerprint`: a hash of the matrix as applied (each group's files and floor panels
+    on the reviewed tree). Group order in the config is semantic, because groups claim files
+    first-match-wins, so the hash is effect-based: two orderings hash the same exactly when
+    they realise the same cells. `summary.health.basis.layout_fingerprint` is unchanged.
+  - `config_sha256`: a hash of the config as written, authored order kept.
+  - `origin`: `committed` (reused: the config is in the reviewed commit, byte for byte),
+    `working_tree` (FRESH: written after it) or `unknown` (not measured; never reported as
+    reused). The driver measures it once, at run start, by comparing the commit's blob with the
+    bytes on disk.
+  - `setup_draft`: for a fresh config, whether it is `driver setup`'s last draft, `unchanged`
+    or not. Setup records its draft's hash in the operator's state directory; nothing in the
+    target is trusted for it.
+
 - **A fault-injection harness drives the whole pipeline through host failures (#3669).** Tests
   only. `tests/test_fault_injection.py` reviews a small fixture target end to end with
   `driver loop` while a fake host fails a planned share of its launches: a non-zero exit, a

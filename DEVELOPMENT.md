@@ -439,7 +439,27 @@ and refuses any dirty run. A report with no recorded commit needs `--allow-unkno
 summary then opens with `COMMIT UNVERIFIED`. Agent findings match on file and category plus line
 proximity (`--line-window`, default 5), and tool findings on their fingerprint. The module
 docstring documents the key. It reports agreement, CRITICAL/HIGH consistency, score spread and
-lost cells, and sets no thresholds.
+lost cells, and sets no thresholds. `--allow-different-layouts` (#3651) is the one opt-in for runs
+whose layouts differ, which is what runs under different setup drafts are: the summary then opens
+with `LAYOUTS DIFFER` and each run's fingerprint, and a dirty tree is accepted only for a run whose
+report says its matrix is a working-tree file. Accepted is not verified: such a run is named under
+`DIRTY TREE, FRESH MATRIX` and in `identity.dirty_excused`, `commit_verified` stays false, and the
+`COMMIT UNVERIFIED` line stays.
+
+### Measuring what a different matrix does
+`python3 devtools/matrix_stability.py DRAFT-report.json [...] --baseline FROZEN-report.json [...]`
+scores how much a review's results move when setup's draft does (#3651). The positional reports are
+runs on one commit that each used its own draft; `--baseline` reports are repeat runs that all used
+one frozen matrix, so they measure the review's own noise and the draft's effect is the difference.
+`--baseline` takes every argument after it, so the draft reports come first.
+For CRITICAL, HIGH and HIGH+ findings, gate-eligible and all active, it reports each group's
+pairwise Jaccard similarity and found-by counts; then the gate, the letter and the health score;
+each draft run against what most baseline runs found; and how far the drafts themselves differ
+(group count, shared names, and the share of file pairs grouped together in both), with the
+correlation between that and the findings' similarity. It reads finished reports and runs nothing.
+**Its output is aggregates only** unless `--detail` is given: counts, ratios, hashes and run labels,
+with no finding title, path, target name or commit, so the summary can be shared when the runs
+cannot. It sets no thresholds.
 
 ### The Dockerfile PR build's disk
 `docker-build-pr.yml` builds the tools image with `load: true`, so at the import the runner holds the
