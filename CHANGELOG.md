@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **`driver readiness` no longer shows another run's posture as this one's (#3668).** Its
+  `capabilities` row read back whatever posture the target's run folder held. So
+  `driver readiness . --host agy --reset`, over a folder left by a claude run, reported "all
+  measured and PROVEN ... on host 'claude'" for an agy run that had measured nothing. The row now
+  shows a stored posture only when it was measured on the host the document is about and `--reset`
+  is not given. Otherwise it says `not measured`, reports `measured: false` with no states under
+  `--json`, and shows none of the stored text.
+
 - **Own-package advisories are stable across identical runs (#3649).** On identical tool output a
   first-party advisory (#3593) could vanish or flip between `tool_confirmed` and
   `needs_more_info`. Trivy reports each package at its own Cargo.lock line, so its advisory can
