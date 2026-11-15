@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **Tool findings a split report put out of sight, and a letter that read as checked (#3667).**
+  An owner run whose tool advisors all went unanswered seemed to keep almost none of its 145 tool
+  findings. None were lost: the report was over the writer's byte budget, so `findings[]` was
+  split into part files. Every tool finding came after every agent finding, so the main
+  `report.json` held almost none of them. Meanwhile the letter printed as certified.
+  - `findings[]` is now published worst first (gate-eligible, severity, evidence status, then the
+    old order), split or not, so the main file carries what matters most.
+  - A split main file names what each part holds (`meta.parts_findings`), and the terminal and
+    HTML print a `**Report parts:**` line.
+  - `meta.coverage.tool_axis.by_tool` reconciles each scanner: ingested, in the report, merged
+    into an agent finding, or dropped into another tool finding, with the reason.
+  - Unanswered tool advisors hold the letter back as provisional with the reason
+    (`summary.grade_shortfalls`, "S (provisional; 23 tool findings unanswered by their
+    advisors)"), make coverage NOT CERTIFIED with that reason, and move a PASS gate to
+    INCONCLUSIVE. The findings stay as `tool_reported`. `grade_shortfalls` is one shared rule
+    (owner ruling): any undone verify work it lists holds the letter back the same way.
+
 - **Own-package advisories are stable across identical runs (#3649).** On identical tool output a
   first-party advisory (#3593) could vanish or flip between `tool_confirmed` and
   `needs_more_info`. Trivy reports each package at its own Cargo.lock line, so its advisory can

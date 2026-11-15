@@ -444,10 +444,34 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=(), model_subs
         },
         "summary": summary,
         "groups": graded.groups,
-        "findings": resolved.active,
+        "findings": worst_first(resolved.active, resolved.gate_eligible),
         "discarded_claims": resolved.rejected,
         "cross_panel": {"integration_findings": resolved.integration_findings},
     }
+
+
+# #3667: the order `findings[]` is published in, best evidence first. A split
+# report's main file carries only the first chunk, so it must be the chunk that
+# matters most. Statuses outside this list (none today) sort after it.
+_STATUS_ORDER = ("tool_confirmed", "advisor_confirmed", evidence_mod.BACKUP_SCOPE_LIMITED,
+                 "corroborated", "needs_more_info", "tool_reported", "unverified")
+
+
+def worst_first(active, gate_eligible):
+    """#3667 (owner ruling 2026-11-15): the report body, worst first.
+
+    Gate-eligible findings lead (the population the gate counted, under this
+    run's own policy and scope), then severity, then evidence status; the
+    pipeline order breaks every tie (`sorted` is stable). The SAME order whether
+    or not the report is later split, so the order never depends on its size.
+    Only the order changes: the members are the same objects."""
+    counted = {id(f) for f in gate_eligible}
+
+    def key(f):
+        status = (f.get("evidence") or {}).get("status")
+        return (0 if id(f) in counted else 1, findings_mod._sev_rank(f),
+                _STATUS_ORDER.index(status) if status in _STATUS_ORDER else len(_STATUS_ORDER))
+    return sorted(active, key=key)
 
 
 def _needs_cvss(f):

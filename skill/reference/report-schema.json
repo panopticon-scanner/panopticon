@@ -34,7 +34,7 @@
     },
     "meta": {
       "type": "object",
-      "description": "#1602 ruling 4: CLOSED. `additionalProperties: false`, so a meta section the schema does not describe fails validation at RUN time, not only in tests/test_schema_parity.py -- which is how `host_capabilities` drifted for a whole release. Three producers write here and only three: `synth.report.assemble` (every section below except the four that follow), `synth.render.write_report` (`parts`, `discarded_claims_file`, `discarded_claims_count`) and `synth.report.attach_schema_status` (`schema_errors`). A new key means a schema entry in the same PR -- describe it, do not reopen this.",
+      "description": "#1602 ruling 4: CLOSED. `additionalProperties: false`, so a meta section the schema does not describe fails validation at RUN time, not only in tests/test_schema_parity.py -- which is how `host_capabilities` drifted for a whole release. Three producers write here and only three: `synth.report.assemble` (every section below except the four that follow), `synth.render.write_report` (`parts`, `parts_findings`, `discarded_claims_file`, `discarded_claims_count`) and `synth.report.attach_schema_status` (`schema_errors`). A new key means a schema entry in the same PR -- describe it, do not reopen this.",
       "required": [
         "target",
         "review_type",
@@ -139,6 +139,17 @@
             "type": "string"
           },
           "description": "Basenames of the `<stem>_partN.json` continuation files this report was split into, written when the document exceeds the writer's byte budget. The main file then carries only the first chunk of `findings`, so a consumer that reads it alone has a PARTIAL report: hydrate the union before validating or comparing (synth/render._read_json_report is that reader)."
+        },
+        "parts_findings": {
+          "type": "object",
+          "description": "#3667: what each `parts` file holds, {part basename: {origin: count}}, where origin is the finding's `tool:<name>` source or \"agent\". Written with `parts`, so a reader of the main file alone sees which scanners' findings sit in the part files; the main file's own findings are the rest. findings[] is published worst first (gate-eligible, then severity, then evidence status), so the main file carries the findings that matter most.",
+          "additionalProperties": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
         },
         "discarded_claims_file": {
           "type": "string",
@@ -379,6 +390,52 @@
                     "number",
                     "null"
                   ]
+                },
+                "by_tool": {
+                  "type": "object",
+                  "description": "#3667: per scanner (keyed by the `tool:<name>` source's name), where every tool finding synthesize received went. ingested == in_report + merged_into_agent + dropped, and dropped_reasons sums to dropped. in_report counts the findings in `findings` and `discarded_claims` (on a split report some sit in the part files: see meta.parts_findings); merged_into_agent counts the ones folded into an agent finding at the same locus (that finding is `reinforced`); dropped counts collapses into ANOTHER tool finding that is in the report: aggregated_into_tool_finding (repeat hits of one rule in one file, counted in the survivor's `occurrences`) or deduplicated_into_tool_finding (one rule on one artifact at one locus, the most severe kept). A scanner whose findings all collapsed elsewhere is still listed.",
+                  "additionalProperties": {
+                    "type": "object",
+                    "required": [
+                      "ingested",
+                      "in_report",
+                      "merged_into_agent",
+                      "dropped",
+                      "dropped_reasons"
+                    ],
+                    "additionalProperties": false,
+                    "properties": {
+                      "ingested": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "in_report": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "merged_into_agent": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "dropped": {
+                        "type": "integer",
+                        "minimum": 0
+                      },
+                      "dropped_reasons": {
+                        "type": "object",
+                        "propertyNames": {
+                          "enum": [
+                            "aggregated_into_tool_finding",
+                            "deduplicated_into_tool_finding"
+                          ]
+                        },
+                        "additionalProperties": {
+                          "type": "integer",
+                          "minimum": 1
+                        }
+                      }
+                    }
+                  }
                 }
               }
             },
@@ -1194,7 +1251,7 @@
             "string",
             "null"
           ],
-          "description": "The letter overall_grade would have carried, held back because coverage did not complete. Same bands.",
+          "description": "The letter overall_grade would have carried, held back because coverage did not complete or verify work was left undone (grade_shortfalls). Same bands.",
           "enum": [
             "S",
             "A",
@@ -1205,6 +1262,13 @@
             "X",
             null
           ]
+        },
+        "grade_shortfalls": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "#3667 (owner ruling): verify work this run left undone, one reason per entry, e.g. \"145 tool findings unanswered by their advisors\". Any entry holds the letter back as provisional_grade (overall_grade null), makes coverage NOT CERTIFIED and a PASS gate INCONCLUSIVE, and is named in coverage_note. The unanswered findings stay in the report as tool_reported. Empty when nothing was left undone."
         },
         "coverage_certified": {
           "type": "boolean"
