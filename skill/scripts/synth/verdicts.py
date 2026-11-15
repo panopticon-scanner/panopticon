@@ -102,6 +102,10 @@ class Resolved:
     # recognise and read as CRITICAL, taken BEFORE dedupe so an absorbed one is
     # named too; published as `meta.integrity.unknown_severity_findings`.
     unknown_severity_ids: list = field(default_factory=list)
+    # #3667: the queued TOOL findings whose advisor never answered, of
+    # `unanswered_gate`'s count. They stay in the report as `tool_reported`;
+    # certify names them in `coverage_note` so the shortfall is said, not implied.
+    unanswered_tools: int = 0
 
 
 @dataclass(frozen=True)
@@ -111,6 +115,7 @@ class _Matches:
     unanswered: int
     engaged_cells: set
     misrouted: list
+    unanswered_tools: int = 0
 
 
 def _own_verdict(fs, finding, queue_id):
@@ -165,6 +170,7 @@ def _bind_verdicts(fs, findings, queue):
     matched = {}
     matched_n = 0
     unanswered = 0
+    unanswered_tools = 0
     by_fid = fs.verdict_bundles or {}
     # Computed on PRE-verdict evidence (nothing below has applied a verdict yet)
     # and on this DEDUPED `findings` list, so it is a subset of (never
@@ -187,8 +193,11 @@ def _bind_verdicts(fs, findings, queue):
             matched_n += 1
         elif fs.verdicts_supplied and plan_mod._finding_owed_verification(entry["finding"], engaged_cells):
             unanswered += 1
+            if evidence_mod.is_tool_sourced(entry["finding"]):
+                unanswered_tools += 1
         matched[id(entry["finding"])] = v
-    return _Matches(matched, matched_n, unanswered, engaged_cells, verdict_misrouted)
+    return _Matches(matched, matched_n, unanswered, engaged_cells, verdict_misrouted,
+                    unanswered_tools)
 
 
 def _verify_matrix(findings, matches):
@@ -297,7 +306,51 @@ def _derive_evidence(findings, catalog, matched, pre_verdict_fps):
 
 
 
-def _tool_axis(findings):
+# #3667: why an ingested tool finding is not itself in the report. Both are
+# collapses into ANOTHER tool finding that is: `aggregate_tool_findings` folds a
+# rule's repeat hits in one file into one survivor (counted in its
+# `occurrences`, the loci in `additional_loci`), and `dedupe` keeps the most
+# severe of one rule on one artifact at one locus.
+DROP_AGGREGATED = "aggregated_into_tool_finding"
+DROP_DEDUPED = "deduplicated_into_tool_finding"
+
+
+def _absorbed_into(findings):
+    """{id(member): survivor} for every member `dedupe` collapsed, read before
+    `restore_confirmed` strips the carrier."""
+    return {id(m): survivor for survivor in findings
+            for m in survivor.get(corroborate_mod.ABSORBED_FIELD) or ()}
+
+
+def _tool_reconciliation(ingested, findings, absorbed_into):
+    """#3667: per scanner, where each ingested tool finding went.
+
+    `ingested` is the tool findings synthesize received, `findings` the
+    pipeline's survivors (the report body plus `discarded_claims`). Every
+    ingested finding lands in exactly one bucket, so
+    `ingested == in_report + merged_into_agent + dropped` for each scanner, and
+    `dropped_reasons` sums to `dropped`. A scanner whose findings all collapsed
+    elsewhere is still listed, with its reasons."""
+    present = {id(f) for f in findings}
+    out: dict[str, dict[str, Any]] = {}
+    for f in ingested:
+        row = out.setdefault(evidence_mod.tool_name(f) or "", {
+            "ingested": 0, "in_report": 0, "merged_into_agent": 0, "dropped": 0,
+            "dropped_reasons": {}})
+        row["ingested"] += 1
+        survivor = absorbed_into.get(id(f))
+        if id(f) in present:
+            row["in_report"] += 1
+        elif survivor is not None and not evidence_mod.is_tool_sourced(survivor):
+            row["merged_into_agent"] += 1
+        else:
+            reason = DROP_DEDUPED if survivor is not None else DROP_AGGREGATED
+            row["dropped"] += 1
+            row["dropped_reasons"][reason] = row["dropped_reasons"].get(reason, 0) + 1
+    return {tool: out[tool] for tool in sorted(out)}
+
+
+def _tool_axis(findings, by_tool=None):
     """Measure tool-side decisions independently from the severity gate."""
     tool_like = [f for f in findings
                  if evidence_mod.is_tool_sourced(f) or f.get("reinforced")]
@@ -318,6 +371,7 @@ def _tool_axis(findings):
         # mirror of the 27% agentic rejection rate. None when nothing was
         # decided, so an unverified run reports "unmeasured", not "0%".
         "rejection_rate": round(rejected_n / decided, 3) if decided else None,
+        "by_tool": by_tool or {},
     }
 
 
@@ -470,7 +524,10 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
               "severity, %d with none: %s"
               % (len(unknown_severity), len(unknown_severity) - absent, absent,
                  ", ".join(unknown_severity)), file=sys.stderr)
+    ingested_tools = [f for f in fs.findings
+                      if isinstance(f, dict) and evidence_mod.is_tool_sourced(f)]
     findings, integration_findings = corroborate_mod.prepare_for_queue(fs.findings)
+    absorbed_into = _absorbed_into(findings)
     catalog = fs.catalog if fs.catalog is not None else load_cwe_catalog()
     ocrdb_bundle = ocrdb.load_bundle()
     ocrdb_coverage = codes_mod.validate_finding_codes(findings, ocrdb_bundle)
@@ -496,7 +553,8 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     _derive_evidence(findings, catalog, matches.matched, pre_verdict_fps)
     # #3231: after the verdict-quality step and the evidence it reads, before anything counts.
     severity_cap_mod.apply(findings, run, groups_meta)
-    tool_axis = _tool_axis(findings)
+    tool_axis = _tool_axis(findings, _tool_reconciliation(ingested_tools, findings,
+                                                          absorbed_into))
     partitions = _partition_gate(findings, delta, run)
     gated, suppressed_not_gated = _scope_suppressed(gated_suppressed, delta, run)
     tool_names = {evidence_mod.tool_name(f) for f in findings
@@ -516,5 +574,6 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
                     doc_policy=fs.doc_policy, verdict_unloadable=fs.verdict_unloadable or [],
                     # Measured only when --verdicts-dir was passed at all.
                     unanswered_gate=matches.unanswered if fs.verdicts_supplied else 0,
+                    unanswered_tools=matches.unanswered_tools if fs.verdicts_supplied else 0,
                     gated_suppressed=gated, suppressed_not_gated=suppressed_not_gated,
                     unknown_severity_ids=unknown_severity)

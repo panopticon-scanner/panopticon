@@ -33,8 +33,43 @@ def _grade_text(summary):
         return summary["overall_grade"] + (" (%s)" % cap if cap else "")
     if summary.get("provisional_grade"):
         return "%s (provisional%s)" % (summary["provisional_grade"],
-                                       "; %s" % cap if cap else "")
+                                       _shortfall_suffix(summary)
+                                       + ("; %s" % cap if cap else ""))
     return "n/a (no reviewed lines of code to grade)"
+
+
+def parts_line(report):
+    """#3667: where a split JSON report's findings sit, or None when it was not split.
+
+    "report.json carries 51 of 167 findings; report_part2.json: agent 51;
+    report_part3.json: agent 17, tool:osv-scanner 48". Read off the
+    `meta.parts_findings` map `write_report` sets, so it names what was written."""
+    parts = (report.get("meta") or {}).get(PARTS_FINDINGS)
+    if not isinstance(parts, dict) or not parts:
+        return None
+    total = len(report.get("findings") or [])
+    in_parts = sum(n for counts in parts.values() if isinstance(counts, dict)
+                   for n in counts.values() if isinstance(n, int))
+    return "the main JSON file carries %d of %d findings; %s" % (
+        max(total - in_parts, 0), total, "; ".join(
+            "%s: %s" % (tool_base.inert_text(name), ", ".join(
+                "%s %d" % (tool_base.inert_text(origin), n)
+                for origin, n in sorted(counts.items()) if isinstance(n, int)))
+            for name, counts in sorted(parts.items()) if isinstance(counts, dict)))
+
+
+def shortfall_list(summary):
+    """#3667: `summary.grade_shortfalls` as a list of non-empty strings. Anything
+    that is not a list (a corrupt `--compare` report's string, say) is no reasons,
+    never one reason per character."""
+    reasons = summary.get("grade_shortfalls")
+    return [str(r) for r in reasons if r] if isinstance(reasons, list) else []
+
+
+def _shortfall_suffix(summary):
+    """#3667: "; 145 tool findings unanswered by their advisors" -- why a letter
+    is held back for undone verify work, said beside the letter itself."""
+    return "".join("; " + tool_base.inert_text(r) for r in shortfall_list(summary))
 
 def _render_severity_block(stats, roles, gate_eligible_stats=None):
     """The severity distribution with the gate's reach marked on it.
@@ -402,6 +437,9 @@ def render_summary(report):
         # #1495: coverage is certified but the letter is held back (a non-default scan profile),
         # so the reason is not in a NOT CERTIFIED line; say it beside the grade.
         lines.insert(3, "**Grade provisional:** %s" % s["coverage_note"])
+    split = parts_line(report)
+    if split:
+        lines.insert(3, "**Report parts:** %s" % split)
     _cov = report["meta"].get("coverage") or {}
     targeted = _targeted_review_line(_cov.get("targeted_review"))
     if targeted:
@@ -593,10 +631,29 @@ def redact_report_secrets(report):
     report.update(redacted)
     return report
 
+PARTS_FINDINGS = "parts_findings"
+
+
+def finding_origin(finding):
+    """#3667: `tool:<name>` for a tool-sourced finding, else "agent"."""
+    source = str(finding.get("source") or "")
+    return source if source.startswith("tool:") else "agent"
+
+
 def write_report(report, out_path, max_bytes=800000):
     """Write report to JSON file, splitting into parts if size exceeds max_bytes.
     Stage every file before publishing siblings, then the main report (#1124).
+
+    #3667: a split report's main file says what each part holds,
+    `meta.parts_findings` = {part basename: {origin: count}}, so a reader of the
+    main file alone sees where every scanner's findings went. The same map is
+    set on the CALLER's `report["meta"]` (popped when this write did not split),
+    so the terminal summary and the HTML, rendered from the in-memory report,
+    can say it too.
     """
+    caller_meta = report.get("meta") if isinstance(report.get("meta"), dict) else None
+    if caller_meta is not None:
+        caller_meta.pop(PARTS_FINDINGS, None)
     out_dir = os.path.dirname(os.path.abspath(out_path)) or "."
     stem, ext = os.path.splitext(out_path)
 
@@ -684,6 +741,16 @@ def write_report(report, out_path, max_bytes=800000):
         part_files.append(os.path.basename(pname))
 
     main_report["meta"]["parts"] = part_files
+    parts_findings = {}
+    for idx in range(1, len(chunks)):
+        counts: dict[str, int] = {}
+        for f in chunks[idx]:
+            origin = finding_origin(f)
+            counts[origin] = counts.get(origin, 0) + 1
+        parts_findings[part_files[idx - 1]] = {k: counts[k] for k in sorted(counts)}
+    main_report["meta"][PARTS_FINDINGS] = parts_findings
+    if caller_meta is not None:
+        caller_meta[PARTS_FINDINGS] = parts_findings
     main_report["findings"] = chunks[0]
 
     all_targets = [(out_path, main_report)]

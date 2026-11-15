@@ -474,19 +474,12 @@ class Gap:
     when: object = None       # outcome -> bool: the runs this gap shows in; None means all
 
 
-#: #3641: verify advisors that never answer leave a letter standing with no reason given.
-#: #3667: the same for tool advisors -- and with every verification phase failing the letter
-#:        that stands is S, beside an INCONCLUSIVE gate.
 #: #3676: backup advisors that never answer leave the report fully certified, and ones that
 #:        write a cut-off file sink certification with no reason; neither is named anywhere.
 #: #3677: the HTML report does not name an exhausted review cell; the terminal does.
 KNOWN_GAPS = (
-    Gap("#3641", fh.ADVISOR, LETTER, _no_review_gap),
-    Gap("#3641", fh.ADVISOR, TERMINAL_NAMES),
-    Gap("#3641", fh.ADVISOR, HTML_NAMES),
-    Gap("#3667", fh.TOOL, LETTER, _no_review_gap),
-    Gap("#3667", fh.TOOL, TERMINAL_NAMES),
-    Gap("#3667", fh.TOOL, HTML_NAMES),
+    # #3641 and #3667's rows are closed by #3667's shared `grading.grade_shortfalls` rule:
+    # unanswered verify and tool advisors hold the letter back and are named on every surface.
     # Backup advisors that left no trace: the report is certified and no surface says a word.
     Gap("#3676", fh.BACKUP, CERTIFIED, _backup_left_no_trace),
     Gap("#3676", fh.BACKUP, JSON_SAYS, _backup_left_no_trace),
