@@ -337,12 +337,17 @@ def critical_high(records):
 
 
 def scores(reports):
-    """Health index, letter and provisional state per run, with the spread."""
+    """Health index, letter and provisional state per run, with the spread.
+
+    `band_grade` is the letter the health bands gave before the #3652 severity
+    cap (None when no cap lowered it), so an A-versus-D pair of same-version
+    runs can be traced to the cap rather than to the score."""
     rows = []
     for report in reports:
         summary = _summary(report)
         rows.append({"score": _dict(summary.get("health")).get("score"),
                      "letter": summary.get("overall_grade"),
+                     "band_grade": _dict(summary.get("grade_cap")).get("band_grade"),
                      "provisional": summary.get("provisional_grade"),
                      "certified": summary.get("coverage_certified")})
     known = [r["score"] for r in rows
@@ -437,8 +442,9 @@ def summary_lines(doc):
     lines.append("scores: min %s, max %s, spread %s" % (
         _num(sc["min"]), _num(sc["max"]), _num(sc["spread"])))
     for i, (row, cell) in enumerate(zip(sc["runs"], doc["cells"])):
-        lines.append("  run%d: score %s, letter %s, provisional %s, certified %s; cells %s/%s%s" % (
+        lines.append("  run%d: score %s, letter %s%s, provisional %s, certified %s; cells %s/%s%s" % (
             i + 1, _num(row["score"]), _text(row["letter"] or "-"),
+            (" (capped from band %s)" % _text(row["band_grade"])) if row.get("band_grade") else "",
             _text(row["provisional"] or "-"), row["certified"],
             _num(cell["answered"]), _num(cell["planned"]),
             " LOST CELLS (misses may be lost coverage)" if cell["lost"] else ""))

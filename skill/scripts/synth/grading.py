@@ -5,6 +5,7 @@ import os
 import stat
 
 import scripts.coverage_model as coverage_model
+import scripts.evidence as evidence_mod
 from . import coverage_io
 from . import health_basis
 from . import delta as delta_mod
@@ -551,6 +552,49 @@ def _worst_grade(grades):
     present = [g for g in grades if g in _GRADE_ORDER]
     return max(present, key=_GRADE_ORDER.index) if present else "A"
 
+# #3652 (owner ruling 2026-11-14; the #3328 bands are not reopened): a severity cap
+# layered on the band grade, so "A" never sits beside an open confirmed CRITICAL.
+# Worst severity first; a level only ever LOWERS the band letter. Owner ruling
+# 2026-11-15: CRITICAL caps at D, HIGH at B.
+# ORDER IS LOAD-BEARING: `severity_cap` returns the FIRST severity present, so
+# the tuple must run worst severity first with a cap that is never better than
+# the next one's (monotone). TestSeverityCapUnits pins both properties.
+SEVERITY_GRADE_CAPS = (("CRITICAL", "D"), ("HIGH", "B"))
+
+
+def severity_cap(gate_eligible):
+    """The cap the worst CONFIRMED severity puts on the band grade, or None.
+
+    Confirmed means the default gate's own population (`GATE_ELIGIBLE_DEFAULT`:
+    tool- or advisor-confirmed, or a confirmed claim the backup could not check),
+    whatever the run's gate policy. An unconfirmed finding never caps -- even
+    under `--gate-unverified`, and even a redteam directory-name drop that joins
+    the gate (#1701) -- so the cap adds no confirmation variance of its own on top
+    of the gate's (#3584)."""
+    confirmed = [f for f in gate_eligible
+                 if (f.get("evidence") or {}).get("status") in evidence_mod.GATE_ELIGIBLE_DEFAULT]
+    for severity, cap in SEVERITY_GRADE_CAPS:
+        count = sum(1 for f in confirmed if f.get("severity") == severity)
+        if count:
+            return {"severity": severity, "count": count, "cap": cap}
+    return None
+
+
+def apply_severity_cap(band_grade, cap):
+    """(grade, disclosure): the band letter, lowered to the cap when the cap is worse.
+
+    The disclosure is None when nothing was lowered -- no confirmed CRITICAL/HIGH,
+    a band already at or below the cap, or no band letter at all (unmeasured
+    health stays unknown rather than inventing one)."""
+    if (cap is None or band_grade not in _GRADE_ORDER
+            or _GRADE_ORDER.index(band_grade) >= _GRADE_ORDER.index(cap["cap"])):
+        return band_grade, None
+    return cap["cap"], {
+        "band_grade": band_grade, "grade": cap["cap"], "severity": cap["severity"],
+        "count": cap["count"],
+        "note": "capped from %s by %d confirmed %s" % (band_grade, cap["count"],
+                                                      cap["severity"])}
+
 def _parent_of(g):
     """Resolve a groups_meta entry's parent review-unit.
 
@@ -616,6 +660,14 @@ def _roll_up_to_parent(group_objs, groups_meta, by_panel):
         node["key_findings"] = key_findings[:5]
         node["subgroups"] = subs
     return rolled
+
+def grade_cap_note(summary):
+    """#3652: "capped from A by 2 confirmed CRITICAL" for a summary whose letter the
+    severity cap lowered, else None. One sentence for the terminal and HTML."""
+    cap = summary.get("grade_cap")
+    note = cap.get("note") if isinstance(cap, dict) else None
+    return note if isinstance(note, str) and note else None
+
 
 _GATE_ROLE_NOTE = {
     "contributing": "**FAILS THE GATE**",
@@ -691,7 +743,8 @@ def grade_report(run, resolved, reconciled, delta=None):
     risk = risk_level(gate_eligible)
     if no_review and risk == "LOW" and not findings_mod._present(gate_eligible, "LOW"):
         risk = None
-    overall = health_grade(health["score"])
+    overall, grade_cap = apply_severity_cap(health_grade(health["score"]),
+                                            severity_cap(gate_eligible))
     # #2178: computed HERE, from the same delta context `resolve_findings`
     # classified against, the same active list it partitioned, and this run's own
     # `gate_scope` -- the three inputs the refusal is a statement about. #2222
@@ -728,6 +781,8 @@ def grade_report(run, resolved, reconciled, delta=None):
     summary = {
         "overall_grade": cert["overall_grade"],
         "provisional_grade": cert["provisional_grade"],
+        # #3652: the band letter and the cap that lowered it, or None.
+        "grade_cap": grade_cap,
         "coverage_certified": cert["coverage_certified"],
         "coverage_note": (cert["coverage_note"] if not no_review else "; ".join(
             filter(None, (coverage_io.REVIEW_MATRIX_MISSING_NOTE, cert["coverage_note"])))),
