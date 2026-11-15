@@ -10,6 +10,7 @@ from scripts import hosts
 import scripts.loop_batch as loop_batch
 from scripts import read_guard_hook
 import scripts.host_disclosure as host_disclosure
+import scripts.matrix_provenance as matrix_provenance
 import scripts.plan_contract as plan_contract
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
@@ -570,6 +571,10 @@ def _scan_fallback(review_root, manifest, host):
     path, created, names = setup_config.seed_flat_manifest(review_root)
     if created and config_clean and config_baseline is not None:
         _record_setup_owned_output(review_root, config_relpath, config_baseline)
+    if created:
+        # #3651: the seed is setup's proposal too, written straight into place.
+        matrix_provenance.record_draft(review_root,
+                                       matrix_provenance.config_digest(review_root)[1])
     # The seed first, then the measurement -- this path's own order, which
     # `ingest_execute` now mirrors. Same helpers as the normal path (#1603):
     # what this records and what it prints are what they were.

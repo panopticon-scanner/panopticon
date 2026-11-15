@@ -106,7 +106,11 @@ intended, move the glob from `tests:` to `match:`. `version: 1` is mandatory in 
 line is added — `driver migrate-config` adds it for you.
 
 Setup writes a **draft**: read `.panopticon/setup-report.md`, review `panopticon.yml.draft`, move it
-to `panopticon.yml`, and commit it (setup never overwrites a committed file).
+to `panopticon.yml`, and commit it (setup never overwrites a committed file). **Commit it before you
+compare runs.** A proposal differs from one setup run to the next, and a run over a config that is
+not in the reviewed commit reports its matrix as FRESH (`meta.matrix.origin: working_tree`), with
+whether it is still setup's last draft; once committed it reads `committed`, and every later run on
+that commit shares one `matrix_fingerprint` (#3651, see Output).
 
 **Upgrading from a `.panopticon/groups.yml` tree.** Nothing reads that file any more.
 `python3 skill/scripts/driver.py migrate-config .` writes `panopticon.yml` from it (group order

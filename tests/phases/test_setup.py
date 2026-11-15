@@ -405,6 +405,24 @@ class TestDriverSetup(unittest.TestCase):
         # no scan checkpoint was emitted
         self.assertFalse(os.path.isfile(runio._pano(d, "setup-proposal.json")))
 
+    def test_the_fallback_seed_is_recorded_as_setups_draft(self):
+        # #3651: the seed is written straight into place, so it is setup's proposal just as
+        # a draft is, and a later run must be able to say its config is that seed, unchanged.
+        import scripts.matrix_provenance as matrix_provenance
+        d = self._registered_repo()
+        self.assertIsNone(matrix_provenance.draft_state(d, "sha256:" + "ab" * 32))
+        args = driver.build_parser().parse_args(["setup", d])
+        with mock.patch("scripts.setup_spine.load_bundled_vocabulary",
+                        return_value=({"names": []}, False)):
+            self.assertEqual("complete", setup.run_setup_flow(args)["status"])
+        relpath, digest = matrix_provenance.config_digest(d)
+        self.assertEqual(repo_config.CONFIG_NAMES[0], relpath)
+        self.assertEqual("unchanged", matrix_provenance.draft_state(d, digest))
+        with open(os.path.join(d, relpath), "a", encoding="utf-8") as fh:
+            fh.write("  extra:\n    match: ['docs/**']\n")
+        self.assertEqual("differs", matrix_provenance.draft_state(
+            d, matrix_provenance.config_digest(d)[1]))
+
     def test_stale_fallback_marker_self_heals_when_vocab_returns(self):
         # First run: vocab absent -> fallback marker written, run completes
         # without a checkpoint.
