@@ -1177,7 +1177,7 @@
             "string",
             "null"
           ],
-          "description": "Letter banded over summary.health.score: S=100, A>=90, B>=80, C>=70, D>=60, F>=26, X below. S is reachable ONLY at exactly 100 (no gate-eligible weighted defect). Supersedes the max-severity rollup, which saturated -- one HIGH anywhere was a D at any codebase size. null when health is unmeasurable (no readable reviewed LoC) or when coverage is incomplete, in which case provisional_grade carries the letter.",
+          "description": "Letter banded over summary.health.score: S=100, A>=90, B>=80, C>=70, D>=60, F>=26, X below. S is reachable ONLY at exactly 100 (no gate-eligible weighted defect). Supersedes the max-severity rollup, which saturated -- one HIGH anywhere was a D at any codebase size. A severity cap sits on top of the band (#3652): a confirmed CRITICAL caps the letter at D and a confirmed HIGH at B, and grade_cap discloses the band letter it lowered. null when health is unmeasurable (no readable reviewed LoC) or when coverage is incomplete, in which case provisional_grade carries the letter.",
           "enum": [
             "S",
             "A",
@@ -1194,7 +1194,7 @@
             "string",
             "null"
           ],
-          "description": "The letter overall_grade would have carried, held back because coverage did not complete. Same bands.",
+          "description": "The letter overall_grade would have carried, held back because coverage did not complete. Same bands and the same severity cap (grade_cap).",
           "enum": [
             "S",
             "A",
@@ -1205,6 +1205,61 @@
             "X",
             null
           ]
+        },
+        "grade_cap": {
+          "type": [
+            "object",
+            "null"
+          ],
+          "description": "#3652: the severity cap that lowered the band grade, or null when nothing was lowered. A confirmed CRITICAL caps the letter at D and a confirmed HIGH at B (owner ruling); confirmed means the default gate's population (tool_confirmed, advisor_confirmed or backup_scope_limited), so an unconfirmed finding never caps. overall_grade / provisional_grade already carry the capped letter; band_grade is the letter the health bands gave.",
+          "required": [
+            "band_grade",
+            "grade",
+            "severity",
+            "count",
+            "note"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "band_grade": {
+              "type": "string",
+              "enum": [
+              "S",
+              "A",
+              "B",
+              "C",
+              "D",
+              "F",
+              "X"
+            ]
+            },
+            "grade": {
+              "type": "string",
+              "enum": [
+              "S",
+              "A",
+              "B",
+              "C",
+              "D",
+              "F",
+              "X"
+            ]
+            },
+            "severity": {
+              "type": "string",
+              "enum": [
+                "CRITICAL",
+                "HIGH"
+              ]
+            },
+            "count": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "note": {
+              "type": "string"
+            }
+          }
         },
         "coverage_certified": {
           "type": "boolean"
