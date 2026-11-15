@@ -13,6 +13,17 @@ root, and its own package.json proves the same name and version and is
 publishable: ``private: true`` is npm's ``publish = false``, except for the
 review root itself.
 
+Python (#3623): a uv.lock, poetry.lock or pdm.lock records local-path packages
+(uv ``editable`` / ``directory`` / ``virtual`` sources, a Poetry ``directory``
+source, a PDM ``path``). An exact match under PEP 503 names against only those
+entries is first-party when the package's realpath is inside the review root and
+its own pyproject.toml proves the same name and static version and is
+publishable: the ``Private :: Do Not Upload`` classifier, Poetry's
+``package-mode = false``, uv's ``package = false`` and a uv ``virtual`` source
+are not, except for the review root itself. A dynamic version fails closed.
+Pipfile.lock and requirements.txt carry no versioned local identity and stay with
+the advisor.
+
 The claim then changes from "a third-party dependency is used" to "this project
 version is affected" before the advisor queue is built. Ambiguity and unreadable
 input fail closed onto the ordinary advisor path.
@@ -42,6 +53,12 @@ MAX_NPM_LOCK_BYTES = 16 * 1024 * 1024
 MAX_NPM_MANIFEST_BYTES = 1024 * 1024
 NPM_PUBLIC_REGISTRY = "https://registry.npmjs.org"
 NPM_INSTALLED_VERSION_TOOLS = frozenset({"osv-scanner", "trivy"})
+# Python (#3623): the same lock budget as npm. pip-audit audits an environment, not
+# the lock, so it never classifies -- like npm-audit.
+PYTHON_LOCKS = ("uv.lock", "poetry.lock", "pdm.lock")
+MAX_PYTHON_LOCK_BYTES = 16 * 1024 * 1024
+PYTHON_PRIVATE_CLASSIFIER = "Private :: Do Not Upload"
+_PEP503_SEPARATORS = re.compile(r"[-_.]+")
 _TRIVY_PACKAGE = re.compile(
     r"(?:^|\s)Package:\s*(\S+)\s+Installed Version:\s*(\S+)(?:\s|$)")
 _DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
@@ -558,6 +575,187 @@ def _npm_package_origins(lock_path, target_root, cache: IngestCache):
     return origins
 
 
+def _pep503(name):
+    """A PEP 503 normalised distribution name."""
+    return _PEP503_SEPARATORS.sub("-", name).lower()
+
+
+def _local_path(value):
+    """A lock's relative local path, else None; a non-string or empty path raises."""
+    if not isinstance(value, str) or not value:
+        raise ValueError("malformed local path")
+    if os.path.isabs(value) or _URL_SCHEME.match(value):
+        return None
+    return os.path.normpath(value)
+
+
+def _uv_source(entry):
+    """``(kind, path)`` for one uv.lock entry: kind is local, virtual, external or
+    unknown. A source naming no single known kind fails the whole lock."""
+    source = entry.get("source", _MISSING)
+    if source is _MISSING:
+        return "unknown", None
+    if not isinstance(source, dict):
+        raise ValueError("malformed uv source")
+    kinds = [key for key in ("registry", "git", "url", "path", "directory", "editable",
+                             "virtual") if key in source]
+    if len(kinds) != 1:
+        raise ValueError("ambiguous uv source")
+    kind = kinds[0]
+    if kind in ("registry", "git", "url"):
+        return "external", None
+    if kind == "path":
+        # A local wheel or sdist, not a project directory.
+        return "unknown", None
+    path = _local_path(source[kind])
+    if path is None:
+        return "unknown", None
+    return ("virtual" if kind == "virtual" else "local"), path
+
+
+def _poetry_source(entry):
+    """``(kind, path)`` for one poetry.lock entry; no source is PyPI."""
+    source = entry.get("source", _MISSING)
+    if source is _MISSING:
+        return "external", None
+    if not isinstance(source, dict) or not isinstance(source.get("type"), str):
+        raise ValueError("malformed Poetry source")
+    kind = source["type"]
+    if kind in ("git", "url", "legacy"):
+        return "external", None
+    if kind != "directory":
+        return "unknown", None
+    path = _local_path(source.get("url"))
+    return ("unknown", None) if path is None else ("local", path)
+
+
+def _pdm_source(entry):
+    """``(kind, path)`` for one pdm.lock entry; no path, git or url is the index."""
+    kinds = [key for key in ("path", "git", "url") if key in entry]
+    if len(kinds) > 1:
+        raise ValueError("ambiguous PDM source")
+    if not kinds:
+        return "external", None
+    if kinds[0] != "path":
+        return "external", None
+    path = _local_path(entry["path"])
+    return ("unknown", None) if path is None else ("local", path)
+
+
+_PYTHON_SOURCES = {"uv.lock": _uv_source, "poetry.lock": _poetry_source,
+                   "pdm.lock": _pdm_source}
+
+
+def _python_manifest_fact(package_dir, target_root, cache: IngestCache, *, virtual=False):
+    """``((name, version), publishable)`` from one in-tree pyproject.toml, else None.
+
+    ``[project]`` comes first; Poetry's legacy ``[tool.poetry]`` only without it. A
+    dynamic or missing version is None (#3623 ruling: fail closed). The private
+    classifier, ``package-mode = false``, ``[tool.uv] package = false`` and a uv
+    virtual source are unpublishable, except for the review root itself (#3623
+    ruling, as npm's ``private``). Anything malformed is None."""
+    real_dir = os.path.realpath(package_dir)
+    # _read_toml confines the realpath to the review root, cache hits included.
+    document = _read_toml(os.path.join(real_dir, "pyproject.toml"), target_root, cache)
+    if document is None:
+        return None
+    tool = document.get("tool", {})
+    if not isinstance(tool, dict):
+        return None
+    poetry, uv = tool.get("poetry", _MISSING), tool.get("uv", _MISSING)
+    project = document.get("project", _MISSING)
+    if any(table is not _MISSING and not isinstance(table, dict)
+           for table in (poetry, uv, project)):
+        return None
+    if project is not _MISSING:
+        dynamic = project.get("dynamic", [])
+        if (not isinstance(dynamic, list) or not all(isinstance(row, str) for row in dynamic)
+                or "version" in dynamic):
+            return None
+        declared = project
+    elif poetry is not _MISSING:
+        declared = poetry
+    else:
+        return None
+    name, version = declared.get("name"), declared.get("version")
+    if not (isinstance(name, str) and name and isinstance(version, str) and version):
+        return None
+    publishable = not virtual
+    for table in (project, poetry):
+        if table is _MISSING:
+            continue
+        classifiers = table.get("classifiers", [])
+        if (not isinstance(classifiers, list)
+                or not all(isinstance(row, str) for row in classifiers)):
+            return None
+        if any(row.strip() == PYTHON_PRIVATE_CLASSIFIER for row in classifiers):
+            publishable = False
+    for table, key in ((poetry, "package-mode"), (uv, "package")):
+        flag = table.get(key, True) if table is not _MISSING else True
+        if not isinstance(flag, bool):
+            return None
+        publishable = publishable and flag
+    return (_pep503(name), version), publishable or real_dir == target_root
+
+
+def _python_package_origins(lock_path, target_root, cache: IngestCache):
+    """Map Python lock identities (PEP 503 names) to fail-closed origin classes (#3623).
+
+    Every ``[[package]]`` entry is classified by its lock's source record. A local
+    entry is first-party only when its in-tree pyproject.toml proves the exact
+    identity and is publishable; registry, git and url entries are external, and
+    anything else is unknown. A malformed lock, or an entry whose name or (non-local)
+    version cannot be read, classifies nothing."""
+    if lock_path in cache.package_origins:
+        return cache.package_origins[lock_path]
+    origins: PackageOrigins = {}
+    cache.package_origins[lock_path] = origins
+    raw = _read_budgeted_bytes(lock_path, MAX_PYTHON_LOCK_BYTES, cache)
+    if raw is None:
+        return origins
+    try:
+        document = tomllib.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError, RecursionError):
+        return origins
+    packages = document.get("package", [])
+    if not isinstance(packages, list) or len(packages) > 64 * MAX_CARGO_MANIFESTS:
+        return origins
+    classify = _PYTHON_SOURCES[os.path.basename(lock_path)]
+    lock_dir = os.path.dirname(lock_path)
+    found: PackageOrigins = {}
+    local = []
+    try:
+        for entry in packages:
+            if not isinstance(entry, dict):
+                return origins
+            name, version = entry.get("name"), entry.get("version", _MISSING)
+            if not (isinstance(name, str) and name):
+                return origins
+            kind, path = classify(entry)
+            if version is _MISSING and kind in ("local", "virtual"):
+                # A dynamic local version has no identity to match.
+                continue
+            if not (isinstance(version, str) and version):
+                return origins
+            identity = (_pep503(name), version)
+            if kind in ("local", "virtual"):
+                local.append((identity, kind, path))
+            else:
+                found.setdefault(identity, set()).add(kind)
+    except ValueError:
+        return origins
+    if len(local) > MAX_CARGO_MANIFESTS:
+        return origins
+    for identity, kind, path in local:
+        fact = _python_manifest_fact(os.path.join(lock_dir, path), target_root, cache,
+                                     virtual=kind == "virtual")
+        origin = (evidence.FIRST_PARTY_PACKAGE_ORIGIN if fact == (identity, True)
+                  else "unknown")
+        found.setdefault(identity, set()).add(origin)
+    origins.update(found)
+    return origins
+
+
 def _advisory_package(finding):
     """Return the advisory's package/version, including Trivy's SARIF prose."""
     tool_evidence = finding.get("tool_evidence")
@@ -607,12 +805,20 @@ def _mark_finding(finding, target_root, cache):
     package = _advisory_package(finding)
     if package is None:
         return
-    lock_path = _lock_path(target_root, finding, ("Cargo.lock",) + NPM_LOCKS)
+    lock_path = _lock_path(target_root, finding, ("Cargo.lock",) + NPM_LOCKS + PYTHON_LOCKS)
     if lock_path is None:
         return
     if os.path.basename(lock_path) == "Cargo.lock":
         ecosystem, member = "Cargo", "workspace/path member"
         origins = _cargo_package_origins(lock_path, target_root, cache).get(package, set())
+    elif os.path.basename(lock_path) in PYTHON_LOCKS:
+        # #3623: as for npm, only the review root's own lock and only scanners that
+        # report an installed version (pip-audit audits an environment, not the lock).
+        if os.path.dirname(lock_path) != target_root or tool not in NPM_INSTALLED_VERSION_TOOLS:
+            return
+        ecosystem, member = "Python", "workspace/path package"
+        origins = _python_package_origins(lock_path, target_root, cache).get(
+            (_pep503(package[0]), package[1]), set())
     else:
         # #3639 review: only the review root's own lock is the reviewed project -- a
         # shrinkwrap npm published inside a tarball (`node_modules/x/`) or a vendored

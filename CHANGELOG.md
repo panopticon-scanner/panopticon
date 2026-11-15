@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- **Python advisories against the project's own packages are first-party (#3623).** The Cargo
+  and npm rule now has a Python twin. An osv-scanner or Trivy advisory naming an exact name
+  (PEP 503 normalised) and version from the review root's own `uv.lock`, `poetry.lock` or
+  `pdm.lock` is confirmed at ingest, without an advisor, when every lock entry with that identity
+  is a local-path package -- a uv `editable` / `directory` / `virtual` source, a Poetry
+  `directory` source, a PDM `path` -- whose realpath is inside the review root and whose own
+  `pyproject.toml` has the same name and a static version and is publishable. `[project]` comes
+  first; Poetry's legacy `[tool.poetry]` is read only without it.
+  - **Unpublishable:** the `Private :: Do Not Upload` classifier, `package-mode = false`,
+    `[tool.uv] package = false` and a uv `virtual` source. The review root itself is exempt, as
+    for npm's `private`; a member is not.
+  - **Fails closed onto the advisor path:** a dynamic version, a registry / git / url / archive
+    copy of the same identity, an outside-tree package, a version mismatch, a malformed lock or
+    manifest, and an unread manifest.
+  - **Out of scope:** `Pipfile.lock` and `requirements.txt` (no versioned local identity), and
+    pip-audit, which audits an environment rather than the lock.
+
+  Every read spends #3634's shared ingest budget; fingerprints and reconcile keys are unchanged.
+
 - **Changed: `driver setup` writes a proposal one way, whatever order and spelling the agent
   returned it in (#3651, phase 2b).** The same matrix used to come out as a different draft each
   run: groups in the agent's order, globs in the agent's order, the same glob spelled two ways.
