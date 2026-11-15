@@ -7,6 +7,7 @@ import html
 import json
 import re
 
+import scripts.config_schema as config_schema
 import scripts.evidence as evidence
 import scripts.evidence_sections as evidence_sections
 import scripts.host_disclosure as host_disclosure
@@ -94,6 +95,9 @@ h2 { font-size: 18px; font-weight: 600; }
 .badge.gate-inconclusive { background: #8a6d1f; color: #faf8f2; }
 .not-certified { margin: 8px 0; padding: 8px 12px; border-left: 4px solid #8a6d1f;
   background: #2e2814; color: #e8d9a0; font-weight: 600; }
+/* #3673: the gate is off, or a request to turn it off was refused. A banner, above the badges. */
+.gate-notice { margin: 8px 0; padding: 10px 14px; border: 2px solid #c0392b;
+  background: #3a1512; color: #ffd9d2; font-weight: 700; letter-spacing: .02em; }
 .integrity-detail { margin-top: .35rem; font-family: var(--mono); font-size: 11px; }
 /* Spec 5.1 surface 3. Deliberately not styled as a warning: it renders on
    EVERY report, and the all-proven case is a statement, not an alarm. */
@@ -525,6 +529,9 @@ def _render_header(report):
         f"<span>{_escape(meta.get('timestamp', ''))}</span>",
         f"<span>{_escape(meta.get('security_mode', 'standard'))}</span>",
         "</div>",
+        # #3673: the gate being off, or asked off and refused, comes before any badge.
+        *("<div class='gate-notice' role='alert'>%s</div>" % _escape(notice)
+          for notice in config_schema.gate_notices(summary, meta.get("config"))),
         "<div class='badges'>",
         # #490: a report with no grade must not render the literal "None",
         # and an uncertified grade is PROVISIONAL, not settled.
@@ -1055,6 +1062,8 @@ def _render_compare_summary(label, report):
     return f"""
 <div class="compare-panel">
 <h3>{_escape(label)}</h3>
+{"".join("<div class='gate-notice' role='alert'>%s</div>" % _escape(notice)
+         for notice in config_schema.gate_notices(summary, meta.get("config")))}
 <div class="badges">
 <span class="badge grade">{_escape(_grade_badge(summary))}</span>
 <span class="badge {_severity_class(summary.get('risk_level', 'INFO') or 'unknown')}">Risk: {_escape(summary.get('risk_level', '-') or 'unknown')}</span>

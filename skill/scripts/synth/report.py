@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 # tests/test_import_shape.py now pins that no module grows another.
 from scripts._version import __version__
 import scripts.app_trace as app_trace
+import scripts.config_schema as config_schema
 import scripts.evidence as evidence_mod
 import scripts.host_disclosure as host_disclosure
 import scripts.inert as inert
@@ -348,6 +349,7 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=(), model_subs
     # score, letter, weights, bands and gate have all been decided above; this
     # copy adds provenance and cannot feed any of those paths back into grading.
     summary = dict(graded.summary)
+    summary["gate_disabled"] = config_schema.gate_disabled(summary.get("gate"))   # #3673
     summary["health"] = health_basis_mod.attach(
         graded.summary.get("health"), run, reconciled, __version__, ocrdb_version)
     return {

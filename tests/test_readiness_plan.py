@@ -272,10 +272,26 @@ class EnforcementTest(_Case):
 
 
 class GateAndFlagsTest(_Case):
-    def test_no_fail_on_warns_that_the_gate_is_off(self):
+    def test_no_fail_on_is_the_default_gate_and_says_nothing_is_wrong(self):
+        # #3673: this row used to WARN that the gate was off. No flag is CRITICAL now.
         row = self._plan()["gate"]
+        self.assertIsNone(row["ok"])
+        self.assertEqual("critical", row["fail_on"])
+        self.assertIn("fails on critical and above (the default", row["detail"])
+        self.assertNotIn("OFF", row["detail"])
+
+    def test_fail_on_off_warns_that_the_gate_is_off(self):
+        row = self._plan("--fail-on", "off")["gate"]
         self.assertEqual("warn", row["ok"])
+        self.assertEqual("off", row["fail_on"])
         self.assertIn("gate: OFF", row["detail"])
+        self.assertIn("--fail-on off", row["detail"])
+
+    def test_a_committed_off_is_refused_so_the_row_stays_the_default(self):
+        with open(os.path.join(self.root, "panopticon.yml"), "a", encoding="utf-8") as fh:
+            fh.write("settings:\n  fail_on: off\n")
+        row = self._plan()["gate"]
+        self.assertEqual((None, "critical"), (row["ok"], row["fail_on"]))
 
     def test_a_fail_on_flag_or_a_committed_one_gates(self):
         self.assertEqual("high", self._plan("--fail-on", "high")["gate"]["fail_on"])

@@ -150,12 +150,11 @@ class DeltaContext:
                                                      expected_run_id)
                               if args.diff_hunks else (None, None))
         if args.diff_hunks and not args.fail_on:
-            # #957: a delta review is gate-first by intent, but the gate only
-            # arms when --fail-on is passed. Without this notice a forgotten
-            # flag yields a green-looking report whose gate silently reads OFF.
-            print("synthesize: DELTA REVIEW WITH Gate: OFF -- no --fail-on was "
-                  "passed, so nothing can gate this change; pass --fail-on "
-                  "{critical,high,medium,low} to arm the gate", file=sys.stderr)
+            # #957: a delta review is gate-first by intent. Since #3673 the gate is armed
+            # unless `--fail-on off` was passed, so this is the operator's own choice.
+            print("synthesize: DELTA REVIEW WITH Gate: OFF -- `--fail-on off` was "
+                  "passed, so nothing can gate this change; drop it, or pass --fail-on "
+                  "{critical,high,medium,low}, to arm the gate", file=sys.stderr)
         ctx = cls(diff_hunks=diff_hunks, diff_context=args.diff_context, report=report)
         _disclose_load(ctx, args.diff_hunks)
         return ctx

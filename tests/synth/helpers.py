@@ -93,7 +93,12 @@ _VERDICT_STATUS = {
 def _cli_args(**kw):
     """An argparse.Namespace with every flag main() parses, at the parser's
     defaults, so the WS-0 S3 loaders see exactly the attribute set main() hands
-    them. Override per test."""
+    them. Override per test.
+
+    One value is NOT the parser's default (#3673): `fail_on=None` is what `--fail-on off`
+    parses to, the OFF gate. The parser's own default is `critical`. These loader tests were
+    written against an unarmed gate and stay there on purpose; a test about the gate passes
+    `fail_on=` itself."""
     import argparse
     ns = dict(target="unknown", root=None, groups=None, security=None, fail_on=None,
               severity="all", changes=False, repo=False, out=None, run_id=None, run_dir=None,
