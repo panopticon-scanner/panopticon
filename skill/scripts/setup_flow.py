@@ -132,9 +132,11 @@ def _replace(path, text):
 
 def realised_cells(planned):
     """What a plan gives each leaf, in a form two plans can be compared by: the files each
-    proposed group claimed, and every leaf's kind, size and panels."""
+    proposed group claimed, every leaf's kind, panels and FILES, and the ungrouped files.
+    The files and not their count: two layers of one group can trade equal numbers."""
     return ({name: sorted(files) for name, files in planned["claims"].items()},
-            sorted((leaf["name"], leaf["kind"], leaf["files"], tuple(sorted(leaf["domains"])))
+            sorted((leaf["name"], leaf["kind"], tuple(sorted(leaf["domains"])),
+                    tuple(sorted(planned["leaf_files"][leaf["name"]])))
                    for leaf in planned["report"]["leaves"]),
             sorted(planned["report"]["ungrouped"]))
 
@@ -147,7 +149,7 @@ def _canonical(assembled, planned, disclosure, files, committed, cap, ceiling):
     never move a file -- whatever the matcher does with a pattern nobody thought of. A
     proposal that fails that check is used as written, and the report says so."""
     from scripts import setup_proposal as sp
-    candidate = sp.canonicalise(assembled, files)
+    candidate = sp.canonicalise(assembled, as_written=set(committed))
     if candidate == assembled and list(candidate) == list(assembled):
         return assembled, planned
     replanned = grouping_engine.plan_groups(files, committed, candidate, cap, ceiling=ceiling)

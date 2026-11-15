@@ -11,10 +11,12 @@ handed). See docs/superpowers/specs/2026-08-14-panopticon-5.0-setup-scan-design.
 and the 5.2 grouping-engine spec (§3 catalogs, §5.3 assembly).
 """
 from typing import Any
+import contextlib
+import io
 import os
 import re
 
-from scripts import coverage_model, groups_schema, repo_config
+from scripts import coverage_model, groups_schema, repo_config, tests_axis
 
 # 5.2: names the engine mints itself -- the Tests sweep, the Commons fold, the
 # residual sink, and the residual LAYER. A catalog entry or alias carrying one
@@ -670,79 +672,161 @@ def _all_globs(body, field):
 #
 # Setup's agent returns the same matrix in a different order and spelling from one run to
 # the next. Everything here changes how a proposal is WRITTEN and nothing about what it
-# claims: `setup_flow.ingest_proposal` plans the proposal both ways and keeps the canonical
-# form only when every group ends up with the same files.
+# claims -- on the tree setup sees and on every later one, because the config it writes is
+# reused on every later commit. So no rule here may rest on which files exist today:
+#
+# - a glob is respelled only when the real compiler makes the SAME matcher of both
+#   spellings, checked each time (`_same_reading`);
+# - two groups are reordered only when no path at all could match a glob of each
+#   (`may_share_a_path`).
+#
+# `setup_flow.ingest_proposal` then plans the proposal both ways on today's tree and keeps
+# the canonical form only when every leaf ends up with the same files.
 
-_MAX_GLOB_CHARS, _MAX_GLOB_STARS = 256, 20       # `groups_schema.glob_to_re`'s own limits
+_NEVER = "(?!)"                    # the pattern `glob_to_re` returns for a glob it refuses
+
+
+def _reading(pat):
+    """How the real compiler reads `pat`: its compiled pattern text, which is built from
+    the token list and the anchoring and nothing else. None for a glob it refuses (a
+    defect, or one over its limits), which matches nothing."""
+    with contextlib.redirect_stderr(io.StringIO()):       # its own disclosure of a refusal
+        pattern = groups_schema.glob_to_re(pat, "setup").pattern
+    return None if pattern == _NEVER else pattern
+
+
+def _same_reading(old, new):
+    """Do `old` and `new` mean the same to every reader of a `match:` glob? The compiler
+    must make one matcher of both, and `tests_axis.literal_prefix` -- read off the
+    SPELLING for a group's home directories and for scoped tests -- must agree too."""
+    reading = _reading(old)
+    return (reading is not None and reading == _reading(new)
+            and tests_axis.literal_prefix(old) == tests_axis.literal_prefix(new))
+
+
+def _respell(pat):
+    """`pat` with the three spellings `groups_schema.glob_to_re` itself folds away."""
+    new = re.sub(r"\*\*\*+", "**", re.sub(r"(?:\*\*/)+", "**/", pat))
+    if new.endswith("/") and "/" in new[:-1]:
+        new += "**"
+    if new.startswith("/") and not new.startswith("//") and "/" in new[1:]:
+        new = new[1:]
+    return new
 
 
 def normalize_glob(glob):
-    """`glob` in the one spelling its compiler reads it as, or `glob` itself.
+    """A `match:` glob in the one spelling its compiler reads it as, or `glob` itself.
 
-    Four rewrites. The first three are read off `groups_schema.glob_to_re`, which performs
-    the same step before it compiles; the fourth follows from what it compiles to:
+    Three rewrites, each a step `groups_schema.glob_to_re` performs before it compiles:
 
     - a run of `**/` segments, or of three or more stars, is one `**/` or `**`;
-    - `**/**` is `**`: "any directories, then anything" is "anything";
     - a trailing `/` on a pattern that holds another `/` is `/**`. Without another `/` the
       pattern is unanchored ("a docs directory at any depth") and `docs/**` would anchor
       it, so `docs/` is left alone;
-    - a leading `/` is dropped when the rest still holds a `/`. Alone it is what anchors
-      the pattern (`/README` is the root's, `README` is anyone's), so it is kept then.
+    - one leading `/` is dropped when the rest still holds a `/` and does not itself start
+      with one. Alone it is what anchors the pattern (`/README` is the root's, `README` is
+      anyone's), and `//src` matches nothing where `/src` matches.
 
-    A pattern the compiler cannot translate (`glob_defect`) is returned untouched, and so is
-    one whose rewritten form would cross the compiler's length or wildcard limit: that
-    limit is checked before the trailing `/` is expanded, so a pattern just under it means
-    something as written and nothing once expanded.
+    The rewrite is then PROVEN, not assumed: it is kept only when `_same_reading` holds,
+    so the compiler makes the same matcher of both spellings. A glob the compiler refuses
+    is never touched, and neither is one whose new spelling the compiler would read
+    differently for any reason -- a limit crossed, an anchor lost, a case nobody listed.
+
+    Not for a `tests:` glob: `tests_axis.is_literal_glob` reads a tests glob's spelling to
+    decide whether it is scoped, so `pkg/src/` and `pkg/src/**` are two different things
+    there (`canonical_globs`).
     """
     if not isinstance(glob, str):
         return glob
     negated = glob.startswith("!")
     pat = glob[1:] if negated else glob
-    if not pat or groups_schema.glob_defect(pat):
+    if not pat:
         return glob
-    new = re.sub(r"\*\*\*+", "**", re.sub(r"(?:\*\*/)+", "**/", pat))
-    new = re.sub(r"\*\*/\*\*", "**", new)
-    if new.endswith("/") and "/" in new[:-1]:
-        new += "**"
-    if new.startswith("/") and "/" in new[1:]:
-        new = new[1:]
-    if len(new) > _MAX_GLOB_CHARS or new.count("*") > _MAX_GLOB_STARS:
+    new = _respell(pat)
+    if new == pat or not _same_reading(pat, new):
         return glob
     return ("!" if negated else "") + new
 
 
-def canonical_globs(globs):
-    """One group's glob list in canonical form. Each glob is normalised; then, when none
-    negates, the list is sorted and de-duplicated, because it is a plain union. With a `!`
-    glob the last match wins, so the order and every repeat are kept exactly."""
-    normalised = [normalize_glob(g) for g in globs or []]
-    if any(isinstance(g, str) and g.startswith("!") for g in normalised):
-        return normalised
-    return sorted(set(normalised))
+def _plain(globs):
+    return all(isinstance(g, str) and not g.startswith("!") for g in globs)
 
 
-def _reach(body):
-    """Every glob list a group can claim a file through: its own, and each layer's."""
-    return [list(body.get("match") or []) + list(body.get("tests") or [])] + [
-        list(layer.get("match") or []) for layer in body.get("layers") or []]
+def canonical_globs(globs, tests=False, respell=True):
+    """One glob list in canonical form, or as written where its order is meaning.
+
+    A `match:` list (a group's or a layer's): each glob is spelled through
+    `normalize_glob`, unless `respell` is off. Then, when none negates, the list is sorted
+    and de-duplicated: a plain union. With a `!` glob the last match wins, so the order and
+    every repeat are kept.
+
+    A `tests:` list (`tests=True`) is never respelled, and is sorted only when it is plain
+    and its globs are all literal or all wildcards. The LAST tests glob to match a file
+    decides how it is credited -- a literal one outright, a wildcard only inside the
+    group's scope -- so `["lib/new.py", "lib/**"]` and its reverse credit `lib/new.py`
+    differently."""
+    out = list(globs or [])
+    if not tests and respell:
+        out = [normalize_glob(g) for g in out]
+    if not _plain(out):
+        return out
+    if tests and len({tests_axis.is_literal_glob(g) for g in out}) > 1:
+        return out
+    return sorted(set(out))
 
 
-def canonical_order(assembled, files):
-    """The proposal's group names in canonical order: by name, except that two groups whose
-    globs both match some file keep the order the proposal gave them. Groups claim files
-    first-match-wins, so for those two the order decides who gets the file; for any others
-    it decides nothing."""
-    from scripts import discovery_catalog          # lazy: it imports this module
+def _fixed_segments(pat):
+    """The leading path segments every path `pat` matches must start with, or None when
+    that cannot be said. Only for a root-anchored pattern, and only up to its first
+    segment that is not plain text."""
+    if not pat or groups_schema.glob_defect(pat):
+        return None
+    if not ("/" in pat[:-1] if pat.endswith("/") else "/" in pat):
+        return None                    # unanchored: a basename at any depth
+    if pat.startswith("/"):
+        pat = pat[1:]
+    fixed = []
+    for segment in pat.split("/"):
+        if not segment or re.search(r"[*?\[]", segment):
+            break
+        fixed.append(segment)
+    return fixed
+
+
+def _may_match_one_path(one, two):
+    """Could some path match both globs? False only on proof: both are anchored and
+    their fixed leading segments part ways."""
+    first, second = _fixed_segments(one), _fixed_segments(two)
+    if first is None or second is None:
+        return True
+    return all(a == b for a, b in zip(first, second))
+
+
+def _positive_globs(body):
+    """Every glob a group can claim a file through: its own `match:` and `tests:`, and
+    each layer's. Negations only ever take paths away, so they are left out."""
+    globs = list(body.get("match") or []) + list(body.get("tests") or [])
+    for layer in body.get("layers") or []:
+        globs += list(layer.get("match") or [])
+    return [g for g in globs if isinstance(g, str) and g and not g.startswith("!")]
+
+
+def may_share_a_path(one, two):
+    """Could some path, on this tree or a later one, match a glob of each group body?"""
+    return any(_may_match_one_path(a, b)
+               for a in _positive_globs(one) for b in _positive_globs(two))
+
+
+def canonical_order(assembled):
+    """The proposal's group names in canonical order: by name, except that two groups that
+    could ever both match one path keep the order the proposal gave them. Groups claim
+    files first-match-wins, so for those two the order decides who gets such a file; for
+    any others it decides nothing, today or on a later tree."""
     names = list(assembled)
-    touched = {name: {path for path in files
-                      if any(discovery_catalog.match_patterns(path, globs)
-                             for globs in _reach(assembled[name]))}
-               for name in names}
     after: dict[str, set] = {name: set() for name in names}      # name -> names it must follow
     for index, first in enumerate(names):
         for second in names[index + 1:]:
-            if touched[first] & touched[second]:
+            if may_share_a_path(assembled[first], assembled[second]):
                 after[second].add(first)
     ordered: list[str] = []
     waiting = set(names)
@@ -753,16 +837,22 @@ def canonical_order(assembled, files):
     return ordered
 
 
-def canonicalise(assembled, files):
+def canonicalise(assembled, as_written=()):
     """`assembled` (from `assemble`) rewritten canonically: each group's and each layer's
     globs through `canonical_globs`, and the groups in `canonical_order`. A new mapping;
-    the bodies' other fields ride along untouched."""
+    the bodies' other fields ride along untouched.
+
+    `as_written` names the groups the committed config already has. A proposal for one is
+    merged into it glob by glob, compared as text (`merge_additive`), so its globs are
+    sorted and never respelled: a respelled copy of a glob the group already carries
+    would be added to it as if it were new."""
     out = {}
-    for name in canonical_order(assembled, files):
+    for name in canonical_order(assembled):
         body = dict(assembled[name])
-        body["match"] = canonical_globs(body.get("match"))
-        body["tests"] = canonical_globs(body.get("tests"))
-        body["layers"] = [dict(layer, match=canonical_globs(layer.get("match")))
+        respell = name not in as_written
+        body["match"] = canonical_globs(body.get("match"), respell=respell)
+        body["tests"] = canonical_globs(body.get("tests"), tests=True)
+        body["layers"] = [dict(layer, match=canonical_globs(layer.get("match"), respell=respell))
                           for layer in body.get("layers") or []]
         out[name] = body
     return out

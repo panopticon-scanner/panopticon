@@ -5,19 +5,29 @@
 - **Changed: `driver setup` writes a proposal one way, whatever order and spelling the agent
   returned it in (#3651, phase 2b).** The same matrix used to come out as a different draft each
   run: groups in the agent's order, globs in the agent's order, the same glob spelled two ways.
-  Now each group's globs are sorted and de-duplicated (unless one negates, where order is
-  meaning), new groups are in name order, and four glob spellings the matcher provably reads
-  alike are unified (`dir/sub/` and `dir/sub/**`; repeated `**/`; `**/**`; a leading `/` beside
-  another `/`). Two groups whose globs both match some file keep the order the proposal gave
-  them, because groups claim files first-match-wins. **No file moves between groups:** setup
-  plans the proposal both ways and keeps the canonical form only when every group ends up with
-  the same files; otherwise it uses the proposal as written and the report says so. Committed
-  groups are never rewritten or moved. Two drafts that differ only in those ways are now
-  byte-equal and share one `config_sha256`. This removes noise from comparing drafts; it does
-  not make two drafts that cut the tree differently agree.
+  Now a `match:` list is sorted and de-duplicated (unless a glob negates, where order is
+  meaning), new groups are in name order, and three `match:` glob spellings are unified (a
+  trailing `/` on an anchored pattern and `/**`; a run of `**/` or of stars; one leading `/`
+  beside another `/`). **The draft is reused on every later commit, so no rule rests on which
+  files exist at setup:**
+  - A glob is respelled only when the glob compiler makes the same matcher of both spellings,
+    checked each time.
+  - Two groups keep the proposal's order whenever some path could match a glob of each, on
+    any tree, because groups claim files first-match-wins.
+  - A `tests:` glob is never respelled, since its spelling decides whether it is scoped. A
+    `tests:` list is sorted only when its globs are all literal or all wildcards.
+  - Setup also plans the proposal both ways on today's tree and keeps the canonical form only
+    when every leaf has the same files; otherwise it uses the proposal as written and the
+    report says so.
+
+  Committed groups are never rewritten or moved, and a proposal for a group the config
+  already has is not respelled. Two drafts that differ only in those ways are now byte-equal
+  and share one `config_sha256`. This removes noise from comparing drafts; it does not make
+  two drafts that cut the tree differently agree.
   - **Visible change:** a custom capability the agent spelled two ways (`custom:lib` and
     `custom:Lib`) is one group named by the spelling that sorts first. It used to be named by
     whichever the agent listed first, so setup may now write a different spelling than before.
+
 - **`devtools/matrix_stability.py` measures what a different setup draft does to a review (#3651,
   phase 1).** Review-stability numbers so far froze one draft per target, so the draft's own
   effect was never measured. Given the reports of runs that each used its own draft, and of

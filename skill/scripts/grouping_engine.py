@@ -325,11 +325,14 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
     Order: committed claims first (scoped tests) -> proposal verticals on the
     leftovers -> the Tests sweep -> Commons -> Ungrouped; then layers for every
     NEW vertical over the cap (D4), the floor, and the ceiling (D1). Returns
-    `{"groups", "claims", "report"}`: `groups` is the assembled side for
-    `setup_proposal.merge_additive` (a layered vertical is a parent body from
-    `layer_bodies`), `claims` maps each proposed name to the previously
-    unclaimed files it took, `report` is the §7.1 data (`format_report`
-    renders it). No timestamps, sorted everywhere.
+    `{"groups", "claims", "report", "leaf_files"}`: `groups` is the assembled
+    side for `setup_proposal.merge_additive` (a layered vertical is a parent
+    body from `layer_bodies`), `claims` maps each proposed name to the
+    previously unclaimed files it took, `report` is the §7.1 data
+    (`format_report` renders it), and `leaf_files` maps every leaf in
+    `report["leaves"]` to its sorted files (#3651: the report holds counts,
+    and two plans can agree on every count while disagreeing on the files).
+    No timestamps, sorted everywhere.
     """
     files = sorted(set(files))
     cap = max(1, int(cap or discovery.DEFAULT_MAX_PER_GROUP))
@@ -433,23 +436,28 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
         groups[name] = layer_bodies(vertical, layered[name]) if name in layered else vertical
 
     leaves = []
+    leaf_files: dict[str, list[str]] = {}
+
+    def add(name, kind, mine, panels):
+        leaves.append(_leaf(name, kind, mine, panels, cap))
+        leaf_files[name] = sorted(mine)
+
     committed_flat = setup_proposal.flatten_groups(committed)
     for fid, mine in committed_files.items():
-        leaves.append(_leaf(fid, "committed", mine, committed_flat[fid].get("panels"), cap))
+        add(fid, "committed", mine, committed_flat[fid].get("panels"))
     for name, body in active.items():
         if not claims.get(name) or name in committed:
             continue
         if name in layered:
             for ly in layered[name]:
-                leaves.append(_leaf("%s:%s" % (name, ly["layer"]), "layer", ly["files"],
-                                    body.get("panels"), cap))
+                add("%s:%s" % (name, ly["layer"]), "layer", ly["files"], body.get("panels"))
         else:
             vertical_files = set(a_assigned.get(name, [])) | set(attached.get(name, []))
-            leaves.append(_leaf(name, "vertical", vertical_files, body.get("panels"), cap))
+            add(name, "vertical", vertical_files, body.get("panels"))
     if tests:
-        leaves.append(_leaf(discovery.TESTS_GROUP, "tests", tests, [], cap))
+        add(discovery.TESTS_GROUP, "tests", tests, [])
     for cat, fs in sorted(commons_named.items()):
-        leaves.append(_leaf(cat, "commons", fs, [], cap))
+        add(cat, "commons", fs, [])
     sizes = [lf["files"] for lf in leaves if lf["files"]]
     by_dir: dict[str, int] = {}
     for f in residual:
@@ -478,7 +486,7 @@ def plan_groups(files, committed, assembled, cap, aliases=None, ceiling=None):
         "skipped_committed_parent": skipped,
         "redundant": sorted(n for n in assembled if not claims.get(n)),
     }
-    return {"groups": groups, "claims": claims, "report": report}
+    return {"groups": groups, "claims": claims, "report": report, "leaf_files": leaf_files}
 
 
 def _ceiling_line(r):
