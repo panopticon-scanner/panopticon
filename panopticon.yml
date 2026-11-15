@@ -665,6 +665,7 @@ groups:
       - tests/test_repo_config_literals.py
       - tests/test_config_schema.py
       - tests/test_matrix_identity.py
+      - tests/test_canonical_proposal.py
       - tests/setup_helpers.py
       - tests/test_setup_catalog.py
       - tests/test_native_unparsed.py
