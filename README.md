@@ -125,7 +125,7 @@ python3 skill/scripts/driver.py loop . -c --base release-2   # vs an explicit ba
 python3 skill/scripts/driver.py loop . --pr 217              # PR 217 in an isolated worktree
 ```
 
-Useful flags: `--security redteam` for the adversarial security posture, `--fail-on high` to make the gate fail the build, `--tools` or `--no-tools`, `--max-budget-usd` and `--max-iterations` to bound spend, `--max-verify N` to cap the verification queue on large deltas. The full list is in [`docs/PANOPTICON.md`](docs/PANOPTICON.md), "Global flags".
+Useful flags: `--security redteam` for the adversarial security posture, `--fail-on high` to tighten the gate (it fails on a confirmed CRITICAL by default; `--fail-on off` disables it, loudly), `--tools` or `--no-tools`, `--max-budget-usd` and `--max-iterations` to bound spend, `--max-verify N` to cap the verification queue on large deltas. The full list is in [`docs/PANOPTICON.md`](docs/PANOPTICON.md), "Global flags".
 
 ## What a review costs
 
@@ -147,7 +147,7 @@ That is the most expensive shape the tool has: adversarial mode, every tool, the
 ## What you get
 
 - `.panopticon/<run-tag>-report.json` (split into parts when large) and `.panopticon/<run-tag>-report.json.html`, plus a markdown summary on the terminal. The report validates against `skill/reference/report-schema.json`.
-- `summary.gate` for CI: `PASS`, `FAIL`, `OFF` (no `--fail-on` given), or `INCONCLUSIVE` (coverage did not complete; treat as not certified).
+- `summary.gate` for CI: `PASS`, `FAIL`, `INCONCLUSIVE` (coverage did not complete; treat as not certified), or `OFF` (only with `--fail-on off`; `summary.gate_disabled` says so). With no `--fail-on` the gate is `critical`.
 - Cross-run reconcile: against the previous run's report, findings recur, close, arrive as new, or land in `ambiguous`, the fail-closed bucket a person has to adjudicate.
 - Optional issue filing to GitHub from a finished report (`devtools/`), with severity, evidence and panel labels. GitHub is the only tracker supported.
 

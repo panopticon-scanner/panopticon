@@ -80,7 +80,7 @@ python3 skill/scripts/driver.py loop . --pr 217 --fail-on high   # a PR, gate on
 
 The loop prints progress per phase and per cell, and ends with the terminal summary. The artifacts land under `.panopticon/`:
 
-- `.panopticon/<run-tag>-report.json` (and `_part2.json` onwards when large): the validated report. `summary.gate` is the CI key: `PASS`, `FAIL`, `OFF` when no `--fail-on` was given, `INCONCLUSIVE` when gate-relevant coverage did not complete.
+- `.panopticon/<run-tag>-report.json` (and `_part2.json` onwards when large): the validated report. `summary.gate` is the CI key: `PASS`, `FAIL`, `INCONCLUSIVE` when gate-relevant coverage did not complete, and `OFF` only when the operator passed `--fail-on off` (the report then says the gate was disabled). With no `--fail-on` the gate is `critical`.
 - `.panopticon/<run-tag>-report.json.html`: the same report as one file for humans (it fetches only its web font when opened, and renders without it). Attach it, mail it, drop it in a shared folder.
 - `.panopticon/runs/<run-tag>/`: the working set (findings, verdicts, coverage, tool output, dispatch ledger, the measured host posture). The reports above survive if you delete it; you lose the resume state and the recorded host posture with it.
 

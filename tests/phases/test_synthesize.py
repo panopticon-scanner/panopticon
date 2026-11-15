@@ -1040,6 +1040,23 @@ class TestAMidRunToolsDowngradeReachesSynthesize(unittest.TestCase):
         self.assertNotIn("--prior-run", self._cmd({"run_id": "R", "security_mode": "standard",
                                                    "flags": {}, "first_contact": {"files": 3}}))
 
+    def test_the_child_gates_on_the_manifests_threshold_or_the_default(self):
+        # #3673: the manifest keeps "no opinion" as null and the child applies the default,
+        # so a run started before the default existed resumes with no flag drift. `off`
+        # travels as itself and parses to the OFF gate.
+        import scripts.synthesize as synthesize_cli
+        for recorded, parsed_as in ((None, "critical"), ("high", "high"), ("low", "low"),
+                                    ("off", None)):
+            with self.subTest(recorded=recorded):
+                cmd = self._cmd({"run_id": "R", "security_mode": "standard",
+                                 "flags": {"fail_on": recorded}})
+                if recorded is None:
+                    self.assertNotIn("--fail-on", cmd)
+                else:
+                    self.assertEqual(recorded, cmd[cmd.index("--fail-on") + 1])
+                self.assertEqual(parsed_as, synthesize_cli.build_parser().parse_args(
+                    cmd[2:]).fail_on)
+
     def test_the_scanned_commit_reaches_the_report(self):
         # #3560: the manifest's provenance (#1492) rides the same argv route and parses back.
         import scripts.synthesize as synthesize_cli
