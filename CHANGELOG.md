@@ -10,6 +10,17 @@
   is not given. Otherwise it says `not measured`, reports `measured: false` with no states under
   `--json`, and shows none of the stored text.
 
+- **The read guard's grant walk no longer recurses, and reports an entry it cannot stat
+  (#3658).** `guard_rules.grant_walk` ran on `os.walk`, which recurses a frame per directory
+  level before Python 3.12: a grant nested deeper than the recursion budget stopped setup with a
+  traceback. It also read a failed is-directory stat as "a file", so a directory could go
+  unvisited with nothing said. The walk now keeps its own stack and puts such an entry in
+  `unwalked`, which denies searches on its line as an unreadable directory already did. What it
+  records is otherwise unchanged: escapes, Keychain paths, the top-level `.git` prune and the
+  entry cap all fall where they did. One difference: a top-level `.git` that is a symlink into a
+  Keychain is now recorded as a Keychain link rather than stat'd and pruned. The walk is one
+  definition (`guard_rules.iter_tree`) shared with the `target-discovery-surface` probe.
+
 - **A confirmed CRITICAL or HIGH caps the letter grade (#3652).** The grade is the health band
   (#3328, unchanged), so a large codebase could grade A or B beside open confirmed CRITICALs. A
   severity cap now sits on top of the band: a confirmed CRITICAL caps the letter at D and a

@@ -204,6 +204,69 @@ def _keychain_homes():
     return homes + ([os.path.join(home, "Library", "Keychains")] if os.path.isabs(home) else [])
 
 
+# #3658: the one tree walk `grant_walk` and the discovery-surface probe (`probes/surface`) share.
+# `os.walk` recurses a frame per level before Python 3.12, so a deep enough tree ended it in a
+# RecursionError, and it reads a failed is-directory stat as "a file" -- a directory nobody
+# visited and nobody was told about. This walk keeps its own stack and reports every failure.
+def scan_directory(directory, on_error):
+    """(real subdirectory names, every other name) in `directory`, each sorted, or None when
+    it could not be listed.
+
+    `is_dir(follow_symlinks=False)`: nothing is stat'd THROUGH a link, so a symlinked directory
+    lands among the other names -- listed, never a directory to descend. Every failure goes to
+    `on_error`: the listing itself, and one entry's own stat on a filesystem that does not say
+    what an entry is. A link whose TARGET cannot be stat'd is not a failure here: it is a link."""
+    subdirs: list[str] = []
+    others: list[str] = []
+    try:
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                try:
+                    real_dir = entry.is_dir(follow_symlinks=False)
+                except OSError as exc:
+                    on_error(exc)
+                    real_dir = False
+                (subdirs if real_dir else others).append(entry.name)
+    except OSError as exc:
+        on_error(exc)
+        return None
+    return sorted(subdirs), sorted(others)
+
+
+def iter_tree(top, on_error):
+    """(directory, subdirs, others) for `top` and every real directory under it, top-down, in
+    sorted order: `os.walk(followlinks=False)`'s contract without its recursion.
+
+    `subdirs` is `scan_directory`'s first list and the caller prunes it IN PLACE to keep the
+    walk out of a directory; leaving the loop stops the walk. A directory is asked again for a
+    link at the moment of descent, as `os.walk` did: it was real when its parent was listed,
+    and may have been swapped since. `top` is the caller's own path and is walked whatever it
+    is."""
+    pending = [top]
+    while pending:
+        directory = pending.pop()
+        if directory != top and os.path.islink(directory):
+            continue
+        listing = scan_directory(directory, on_error)
+        if listing is None:
+            continue
+        yield directory, listing[0], listing[1]
+        # Reversed, so the stack pops them in sorted order -- and read AFTER the caller has
+        # had the list, which is what makes its in-place pruning take effect.
+        pending.extend(os.path.join(directory, name) for name in reversed(listing[0]))
+
+
+def _links_to_a_directory(path):
+    """True when `path` is a symlink to a directory. The one question `grant_walk` still asks
+    THROUGH a link, and only of a top-level `.git`. A link whose target names a Keychain is
+    never stat'd -- it answers False, so the walk records it as the Keychain link it is."""
+    if not os.path.islink(path):
+        return False
+    if _names_keychain(path) or _names_keychain(os.path.realpath(path)):
+        return False
+    return os.path.isdir(path)
+
+
 def grant_walk(dirs, cap=ESCAPE_WALK_CAP):
     """(escapes, keychains, unwalked), each {grant: sorted paths, or None when the walk passed
     `cap` entries}. One walk per grant; never follows a link, walks the `.git` store no grant
@@ -212,7 +275,7 @@ def grant_walk(dirs, cap=ESCAPE_WALK_CAP):
     escapes (#2063): in-grant symlinks leaving the grant. keychains (#3616): Keychain paths under
     the grant, and in-grant links whose target names a Keychain or lies at or above one (an
     in-grant Keychain, or the system's or the user's, by string). unwalked (#3616): directories
-    the walk could not read."""
+    the walk could not read, and (#3658) entries it could not stat to learn what they were."""
     escapes: dict[str, list[str] | None] = {}
     keychains: dict[str, list[str] | None] = {}
     unwalked: dict[str, list[str] | None] = {}
@@ -226,12 +289,18 @@ def grant_walk(dirs, cap=ESCAPE_WALK_CAP):
         def note(exc, failed=failed, grant=grant):
             failed.append(os.path.abspath(getattr(exc, "filename", None) or grant))
 
-        for root, subdirs, files in os.walk(grant, followlinks=False, onerror=note):
-            subdirs[:] = [d for d in subdirs if root != grant or d.casefold() != ".git"]
-            seen += len(subdirs) + len(files)
+        for root, subdirs, others in iter_tree(grant, note):
+            if root == grant:
+                # The `.git` store, as a directory or as a link to one: `os.walk` listed both
+                # among the directories, so both were pruned -- never counted, and the link
+                # never recorded as an escape (which would deny every wildcard in the grant).
+                subdirs[:] = [d for d in subdirs if d.casefold() != ".git"]
+                others = [n for n in others if n.casefold() != ".git"
+                          or not _links_to_a_directory(os.path.join(root, n))]
+            seen += len(subdirs) + len(others)
             if seen > cap:
                 break
-            for name in subdirs + files:
+            for name in subdirs + others:
                 path = os.path.join(root, name)
                 if not os.path.islink(path):
                     if _names_keychain(path):
