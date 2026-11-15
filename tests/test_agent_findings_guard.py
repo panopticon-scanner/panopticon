@@ -24,6 +24,7 @@ OTHER_READERS = {
     "html_report.py::_render_findings", "html_report.py::render",
     "synthesize.py::main", "reconcile.py::load_report",
     "synth/render.py::render_summary", "synth/render.py::write_report",
+    "synth/render.py::parts_line",
     "synth/render.py::_read_json_report", "synth/report.py::validate_report",
     "synth/validate_schema.py::finding_item_schema",
     "findings_contract.py::payload_defects",

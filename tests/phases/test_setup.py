@@ -2324,3 +2324,190 @@ class TestSetupDonePredicatesBindToThisRun(unittest.TestCase):
             status = setup.run_setup_flow(driver.build_parser().parse_args(["setup", d]))
         self.assertIn("git rm -r --cached .panopticon", status["message"])     # #3271: H1
         self.assertNotIn("--reset", status["message"])
+
+
+class TestSetupResetRotatesTheSpendRecord(unittest.TestCase):
+    """#3647: `--setup --reset` starts a new setup run, but the flat
+    `.panopticon/dispatch-ledger.jsonl` and `usage.json` were left in place, so across
+    repeated setups `usage.json` -- derived from the WHOLE ledger -- reported the running
+    total. Reset now rotates both aside, named by the outgoing setup run's id."""
+
+    RUN_ID = "0123456789abcdef0123456789abcdef"
+    # Borrowed, not inherited (inheriting would re-run TestDriverSetup's tests here):
+    # the one dead-pid helper, so this class adds no subprocess site of its own.
+    _dead_pid = TestDriverSetup._dead_pid
+
+    def setUp(self):
+        import scripts.ledger as ledger_mod
+        import scripts.phases.persist as persist
+        self._d = tempfile.TemporaryDirectory()
+        self.addCleanup(self._d.cleanup)
+        self.root = os.path.realpath(self._d.name)
+        os.makedirs(os.path.join(self.root, ".panopticon"))
+        self.run_dir = persist.run_dir(self.root, "setup")
+        self.assertEqual(self.run_dir, os.path.dirname(setup._setup_manifest_path(self.root)))
+        self.ledger_mod = ledger_mod
+
+    def _cycle(self, tokens, run_id=None):
+        """One setup cycle's spend: a manifest, one ledgered launch, and usage.json."""
+        runio._write_json(setup._setup_manifest_path(self.root),
+                          {"schema_version": 1, "run_id": run_id or self.RUN_ID})
+        ledger = self.ledger_mod.Ledger(self.run_dir)
+        result = runners_base.RunResult(
+            entry_id="setup-scan", ok=True, text="x", usage={"input_tokens": tokens},
+            cost_usd=0.1, model=None, session_id=None, denials=[], error=None)
+        ledger.record({"id": "setup-scan"}, "setup", result, "headless", "claude")
+        loop_batch.write_usage(self.root, ledger, "setup")
+        return runio._load_json(os.path.join(self.run_dir, "usage.json"))
+
+    def test_two_reset_cycles_leave_the_second_cycle_s_usage_its_own(self):
+        first = self._cycle(10)
+        self.assertEqual(10, first["total"])
+        setup._clear_setup_artifacts(self.root)
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, runners_base.LEDGER_FILE)))
+        self.assertFalse(os.path.exists(os.path.join(self.run_dir, "usage.json")))
+        second = self._cycle(7, run_id="f" * 32)
+        self.assertEqual(7, second["total"])
+        rows = self.ledger_mod.Ledger(self.run_dir).lines()
+        self.assertEqual([7], [row["usage"]["input_tokens"] for row in rows])
+
+    def test_the_previous_cycle_is_kept_under_its_run_id(self):
+        self._cycle(10)
+        setup._clear_setup_artifacts(self.root)
+        ledger = os.path.join(self.run_dir, "dispatch-ledger.%s.jsonl" % self.RUN_ID)
+        usage = os.path.join(self.run_dir, "usage.%s.json" % self.RUN_ID)
+        with open(ledger, encoding="utf-8") as fh:
+            rows = [json.loads(line) for line in fh if line.strip()]
+        self.assertEqual([10], [row["usage"]["input_tokens"] for row in rows
+                                if "usage" in row])
+        self.assertEqual(10, runio._load_json(usage)["total"])
+
+    def test_a_planted_run_id_never_names_a_path(self):
+        # The manifest is in the reviewed tree: only a 32-hex id becomes a filename.
+        for planted in ("../../escape", "x/y", "", None, 5, "A" * 32, "0" * 31):
+            with self.subTest(planted=planted):
+                for name in os.listdir(self.run_dir):
+                    os.remove(os.path.join(self.run_dir, name))
+                self._cycle(3)
+                runio._write_json(setup._setup_manifest_path(self.root),
+                                  {"schema_version": 1, "run_id": planted})
+                setup._clear_setup_artifacts(self.root)
+                rotated = sorted(n for n in os.listdir(self.run_dir)
+                                 if n.startswith(("dispatch-ledger.", "usage.")))
+                self.assertEqual(2, len(rotated), rotated)
+                for name in rotated:
+                    tag = name.split(".")[1]
+                    self.assertEqual(32, len(tag))
+                    self.assertTrue(all(c in "0123456789abcdef" for c in tag), name)
+                self.assertEqual([], [n for n in os.listdir(os.path.dirname(self.run_dir))
+                                      if n == "escape"])
+
+    def test_a_rotation_never_overwrites_an_earlier_one(self):
+        self._cycle(10)
+        setup._clear_setup_artifacts(self.root)
+        self._cycle(20)                                  # the same run_id again
+        setup._clear_setup_artifacts(self.root)
+        totals = sorted(runio._load_json(os.path.join(self.run_dir, n))["total"]
+                        for n in os.listdir(self.run_dir) if n.startswith("usage."))
+        self.assertEqual([10, 20], totals)
+
+    def _rotated(self):
+        return sorted(n for n in os.listdir(self.run_dir)
+                      if n.startswith(("dispatch-ledger.", "usage."))
+                      and n not in (runners_base.LEDGER_FILE, "usage.json"))
+
+    def _record(self, name, **fields):
+        path = os.path.join(self.run_dir, name)
+        runio._write_json(path, {"schema_version": 1, "batch": 1, **fields})
+        return path
+
+    def test_a_live_setup_loop_keeps_its_ledger_in_place(self):
+        # Review F1: loop A's --budget check reads this ledger's total. Rotating it away
+        # under a running loop reads $0 and keeps spending.
+        self._cycle(10)
+        self._record("batch-1.json", pid=os.getpid(), host=batch_mod.host_id())
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            setup._clear_setup_artifacts(self.root)
+        self.assertEqual([], self._rotated())
+        self.assertTrue(os.path.isfile(os.path.join(self.run_dir, runners_base.LEDGER_FILE)))
+        self.assertTrue(os.path.isfile(os.path.join(self.run_dir, "usage.json")))
+        self.assertIn("not rotating the setup ledger", err.getvalue())
+        self.assertIn(repr(os.getpid()), err.getvalue())
+
+    def test_a_dead_setup_loop_does_not_hold_the_rotation_back(self):
+        self._cycle(10)
+        self._record("batch-1.json", pid=self._dead_pid(), host=batch_mod.host_id())
+        setup._clear_setup_artifacts(self.root)
+        self.assertEqual(["dispatch-ledger.%s.jsonl" % self.RUN_ID, "usage.%s.json" % self.RUN_ID],
+                         self._rotated())
+
+    def test_a_failed_move_stops_the_reset_before_anything_is_removed(self):
+        # Review F2: a rename that fails must not report a successful reset.
+        self._cycle(10)
+        manifest = setup._setup_manifest_path(self.root)
+        real_rename = os.rename
+
+        def refuse_ledger(src, dst):
+            if os.path.basename(src) == runners_base.LEDGER_FILE:
+                raise PermissionError(13, "Permission denied")
+            return real_rename(src, dst)
+        with mock.patch.object(setup.os, "rename", side_effect=refuse_ledger):
+            with self.assertRaises(setup.SpendRotationError) as caught:
+                setup._clear_setup_artifacts(self.root)
+        self.assertIn("--reset stopped", str(caught.exception))
+        self.assertIn(runners_base.LEDGER_FILE, str(caught.exception))
+        self.assertTrue(os.path.isfile(manifest), "the reset went on after a failed rotation")
+        self.assertTrue(os.path.isfile(os.path.join(self.run_dir, runners_base.LEDGER_FILE)))
+
+    def test_a_failed_move_is_the_reset_s_status(self):
+        args = driver.build_parser().parse_args(["setup", self.root, "--reset"])
+        with mock.patch.object(setup, "_clear_setup_artifacts",
+                               side_effect=setup.SpendRotationError("--reset stopped: x")), \
+                mock.patch.object(setup.first_contact, "assess", return_value={}):
+            status = setup.run_setup_flow(args)
+        self.assertEqual("error", status["status"])
+        self.assertIn("--reset stopped: x", status["message"])
+
+    def test_a_taken_name_moves_the_pair_to_one_fresh_tag(self):
+        # Review N1: the ledger and usage of one cycle keep ONE tag.
+        self._cycle(10)
+        planted = os.path.join(self.run_dir, "usage.%s.json" % self.RUN_ID)
+        with open(planted, "w", encoding="utf-8") as fh:
+            fh.write("planted")
+        setup._clear_setup_artifacts(self.root)
+        moved = [n for n in self._rotated() if n != os.path.basename(planted)]
+        self.assertEqual(2, len(moved), moved)
+        tags = {n.split(".")[1] for n in moved}
+        self.assertEqual(1, len(tags), moved)
+        self.assertNotIn(self.RUN_ID, tags)
+        with open(planted, encoding="utf-8") as fh:
+            self.assertEqual("planted", fh.read())
+
+    def test_a_dangling_symlink_source_is_moved_as_the_link(self):
+        # Review N2: the source is a dangling link -- moved, never followed or skipped.
+        self._cycle(10)
+        ledger = os.path.join(self.run_dir, runners_base.LEDGER_FILE)
+        os.remove(ledger)
+        nowhere = os.path.join(self.root, "nowhere.jsonl")
+        os.symlink(nowhere, ledger)
+        setup._clear_setup_artifacts(self.root)
+        moved = os.path.join(self.run_dir, "dispatch-ledger.%s.jsonl" % self.RUN_ID)
+        self.assertTrue(os.path.islink(moved))
+        self.assertEqual(nowhere, os.readlink(moved))
+        self.assertFalse(os.path.lexists(ledger))
+        self.assertFalse(os.path.exists(nowhere))
+
+    def test_a_dangling_symlink_target_is_never_written_through(self):
+        # Review N2: a dangling link planted at the rotated name counts as taken.
+        self._cycle(10)
+        nowhere = os.path.join(self.root, "nowhere.jsonl")
+        planted = os.path.join(self.run_dir, "dispatch-ledger.%s.jsonl" % self.RUN_ID)
+        os.symlink(nowhere, planted)
+        setup._clear_setup_artifacts(self.root)
+        self.assertTrue(os.path.islink(planted))
+        self.assertEqual(nowhere, os.readlink(planted))
+        self.assertFalse(os.path.exists(nowhere), "the rotation wrote through a planted link")
+        moved = [n for n in self._rotated() if n != os.path.basename(planted)]
+        self.assertEqual(2, len(moved), moved)
+

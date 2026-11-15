@@ -99,12 +99,37 @@ GATE_GAP_NOTE = "gate-relevant coverage did not complete"
 PROVISIONAL_PREFIX = "grade provisional: "
 
 
+def grade_shortfalls(resolved):
+    """#3667 (owner ruling 2026-11-15): verify work this run left UNDONE, one
+    reason per entry. ONE shared rule reads this list: any reason here holds the
+    letter back as `provisional_grade`, sinks `coverage_certified`, moves a PASS
+    gate to INCONCLUSIVE, and is named in `coverage_note` and beside the letter.
+    A new kind of undone verify work (#3641's host-cut-short verify phase) adds
+    its reason here and nothing else.
+
+    Unanswered tool advisors: each such finding stays in the report as
+    `tool_reported` (unverified, not gate-eligible); the letter must not read as
+    though they had been checked. Unanswered verify advisors (the agent claims
+    owed a verdict, `unanswered_gate` less the tool ones): when every verify
+    launch fails nothing is confirmed, health reads 100 and the letter S stood
+    beside an INCONCLUSIVE gate -- the same undone work, the same rule."""
+    reasons = []
+    unanswered_tools = getattr(resolved, "unanswered_tools", 0) or 0
+    unanswered_claims = max((getattr(resolved, "unanswered_gate", 0) or 0) - unanswered_tools, 0)
+    for count, kind in ((unanswered_tools, "tool finding"), (unanswered_claims, "finding")):
+        if count:
+            reasons.append("%d %s%s unanswered by %s %sadvisor%s" % (
+                count, kind, "" if count == 1 else "s", "its" if count == 1 else "their",
+                "" if kind == "tool finding" else "verify ", "" if count == 1 else "s"))
+    return reasons
+
+
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
             integrity_ok=True, verdicts_unloadable=0, verdicts_unanswered=0,
             missing_floor=0, tools_manifest_invalid=None, tools_network_excluded=None,
             delta_scope_suppressed_git_drivers=None, tools_file_partial=None,
             delta_zero_hunks=None, dependency_audit_gap=False, custom_profile=None,
-            config_notes=None, native_unparsed_gap=None):
+            config_notes=None, native_unparsed_gap=None, shortfalls=()):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
     (+ requested-absent tools + artifact integrity + verdict loadability +
     missing FLOOR review cells); grade is holistic (provisional on ANY gap).
@@ -162,6 +187,10 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     `delta.delta_gate_gap` picks which rule spoke; the parameter keeps its name
     because nothing about how `certify` treats the reason changes, and a second
     argument would have two channels doing one job.
+
+    `shortfalls` (#3667) is `grade_shortfalls`' list: undone verify work. Any
+    entry is gate-relevant, holds the letter back exactly as an incomplete panel
+    does, and is named in the note.
     """
     base_gate = gate_verdict(gate_eligible, fail_on)          # PASS / FAIL / OFF
     syntax_disclosures = coverage_model.semgrep_syntax_disclosures(tools_file_partial)
@@ -173,7 +202,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
                          or not integrity_ok or bool(verdicts_unloadable)
                          or bool(verdicts_unanswered) or bool(missing_floor)
                          or bool(tools_network_excluded) or bool(delta_zero_hunks)
-                         or dependency_audit_gap or bool(native_unparsed_gap))
+                         or dependency_audit_gap or bool(native_unparsed_gap)
+                         or bool(shortfalls))
     any_incomplete = bool(panels_incomplete)
 
     if base_gate == "PASS" and gate_relevant_gap:
@@ -189,7 +219,7 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     # #1495: a non-default scan profile moves the LETTER only, the way an incomplete panel does.
     # The gate and coverage_certified do not see it: the findings and the coverage are what
     # they are, only the letter is not comparable with the bands.
-    if any_incomplete or custom_profile:
+    if any_incomplete or custom_profile or shortfalls:
         cert_grade, provisional = None, overall_grade
     else:
         cert_grade, provisional = overall_grade, None
@@ -221,6 +251,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         reason = (custom_profile if lead and PROVISIONAL_PREFIX.rstrip(": ") in lead
                   else PROVISIONAL_PREFIX + custom_profile)
         note = "; ".join(filter(None, (lead, reason)))
+    if shortfalls:
+        note = "; ".join(filter(None, (note, *shortfalls)))
     if dependency_audit_gap:
         note = "; ".join(filter(None, (note, NO_SCA_COVERAGE_NOTE)))
     if delta_zero_hunks:
@@ -762,6 +794,7 @@ def grade_report(run, resolved, reconciled, delta=None):
         delta_zero_hunks = delta_mod.delta_gate_gap(
             delta, len(would_have_judged), run.gate_scope)
     coverages = getattr(reconciled, "coverages", None)
+    shortfalls = grade_shortfalls(resolved)
     cert = certify(overall, gate_eligible, run.fail_on, reconciled.panels_incomplete,
                    reconciled.tools_absent,
                    integrity_ok=reconciled.integrity_ok,
@@ -777,10 +810,13 @@ def grade_report(run, resolved, reconciled, delta=None):
                    dependency_audit_gap=getattr(reconciled, "dependency_audit_gap", False),
                    native_unparsed_gap=getattr(reconciled, "native_unparsed_gap", None),
                    custom_profile=health_basis.custom_profile_reasons(run, coverages),
-                   config_notes=health_basis.config_notes(run, coverages))
+                   config_notes=health_basis.config_notes(run, coverages),
+                   shortfalls=shortfalls)
     summary = {
         "overall_grade": cert["overall_grade"],
         "provisional_grade": cert["provisional_grade"],
+        # #3667: why the letter is held back for undone verify work; [] when none is.
+        "grade_shortfalls": shortfalls,
         # #3652: the band letter and the cap that lowered it, or None.
         "grade_cap": grade_cap,
         "coverage_certified": cert["coverage_certified"],
