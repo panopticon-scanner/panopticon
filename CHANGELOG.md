@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Summoned backup advisors that never answer hold the letter back (#3676).** A run whose
+  backup advisors all failed (non-zero exit, empty reply, timeout) read as fully certified, and
+  a malformed backup sank certification without naming a cause. `meta.coverage.backups`
+  (`summoned`, `answered`, `unanswered`, `unloadable`, in cells, off the verify phase's own
+  `verify-attempts.json`) now feeds the shared `grade_shortfalls` rule from #3667: unanswered
+  and unloadable backups are named reasons, the letter is provisional ("S (provisional; 5
+  backup advisors unanswered)"), coverage is NOT CERTIFIED and a PASS gate is INCONCLUSIVE. A
+  run whose backups all answered is unchanged.
+
 - **Tool findings a split report put out of sight, and a letter that read as checked (#3667).**
   An owner run whose tool advisors all went unanswered seemed to keep almost none of its 145 tool
   findings. None were lost: the report was over the writer's byte budget, so `findings[]` was

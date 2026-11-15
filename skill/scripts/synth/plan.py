@@ -18,6 +18,7 @@ import scripts.ingest_tools as ingest_tools
 import scripts.plan_contract as plan_contract
 import scripts.score_gate as score_gate
 from . import artifacts as artifacts_mod
+from . import backups as backups_mod
 from . import coverage_io as coverage_io
 from . import findings as findings_mod
 from . import integrity as integrity_mod
@@ -67,12 +68,15 @@ class PlanInputs:
     # The hash-bound driver plan entries, retained so #3611 can prove the SEC
     # target list was actually dispatched rather than infer it after the fact.
     dispatch_entries: list = field(default_factory=list)
+    # #3676: the backup advisors this run summoned and what came back, in cells
+    # (`backups.coverage`). None when the run left no record of a verify phase.
+    backups: dict | None = None
 
     @classmethod
     def load(cls, run_dir, files, verdicts_dir, groups_meta, plans, queue, verdicts,
              git_drivers_suppressed=None, plan_owed=False, plan_sha256=None,
              snapshot_sha256=None, discovery=None, sec_carve_out=None, raw_groups=None,
-             groups_valid=True):
+             groups_valid=True, verdict_unloadable=(), verdict_run_id=None):
         """main()'s plan stage (WS-0 S3): lane discipline (#441), fan-out
         accounting, resume stats, scout requests, coverage files and their
         integrity disclosures. `plans` is the
@@ -126,7 +130,9 @@ class PlanInputs:
                    test_inventory=load_test_inventory(run_dir),
                    git_drivers_suppressed=git_drivers_suppressed,
                    sec_carve_out=sec_carve_out,
-                   dispatch_entries=list(plan))
+                   dispatch_entries=list(plan),
+                   backups=backups_mod.coverage(run_dir, verdicts_dir, verdict_unloadable,
+                                                verdict_run_id))
 
 
 # One source for the per-group dispatch-plan filename glob (#681): synthesize

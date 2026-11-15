@@ -476,6 +476,10 @@ def main(argv=None):
                                     sec_carve_out=gj.get(
                                         "exclude_paths_sec_carve_out"),
                                     groups_valid=groups_valid == [True],
+                                    # #3676: which backups were summoned, read
+                                    # against what the verdicts dir holds.
+                                    verdict_unloadable=fs.verdict_unloadable,
+                                    verdict_run_id=fs.verdict_run_id,
                                     # #2962: #2964's check reads the names
                                     # unspelled; every other reader keeps `gj`.
                                     raw_groups=raw_groups)

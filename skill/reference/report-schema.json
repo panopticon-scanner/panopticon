@@ -439,6 +439,54 @@
                 }
               }
             },
+            "backups": {
+              "type": [
+                "object",
+                "null"
+              ],
+              "description": "#3676: the backup advisors this run summoned (cells charged a `<group>/<domain>/backup` dispatch in the verify phase's verify-attempts.json) and what came back, counted in cells. answered: a loadable backup bundle bound to this run holds a verdict; unloadable: a backup bundle file failed to load; unanswered: anything else (no file, an empty bundle, another run's). summoned == answered + unanswered + unloadable. unanswered and unloadable are summary.grade_shortfalls reasons: the letter is held back and coverage is NOT CERTIFIED. record_unreadable: the attempts record is present but unreadable, so the counts are null and that is itself a shortfall. null when the run left no record (no verify phase, or a direct synthesize call).",
+              "required": [
+                "summoned",
+                "answered",
+                "unanswered",
+                "unloadable",
+                "record_unreadable"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "summoned": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "answered": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "unanswered": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "unloadable": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "record_unreadable": {
+                  "type": "boolean"
+                }
+              }
+            },
             "verdicts": {
               "type": "object",
               "description": "Verify-phase accounting: verdicts that were dropped are otherwise stderr-only, and under strict gating a run whose verdicts all failed to match looks like a clean pass.",

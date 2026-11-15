@@ -81,7 +81,12 @@ launch fails, nothing is confirmed and health alone would read S): `overall_grad
 `provisional_grade` carries it, and `summary.grade_shortfalls` names why ("D (provisional; 145
 tool findings unanswered by their advisors)"). That list is one shared rule: any reason in it
 holds the letter back, sinks `coverage_certified`, moves a PASS gate to INCONCLUSIVE and is named
-in `coverage_note`.
+in `coverage_note`. Summoned backup advisors are its third reason (#3676): `meta.coverage.backups`
+counts, in cells, the backups the verify phase dispatched (`verify-attempts.json`) as `answered`
+(a loadable bundle bound to this run holds a verdict), `unanswered` (no file, an empty bundle,
+another run's) or `unloadable`, and "5 backup advisors unanswered" holds the letter back the same
+way. An unreadable attempts record is a reason of its own; a run whose backups all answered is
+unchanged.
 A legitimate catalog-gap finding without `location.file` cannot satisfy X0X's required occurrence
 shape. It remains in the main JSON and HTML, while `synthesize` excludes it from the X0X candidate
 set and writes `<report-stem>-x0x-failures.json` beside the X0X, where `<report-stem>` means the
