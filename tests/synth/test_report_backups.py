@@ -15,6 +15,7 @@ import unittest
 
 import jsonschema
 
+import scripts.evidence as evidence_mod
 import scripts.html_report as html_report
 import scripts.phases.verify as verify
 import scripts.synth.backups as backups_mod
@@ -45,16 +46,25 @@ class _RunDir(unittest.TestCase):
                   encoding="utf-8") as fh:
             json.dump(body, fh)
 
-    def bundle(self, group, domain, verdicts, *, part=0, run_id=RUN_ID, raw=None):
+    def bundle(self, group, domain, verdicts, *, part=0, run_id=RUN_ID, raw=None,
+               stage="backup"):
         name = "verdicts-%s-%s-backup%s.json" % (group, domain,
                                                  "-part%d" % part if part else "")
         with open(os.path.join(self.verdicts, name), "w", encoding="utf-8") as fh:
             fh.write(raw if raw is not None else json.dumps(
-                {"verdicts": verdicts, "_panopticon": {"run_id": run_id, "stage": "backup"}}))
+                {"verdicts": verdicts, "_panopticon": {"run_id": run_id, "stage": stage}}))
         return name
 
-    def coverage(self, unloadable=()):
-        return backups_mod.coverage(self.run_dir, self.verdicts, unloadable, RUN_ID)
+    def loaded(self):
+        """What synthesize's FindingSet holds: the loader's per-file stamps and
+        its unloadable rows -- the only verdict reads in the path."""
+        accepted = {}
+        _by_fid, unloadable = evidence_mod.load_verdict_bundles(self.verdicts, accepted=accepted)
+        return accepted, unloadable
+
+    def coverage(self):
+        accepted, unloadable = self.loaded()
+        return backups_mod.coverage(self.run_dir, accepted, unloadable, RUN_ID)
 
 
 _VERDICT = {"finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "checked"}
@@ -63,18 +73,26 @@ _VERDICT = {"finding_id": "SEC-001", "verdict": "CONFIRMED", "reasoning": "check
 class TestBackupCoverage(_RunDir):
     def test_no_record_means_no_block(self):
         self.assertIsNone(self.coverage())
-        self.assertIsNone(backups_mod.coverage(None, self.verdicts))
+        self.assertIsNone(backups_mod.coverage(None, {}))
 
     def test_each_summoned_cell_is_counted_once(self):
-        self.summon(("g1", "SEC"), ("g2", "SEC"), ("g3", "COD"), ("g4", "SEC"), ("g5", "SEC"))
+        self.summon(("g1", "SEC"), ("g2", "SEC"), ("g3", "COD"), ("g4", "SEC"), ("g5", "SEC"),
+                    ("g6", "SEC"), ("g7", "SEC"))
         self.bundle("g1", "SEC", [_VERDICT])                    # answered
         self.bundle("g3", "COD", [])                            # empty reply
         self.bundle("g4", "SEC", [_VERDICT], run_id="old-run")  # another run's
-        bad = self.bundle("g5", "SEC", None, raw="{not json")   # malformed
+        self.bundle("g5", "SEC", None, raw="{not json")         # malformed
+        self.bundle("g6", "SEC", [_VERDICT], stage="primary")   # not stamped a backup
+        self.bundle("g7", "SEC", [{"verdict": "CONFIRMED"}])    # no entry survives
         # g2: nothing came back at all.
-        self.assertEqual({"summoned": 5, "answered": 1, "unanswered": 3, "unloadable": 1,
-                          "record_unreadable": False},
-                         self.coverage(unloadable=[{"file": bad, "reason": "x"}]))
+        self.assertEqual({"summoned": 7, "answered": 1, "unanswered": 4, "unloadable": 2,
+                          "record_unreadable": False}, self.coverage())
+
+    def test_the_loader_records_stamps_and_counts_only(self):
+        self.bundle("g1", "SEC", [_VERDICT, {"verdict": "CONFIRMED"}])
+        accepted, _unloadable = self.loaded()
+        self.assertEqual({"verdicts-g1-SEC-backup.json":
+                          {"run_id": RUN_ID, "stage": "backup", "kept": 1}}, accepted)
 
     def test_a_chunked_cell_answers_through_any_part(self):
         self.summon(("g1", "SEC"))
@@ -199,9 +217,11 @@ class TestUnansweredBackupsHoldTheLetterBack(unittest.TestCase):
 class TestSynthesizeReadsTheRunRecord(_RunDir):
     def test_plan_inputs_load_carries_the_block(self):
         self.summon(("g1", "SEC"))
+        accepted, unloadable = self.loaded()
         plan = plan_mod.PlanInputs.load(self.run_dir, [], self.verdicts, GROUPS,
                                         ([], 0, []), (None, None), {},
-                                        verdict_unloadable=[], verdict_run_id=RUN_ID)
+                                        verdict_unloadable=unloadable, verdict_run_id=RUN_ID,
+                                        bundle_files=accepted)
         self.assertEqual({"summoned": 1, "answered": 0, "unanswered": 1, "unloadable": 0,
                           "record_unreadable": False}, plan.backups)
 

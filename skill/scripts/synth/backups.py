@@ -13,8 +13,8 @@ The verify phase charges one attempt per dispatched cell/stage in
 means here. Each summoned cell is then read off the verdicts directory:
 
 - `unloadable`: a backup bundle file for the cell failed to load;
-- `answered`: a loadable backup bundle for the cell, bound to this run, holds at
-  least one verdict;
+- `answered`: a loadable bundle the controller stamped `stage: backup`, bound to
+  this run, holds at least one sanitized verdict;
 - `unanswered`: anything else -- no file, an empty bundle, or one from another
   run.
 
@@ -26,7 +26,6 @@ import os
 import re
 
 from . import artifacts as artifacts_mod
-import scripts.evidence as evidence_mod
 
 # The verify phase's own record (`phases/verify._VERIFY_ATTEMPTS_FILE`). Spelled
 # here because synth may not import phases; tests pin the two names equal.
@@ -67,39 +66,35 @@ def _cell_files(names, group, domain):
     return [name for name in names if pattern.match(name)]
 
 
-def _answered(path, run_id):
-    """A loadable bundle bound to this run (or to no queue at all) holding a verdict."""
-    try:
-        data = evidence_mod.load_json_tolerant(evidence_mod._read_verdict_text(path))
-    except (OSError, ValueError, RecursionError, MemoryError):
-        return False
-    if not isinstance(data, dict) or not isinstance(data.get("verdicts"), list):
-        return False
-    pano = data.get("_panopticon")
-    if not isinstance(pano, dict):
-        pano = {}
-    if run_id is not None and pano.get("run_id") != run_id:
-        return False
-    return any(isinstance(v, dict) for v in data["verdicts"])
+def _answered(stamp, run_id):
+    """A loaded bundle the CONTROLLER stamped a backup, bound to this run (or to no
+    queue at all), with at least one verdict through the sanitizer."""
+    return (isinstance(stamp, dict) and stamp.get("stage") == "backup"
+            and (run_id is None or stamp.get("run_id") == run_id)
+            and type(stamp.get("kept")) is int and stamp["kept"] >= 1)
 
 
-def coverage(run_dir, verdicts_dir, verdict_unloadable=(), run_id=None):
+def coverage(run_dir, bundle_files, verdict_unloadable=(), run_id=None):
     """`meta.coverage.backups`: {summoned, answered, unanswered, unloadable,
-    record_unreadable}, counted in cells; None when the run left no record."""
+    record_unreadable}, counted in cells; None when the run left no record.
+
+    `bundle_files` is `evidence.load_verdict_bundles(accepted=)`'s per-file map and
+    `verdict_unloadable` the loaders' unloadable rows: no verdict file is read here."""
     summoned = _summoned(run_dir)
     if summoned is None:
         return None
     if summoned == "unreadable":
         return {"summoned": None, "answered": None, "unanswered": None,
                 "unloadable": None, "record_unreadable": True}
-    files = dict(evidence_mod._iter_verdict_files(verdicts_dir))
+    stamps = bundle_files if isinstance(bundle_files, dict) else {}
     bad = {str(u.get("file")) for u in verdict_unloadable or () if isinstance(u, dict)}
+    names = set(stamps) | bad
     answered = unanswered = unloadable = 0
     for group, domain in summoned:
-        names = _cell_files(files, group, domain)
-        if any(name in bad for name in names):
+        cell = _cell_files(names, group, domain)
+        if any(name in bad for name in cell):
             unloadable += 1
-        elif any(_answered(files[name], run_id) for name in names):
+        elif any(_answered(stamps.get(name), run_id) for name in cell):
             answered += 1
         else:
             unanswered += 1

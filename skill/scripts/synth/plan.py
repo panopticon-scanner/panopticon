@@ -76,7 +76,8 @@ class PlanInputs:
     def load(cls, run_dir, files, verdicts_dir, groups_meta, plans, queue, verdicts,
              git_drivers_suppressed=None, plan_owed=False, plan_sha256=None,
              snapshot_sha256=None, discovery=None, sec_carve_out=None, raw_groups=None,
-             groups_valid=True, verdict_unloadable=(), verdict_run_id=None):
+             groups_valid=True, verdict_unloadable=(), verdict_run_id=None,
+             bundle_files=None):
         """main()'s plan stage (WS-0 S3): lane discipline (#441), fan-out
         accounting, resume stats, scout requests, coverage files and their
         integrity disclosures. `plans` is the
@@ -131,7 +132,7 @@ class PlanInputs:
                    git_drivers_suppressed=git_drivers_suppressed,
                    sec_carve_out=sec_carve_out,
                    dispatch_entries=list(plan),
-                   backups=backups_mod.coverage(run_dir, verdicts_dir, verdict_unloadable,
+                   backups=backups_mod.coverage(run_dir, bundle_files, verdict_unloadable,
                                                 verdict_run_id))
 
 

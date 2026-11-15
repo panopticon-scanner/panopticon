@@ -480,6 +480,7 @@ def main(argv=None):
                                     # against what the verdicts dir holds.
                                     verdict_unloadable=fs.verdict_unloadable,
                                     verdict_run_id=fs.verdict_run_id,
+                                    bundle_files=fs.bundle_files,
                                     # #2962: #2964's check reads the names
                                     # unspelled; every other reader keeps `gj`.
                                     raw_groups=raw_groups)
