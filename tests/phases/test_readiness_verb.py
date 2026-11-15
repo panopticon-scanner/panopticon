@@ -966,6 +966,128 @@ class TestTheAssumedHost(_VerbCase):
         self.assertTrue(callable(runio.resolve_host))
 
 
+class TestTheCapabilitiesRowIsThisRunsOwn(_VerbCase):
+    """#3668. `driver readiness . --host agy --reset`, over a target whose run folder held a
+    claude run, printed that run's posture as this one's: "all measured and PROVEN ... on host
+    'claude'". The row now shows a stored posture only for the host the document is about, and
+    never under `--reset`, which discards the folder the posture is stored in.
+    """
+
+    AGY = {"agy": "/opt/bin/agy"}
+
+    def _stored_run(self, d, host, state=hosts.PROVEN):
+        tag = "%s-standard-repo-20260915-abcd1234" % host
+        folder = os.path.join(d, ".panopticon", "runs", tag)
+        os.makedirs(folder)
+        with open(os.path.join(folder, runio.HOST_CAPABILITIES), "w", encoding="utf-8") as fh:
+            json.dump({"schema_version": 1, "host": host, "probed_at": "2026-09-15T00:00:00Z",
+                       "capabilities": {c: {"state": state, "by": "fixture", "detail": "fixture"}
+                                        for c in hosts.CAPABILITIES},
+                       # The note the issue quotes: "replies are schema-constrained this run on
+                       # host 'claude' -- --json-schema advertised, shape proven by one launch".
+                       hosts.CLI_FLAGS: {hosts.OUTPUT_SCHEMA: {
+                           "advertised": True, "flag": "--json-schema",
+                           hosts.SHAPE: hosts.SHAPE_PROVEN, hosts.SHAPE_DETAIL: "fixture"}}}, fh)
+        os.symlink(tag, os.path.join(d, ".panopticon", "runs", "latest"))
+
+    def _row(self, d, *argv, **kw):
+        """(the `--json` capabilities row, the table's capabilities line) for one invocation."""
+        _code, body = self._json(d, *argv, **kw)
+        _code, text = self._run(d, *argv, **kw)
+        line, = [ln for ln in text.splitlines() if ln.split()[:1] == ["capabilities"]]
+        self.assertIn(body["capabilities"]["detail"], line)
+        return body["capabilities"], line
+
+    def _assert_not_measured(self, row, line):
+        self.assertEqual({"measured": False, "host": None, "states": {}, "unproven": []},
+                         {key: row[key] for key in ("measured", "host", "states", "unproven")})
+        self.assertIn("not measured", line)
+        self.assertNotIn("PROVEN", line)
+        self.assertNotIn("claude", line)
+
+    def test_the_stored_posture_is_shown_for_the_host_it_was_measured_on(self):
+        # The control: what the other tests must not see is really there to be seen.
+        d = self._repo(groups_yml=GROUPS_YML)
+        self._stored_run(d, "claude")
+        row, line = self._row(d, "--host", "claude", which=READY_CLI)
+        self.assertIs(True, row["measured"])
+        self.assertEqual("claude", row["host"])
+        self.assertIn("all measured and PROVEN", line)
+        self.assertIn("replies are schema-constrained this run on host 'claude'", line)
+
+    def test_another_hosts_stored_posture_is_not_this_hosts(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        self._stored_run(d, "claude")
+        row, line = self._row(d, "--host", "agy", which=self.AGY)
+        self._assert_not_measured(row, line)
+        self.assertEqual(readiness.NOT_MEASURED_ON_HOST % "agy", row["detail"])
+        self.assertIn("host agy", line)
+
+    def test_another_hosts_unproven_posture_is_not_shown_either(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        self._stored_run(d, "claude", state=hosts.REFUTED)
+        row, line = self._row(d, "--host", "agy", which=self.AGY)
+        self._assert_not_measured(row, line)
+
+    def test_reset_discards_the_stored_posture_of_the_same_host(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        self._stored_run(d, "claude")
+        row, line = self._row(d, "--host", "claude", "--reset", which=READY_CLI)
+        self._assert_not_measured(row, line)
+        self.assertEqual(readiness.NOT_MEASURED_AFTER_RESET, row["detail"])
+        self.assertIn("--reset", line)
+
+    def test_reset_and_another_host_together_show_nothing_stored(self):
+        # The invocation in the issue.
+        d = self._repo(groups_yml=GROUPS_YML)
+        self._stored_run(d, "claude")
+        row, line = self._row(d, "--host", "agy", "--reset", which=self.AGY)
+        self._assert_not_measured(row, line)
+
+    def test_a_bare_invocation_compares_against_the_host_it_assumed(self):
+        # No `--host` and no manifest: the document is about the default host, so a stored run
+        # on any other host is not its posture.
+        d = self._repo(groups_yml=GROUPS_YML)
+        self._stored_run(d, "agy")
+        row, line = self._row(d, which=READY_CLI)
+        self.assertEqual(DEFAULT_HOST, self._json(d, which=READY_CLI)[1]["host"])
+        self.assertIs(False, row["measured"])
+        self.assertEqual(readiness.NOT_MEASURED_ON_HOST % DEFAULT_HOST, row["detail"])
+        self.assertNotIn("PROVEN", line)
+        self.assertNotIn("agy", line)
+
+    def test_a_host_taken_from_the_manifest_reads_its_own_stored_posture(self):
+        d = self._repo(groups_yml=GROUPS_YML)
+        self._stored_run(d, "agy")
+        git = TestTheAssumedHost._manifest(self, d, "agy")
+        row, line = self._row(d, which=dict(self.AGY, git=git), path=os.path.dirname(git))
+        self.assertIs(True, row["measured"])
+        self.assertEqual("agy", row["host"])
+        self.assertIn("all measured and PROVEN", line)
+
+    def test_with_no_stored_run_every_form_says_not_measured(self):
+        for argv, which in (((), READY_CLI), (("--host", "agy"), self.AGY),
+                            (("--reset",), READY_CLI), (("--host", "agy", "--reset"), self.AGY)):
+            with self.subTest(argv=argv):
+                d = self._repo(groups_yml=GROUPS_YML)
+                row, line = self._row(d, *argv, which=which)
+                self.assertIs(False, row["measured"])
+                self.assertEqual(readiness.NOT_MEASURED, row["detail"])
+                self.assertNotIn("PROVEN", line)
+
+    def test_a_stored_host_is_matched_exactly(self):
+        # The artifact is target-writable: a near-miss spelling is another host, and its text
+        # is not echoed.
+        for stored in ("Claude", "claude ", "claudex"):
+            with self.subTest(stored=stored):
+                d = self._repo(groups_yml=GROUPS_YML)
+                self._stored_run(d, stored)
+                row = readiness._capabilities_row(
+                    d, "%s-standard-repo-20260915-abcd1234" % stored, "claude", False)
+                self.assertIs(False, row["measured"])
+                self.assertEqual(readiness.NOT_MEASURED_ON_HOST % "claude", row["detail"])
+
+
 class TestAHealthyCliRowReadsOk(_VerbCase):
     """Fix round 2, item 2. `_cli_gate` never returned True, so a selected host
     whose binary was right there rendered `--` -- the same token the rows that
@@ -1081,7 +1203,7 @@ class TestCapabilitiesRowHostShape(unittest.TestCase):
                        "capabilities": {c: {"state": hosts.PROVEN, "by": "p",
                                             "detail": "d"}
                                         for c in hosts.CAPABILITIES}}, fh)
-        return readiness._capabilities_row(d, "t1")
+        return readiness._capabilities_row(d, "t1", "claude", False)
 
     def test_a_non_string_host_reads_as_not_measured(self):
         for host in (["claude"], {"name": "claude"}, 1, True):
@@ -1091,6 +1213,8 @@ class TestCapabilitiesRowHostShape(unittest.TestCase):
                 self.assertIsNone(row["host"])
                 self.assertEqual({}, row["states"])
                 self.assertEqual([], row["unproven"])
+                # #3668 N1: an unreadable host is "no stored posture", not "another host's".
+                self.assertEqual(readiness.NOT_MEASURED, row["detail"])
 
     def test_a_string_host_still_measures(self):
         row = self._row_for("claude")
