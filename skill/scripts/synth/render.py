@@ -27,11 +27,13 @@ def _grade_text(summary):
     format produced for that case -- reads as a grade rather than as the absence
     of one.
     """
+    cap = grading_mod.grade_cap_note(summary)
     if summary.get("overall_grade"):
-        return summary["overall_grade"]
+        return summary["overall_grade"] + (" (%s)" % cap if cap else "")
     if summary.get("provisional_grade"):
         return "%s (provisional%s)" % (summary["provisional_grade"],
-                                       _shortfall_suffix(summary))
+                                       _shortfall_suffix(summary)
+                                       + ("; %s" % cap if cap else ""))
     return "n/a (no reviewed lines of code to grade)"
 
 
@@ -96,7 +98,9 @@ def _health_headline(health):
     """The health index as a headline field, or None when unavailable.
 
     The numeric score appears beside Grade/Risk/Gate. The letter grade is
-    derived from the same health score. With no reviewed lines to grade, health
+    banded from the same health score, then capped by the worst confirmed
+    severity (#3652: CRITICAL caps at D, HIGH at B), so the letter can sit
+    below the band this score implies; the grade text discloses the cap. With no reviewed lines to grade, health
     is unavailable and the displayed grade is n/a. The numeric score preserves
     detail within a grade; incomplete coverage can make the grade provisional.
 

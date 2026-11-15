@@ -264,6 +264,14 @@ class TestScannerConfigIsNotReviewed(unittest.TestCase):
             self.assertIn("scanner config: not reviewed", err)
             self.assertIn("#3642", err)
 
+    def test_the_root_config_is_not_counted_as_implementation(self):
+        # #3656 review nit: the impl/test partition reads the WHOLE-repo surface, so the
+        # counts a reader sees do not include the config that was not reviewed.
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d)
+            out = run_scan(d)
+            self.assertEqual(3, out["counts"]["implementation"])   # src/app.py + 2 nested
+
     def test_the_disclosure_sits_beside_the_fixture_disclosure(self):
         with tempfile.TemporaryDirectory() as d:
             self._tree(d)

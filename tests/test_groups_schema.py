@@ -383,7 +383,7 @@ class TestEscapedBracketsAreExactLiterals(unittest.TestCase):
     exactly. Nothing between a decoded pair is checked; every other `[` is a class
     and is still refused."""
 
-    PATHS = ("users/[id]/route.ts", "users/i/route.ts", "users/d/route.ts",
+    PATHS = ("users/[id]/route.ts", "users/Xid]/route.ts", "users/i/route.ts", "users/d/route.ts",
              "users/x/route.ts", "users/[[]id]/route.ts", "[a-z]", "a", "b", "[post-id]",
              "p", "x/]y", "[]", "]")
 
@@ -401,8 +401,16 @@ class TestEscapedBracketsAreExactLiterals(unittest.TestCase):
         self.assertEqual(["]"], self._claims("[]]"))
         self.assertEqual([], self._claims("src/[[]"))          # the literal `src/[`
 
+    def test_the_diagnostic_pattern_names_the_exact_literal(self):
+        # #3659 review: matching runs on tokens, so `.pattern` is diagnostics only -- but it
+        # is what a reader is shown, and it must say "this literal bracket", not "any char".
+        self.assertEqual(r"^users/\[id\]/route\.ts\Z",
+                         gs.glob_to_re("users/[[]id]/route.ts", "t").pattern)
+
     def test_every_other_bracket_is_still_a_refused_class(self):
+        # #3659 review: `[*]`, `[?]` and `[!]` are classes too -- only `[[]` and `[]]` escape.
         for glob in ("[a-z]", "[!x]", "users/[id]/route.ts", "*.[ch]", "[[[]", "[]]x[",
+                     "[*]", "[?]", "[!]",
                      "[[]id][ab]", "[]"):
             with self.subTest(glob=glob):
                 defect = gs.glob_defect(glob)

@@ -889,8 +889,20 @@ class TestAgreementScoresCells(Workspace):
                            report(score=None, letter=None, provisional="B"))
         sc = doc["scores"]
         self.assertEqual((88.0, 91.5, 3.5), (sc["min"], sc["max"], sc["spread"]))
-        self.assertEqual({"score": None, "letter": None, "provisional": "B",
-                          "certified": False}, sc["runs"][2])
+        self.assertEqual({"score": None, "letter": None, "band_grade": None,
+                          "provisional": "B", "certified": False}, sc["runs"][2])
+
+    def test_a_capped_run_records_its_band_letter(self):
+        # #3652: same score, A versus D -- the cap, not the score, made the difference.
+        capped = report(score=95.0, letter="D")
+        capped["summary"]["grade_cap"] = {"band_grade": "A", "grade": "D", "severity": "CRITICAL",
+                                          "count": 1, "note": "capped from A by 1 confirmed CRITICAL"}
+        doc = self.compare(report(score=95.0), capped)
+        self.assertEqual([(None, "A"), ("A", "D")],
+                         [(r["band_grade"], r["letter"]) for r in doc["scores"]["runs"]])
+        text = "\n".join(cr.summary_lines(doc))
+        self.assertIn("run2: score 95.0, letter D (capped from band A), provisional -", text)
+        self.assertIn("run1: score 95.0, letter A, provisional -", text)
 
     def test_no_scores_has_no_spread(self):
         sc = self.compare(report(score=None), report(score=None))["scores"]

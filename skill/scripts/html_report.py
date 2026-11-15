@@ -290,8 +290,11 @@ def _grade_badge(summary):
     letter = certified or provisional or "-"
     held = (not certified and bool(provisional)) or summary.get("coverage_certified") is False
     # #3667: undone verify work is named beside the letter, as in the terminal.
-    reasons = "".join("; %s" % r for r in (summary.get("grade_shortfalls") or []) if r)
-    return letter + (" (provisional%s)" % reasons if held else "")
+    reasons = [str(r) for r in (summary.get("grade_shortfalls") or []) if r] if held else []
+    # #3652: the band letter a confirmed CRITICAL/HIGH lowered, beside the cap.
+    cap = grading.grade_cap_note(summary) if letter != "-" else None
+    qualifiers = (["provisional"] if held else []) + reasons + ([cap] if cap else [])
+    return letter + (" (%s)" % "; ".join(qualifiers) if qualifiers else "")
 
 
 def _escape(value):
