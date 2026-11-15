@@ -7,6 +7,10 @@ module that fails to load in any way denies rather than crashing (a crashed
 hook is fail-OPEN), and a hook launched the way the hosts launch it --
 ``<python> -I <abs path>`` -- takes ours and never a planted decoy.
 """
+import ast
+import contextlib
+import errno
+import inspect
 import json
 import os
 import shutil
@@ -145,6 +149,31 @@ class TestTheSharedRules(unittest.TestCase):
             for name in names:
                 with self.subTest(hook=hook.__name__, name=name):
                     self.assertIs(getattr(hook, name), getattr(guard_rules, name))
+
+
+class TestTheRuleSetImportsOnlyTheStdlib(unittest.TestCase):
+    """The module's own rule: stdlib-only, nothing from `scripts`, nothing relative. A hook
+    loads it by path under `-I`, where a sibling import raises and a `scripts` import could
+    be answered by a foreign package. #3658 put a tree walk here that `probes/surface` shares;
+    the sharing goes OUT of this module, never into it."""
+
+    def test_every_import_anywhere_in_the_module_is_a_stdlib_module(self):
+        imported = []
+        for node in ast.walk(ast.parse(_source("guard_rules.py"))):
+            if isinstance(node, ast.Import):
+                imported += [(0, alias.name) for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                imported.append((node.level, node.module or ""))
+        self.assertTrue(imported)
+        self.assertEqual([], [(level, name) for level, name in imported
+                              if level or name.split(".")[0] not in sys.stdlib_module_names])
+
+    def test_the_probe_reads_the_walk_from_here_and_keeps_no_copy(self):
+        import scripts.probes.surface as probes_surface
+        self.assertIs(guard_rules, probes_surface.guard_rules)
+        self.assertFalse(hasattr(probes_surface, "scan_directory"))
+        self.assertNotIn("os.scandir", _source(os.path.join("probes", "surface.py")))
+        self.assertNotIn("os.walk(", _source(os.path.join("probes", "surface.py")))
 
 
 class TestAnUnloadedRuleSetDeniesInProcess(unittest.TestCase):
@@ -887,16 +916,14 @@ class TestTheKeychainRuleHoldsAgainstSpellingsLinksAndUnreadableDirs(_KeychainTr
 
     def _unreadable(self, grant, name):
         """grant_walk over `grant` as if `grant/name` could not be read (EACCES), without
-        changing any permission: os.walk is wrapped to prune it and report the error."""
-        real_walk = os.walk
+        changing any permission: os.scandir refuses that one directory."""
+        real_scandir, target = os.scandir, os.path.join(grant, name)
 
-        def walk(top, followlinks=False, onerror=None):
-            for root, subdirs, files in real_walk(top, followlinks=followlinks, onerror=onerror):
-                if root == grant and name in subdirs:
-                    subdirs.remove(name)
-                    onerror(PermissionError(13, "Permission denied", os.path.join(grant, name)))
-                yield root, subdirs, files
-        return mock.patch.object(guard_rules.os, "walk", walk)
+        def scandir(path):
+            if path == target:
+                raise PermissionError(13, "Permission denied", target)
+            return real_scandir(path)
+        return mock.patch.object(guard_rules.os, "scandir", scandir)
 
     def test_an_unreadable_directory_denies_only_searches_on_its_line(self):
         repo = os.path.realpath(tempfile.mkdtemp())
@@ -921,6 +948,275 @@ class TestTheKeychainRuleHoldsAgainstSpellingsLinksAndUnreadableDirs(_KeychainTr
         for tool, call in self._dir_tools(os.path.join(repo, "src"), scope):
             with self.subTest(tool=tool, path="src (beside it)"):
                 self.assertEqual((True, ""), call())
+
+
+def _grant_walk_before_3658(dirs, cap=guard_rules.ESCAPE_WALK_CAP):
+    """`guard_rules.grant_walk` as it was before #3658: the same body over `os.walk`. Kept
+    here, and only here, as the reference the explicit-stack walk is compared against."""
+    g = guard_rules
+    escapes, keychains, unwalked = {}, {}, {}
+    for grant in dirs:
+        links, found, failed, pointing, seen = [], [], [], [], 0
+
+        def note(exc, failed=failed, grant=grant):
+            failed.append(os.path.abspath(getattr(exc, "filename", None) or grant))
+
+        for root, subdirs, files in os.walk(grant, followlinks=False, onerror=note):
+            subdirs[:] = [d for d in subdirs if root != grant or d.casefold() != ".git"]
+            seen += len(subdirs) + len(files)
+            if seen > cap:
+                break
+            for name in subdirs + files:
+                path = os.path.join(root, name)
+                if not os.path.islink(path):
+                    if g._names_keychain(path):
+                        found.append(path)
+                    continue
+                real = os.path.realpath(path)
+                if not g._under(real, grant):
+                    links.append(path)
+                if g._names_keychain(path) or g._names_keychain(real):
+                    found.append(path)
+                else:
+                    pointing.append((path, real))
+            subdirs[:] = [d for d in subdirs if not g._names_keychain(os.path.join(root, d))]
+        if seen > cap:
+            escapes[grant] = keychains[grant] = unwalked[grant] = None
+            continue
+        if pointing:
+            targets = [g._fold(p) for p in found] + [g._fold(p) for p in g._keychain_homes()]
+            above = g._stats([step for p in found for step in g._chain(grant, p)[:-1]]
+                             + [step for home in g._keychain_homes()
+                                for step in g._chain(os.sep, home)[:-1]])
+            found += [path for path, real in pointing
+                      if any(g._under(t, g._fold(real)) for t in targets)
+                      or g._identical(real, above)]
+        escapes[grant] = sorted(links)
+        keychains[grant] = sorted(found)
+        unwalked[grant] = sorted(set(failed))
+    return escapes, keychains, unwalked
+
+
+def _scandir_failing_stat_on(name):
+    """`os.scandir`, except that the entry called `name` cannot be stat'd: what a filesystem
+    with no `d_type` does when the `lstat` behind `DirEntry.is_dir` fails."""
+    real = os.scandir
+
+    class _NoStat:
+        def __init__(self, entry):
+            self.name, self.path = entry.name, entry.path
+
+        def is_dir(self, *, follow_symlinks=True):
+            raise OSError(errno.EIO, os.strerror(errno.EIO), self.path)
+
+    @contextlib.contextmanager
+    def scandir(path):
+        with real(path) as entries:
+            yield [_NoStat(entry) if entry.name == name else entry for entry in entries]
+
+    return scandir
+
+
+class TestTheGrantWalkKeepsItsOwnStack(unittest.TestCase):
+    """#3658: `grant_walk` ran on `os.walk`, which recurses a frame per level before Python
+    3.12 and reads a failed is-directory stat as "a file". It now runs on `iter_tree`, the
+    walk the discovery-surface probe shares. What it RECORDS must not have moved."""
+
+    def _tmp(self):
+        d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        return d
+
+    def _write(self, *parts):
+        path = os.path.join(*parts)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write("x\n")
+        return path
+
+    def _grants(self):
+        """Three grants and an outside: every kind of entry the walk treats differently."""
+        outside = self._tmp()
+        self._write(outside, "secret.txt")
+        os.makedirs(os.path.join(outside, "store"))
+        one, two, three = self._tmp(), self._tmp(), self._tmp()
+        self._write(one, "src", "pkg", "mod.py")
+        self._write(one, "src", "pkg", "deep", "er", "leaf.py")
+        os.makedirs(os.path.join(one, "empty"))
+        os.symlink(os.path.join(one, "src", "pkg"), os.path.join(one, "src", "in-link"))
+        os.symlink(outside, os.path.join(one, "src", "out-dir"))
+        os.symlink(os.path.join(outside, "secret.txt"), os.path.join(one, "out-file"))
+        os.symlink(os.path.join(one, "nowhere"), os.path.join(one, "dangling"))
+        os.symlink("loop", os.path.join(one, "loop"))
+        # The top-level `.git` store is not walked, so the link inside it is unseen; a
+        # `.git` further down is an ordinary directory.
+        self._write(one, ".git", "config")
+        os.symlink(outside, os.path.join(one, ".git", "unseen"))
+        self._write(one, "vendored", ".git", "config")
+        os.symlink(outside, os.path.join(one, "vendored", ".git", "seen"))
+        # A Keychain directory (never descended), a loose keychain file, a link to the
+        # directory above the Keychain.
+        self._write(one, "Library", "Keychains", "login.keychain-db")
+        os.symlink(outside, os.path.join(one, "Library", "Keychains", "unseen"))
+        self._write(one, "old", "stale.keychain-db")
+        os.symlink(os.path.join(one, "Library"), os.path.join(one, "to-library"))
+        # `.git` as a link: to a directory in `two`, to a file in `three`.
+        self._write(two, "a.py")
+        os.symlink(os.path.join(outside, "store"), os.path.join(two, ".git"))
+        self._write(three, "b.py")
+        os.symlink(os.path.join(outside, "secret.txt"), os.path.join(three, ".git"))
+        # A grant whose own path is a link: walked whatever it is, as `os.walk(top)` was.
+        behind = self._tmp()
+        self._write(behind, "pkg", "c.py")
+        os.symlink(os.path.join(behind, "pkg"), os.path.join(behind, "in-link"))
+        os.symlink(outside, os.path.join(behind, "pkg", "out-dir"))
+        four = os.path.join(self._tmp(), "linked-grant")
+        os.symlink(behind, four)
+        return outside, [one, two, three, four]
+
+    def test_it_records_exactly_what_the_os_walk_version_recorded(self):
+        _outside, grants = self._grants()
+        one, two, three, four = grants
+        after = guard_rules.grant_walk(grants)
+        self.assertEqual(_grant_walk_before_3658(grants), after)
+        # The reference is not trusted blind: what this tree must yield, said outright.
+        escapes, keychains, unwalked = after
+        self.assertEqual(sorted([os.path.join(one, "out-file"),
+                                 os.path.join(one, "src", "out-dir"),
+                                 os.path.join(one, "vendored", ".git", "seen")]),
+                         escapes[one])
+        self.assertEqual(sorted([os.path.join(one, "Library", "Keychains"),
+                                 os.path.join(one, "old", "stale.keychain-db"),
+                                 os.path.join(one, "to-library")]), keychains[one])
+        self.assertEqual({one: [], two: [], three: [], four: []}, unwalked)
+        # The linked grant was walked, not skipped: the link two levels into it is there.
+        self.assertIn(os.path.join(four, "pkg", "out-dir"), escapes[four])
+
+    def test_the_cap_falls_on_the_same_entry_count_as_before(self):
+        # Every cap from nothing to past the whole tree: the two walks count the same
+        # entries, so they give up -- or do not -- at exactly the same cap.
+        _outside, grants = self._grants()
+        verdicts = set()
+        for cap in range(0, 40):
+            with self.subTest(cap=cap):
+                after = guard_rules.grant_walk(grants, cap=cap)
+                self.assertEqual(_grant_walk_before_3658(grants, cap=cap), after)
+                verdicts.add(after[0][grants[0]] is None)
+        self.assertEqual({True, False}, verdicts, "the range must straddle the cap")
+
+    def test_a_top_level_git_link_to_a_directory_is_pruned_like_the_directory(self):
+        # `os.walk` listed a link to a directory among the directories, so the `.git` prune
+        # took it too. Recording it as an escape would deny every wildcard in the grant.
+        outside, (_one, two, three, _four) = self._grants()
+        self.assertEqual({two: []}, guard_rules.grant_escapes([two]))
+        # ...while `.git` as a link to a FILE was never a directory, and is a link out.
+        self.assertEqual({three: [os.path.join(three, ".git")]},
+                         guard_rules.grant_escapes([three]))
+        self.assertTrue(os.path.isdir(os.path.join(outside, "store")))
+
+    def test_exactly_the_cap_is_not_over_the_cap(self):
+        # `a/`, `a/f`, `b`: three entries. A cap of three has seen the whole grant.
+        grant = self._tmp()
+        self._write(grant, "a", "f")
+        self._write(grant, "b")
+        self.assertEqual(({grant: []},) * 3, guard_rules.grant_walk([grant], cap=3))
+        self.assertEqual(({grant: None},) * 3, guard_rules.grant_walk([grant], cap=2))
+
+    def test_a_top_level_git_link_into_a_keychain_is_recorded_and_never_statted(self):
+        # The one place this walk still asks a question THROUGH a link is a top-level
+        # `.git`. Where that link leads to a Keychain it is not asked: nothing here stats a
+        # Keychain, and the link is recorded as the Keychain link it is. (The `os.walk`
+        # version stat'd through it, found a directory, and pruned it unrecorded.)
+        user, grant = self._tmp(), self._tmp()
+        kdir = os.path.join(user, "Library", "Keychains")
+        os.makedirs(kdir)
+        link = os.path.join(grant, ".git")
+        os.symlink(kdir, link)
+        real_stat, statted = os.stat, []
+
+        def spy(path, *a, **k):
+            statted.append(os.fspath(path))
+            return real_stat(path, *a, **k)
+        with mock.patch.object(guard_rules.os, "stat", spy):
+            escapes, keychains, unwalked = guard_rules.grant_walk([grant])
+        self.assertEqual(({grant: [link]}, {grant: [link]}, {grant: []}),
+                         (escapes, keychains, unwalked))
+        self.assertEqual([], [p for p in statted
+                              if p == link or guard_rules._names_keychain(p)])
+
+    def test_iter_tree_asks_nothing_through_a_link(self):
+        # `is_dir(follow_symlinks=False)` and `islink` only: no stat that follows, and no
+        # realpath. `grant_walk` does its own realpath on the links it is handed, outside.
+        outside, (one, _two, _three, four) = self._grants()
+
+        def never(*_a, **_k):
+            raise AssertionError("iter_tree looked through a link")
+        with mock.patch.object(guard_rules.os, "stat", never), \
+                mock.patch.object(guard_rules.os.path, "realpath", never), \
+                mock.patch.object(guard_rules.os.path, "isdir", never):
+            for top in (one, four):
+                visited = [directory for directory, _subdirs, _others
+                           in guard_rules.iter_tree(top, self.fail)]
+                self.assertIn(top, visited)
+                self.assertEqual([], [d for d in visited if os.path.islink(d) and d != top])
+        # The Keychain directory is listed by its parent; nothing in the walk opens it
+        # unless the caller leaves it in `subdirs` -- `grant_walk` prunes it.
+        self.assertTrue(os.path.isdir(os.path.join(outside, "store")))
+
+    def test_a_grant_deeper_than_the_recursion_budget_is_walked_not_crashed(self):
+        # `os.walk` on Python 3.11 needs a frame per level; with far fewer to spare than the
+        # grant has levels, the walk still reaches the link at the bottom.
+        grant, outside = self._tmp(), self._tmp()
+        levels, spare = 200, 80
+        bottom = os.path.join(grant, *["d"] * levels)
+        os.makedirs(bottom)
+        os.symlink(outside, os.path.join(bottom, "out"))
+        limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(len(inspect.stack(0)) + spare)
+        try:
+            walked = guard_rules.grant_walk([grant])
+        finally:
+            sys.setrecursionlimit(limit)
+        self.assertEqual(({grant: [os.path.join(bottom, "out")]}, {grant: []}, {grant: []}),
+                         walked)
+
+    def test_an_entry_whose_stat_fails_is_unwalked_not_a_file(self):
+        # It may be a directory nobody visited: said so, by path, like an unreadable one.
+        grant, outside = self._tmp(), self._tmp()
+        self._write(grant, "src", "a.py")
+        os.makedirs(os.path.join(grant, "flaky"))
+        os.symlink(outside, os.path.join(grant, "flaky", "out"))
+        with mock.patch.object(guard_rules.os, "scandir", _scandir_failing_stat_on("flaky")):
+            walked = guard_rules.grant_walk([grant])
+        self.assertEqual(({grant: []}, {grant: []}, {grant: [os.path.join(grant, "flaky")]}),
+                         walked)
+
+    def test_a_link_whose_target_cannot_be_stat_is_a_link_not_unwalked(self):
+        # Nothing is stat'd THROUGH a link. A looping link is in every other checkout; were
+        # it "unwalked", every search on its line -- the whole grant -- would be denied.
+        grant = self._tmp()
+        os.symlink("loop", os.path.join(grant, "loop"))
+        os.makedirs(os.path.join(grant, "locked"))
+        os.symlink(os.path.join(grant, "locked", "gone"), os.path.join(grant, "behind"))
+        os.chmod(os.path.join(grant, "locked"), 0o000)
+        self.addCleanup(os.chmod, os.path.join(grant, "locked"), 0o700)
+        escapes, _keychains, unwalked = guard_rules.grant_walk([grant])
+        self.assertNotIn(os.path.join(grant, "loop"), unwalked[grant])
+        self.assertNotIn(os.path.join(grant, "behind"), unwalked[grant])
+        self.assertEqual([], escapes[grant])
+
+    def test_iter_tree_walks_in_sorted_order_and_honours_in_place_pruning(self):
+        grant = self._tmp()
+        for parts in (("b", "x", "f"), ("a", "f"), ("c", "f")):
+            self._write(grant, *parts)
+        os.symlink(os.path.join(grant, "a"), os.path.join(grant, "b", "link"))
+        seen = []
+        for directory, subdirs, others in guard_rules.iter_tree(grant, self.fail):
+            seen.append((os.path.relpath(directory, grant), list(subdirs), others))
+            if "x" in subdirs:
+                subdirs.remove("x")
+        self.assertEqual([(os.curdir, ["a", "b", "c"], []), ("a", [], ["f"]),
+                          ("b", ["x"], ["link"]), ("c", [], ["f"])], seen)
 
 
 SHELL_TOOLS = ("run_command", "run_shell_command", "Bash", "BashOutput", "KillShell",

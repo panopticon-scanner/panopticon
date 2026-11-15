@@ -130,12 +130,14 @@ def _by_package(members):
     a package name, and an unnamed member must not be folded into an artifact it
     was never reported against.
     """
-    buckets: dict[str | None, list[dict[str, Any]]] = {}
+    buckets: dict[tuple[str | None, bool], list[dict[str, Any]]] = {}
     order = []
     for m in members:
         # `evidence.artifact_term` is the one reading of the term, shared with
         # both identity functions and `findings.aggregate_tool_findings` (#2352).
-        key = evidence_mod.artifact_term(m)
+        # #3655 review: so is the first-party mark -- the project's own package and
+        # a registry copy of the same name are two artifacts, never one bucket.
+        key = (evidence_mod.artifact_term(m), evidence_mod.is_first_party_advisory(m))
         if key not in buckets:
             buckets[key] = []
             order.append(key)
@@ -193,7 +195,14 @@ def dedupe(findings):
         group = by_locus[key]
         tool_srcd = [f for f in group if _is_tool_sourced(f)]
         agent_srcd = [f for f in group if not _is_tool_sourced(f)]
-        if len(group) == 2 and len(tool_srcd) == 1 and len(agent_srcd) == 1:
+        # #3649: never the exactly-two collapse for an ingest-proved first-party
+        # advisory. Keeping the more severe member let an agent's claim -- which
+        # varies run to run -- absorb the advisory, so on identical tool output it
+        # was first-party in one run and queued to the advisor (or gone) in the
+        # next. The general branch below keeps both: the advisory stays first-party
+        # (reinforced when the agent agrees on category), the agent claim its own.
+        if (len(group) == 2 and len(tool_srcd) == 1 and len(agent_srcd) == 1
+                and not evidence_mod.is_first_party_advisory(tool_srcd[0])):
             best = min(group, key=lambda f: (findings_mod._sev_rank(f), _conf_rank(f)))
             other = agent_srcd[0] if _is_tool_sourced(best) else tool_srcd[0]
             best["reinforced"] = True

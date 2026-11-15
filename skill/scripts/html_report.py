@@ -288,7 +288,10 @@ def _grade_badge(summary):
     certified, provisional = summary.get("overall_grade"), summary.get("provisional_grade")
     letter = certified or provisional or "-"
     held = (not certified and bool(provisional)) or summary.get("coverage_certified") is False
-    return letter + (" (provisional)" if held else "")
+    # #3652: the band letter a confirmed CRITICAL/HIGH lowered, beside the cap.
+    cap = grading.grade_cap_note(summary) if letter != "-" else None
+    qualifiers = (["provisional"] if held else []) + ([cap] if cap else [])
+    return letter + (" (%s)" % "; ".join(qualifiers) if qualifiers else "")
 
 
 def _escape(value):
