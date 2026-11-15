@@ -484,7 +484,39 @@ def _expected_gaps(outcome):
             if gap.phase in undone and (gap.when is None or gap.when(outcome))]
 
 
+def triage(found, expected):
+    """(problems no expected gap covers, expected gaps with no problem). Both must be empty
+    for a case to be a known failure: the first is a new defect, the second a fixed one whose
+    row is still in the table."""
+    known = {(gap.check, gap.phase) for gap in expected}
+    seen = {row[:2] for row in found}
+    return ([row for row in found if row[:2] not in known],
+            [gap for gap in expected if (gap.check, gap.phase) not in seen])
+
+
 # --- the tests ---------------------------------------------------------------------------
+
+def test_the_known_gap_table_can_neither_hide_a_problem_nor_outlive_its_fix():
+    gap = Gap("#1", fh.TOOL, LETTER)
+    listed, other_check, other_phase = ((LETTER, fh.TOOL, "a"), (CERTIFIED, fh.TOOL, "b"),
+                                        (LETTER, fh.ADVISOR, "c"))
+    assert triage([listed], [gap]) == ([], [])
+    assert triage([listed, listed], [gap]) == ([], [])
+    # A different check for the same work, the same check for other work, and a problem
+    # about no work at all are each new: a known gap excuses only itself.
+    assert triage([listed, other_check], [gap]) == ([other_check], [])
+    assert triage([listed, other_phase], [gap]) == ([other_phase], [])
+    assert triage([(LOSS, None, "d")], [gap]) == ([(LOSS, None, "d")], [gap])
+    assert triage([listed], []) == ([listed], [])
+    # A row with nothing left to excuse must go.
+    assert triage([], [gap]) == ([], [gap])
+    assert triage([], []) == ([], [])
+    # Every row names a real check and a phase that can leave work undone.
+    checks = {LOSS, COUNTS, GATE, CERTIFIED, LETTER, IN_JSON, ON_TERMINAL, IN_HTML}
+    for row in KNOWN_GAPS:
+        assert row.check in checks and row.phase in fh.PHASES and row.issue.startswith("#")
+    assert len({(row.phase, row.check, row.when) for row in KNOWN_GAPS}) == len(KNOWN_GAPS)
+
 
 def test_the_control_certifies_and_shows_every_state(lab):
     """The 0% run: what every other case is measured against, so it has to be a real review."""
@@ -569,11 +601,9 @@ def test_a_host_failure_is_never_silent(lab, plan, request):
 
     found = problems(control, outcome)
     expected = _expected_gaps(outcome)
-    known = {(gap.check, gap.phase) for gap in expected}
-    unexpected = [row for row in found if row[:2] not in known]
+    unexpected, fixed = triage(found, expected)
     assert not unexpected, "no issue covers:\n  " + "\n  ".join(
         "%s: %s" % (check, sentence) for check, _phase, sentence in unexpected)
-    fixed = [gap for gap in expected if (gap.check, gap.phase) not in {row[:2] for row in found}]
     assert not fixed, ("these hold again, so remove their rows from KNOWN_GAPS: "
                        + ", ".join("%s (%s, %s)" % (gap.issue, gap.phase, gap.check)
                                    for gap in fixed))
