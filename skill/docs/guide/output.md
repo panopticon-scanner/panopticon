@@ -67,6 +67,23 @@ published, or removed prints `synthesize: artifact path refused:` with the path 
 Either case exits `4` and ends a `driver` run in `error`; artifacts completed before a refusal
 remain on disk, later artifacts are not written, and the refused directory or other leaf is left
 untouched.
+**A split report explains itself, and undone verify work holds the letter back (#3667).** Past
+the writer's byte budget `findings[]` is split into `_partN.json` files named in `meta.parts`; the
+main file then also carries `meta.parts_findings`, `{part: {origin: count}}` (origin is
+`tool:<name>` or `agent`), and the terminal and HTML print a `**Report parts:**` line saying how
+many findings the main file holds and what each part holds. `findings[]` is published worst first
+-- gate-eligible, then severity, then evidence status, then pipeline order -- split or not, so the
+main file carries what matters most. `meta.coverage.tool_axis.by_tool` reconciles each scanner:
+`ingested == in_report + merged_into_agent + dropped`, every drop with its reason. A tool finding
+whose advisor never answered stays in the report as `tool_reported` (not gate-eligible), and the
+letter is held back, as it is for an owed agent claim no verify advisor answered (when every verify
+launch fails, nothing is confirmed and health alone would read S): `overall_grade` is null,
+`provisional_grade` carries it, and `summary.grade_shortfalls` names why ("D (provisional; 145
+tool findings unanswered by their advisors)"). That list is one shared rule: any reason in it
+holds the letter back, sinks `coverage_certified`, moves a PASS gate to INCONCLUSIVE and is named
+in `coverage_note`. The shortfall's "N tool findings" counts the queued tool-sourced findings owed a
+verdict that got none; `tool_axis.unanswered` counts every `tool_reported` finding, which also
+takes in agent survivors reinforced by a tool, so it can read higher (24 beside 23, say).
 A legitimate catalog-gap finding without `location.file` cannot satisfy X0X's required occurrence
 shape. It remains in the main JSON and HTML, while `synthesize` excludes it from the X0X candidate
 set and writes `<report-stem>-x0x-failures.json` beside the X0X, where `<report-stem>` means the
