@@ -81,7 +81,9 @@ launch fails, nothing is confirmed and health alone would read S): `overall_grad
 `provisional_grade` carries it, and `summary.grade_shortfalls` names why ("D (provisional; 145
 tool findings unanswered by their advisors)"). That list is one shared rule: any reason in it
 holds the letter back, sinks `coverage_certified`, moves a PASS gate to INCONCLUSIVE and is named
-in `coverage_note`.
+in `coverage_note`. The shortfall's "N tool findings" counts the queued tool-sourced findings owed a
+verdict that got none; `tool_axis.unanswered` counts every `tool_reported` finding, which also
+takes in agent survivors reinforced by a tool, so it can read higher (24 beside 23, say).
 A legitimate catalog-gap finding without `location.file` cannot satisfy X0X's required occurrence
 shape. It remains in the main JSON and HTML, while `synthesize` excludes it from the X0X candidate
 set and writes `<report-stem>-x0x-failures.json` beside the X0X, where `<report-stem>` means the

@@ -179,6 +179,15 @@ class TestUnansweredToolAdvisorsHoldTheLetterBack(unittest.TestCase):
         self.assertEqual(text, render_mod._grade_text(summary))
         self.assertEqual(text, html_report._grade_badge(summary))
 
+    def test_a_non_list_shortfall_field_is_no_reasons(self):
+        # Review nit 3: a string is not iterated a character at a time.
+        for value in ("12 tool findings", {"a": 1}, 7, None):
+            with self.subTest(value=value):
+                summary = {"overall_grade": None, "provisional_grade": "B",
+                           "coverage_certified": False, "grade_shortfalls": value}
+                self.assertEqual("B (provisional)", render_mod._grade_text(summary))
+                self.assertEqual("B (provisional)", html_report._grade_badge(summary))
+
     def test_one_unanswered_tool_finding_reads_in_the_singular(self):
         summary = _build(_advisories(1, 1))["summary"]
         self.assertEqual(["1 tool finding unanswered by its advisor"],
@@ -353,6 +362,36 @@ class TestASplitReportExplainsItself(unittest.TestCase):
                     for name, fs in parts.items()}
         self.assertEqual(expected, main["meta"]["parts_findings"])
         self.assertEqual(main["meta"]["parts_findings"], r["meta"]["parts_findings"])
+
+    def test_tool_findings_behind_worse_agent_findings_are_named_in_their_part(self):
+        # Review nit 1: a literal, not `finding_origin` as its own oracle. LOW advisories
+        # sort behind HIGH agent claims, so the LAST part holds every one of them.
+        agents = [_agentic(fid="AG-%03d" % i, sev="HIGH",
+                           location={"file": "app.py", "line_start": 10 * i + 1},
+                           description="d" * 3000)
+                  for i in range(1, 30)]
+        advisories = [_tool("osv-scanner", "GHSA-L-%02d" % i, 1, file="package-lock.json",
+                            category="dependency", package="low%d" % i, sev="LOW")
+                      for i in range(6)]
+        r = _build(agents + advisories)
+        main, parts, _ = self._write(r, 60000)
+        last = sorted(parts)[-1]
+        self.assertEqual(6, main["meta"]["parts_findings"][last]["tool:osv-scanner"])
+        self.assertEqual({"tool:osv-scanner"},
+                         {k for counts in main["meta"]["parts_findings"].values()
+                          for k in counts} - {"agent"})
+        self.assertEqual(0, sum(1 for f in main["findings"] if f.get("source", "").startswith("tool:")))
+        agent_in_last = sum(1 for f in parts[last] if not f.get("source", "").startswith("tool:"))
+        self.assertEqual({"tool:osv-scanner": 6, "agent": agent_in_last} if agent_in_last
+                         else {"tool:osv-scanner": 6}, main["meta"]["parts_findings"][last])
+
+    def test_a_corrupt_parts_map_never_raises(self):
+        # Review nit 2: reachable through --compare on a hand-edited report.
+        line = render_mod.parts_line({"meta": {"parts_findings": {
+            "report_part2.json": {"agent": "x", "tool:semgrep": 2}, "bad": "y"}},
+            "findings": [{}] * 5})
+        self.assertEqual("the main JSON file carries 3 of 5 findings; "
+                         "report_part2.json: tool:semgrep 2", line)
 
     def test_an_unsplit_write_carries_no_stale_parts_findings(self):
         r = self._big_report()
