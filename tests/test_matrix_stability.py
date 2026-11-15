@@ -4,6 +4,7 @@ layouts differ.
 Every report here is synthetic and built in the test: no setup or review runs, and no real
 run data is read.
 """
+import copy
 import io
 import json
 import os
@@ -94,8 +95,7 @@ class TestCompareRunsAcceptsDifferentLayoutsOnlyByRequest(Workspace):
             fresh, summary=run([SQLI], matrix=FA)["summary"])))
         # With it: accepted, and named in the summary's opening lines.
         doc = self.compare(run([SQLI], matrix=FA), fresh, allow_different_layouts=True)
-        self.assertEqual(["run2"], doc["identity"]["dirty_fresh_matrix"])
-        self.assertTrue(doc["identity"]["commit_verified"])
+        self.assertEqual(["run2"], doc["identity"]["dirty_excused"])
         lines = cr.summary_lines(doc)
         self.assertTrue(lines[1].startswith("DIRTY TREE, FRESH MATRIX: run2 "), lines[1])
         self.assertIn("other uncommitted changes cannot be ruled out", lines[1])
@@ -107,6 +107,42 @@ class TestCompareRunsAcceptsDifferentLayoutsOnlyByRequest(Workspace):
                     del dirty["meta"]["matrix"]
                 self.assertIn("a dirty tree was scanned: run2", self.refused(
                     run([SQLI], matrix=FA), dirty, allow_different_layouts=True))
+
+    def test_an_excused_dirty_run_is_accepted_and_never_called_verified(self):
+        fresh = run([SQLI], matrix=FB, origin="working_tree", dirty=True)
+        doc = self.compare(run([SQLI], matrix=FA), fresh, allow_different_layouts=True)
+        self.assertIs(False, doc["identity"]["commit_verified"])
+        self.assertEqual(["run2"], doc["identity"]["dirty_excused"])
+        lines = cr.summary_lines(doc)
+        self.assertTrue(lines[0].startswith("LAYOUTS DIFFER (compared by request): "), lines[0])
+        self.assertTrue(lines[2].startswith("COMMIT UNVERIFIED: "), lines[2])
+        # The layouts opt-in is all the excuse needs; the commit is still on record.
+        code, out, _err = self._main(run([SQLI], matrix=FA), fresh,
+                                     flags=["--allow-different-layouts"])
+        self.assertEqual(0, code)
+        self.assertIn("\nCOMMIT UNVERIFIED: ", out)
+        self.assertEqual(run()["meta"]["target_commit"], doc["identity"]["target_commit"])
+        # Runs on clean trees stay verified under the flag, and nothing is excused.
+        clean = self.compare(run([SQLI], matrix=FA), run([SQLI], matrix=FB),
+                             allow_different_layouts=True)
+        self.assertIs(True, clean["identity"]["commit_verified"])
+        self.assertEqual([], clean["identity"]["dirty_excused"])
+        self.assertNotIn("COMMIT UNVERIFIED", "\n".join(cr.summary_lines(clean)))
+
+    def test_the_excuse_covers_the_dirt_and_nothing_else(self):
+        # An excused run that also records no commit needs the other flag, as any run does.
+        fresh = run([SQLI], matrix=FB, origin="working_tree", dirty=True)
+        del fresh["meta"]["target_commit"]
+        self.assertIn("pass --allow-unknown-commit", self.refused(
+            run([SQLI], matrix=FA), fresh, allow_different_layouts=True))
+        doc = self.compare(run([SQLI], matrix=FA), fresh, allow_different_layouts=True,
+                           allow_unknown_commit=True)
+        self.assertIs(False, doc["identity"]["commit_verified"])
+        self.assertEqual(["run2"], doc["identity"]["dirty_excused"])
+        # And a run that does not say whether its tree was dirty is not excused at all.
+        unsaid = run([SQLI], matrix=FB, origin="working_tree", dirty=None)
+        self.assertIn("pass --allow-unknown-commit", self.refused(
+            run([SQLI], matrix=FA), unsaid, allow_different_layouts=True))
 
     def _main(self, *docs, flags=()):
         out, err = io.StringIO(), io.StringIO()
@@ -249,6 +285,16 @@ class TestWhatItMeasures(_Measured):
                              baseline)["against_baseline"][0]["gate_eligible"]["HIGH+"]
         self.assertEqual({"baseline_majority": 2, "missed": 0, "added": 0}, again)
 
+    def test_half_of_a_baseline_is_not_most_of_it(self):
+        # Two baseline runs, and AUTHZ in exactly one: one of two is not a majority.
+        doc = self.measure([run([SQLI], matrix=FA), run([SQLI, AUTHZ], matrix=FB)],
+                           [run([SQLI, AUTHZ], matrix=FC), run([SQLI], matrix=FC)])
+        rows = {row["run"]: row["gate_eligible"]["HIGH+"] for row in doc["against_baseline"]}
+        self.assertEqual({"baseline_majority": 1, "missed": 0, "added": 0}, rows["draft1"])
+        self.assertEqual({"baseline_majority": 1, "missed": 0, "added": 0}, rows["draft2"])
+        self.assertEqual({"clusters": 2, "all": 1, "majority": 1, "only_one": 1},
+                         doc["findings"]["baseline"]["gate_eligible"]["HIGH+"]["found"])
+
     def test_without_a_baseline_there_is_no_effect_to_state(self):
         doc = self.measure([run([SQLI], matrix=FA), run([SQLI], matrix=FB)])
         self.assertIsNone(doc["draft_effect"])
@@ -304,6 +350,25 @@ class TestHowFarTheDraftsDiffer(_Measured):
         self.assertFalse(pairs[("draft1", "draft2")]["same_matrix"])
         self.assertEqual(3, doc["matrices"]["drafts_distinct"])
 
+    def test_a_file_a_report_lists_under_two_groups_belongs_to_the_first(self):
+        # A real run gives each file to one group. A report that does not is read the way
+        # a run assigns, so no ratio can pass 1.
+        twice = run([SQLI], matrix=FA, groups={"a": ["x", "y"], "b": ["x", "y"]})
+        self.assertEqual({"a": {"x", "y"}, "b": set()}, ms._partition(twice))
+        doc = self.measure([twice, run([SQLI], matrix=FB, groups={"c": ["x", "y"]})])
+        self.assertEqual(1.0, doc["draft_pairs"][0]["matrix"]["co_grouping"])
+        self.assertEqual(1.0, doc["matrix_movement"]["co_grouping"]["max"])
+        # One name listed twice is one group; a later group cannot take its files back.
+        again = run()
+        again["groups"] = [{"name": "a", "files": ["x", "y"]}, {"name": "b", "files": ["y", "z"]},
+                           {"name": "a", "files": ["z", "w"]}]
+        self.assertEqual({"a": {"x", "y", "w"}, "b": {"z"}}, ms._partition(again))
+        # Every earlier group counts, not only the one before.
+        third = run()
+        third["groups"] = [{"name": "a", "files": ["x", "y"]}, {"name": "b", "files": ["z"]},
+                           {"name": "c", "files": ["x", "v"]}]
+        self.assertEqual({"a": {"x", "y"}, "b": {"z"}, "c": {"v"}}, ms._partition(third))
+
     def test_whether_results_follow_the_matrix(self):
         # Three drafts. The two that cut the tree alike find the same things; the third
         # cuts it differently and finds something else.
@@ -352,8 +417,21 @@ class TestWhatItRefusesAndDiscloses(_Measured):
     def test_a_fresh_matrix_on_a_dirty_tree_is_measured_and_named(self):
         doc = self.measure([run([SQLI], matrix=FA, origin="working_tree", dirty=True),
                             run([SQLI], matrix=FB, origin="working_tree", dirty=True)])
-        self.assertEqual(2, doc["dirty_fresh_matrix"])
-        self.assertTrue(ms.summary_lines(doc)[0].startswith("DIRTY TREE, FRESH MATRIX: 2 run(s)"))
+        self.assertEqual(["draft1", "draft2"], doc["dirty_excused"])
+        # Measured is not vouched for: the commit is unverified, and the summary opens on it.
+        self.assertIs(False, doc["commit_verified"])
+        lines = ms.summary_lines(doc)
+        self.assertTrue(lines[0].startswith("COMMIT UNVERIFIED: "), lines[0])
+        self.assertTrue(lines[1].startswith("DIRTY TREE, FRESH MATRIX: 2 run(s)"), lines[1])
+        # Clean runs are verified, and a baseline run is named by its own label.
+        clean = self.measure([run([SQLI], matrix=FA), run([SQLI], matrix=FB)])
+        self.assertEqual((True, []), (clean["commit_verified"], clean["dirty_excused"]))
+        self.assertNotIn("COMMIT UNVERIFIED", "\n".join(ms.summary_lines(clean)))
+        mixed = self.measure(
+            [run([SQLI], matrix=FA), run([SQLI], matrix=FB, origin="working_tree", dirty=True)],
+            [run([SQLI], matrix=FC), run([SQLI], matrix=FC, origin="working_tree", dirty=True)])
+        self.assertEqual((False, ["draft2", "base2"]),
+                         (mixed["commit_verified"], mixed["dirty_excused"]))
 
     def test_drafts_that_share_one_matrix_are_called_what_they_are(self):
         doc = self.measure([run([SQLI], matrix=FA), run([SQLI], matrix=FA)])
@@ -365,13 +443,40 @@ class TestWhatItRefusesAndDiscloses(_Measured):
         old = run([SQLI], matrix=FB)
         del old["meta"]["matrix"]
         doc = self.measure([run([SQLI], matrix=FA), old])
-        self.assertEqual(["layout_fingerprint", "matrix_fingerprint"],
-                         doc["matrices"]["fingerprint_source"])
+        self.assertEqual("layout_fingerprint", doc["matrices"]["fingerprint_source"])
         self.assertEqual(FB, doc["matrices"]["fingerprints"]["draft2"])
         self.assertIn("predates meta.matrix", "\n".join(ms.summary_lines(doc)))
+        new = self.measure([run([SQLI], matrix=FA), run([SQLI], matrix=FB)])
+        self.assertEqual("matrix_fingerprint", new["matrices"]["fingerprint_source"])
+        self.assertNotIn("predates meta.matrix", "\n".join(ms.summary_lines(new)))
         # Two matrices with one layout and different floors are two matrices.
         both = self.measure([run([SQLI], matrix=FA, layout=FC), run([SQLI], matrix=FB, layout=FC)])
         self.assertEqual(2, both["matrices"]["drafts_distinct"])
+
+    def test_a_hash_of_one_kind_is_never_compared_with_a_hash_of_the_other(self):
+        def old(layout):
+            report_ = run([SQLI], layout=layout)
+            del report_["meta"]["matrix"]
+            return report_
+
+        # One layout, and one of the two reports predates the matrix fingerprint. Every run
+        # is then identified by its layout: these two are one matrix as far as can be seen.
+        doc = self.measure([run([SQLI], matrix=FA, layout=FC), old(FC)])
+        self.assertEqual({"draft1": FC, "draft2": FC}, doc["matrices"]["fingerprints"])
+        self.assertEqual((1, True), (doc["matrices"]["drafts_distinct"],
+                                     doc["draft_pairs"][0]["same_matrix"]))
+        # An old report's layout hash that happens to equal a new report's matrix hash is
+        # not the same matrix.
+        doc = self.measure([run([SQLI], matrix=FA, layout=FB), old(FA)])
+        self.assertEqual((2, False), (doc["matrices"]["drafts_distinct"],
+                                      doc["draft_pairs"][0]["same_matrix"]))
+        doc = self.measure([run(matrix=FA, layout=FB), run(matrix=FC, layout=FC)],
+                           [old(FA), old(FA)])
+        self.assertEqual(FA, doc["matrices"]["baseline"])
+        self.assertFalse(doc["matrices"]["baseline_is_a_draft"])
+        # The baseline's one-matrix rule is checked on like hashes too.
+        self.assertIn("the baseline is not one matrix", self.refused(
+            [run(matrix=FA), run(matrix=FB)], [run(matrix=FC, layout=FA), old(FB)]))
 
     def test_a_baseline_that_is_one_of_the_drafts_is_noted(self):
         doc = self.measure([run(matrix=FA), run(matrix=FB)], [run(matrix=FA), run(matrix=FA)])
@@ -425,6 +530,15 @@ class TestTheOutputIsAggregatesOnly(_Measured):
         self.assertEqual((cr.REFUSED, ""), (code, out.getvalue()))
         self.assertIn("matrix_stability: refused: need at least 2 draft runs", err.getvalue())
 
+    def test_the_help_says_the_drafts_come_first(self):
+        out = io.StringIO()
+        with redirect_stdout(out), self.assertRaises(SystemExit) as stop:
+            ms.main(["--help"])
+        self.assertEqual(0, stop.exception.code)
+        text = " ".join(out.getvalue().split())
+        self.assertIn("it takes every argument after it, so put it last", text)
+        self.assertIn("give the draft reports first", text)
+
     def test_the_order_of_the_runs_does_not_change_the_numbers(self):
         drafts = [run([SQLI, AUTHZ], matrix=FA, groups={"a": ["x", "y"]}, score=70.0),
                   run([SQLI, XSS], matrix=FB, groups={"b": ["x"], "c": ["y"]}, score=80.0),
@@ -437,3 +551,115 @@ class TestTheOutputIsAggregatesOnly(_Measured):
 
         self.assertEqual(numbers(self.measure(drafts, baseline)),
                          numbers(self.measure(drafts[::-1], baseline[::-1])))
+
+
+class TestAReportOfAnyShapeIsMeasuredOrRefused(_Measured):
+    """A report is untrusted input: whatever it holds, the script exits 0 or 2 and never
+    with a traceback, and what it writes is standard JSON."""
+
+    def _main(self, drafts, baseline=(), flags=()):
+        paths = [self.write("d%d-report.json" % i, d) for i, d in enumerate(drafts)]
+        base = [self.write("b%d-report.json" % i, d) for i, d in enumerate(baseline)]
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = ms.main(paths + list(flags) + (["--baseline"] + base if base else []))
+        return code, out.getvalue(), err.getvalue()
+
+    def test_a_fingerprint_that_is_not_a_string_is_no_fingerprint(self):
+        def old(layout):
+            report_ = run([SQLI])
+            del report_["meta"]["matrix"]
+            report_["summary"]["health"]["basis"]["layout_fingerprint"] = layout
+            return report_
+
+        for label, layout in (("a list", [FA]), ("an object", {"sha": FA}), ("a number", 7),
+                              ("empty", "")):
+            with self.subTest(layout=label):
+                code, out, err = self._main([old(layout), old(layout)])
+                self.assertEqual((cr.REFUSED, ""), (code, out))
+                self.assertIn("matrix_stability: refused: ", err)
+                code, _out, err = self._main([run(matrix=FA), run(matrix=FB)],
+                                             [old(layout), old(layout)])
+                self.assertEqual(cr.REFUSED, code)
+                self.assertIn("matrix_stability: refused: ", err)
+        self.assertIn("a run records no usable layout_fingerprint",
+                      self.refused([old([FA]), old([FA])]))
+        # A matrix fingerprint of the wrong shape is no matrix fingerprint: the layout is used.
+        odd = run([SQLI], matrix=FA, layout=FB)
+        odd["meta"]["matrix"]["matrix_fingerprint"] = [FA]
+        doc = self.measure([odd, run([SQLI], matrix=FC, layout=FC)])
+        self.assertEqual(("layout_fingerprint", {"draft1": FB, "draft2": FC}),
+                         (doc["matrices"]["fingerprint_source"], doc["matrices"]["fingerprints"]))
+
+    def test_an_evidence_status_that_is_not_a_string_is_not_gate_eligible(self):
+        for label, status in (("a list", ["advisor_confirmed"]), ("an object", {"a": 1}),
+                              ("a number", 1), ("null", None)):
+            with self.subTest(status=label):
+                odd = dict(agent(10, severity="CRITICAL"), evidence={"status": status})
+                doc = self.measure([run([odd], matrix=FA), run([SQLI], matrix=FB)])
+                found = doc["findings"]["drafts"]
+                self.assertEqual(0.0, found["gate_eligible"]["CRITICAL"]["jaccard"]["mean"])
+                self.assertEqual(1.0, found["all_active"]["CRITICAL"]["jaccard"]["mean"])
+                self.assertEqual(0, self._main([run([odd], matrix=FA), run([SQLI], matrix=FB)])[0])
+
+    def test_a_score_that_is_not_a_finite_number_is_not_counted(self):
+        self.assertEqual({"n": 2, "min": 60.0, "max": 80.0, "mean": 70.0, "stdev": 10.0},
+                         ms._spread([float("nan"), float("inf"), float("-inf"), 1e300, -1e300,
+                                     10 ** 400, True, "70", None, 60, 80.0]))
+        self.assertEqual(0, ms._spread([float("nan")])["n"])
+        self.assertEqual(1e12, ms._spread([1e12, 1e12 + 1e3])["max"])
+        drafts = [run(matrix=FA, score=float("nan")), run(matrix=FB, score=float("inf")),
+                  run(matrix=FC, score=80.0)]
+        out_path = os.path.join(self.dir, "stability.json")
+        code, out, err = self._main(drafts, flags=["--out", out_path])
+        self.assertEqual((0, ""), (code, err))
+
+        def refuse(constant):
+            raise AssertionError("the document holds %s, which is not JSON" % constant)
+
+        with open(out_path, encoding="utf-8") as fh:
+            doc = json.loads(fh.read(), parse_constant=refuse)
+        self.assertEqual({"n": 1, "min": 80.0, "max": 80.0, "mean": 80.0, "stdev": 0.0},
+                         doc["outcomes"]["drafts"]["health"])
+        self.assertNotIn("nan", out.lower())
+
+    def test_no_shape_of_report_ends_in_a_traceback(self):
+        def bent(change):
+            report_ = copy.deepcopy(run([SQLI, AUTHZ], matrix=FA, groups={"a": ["x", "y"]}))
+            change(report_)
+            return report_
+
+        def put(*keys_then_value):
+            *keys, last, value = keys_then_value
+
+            def change(report_):
+                at = report_
+                for key in keys:
+                    at = at[key]
+                at[last] = value
+            return change
+
+        odd = (["x"], {"k": "v"}, 7, 1.5, "word", None, True, float("nan"), [["x"]])
+        places = (("summary",), ("summary", "gate"), ("summary", "overall_grade"),
+                  ("summary", "provisional_grade"), ("summary", "health"),
+                  ("summary", "health", "score"), ("summary", "health", "basis"),
+                  ("summary", "health", "basis", "layout_fingerprint"), ("meta",),
+                  ("meta", "matrix"), ("meta", "matrix", "matrix_fingerprint"),
+                  ("meta", "matrix", "origin"), ("meta", "target_dirty"), ("meta", "target_commit"),
+                  ("meta", "version"), ("groups",), ("groups", 0), ("groups", 0, "name"),
+                  ("groups", 0, "files"), ("findings",), ("findings", 0),
+                  ("findings", 0, "evidence"), ("findings", 0, "evidence", "status"),
+                  ("findings", 0, "severity"), ("findings", 0, "location"),
+                  ("findings", 0, "location", "file"), ("findings", 0, "location", "line_start"),
+                  ("findings", 0, "category"), ("findings", 0, "title"), ("findings", 0, "source"))
+        codes = set()
+        for place in places:
+            for value in odd:
+                with self.subTest(place=place, value=repr(value)):
+                    drafts = [bent(put(*place, value)), bent(put(*place, value))]
+                    for flags in ((), ("--allow-unknown-commit", "--detail")):
+                        code, _out, err = self._main(drafts, flags=flags)
+                        self.assertIn(code, (0, cr.REFUSED), err)
+                        self.assertEqual(code == cr.REFUSED, "refused: " in err, err)
+                        codes.add(code)
+        self.assertEqual({0, cr.REFUSED}, codes)

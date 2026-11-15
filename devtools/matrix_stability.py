@@ -7,9 +7,11 @@ draft does to the results was never measured. This scores it, from finished
 reports. It runs nothing and reads nothing but the reports it is given.
 
     python3 devtools/matrix_stability.py DRAFT-report.json [DRAFT-report.json ...]
-            [--baseline FROZEN-report.json [FROZEN-report.json ...]]
             [--out stability.json] [--detail] [--line-window 5]
             [--allow-unknown-commit]
+            [--baseline FROZEN-report.json [FROZEN-report.json ...]]
+
+`--baseline` takes every argument after it, so the draft reports come first.
 
 The positional reports are runs of one version on one commit, each under its
 own setup draft. `--baseline` reports are runs on that same commit that all
@@ -46,7 +48,8 @@ report file names and the matched clusters, for reading locally.
 Refused with exit 2: fewer than two draft runs; a baseline that is not one
 matrix, or has one run; runs of different versions, commits or profiles.
 A dirty tree is accepted only for a run whose own report says its matrix is a
-working-tree file, and the summary says so (see `compare_runs`).
+working-tree file (see `compare_runs`). Accepted is not verified: the summary
+then opens with COMMIT UNVERIFIED and names how many runs were excused.
 
 No pass/fail thresholds: those are the owner's to set from the numbers.
 """
@@ -66,15 +69,26 @@ REFUSED = cr.REFUSED
 LEVELS = ("CRITICAL", "HIGH", "HIGH+")
 POPULATIONS = ("gate_eligible", "all_active")
 BASELINE, DRAFTS = "baseline", "drafts"
+# Far above any score, ratio or count this script handles; squaring it cannot overflow.
+MAX_NUMBER = 1e12
 
 
-def _fingerprint(report):
-    """(the matrix's identity, which field gave it). `meta.matrix.matrix_fingerprint` when
-    the report carries one; else the layout fingerprint, which cannot see floor panels."""
-    matrix = cr._dict(cr._meta(report).get("matrix"))
-    if isinstance(matrix.get("matrix_fingerprint"), str) and matrix["matrix_fingerprint"]:
-        return matrix["matrix_fingerprint"], "matrix_fingerprint"
-    return cr._basis(report).get("layout_fingerprint"), "layout_fingerprint"
+def _hash(value):
+    """`value` when it is a non-empty string, else None: a fingerprint of any other shape
+    is no fingerprint."""
+    return value if isinstance(value, str) and value else None
+
+
+def fingerprints(reports):
+    """(one matrix identity per run, the field every one of them came from).
+
+    `meta.matrix.matrix_fingerprint` when every run carries one. When any run predates it,
+    every run is identified by its layout fingerprint instead, which cannot see floor panels:
+    a hash of one kind is never compared with a hash of the other."""
+    own = [_hash(cr._dict(cr._meta(r).get("matrix")).get("matrix_fingerprint")) for r in reports]
+    if all(own):
+        return own, "matrix_fingerprint"
+    return [_hash(cr._basis(r).get("layout_fingerprint")) for r in reports], "layout_fingerprint"
 
 
 def run_sets(reports, window):
@@ -87,7 +101,8 @@ def run_sets(reports, window):
             top: dict[int, str] = {}
             for index, finding, _span in members:
                 status = cr._dict(finding.get("evidence")).get("status")
-                if pop == "gate_eligible" and status not in evidence.GATE_ELIGIBLE_DEFAULT:
+                if pop == "gate_eligible" and not (
+                        isinstance(status, str) and status in evidence.GATE_ELIGIBLE_DEFAULT):
                     continue
                 severity = cr._severity(finding)
                 if severity and (index not in top or cr.RANK[severity] > cr.RANK[top[index]]):
@@ -105,10 +120,22 @@ def jaccard(one, two):
     return 1.0 if not union else len(one & two) / len(union)
 
 
+def _finite(value):
+    """`value` as a float when it is a number a report may honestly hold, else None. NaN,
+    an infinity and a magnitude no score or ratio has are not numbers here, so `--out`
+    stays standard JSON whatever a report claims.
+
+    The one bound is the whole finiteness check: NaN fails every comparison and an infinity
+    is over any bound. It is asked of the value as it is, because `math.isfinite` and
+    `float()` both raise on an integer too large for a float."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value) if abs(value) <= MAX_NUMBER else None
+
+
 def _spread(values):
     """{n, min, max, mean, stdev} of the numbers in `values`, None where there are none."""
-    known = [float(v) for v in values
-             if isinstance(v, (int, float)) and not isinstance(v, bool)]
+    known = [number for number in map(_finite, values) if number is not None]
     if not known:
         return {"n": 0, "min": None, "max": None, "mean": None, "stdev": None}
     mean = sum(known) / len(known)
@@ -150,14 +177,20 @@ def outcomes(reports):
 
 
 def _partition(report):
-    """`{group name: set of files}` as the report's own `groups` list realised it."""
+    """`{group name: set of files}` as the report's own `groups` list realised it.
+
+    A real run gives each file to one group. A report that lists a file under two is
+    read the way a run assigns: the first group to list it has it."""
     out: dict[str, set] = {}
+    taken: set = set()
     groups = report.get("groups")
     for group in groups if isinstance(groups, list) else ():
         if isinstance(group, dict) and isinstance(group.get("name"), str):
             files = group.get("files")
-            out.setdefault(group["name"], set()).update(
-                f for f in (files if isinstance(files, list) else ()) if isinstance(f, str))
+            mine = {f for f in (files if isinstance(files, list) else ())
+                    if isinstance(f, str)} - taken
+            out.setdefault(group["name"], set()).update(mine)
+            taken |= mine
     return out
 
 
@@ -230,10 +263,14 @@ def measure(draft_paths, baseline_paths=(), window=cr.DEFAULT_LINE_WINDOW,
     identity = cr.check_inputs(reports, allow_unknown_commit, allow_different_layouts=True)
     draft_index = list(range(len(draft_paths)))
     base_index = list(range(len(draft_paths), len(paths)))
-    prints = [_fingerprint(r) for r in reports]
-    if any(value is None for value, _source in prints):
-        raise cr.Refused("a run records no matrix or layout fingerprint")
-    base_prints = {prints[i][0] for i in base_index}
+
+    def label(index):
+        return ("draft%d" % (index + 1) if index < len(draft_paths)
+                else "base%d" % (index - len(draft_paths) + 1))
+    prints, source = fingerprints(reports)
+    if any(value is None for value in prints):
+        raise cr.Refused("a run records no usable %s" % source)
+    base_prints = {prints[i] for i in base_index}
     if len(base_prints) > 1:
         raise cr.Refused("the baseline is not one matrix: its runs carry %d different "
                          "fingerprints (%s)" % (len(base_prints), ", ".join(sorted(base_prints))))
@@ -246,8 +283,8 @@ def measure(draft_paths, baseline_paths=(), window=cr.DEFAULT_LINE_WINDOW,
     pair_rows = []
     for a, b in itertools.combinations(draft_index, 2):
         pair_rows.append({
-            "runs": ["draft%d" % (a + 1), "draft%d" % (b + 1)],
-            "same_matrix": prints[a][0] == prints[b][0],
+            "runs": [label(a), label(b)],
+            "same_matrix": prints[a] == prints[b],
             "matrix": matrix_similarity(partitions[a], partitions[b]),
             "high_plus_jaccard": round(jaccard(sets["gate_eligible"]["HIGH+"][a],
                                                sets["gate_eligible"]["HIGH+"][b]), 4)})
@@ -255,14 +292,14 @@ def measure(draft_paths, baseline_paths=(), window=cr.DEFAULT_LINE_WINDOW,
         "line_window": window,
         "version": identity["version"],
         "commit_verified": identity["commit_verified"],
-        "dirty_fresh_matrix": len(identity["dirty_fresh_matrix"]),
+        "dirty_excused": [label(int(name[3:]) - 1) for name in identity["dirty_excused"]],
         "runs": {"drafts": len(draft_index), "baseline": len(base_index)},
         "matrices": {
-            "drafts_distinct": len({prints[i][0] for i in draft_index}),
-            "fingerprints": {"draft%d" % (i + 1): prints[i][0] for i in draft_index},
+            "drafts_distinct": len({prints[i] for i in draft_index}),
+            "fingerprints": {label(i): prints[i] for i in draft_index},
             "baseline": next(iter(base_prints), None),
-            "fingerprint_source": sorted({source for _value, source in prints}),
-            "baseline_is_a_draft": bool(base_prints & {prints[i][0] for i in draft_index}),
+            "fingerprint_source": source,
+            "baseline_is_a_draft": bool(base_prints & {prints[i] for i in draft_index}),
         },
         "findings": findings,
         "outcomes": {name: outcomes([reports[i] for i in index])
@@ -287,9 +324,7 @@ def measure(draft_paths, baseline_paths=(), window=cr.DEFAULT_LINE_WINDOW,
     if detail:
         n_runs = len(reports)
         doc["detail"] = {
-            "reports": {("draft%d" % (i + 1) if i in draft_index
-                         else "base%d" % (i - len(draft_index) + 1)): os.path.basename(paths[i])
-                        for i in range(n_runs)},
+            "reports": {label(i): os.path.basename(paths[i]) for i in range(n_runs)},
             "target_commit": identity["target_commit"],
             "clusters": [cr.describe(number + 1, key, members, n_runs)
                          for number, (key, members) in enumerate(clusters)]}
@@ -314,10 +349,10 @@ def summary_lines(doc):
     if not doc["commit_verified"]:
         lines.append("COMMIT UNVERIFIED: not every run recorded a clean target commit; "
                      "differences may be code changes, not matrix or scanner variance")
-    if doc["dirty_fresh_matrix"]:
+    if doc["dirty_excused"]:
         lines.append("DIRTY TREE, FRESH MATRIX: %d run(s) scanned a tree whose config is not "
                      "in the commit; other uncommitted changes cannot be ruled out"
-                     % doc["dirty_fresh_matrix"])
+                     % len(doc["dirty_excused"]))
     matrices = doc["matrices"]
     lines.append("matrix_stability: %d draft run(s) under %d distinct matri%s, %d baseline "
                  "run(s); panopticon %s; line window %d"
@@ -330,9 +365,9 @@ def summary_lines(doc):
     if not doc["runs"]["baseline"]:
         lines.append("NOTE: no baseline was given, so the review's own run-to-run noise is not "
                      "separated from the drafts' effect")
-    if matrices["fingerprint_source"] != ["matrix_fingerprint"]:
-        lines.append("NOTE: some report predates meta.matrix; its matrix is identified by "
-                     "layout_fingerprint, which cannot see a group's floor panels")
+    if matrices["fingerprint_source"] != "matrix_fingerprint":
+        lines.append("NOTE: some report predates meta.matrix, so every run's matrix is "
+                     "identified by layout_fingerprint, which cannot see a group's floor panels")
     if matrices["baseline_is_a_draft"]:
         lines.append("NOTE: the baseline's matrix is also one of the drafts")
     for pop in POPULATIONS:
@@ -381,10 +416,14 @@ def summary_lines(doc):
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    ap.add_argument("drafts", nargs="+", help="reports of runs that each used its own draft")
+    ap = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        epilog="--baseline takes every argument after it, so give the draft reports first.")
+    ap.add_argument("drafts", nargs="+",
+                    help="reports of runs that each used its own draft; give these first")
     ap.add_argument("--baseline", nargs="+", default=[], metavar="REPORT",
-                    help="reports of repeat runs that all used one frozen matrix")
+                    help="reports of repeat runs that all used one frozen matrix; it takes "
+                         "every argument after it, so put it last")
     ap.add_argument("--out", help="write the stability JSON here")
     ap.add_argument("--detail", action="store_true",
                     help="add report file names and the matched clusters to the JSON "

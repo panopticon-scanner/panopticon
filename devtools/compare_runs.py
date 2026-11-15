@@ -176,7 +176,8 @@ def check_inputs(reports, allow_unknown_commit=False, allow_different_layouts=Fa
 
     `allow_different_layouts` is the #3651 opt-in: the layouts may differ (the shared
     `layout_fingerprint` is then None and `layouts` lists each run's), and a dirty tree is
-    accepted for a run whose matrix is a working-tree file (`dirty_fresh_matrix` names them)."""
+    accepted for a run whose matrix is a working-tree file (`dirty_excused` names them).
+    Accepted is not verified: `commit_verified` is False whenever any tree was dirty."""
     if len(reports) < 2:
         raise Refused("need at least 2 reports, got %d" % len(reports))
     for i, report in enumerate(reports):
@@ -213,15 +214,17 @@ def check_inputs(reports, allow_unknown_commit=False, allow_different_layouts=Fa
     known = [c for c in commits if c is not None]
     if len(set(known)) > 1:
         raise Refused(_mixed("target_commit", commits))
-    verified = len(known) == len(reports) and all(
+    # An excused run is let through, never vouched for: the excuse rests on a field of the
+    # report itself, and the report's one dirty flag cannot say that only the config was dirty.
+    accepted = len(known) == len(reports) and all(
         d is False or e for d, e in zip(dirty, excused))
-    shared["dirty_fresh_matrix"] = ["run%d" % (i + 1) for i, e in enumerate(excused) if e]
-    if not verified and not allow_unknown_commit:
+    shared["dirty_excused"] = ["run%d" % (i + 1) for i, e in enumerate(excused) if e]
+    if not accepted and not allow_unknown_commit:
         raise Refused("the scanned commit is not verified on every run (target_commit "
                       "%s, target_dirty %s); pass --allow-unknown-commit to compare anyway"
                       % (commits, dirty))
     shared["target_commit"] = known[0] if known else None
-    shared["commit_verified"] = verified
+    shared["commit_verified"] = len(known) == len(reports) and all(d is False for d in dirty)
     return shared
 
 
@@ -491,10 +494,10 @@ def layout_lines(ident):
                      "matrices, review cells are not" % ", ".join(
                          "run%d=%s" % (i + 1, _text(value))
                          for i, value in enumerate(ident["layouts"])))
-    if ident.get("dirty_fresh_matrix"):
+    if ident.get("dirty_excused"):
         lines.append("DIRTY TREE, FRESH MATRIX: %s scanned a tree whose config is not in the "
                      "commit; other uncommitted changes cannot be ruled out"
-                     % ", ".join(ident["dirty_fresh_matrix"]))
+                     % ", ".join(ident["dirty_excused"]))
     return lines
 
 
