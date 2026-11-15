@@ -17,6 +17,7 @@ import scripts.model_disclosure as model_disclosure
 import scripts.ocrdb as ocrdb
 import scripts.synth.grading as grading
 import scripts.synth.health_basis as health_basis
+import scripts.synth.render as render_mod
 from scripts import build_disclosure, safe_write, tool_cleanup
 
 _CSS = """
@@ -292,9 +293,11 @@ def _grade_badge(summary):
     certified, provisional = summary.get("overall_grade"), summary.get("provisional_grade")
     letter = certified or provisional or "-"
     held = (not certified and bool(provisional)) or summary.get("coverage_certified") is False
+    # #3667: undone verify work is named beside the letter, as in the terminal.
+    reasons = render_mod.shortfall_list(summary) if held else []
     # #3652: the band letter a confirmed CRITICAL/HIGH lowered, beside the cap.
     cap = grading.grade_cap_note(summary) if letter != "-" else None
-    qualifiers = (["provisional"] if held else []) + ([cap] if cap else [])
+    qualifiers = (["provisional"] if held else []) + reasons + ([cap] if cap else [])
     return letter + (" (%s)" % "; ".join(qualifiers) if qualifiers else "")
 
 
@@ -586,6 +589,10 @@ def _render_header(report):
         # #1495: certified coverage, letter held back (a non-default scan profile).
         parts.append("<div class='provisional-grade'>%s</div>"
                      % _escape(summary["coverage_note"]))
+    # #3667: the JSON report beside this page was split; say where its findings sit.
+    split = render_mod.parts_line(report)
+    if split:
+        parts.append("<div class='report-parts'>JSON report split: %s</div>" % _escape(split))
     # #2990 / #3245: a CRITICAL nobody wrote, and a code group no SEC cell read, are explained; neither sinks.
     for key in ("unknown_severity_findings", "sec_less_groups"):
         sentence = integrity_messages.note_sentence(meta.get("integrity"), key)

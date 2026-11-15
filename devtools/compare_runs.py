@@ -17,6 +17,16 @@ means unknown, never clean). `--allow-unknown-commit` accepts runs that
 recorded neither fact, and the summary's first line then says the commit is
 unverified. Anything mixed is refused with exit 2, naming each run's value.
 
+`--allow-different-layouts` (#3651) is the one opt-in: it compares runs whose
+`layout_fingerprint` differs, which is what runs under different setup drafts
+are. The summary's FIRST line then says the layouts differ and lists each
+run's fingerprint. Under it, a run that scanned a dirty tree is accepted when
+its own report says its matrix is a working-tree file (`meta.matrix.origin`),
+because an uncommitted config is what makes that tree dirty; the summary names
+those runs and says other uncommitted changes cannot be ruled out. Without the
+flag both are refused exactly as before. Findings match across matrices (the
+match key below holds no group); review cells do not.
+
 Models are disclosed, never refused (#3626): when the runs' `meta.model_strict`
 differ, or any run ran a dispatch on a fallback rung (`meta.model_substitutions`,
 #3582), the summary says so per entry, requested and bound shown apart. A report
@@ -156,41 +166,65 @@ def _mixed(label, values):
         label, ", ".join("run%d=%r" % (i + 1, v) for i, v in enumerate(values)))
 
 
-def check_inputs(reports, allow_unknown_commit=False):
-    """The identity the runs share, or Refused naming the first mismatch."""
+def _fresh_matrix(report):
+    """Does this report say its matrix is a file outside the reviewed commit (#3651)?"""
+    return _dict(_meta(report).get("matrix")).get("origin") == "working_tree"
+
+
+def check_inputs(reports, allow_unknown_commit=False, allow_different_layouts=False):
+    """The identity the runs share, or Refused naming the first mismatch.
+
+    `allow_different_layouts` is the #3651 opt-in: the layouts may differ (the shared
+    `layout_fingerprint` is then None and `layouts` lists each run's), and a dirty tree is
+    accepted for a run whose matrix is a working-tree file (`dirty_excused` names them).
+    Accepted is not verified: `commit_verified` is False whenever any tree was dirty."""
     if len(reports) < 2:
         raise Refused("need at least 2 reports, got %d" % len(reports))
     for i, report in enumerate(reports):
         if not _basis(report):
             raise Refused("run%d has no summary.health.basis; it predates #3528" % (i + 1))
-    shared = {}
+    shared: dict = {}
     for label, read in IDENTITY:
         values = [read(r) for r in reports]
         if any(v is None for v in values):
             raise Refused("%s is not recorded on every run: %s" % (label, ", ".join(
                 "run%d=%r" % (i + 1, v) for i, v in enumerate(values))))
         if len(set(map(json.dumps, values))) != 1:
-            raise Refused(_mixed(label, values))
+            if not (allow_different_layouts and label == "layout_fingerprint"):
+                raise Refused(_mixed(label, values))
+            shared[label] = None
+            continue
         shared[label] = values[0]
+    shared["layouts"] = ([read(r) for label, read in IDENTITY if label == "layout_fingerprint"
+                          for r in reports] if shared["layout_fingerprint"] is None else None)
     if shared["review_type"] != "full":
         raise Refused("only full reviews can be compared; these are %r reviews (a delta "
                       "comparison also needs matching base and head anchors)"
                       % shared["review_type"])
     commits = [_commit(_meta(r).get("target_commit")) for r in reports]
     dirty = [_meta(r).get("target_dirty") for r in reports]
-    if any(d is True for d in dirty):
+    # #3651: an uncommitted config is itself the dirt. Only under the opt-in, and only for a
+    # run whose own report says so.
+    excused = [allow_different_layouts and d is True and _fresh_matrix(r)
+               for d, r in zip(dirty, reports)]
+    if any(d is True and not e for d, e in zip(dirty, excused)):
         raise Refused("a dirty tree was scanned: " + ", ".join(
-            "run%d" % (i + 1) for i, d in enumerate(dirty) if d is True))
+            "run%d" % (i + 1) for i, (d, e) in enumerate(zip(dirty, excused))
+            if d is True and not e))
     known = [c for c in commits if c is not None]
     if len(set(known)) > 1:
         raise Refused(_mixed("target_commit", commits))
-    verified = len(known) == len(reports) and all(d is False for d in dirty)
-    if not verified and not allow_unknown_commit:
+    # An excused run is let through, never vouched for: the excuse rests on a field of the
+    # report itself, and the report's one dirty flag cannot say that only the config was dirty.
+    accepted = len(known) == len(reports) and all(
+        d is False or e for d, e in zip(dirty, excused))
+    shared["dirty_excused"] = ["run%d" % (i + 1) for i, e in enumerate(excused) if e]
+    if not accepted and not allow_unknown_commit:
         raise Refused("the scanned commit is not verified on every run (target_commit "
                       "%s, target_dirty %s); pass --allow-unknown-commit to compare anyway"
                       % (commits, dirty))
     shared["target_commit"] = known[0] if known else None
-    shared["commit_verified"] = verified
+    shared["commit_verified"] = len(known) == len(reports) and all(d is False for d in dirty)
     return shared
 
 
@@ -370,14 +404,15 @@ def cells(reports):
     return rows
 
 
-def compare(paths, window=DEFAULT_LINE_WINDOW, allow_unknown_commit=False):
+def compare(paths, window=DEFAULT_LINE_WINDOW, allow_unknown_commit=False,
+            allow_different_layouts=False):
     """The comparison document for the reports at `paths`."""
     if window < 0:
         raise Refused("--line-window must be 0 or more, got %d" % window)
     if len({os.path.realpath(p) for p in paths}) != len(paths):
         raise Refused("the same report was given twice")
     reports = [load(p) for p in paths]
-    shared = check_inputs(reports, allow_unknown_commit)
+    shared = check_inputs(reports, allow_unknown_commit, allow_different_layouts)
     n_runs = len(reports)
     records = [describe(i + 1, key, members, n_runs) for i, (key, members)
                in enumerate(cluster([r["findings"] for r in reports], window))]
@@ -408,7 +443,7 @@ def summary_lines(doc):
     """The short text summary; the first line says when the commit is unverified."""
     ident = doc["identity"]
     n_runs = len(doc["runs"])
-    lines = []
+    lines = layout_lines(ident)
     if not ident["commit_verified"]:
         lines.append("COMMIT UNVERIFIED: not every run recorded a clean target commit; "
                      "differences may be code changes, not scanner variance")
@@ -451,6 +486,21 @@ def summary_lines(doc):
     return lines
 
 
+def layout_lines(ident):
+    """#3651: the lines a comparison across layouts opens with; [] for one layout."""
+    lines = []
+    if ident.get("layouts"):
+        lines.append("LAYOUTS DIFFER (compared by request): %s; findings are matched across "
+                     "matrices, review cells are not" % ", ".join(
+                         "run%d=%s" % (i + 1, _text(value))
+                         for i, value in enumerate(ident["layouts"])))
+    if ident.get("dirty_excused"):
+        lines.append("DIRTY TREE, FRESH MATRIX: %s scanned a tree whose config is not in the "
+                     "commit; other uncommitted changes cannot be ruled out"
+                     % ", ".join(ident["dirty_excused"]))
+    return lines
+
+
 def model_lines(models):
     """#3626: what the runs' models were, when it could change the comparison."""
     if not models["recorded"]:
@@ -488,9 +538,13 @@ def main(argv=None):
                          "match (default %(default)s)")
     ap.add_argument("--allow-unknown-commit", action="store_true",
                     help="compare runs that did not record a clean target commit")
+    ap.add_argument("--allow-different-layouts", action="store_true",
+                    help="compare runs whose layout_fingerprint differs (runs under different "
+                         "setup drafts, #3651); the first line of the summary says so")
     args = ap.parse_args(argv)
     try:
-        doc = compare(args.reports, args.line_window, args.allow_unknown_commit)
+        doc = compare(args.reports, args.line_window, args.allow_unknown_commit,
+                      args.allow_different_layouts)
     except Refused as exc:
         print("compare_runs: refused: %s" % exc, file=sys.stderr)
         return REFUSED

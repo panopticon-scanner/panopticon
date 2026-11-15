@@ -12,6 +12,37 @@
   still-running `driver loop --setup` the pair stays in place (its `--budget` reads the ledger),
   and a failed move stops the reset with an error before anything else is removed.
 
+- **Tool findings a split report put out of sight, and a letter that read as checked (#3667).**
+  An owner run whose tool advisors all went unanswered seemed to keep almost none of its 145 tool
+  findings. None were lost: the report was over the writer's byte budget, so `findings[]` was
+  split into part files. Every tool finding came after every agent finding, so the main
+  `report.json` held almost none of them. Meanwhile the letter printed as certified.
+  - `findings[]` is now published worst first (gate-eligible, severity, evidence status, then the
+    old order), split or not, so the main file carries what matters most.
+  - A split main file names what each part holds (`meta.parts_findings`), and the terminal and
+    HTML print a `**Report parts:**` line.
+  - `meta.coverage.tool_axis.by_tool` reconciles each scanner: ingested, in the report, merged
+    into an agent finding, or dropped into another tool finding, with the reason.
+  - Unanswered tool advisors hold the letter back as provisional with the reason
+    (`summary.grade_shortfalls`, "S (provisional; 23 tool findings unanswered by their
+    advisors)"), make coverage NOT CERTIFIED with that reason, and move a PASS gate to
+    INCONCLUSIVE. The findings stay as `tool_reported`. `grade_shortfalls` is one shared rule
+    (owner ruling): any undone verify work it lists holds the letter back the same way -- owed
+    agent claims no verify advisor answered are its second reason, so a run whose every verify
+    launch failed no longer prints S beside an INCONCLUSIVE gate.
+
+- **`devtools/matrix_stability.py` measures what a different setup draft does to a review (#3651,
+  phase 1).** Review-stability numbers so far froze one draft per target, so the draft's own
+  effect was never measured. Given the reports of runs that each used its own draft, and of
+  frozen-matrix repeat runs as a baseline, the script reports how much the CRITICAL and HIGH
+  finding sets, the gate, the letter and the health score move in each group, each draft against
+  the baseline, and how far the drafts themselves differ. It reads finished reports and runs
+  nothing, and its output is aggregates only unless `--detail` is given. `devtools/compare_runs.py`
+  gains `--allow-different-layouts`, the explicit opt-in for runs whose layouts differ; without
+  it such runs are refused as before. Under it a dirty tree is accepted for a run whose report
+  says its matrix is a working-tree file, and never called verified: `commit_verified` stays
+  false, `dirty_excused` names the run, and the summary keeps its `COMMIT UNVERIFIED` line.
+
 - **A report says which matrix it ran under (#3651, phase 3).** Setup proposes a different matrix
   nearly every time it is asked, and a review's results move with it, so two reports could not
   be compared honestly. Every report now carries `meta.matrix`, and a `Matrix:` line among the
