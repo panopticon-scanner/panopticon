@@ -54,15 +54,22 @@ def parts_line(report):
         max(total - in_parts, 0), total, "; ".join(
             "%s: %s" % (tool_base.inert_text(name), ", ".join(
                 "%s %d" % (tool_base.inert_text(origin), n)
-                for origin, n in sorted(counts.items())))
+                for origin, n in sorted(counts.items()) if isinstance(n, int)))
             for name, counts in sorted(parts.items()) if isinstance(counts, dict)))
+
+
+def shortfall_list(summary):
+    """#3667: `summary.grade_shortfalls` as a list of non-empty strings. Anything
+    that is not a list (a corrupt `--compare` report's string, say) is no reasons,
+    never one reason per character."""
+    reasons = summary.get("grade_shortfalls")
+    return [str(r) for r in reasons if r] if isinstance(reasons, list) else []
 
 
 def _shortfall_suffix(summary):
     """#3667: "; 145 tool findings unanswered by their advisors" -- why a letter
     is held back for undone verify work, said beside the letter itself."""
-    reasons = [str(r) for r in (summary.get("grade_shortfalls") or []) if r]
-    return "".join("; " + tool_base.inert_text(r) for r in reasons)
+    return "".join("; " + tool_base.inert_text(r) for r in shortfall_list(summary))
 
 def _render_severity_block(stats, roles, gate_eligible_stats=None):
     """The severity distribution with the gate's reach marked on it.
