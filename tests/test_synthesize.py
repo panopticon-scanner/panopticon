@@ -764,8 +764,10 @@ class TestTwoPassCli(unittest.TestCase):
             out = os.path.join(d, "report.json")
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
+            # #3673: no `--fail-on` is the CRITICAL gate now, and this fixture leaves a queued finding unanswered,
+            # so the run is INCONCLUSIVE (exit 2). It exited 0 while no flag meant gate OFF.
                 rc = syn.main(["--repo", "--verdicts-dir", vd, "--out", out, fp])
-            self.assertEqual(rc, 0)
+            self.assertEqual(rc, 2)
             self.assertIn("no verdict", err.getvalue())
 
     def test_corrupt_verdict_file_surfaced_in_coverage(self):
@@ -784,8 +786,10 @@ class TestTwoPassCli(unittest.TestCase):
             out = os.path.join(d, "report.json")
             err = io.StringIO()
             with contextlib.redirect_stderr(err):
+            # #3673: no `--fail-on` is the CRITICAL gate now, and this fixture leaves its one verdict unloadable,
+            # so the run is INCONCLUSIVE (exit 2). It exited 0 while no flag meant gate OFF.
                 rc = syn.main(["--repo", "--verdicts-dir", vd, "--out", out, fp])
-            self.assertEqual(rc, 0)
+            self.assertEqual(rc, 2)
             with open(out) as fh:
                 report = json.load(fh)
             self.assertEqual(report["meta"]["coverage"]["verdicts"]["unloadable"], 1)
@@ -929,7 +933,9 @@ class TestTwoPassCli(unittest.TestCase):
 
             report_out = os.path.join(d, "report.json")
             rc2 = syn.main(["--repo", "--tools-dir", td, "--verdicts-dir", vd, "--out", report_out, agent])
-            self.assertEqual(rc2, 0)
+            # #3673: no `--fail-on` is the CRITICAL gate now, and this fixture leaves one of two queued findings unanswered,
+            # so the run is INCONCLUSIVE (exit 2). It exited 0 while no flag meant gate OFF.
+            self.assertEqual(rc2, 2)
             with open(report_out) as fh:
                 report = json.load(fh)
             emitted = report["findings"] + report["discarded_claims"]
@@ -1325,7 +1331,9 @@ class TestRunDirArtifactResolution(unittest.TestCase):
                 rc = syn.main(["--repo", "--target", "src",
                                "--groups", os.path.join(run_dir, "groups.json"),
                                "--run-id", "rid-1", "--out", out, fcod, fsec])
-            self.assertEqual(rc, 0)
+            # #3673: no `--fail-on` is the CRITICAL gate now, and this fixture leaves a gate-relevant coverage gap,
+            # so the run is INCONCLUSIVE (exit 2). It exited 0 while no flag meant gate OFF.
+            self.assertEqual(rc, 2)
             rows = json.load(open(out))["meta"]["cost"]["dispatches"]
             by_role = {r["role"]: r["count"] for r in rows}
             # driver-path shape from the run_dir plan -- NOT the legacy None fallback

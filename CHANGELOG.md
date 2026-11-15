@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **Changed: the gate is armed at CRITICAL by default (#3673, owner ruling 2026-11-15).** With
+  no `--fail-on` flag and no committed `fail_on`, a run used to gate nothing (`gate: OFF`) and
+  said so nowhere. It now gates as `--fail-on critical` does. This changes what CI sees for a
+  run that passes no flag:
+
+  | Run with no `--fail-on` | Before | After |
+  | --- | --- | --- |
+  | Clean result | `gate: OFF`, `synthesize.py` exits 0 | `gate: PASS`, exits 0 |
+  | A confirmed CRITICAL | `gate: OFF`, exits 0 | `gate: FAIL`, exits 1 |
+  | A gate-relevant coverage gap (an unanswered verdict, a missing floor cell, an absent tool) | `gate: OFF`, exits 0 | `gate: INCONCLUSIVE`, exits 2 |
+
+  The exit codes are `synthesize.py`'s; `driver loop` reports the gate in the report and does not
+  move its own exit code for it. A confirmed HIGH still passes: the default is CRITICAL, not
+  everything.
+  - **To tighten,** pass `--fail-on high|medium|low` or commit `settings: fail_on:`. Tightening
+    prints nothing.
+  - **To opt out,** pass `--fail-on off`. It is the only way to an OFF gate, and it is loud: the
+    terminal summary opens with `GATE DISABLED BY OPERATOR`, the JSON carries
+    `summary.gate_disabled` (`{"disabled_by_operator": true, "source": "--fail-on off"}`, `null`
+    while the gate is armed) and the HTML report carries a banner above its badges.
+  - **A committed `fail_on: off` is refused.** The config is written by the repository under
+    review, and a target may tighten its own review, never loosen it. The gate stays at CRITICAL
+    and the refusal is as loud as the opt-out: `GATE-OFF REQUEST REFUSED` on the terminal summary
+    and in the HTML, the reason in `meta.config.refused`, and the driver's own line at run start.
+    YAML's bare `off` (the boolean `false`) is read as the same request.
+  - **A run already in flight** resumes without a flag-drift refusal: its manifest recorded no
+    threshold, and it gates at CRITICAL when it synthesizes.
+  - `driver readiness` reports the default threshold on its `gate` row and warns only for
+    `--fail-on off`. The delta-review notice (`DELTA REVIEW WITH Gate: OFF`) now fires only for
+    `--fail-on off`.
+
 - **`driver readiness` no longer shows another run's posture as this one's (#3668).** Its
   `capabilities` row read back whatever posture the target's run folder held. So
   `driver readiness . --host agy --reset`, over a folder left by a claude run, reported "all

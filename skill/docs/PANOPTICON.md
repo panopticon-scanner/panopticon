@@ -56,13 +56,17 @@ every mode below (`driver run [target]` is the single-step primitive it calls) �
   key, never by value). That matters because `worktree add` is a **checkout**: on the old path the
   target's `filter.*.smudge` ran on the PR's content and its output, not the committed bytes, was
   what got reviewed, and a `post-checkout` hook ran from whatever `core.hooksPath` the repository
-  asked for. **Pass `--fail-on` or the gate stays OFF** — a delta run is gate-first by intent.
+  asked for. The gate is armed at CRITICAL unless `--fail-on` says otherwise — a delta run is
+  gate-first by intent, and only `--fail-on off` leaves it OFF.
 - `driver setup [target] [--max-per-group N] [--max-groups N]` — one-time bootstrap: proposes
   `panopticon.yml.draft` at the repo root and writes `.panopticon/setup-report.md`. See Driver setup
   (5.2) below.
 
 ## Global flags
-`--security {standard,redteam}` (default standard), `--fail-on {critical,high,medium,low}`,
+`--security {standard,redteam}` (default standard), `--fail-on {critical,high,medium,low,off}`
+(default critical: with no flag and no committed `fail_on`, a confirmed CRITICAL fails the gate;
+`off` is the operator's opt-out, and the terminal summary, `summary.gate_disabled` and an HTML
+banner all say the gate was disabled),
 `--severity {all,medium,high,critical}` (report only
 findings at or above the threshold), `--out PATH`, `--tools` (require tool scan), `--no-tools` (skip
 tool scan), `--reset` (discard the current run's working artifacts and start a NEW run — keeps every

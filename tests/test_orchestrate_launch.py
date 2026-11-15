@@ -726,9 +726,10 @@ class TestAReviewRoundWithNothingToShow(LoopCase):
             self.launched.append(eid)
             return base.RunResult.failed(eid, "the panel wrote nothing: " + eid)
 
-    def _run(self, d, floor, runner, gate=True):
+    def _run(self, d, floor, runner, gate="high"):
+        """`gate` is the `--fail-on` value, or None for no flag at all."""
         argv = ["loop", d, "--no-tools", "--concurrency", str(self.WIDTH)]
-        args = driver.build_parser().parse_args(argv + (["--fail-on", "high"] if gate else []))
+        args = driver.build_parser().parse_args(argv + (["--fail-on", gate] if gate else []))
         with contextlib.ExitStack() as es:
             es.enter_context(mock.patch.object(
                 orchestrate, "_after_first_run",
@@ -866,7 +867,16 @@ class TestAReviewRoundWithNothingToShow(LoopCase):
         self._assert_unknown(d, "INCONCLUSIVE")       # the gated path, pinned not changed
 
     def test_a_report_with_no_review_cell_answered_reads_unknown_with_the_gate_off(self):
+        # #3673: OFF is the operator's `--fail-on off` now, never the absence of a flag.
         d, floor = self._repo(floor=self.FLOOR)
-        self._run(d, floor, self.Lands(), gate=False)
+        self._run(d, floor, self.Lands(), gate="off")
         self._assert_unknown(d, "OFF")
+
+    def test_a_report_with_no_review_cell_answered_and_no_flag_is_gated_by_default(self):
+        # #3673: this run used to end OFF. With no `--fail-on` the gate is CRITICAL, so an
+        # empty review axis reads INCONCLUSIVE exactly as it does under an explicit flag.
+        d, floor = self._repo(floor=self.FLOOR)
+        self._run(d, floor, self.Lands(), gate=None)
+        self._assert_unknown(d, "INCONCLUSIVE")
+        self.assertEqual("CRITICAL", self._summary(d)["gate_severities"]["fail_on"])
 

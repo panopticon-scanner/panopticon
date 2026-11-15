@@ -76,7 +76,12 @@ value too large to be an integer setting at all (beyond 53 bits) is refused as o
 than clamped. **Gate (ratchet)** keys — `security`, `fail_on`, `severity`, `gate_scope`, `tools`,
 `max_verify` — change how the review judges, and are honoured only when the value is at least as
 strict as panopticon's own default: a repository may tighten its own review and may never loosen it,
-so `security: redteam` is honoured and `tools: false` is refused. Two of them are already at their
+so `security: redteam` is honoured and `tools: false` is refused. `fail_on` defaults to `critical`:
+`high`, `medium` and `low` tighten it and are honoured without a word, and `fail_on: off` is a
+loosening like any other, so it is refused and the gate stays at CRITICAL. That refusal is loud —
+the terminal summary and the HTML report carry a `GATE-OFF REQUEST REFUSED` notice and
+`meta.config.refused` records it — because only the operator's own `--fail-on off` may disable
+the gate. Two of them are already at their
 strictest by default, so any value that moves them is refused: `severity` (default `all` — every
 severity is reported) and `max_verify` (default uncapped — every queued finding is verified); the
 refusal says so. A value equal to the default is neither honoured nor refused — it is disclosed as a

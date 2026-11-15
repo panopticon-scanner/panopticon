@@ -521,7 +521,9 @@ class TestResumeDisclosure(unittest.TestCase):
             with open(out) as fh:
                 report = json.load(fh)
             self.assertEqual(report["meta"]["coverage"]["resume"]["verify"]["total"], 0)
-            self.assertEqual(report["summary"]["gate"], "OFF")
+            # #3673: this read OFF while no `--fail-on` meant no gate. The gate is CRITICAL by
+            # default now, and this run's unverified queue is a gate-relevant gap.
+            self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
             self.assertFalse(report["summary"]["coverage_certified"])
             self.assertIn("entries list", report["meta"]["integrity"]["invalid_verify_queue"])
 
