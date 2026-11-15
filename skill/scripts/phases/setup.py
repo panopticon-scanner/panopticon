@@ -429,11 +429,22 @@ def _stale_batch_records(run_dir):
     pid from another machine, no stamp at all -- goes: `--reset` is the
     operator saying this run is over, and none of those is a live process.
     """
+    live, stale = _batch_records(run_dir)
+    for name, pid in live:
+        print("driver setup: keeping %s -- a `driver loop --setup` is still "
+              "running here (pid %r)" % (name, pid), file=sys.stderr, flush=True)
+    return stale
+
+
+def _batch_records(run_dir):
+    """([(name, pid)] of records whose owner is LIVE, [paths of the rest]) --
+    `_stale_batch_records`' partition, also read by `_clear_setup_artifacts`
+    (#3647 review F1) to leave a running loop's spend record where it is."""
     try:
         names = sorted(os.listdir(run_dir))
     except OSError:
-        return []
-    keep = []
+        return [], []
+    live, stale = [], []
     for name in names:
         if not batch.MANIFEST_RE.fullmatch(name):
             continue
@@ -443,12 +454,65 @@ def _stale_batch_records(run_dir):
         # isinstance restates that so reading `pid` back off `doc` is visibly
         # safe rather than safe-by-reference-to-another-module.
         if isinstance(doc, dict) and batch.owner_state(doc) == batch.OWNER_LIVE:
-            print("driver setup: keeping %s -- a `driver loop --setup` is still "
-                  "running here (pid %r)" % (name, doc.get("pid")),
-                  file=sys.stderr, flush=True)
+            live.append((name, doc.get("pid")))
             continue
-        keep.append(path)
-    return keep
+        stale.append(path)
+    return live, stale
+
+# #3647: what `--setup --reset` rotates rather than deletes. Both accumulate across setup
+# cycles in the flat `.panopticon/` (a review run gets a fresh `runs/<tag>/` instead), so
+# without this the second cycle's `usage.json` -- derived from the WHOLE ledger -- reported
+# the running total. Rotated, never deleted: they are the spend record of a finished cycle.
+_SETUP_ROTATED = ((runners_base.LEDGER_FILE, "dispatch-ledger", ".jsonl"),
+                  ("usage.json", "usage", ".json"))
+
+
+def _rotation_tag(setup_dir):
+    """The outgoing setup run's id, to name its rotated ledger and usage by. The manifest
+    lives in the reviewed tree, so only `run_manifest.new_run_id()`'s own shape (32 hex)
+    is trusted as a filename; anything else gets a fresh id."""
+    doc = runio._load_json(os.path.join(setup_dir, SETUP_MANIFEST))
+    run_id = doc.get("run_id") if isinstance(doc, dict) else None
+    if isinstance(run_id, str) and len(run_id) == 32 and all(
+            c in "0123456789abcdef" for c in run_id):
+        return run_id
+    return run_manifest.new_run_id()
+
+
+class SpendRotationError(Exception):
+    """#3647 review F2: the previous cycle's ledger or usage could not be moved aside.
+    The reset stops here, before anything is removed: going on would start the next
+    cycle on top of the running total, which is what the rotation exists to prevent."""
+
+
+def _rotate_setup_spend(setup_dir):
+    """#3647: move the previous setup cycle's ledger and usage aside, as
+    `dispatch-ledger.<run_id>.jsonl` / `usage.<run_id>.json`, so the next cycle's
+    usage is its own rows only. Never overwrites: when either name is already taken
+    (a file, or a dangling symlink), BOTH get one fresh id, so a cycle's pair keeps
+    one tag (review N1). A symlink source is moved as the link, never followed.
+    Returns the rotated destinations; raises SpendRotationError on a failed move."""
+    present = [(os.path.join(setup_dir, name), stem, suffix)
+               for name, stem, suffix in _SETUP_ROTATED
+               if os.path.lexists(os.path.join(setup_dir, name))]
+    tag = _rotation_tag(setup_dir)
+    while any(os.path.lexists(os.path.join(setup_dir, "%s.%s%s" % (stem, tag, suffix)))
+              for _source, stem, suffix in present):
+        tag = run_manifest.new_run_id()
+    rotated = []
+    for source, stem, suffix in present:
+        target = os.path.join(setup_dir, "%s.%s%s" % (stem, tag, suffix))
+        try:
+            os.rename(source, target)
+        except OSError as exc:
+            raise SpendRotationError(
+                "driver setup: --reset stopped: could not move %s aside to %s (%s); "
+                "nothing else was reset. The next setup cycle would otherwise count the "
+                "previous cycle's spend. Move or remove it, then re-run --reset"
+                % (source, target, exc)) from exc
+        rotated.append(target)
+    return rotated
+
 
 def _clear_setup_artifacts(review_root):
     """Remove derived setup artifacts + the setup-manifest for --reset. NEVER
@@ -477,6 +541,16 @@ def _clear_setup_artifacts(review_root):
     # `setup_ack` -- which reaches `loop_batch` through `requests` -- is only
     # partially initialized while this module's body runs (test_layout rule 1).
     names = _SETUP_ARTIFACTS + (setup_ack.SETUP_UNENFORCED_ACK,)
+    # #3647: BEFORE the manifest goes -- its run_id names the rotated pair. Review F1: not
+    # under a LIVE `driver loop --setup` -- its `--budget` check reads this ledger's total,
+    # and rotating it away mid-run would read $0 and keep spending.
+    live, _stale = _batch_records(setup_dir)
+    if live:
+        print("driver setup: not rotating the setup ledger or usage -- a `driver loop "
+              "--setup` is still running here (pid %s) and its --budget reads them"
+              % ", ".join(repr(pid) for _name, pid in live), file=sys.stderr, flush=True)
+    else:
+        _rotate_setup_spend(setup_dir)
     for path in ([os.path.join(setup_dir, name) for name in names]
                  + _stale_batch_records(setup_dir)
                  + ([draft] if os.path.isfile(draft) else [])):
@@ -575,7 +649,10 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
     preserved_setup_owned = (run_manifest.verified_setup_owned(review_root)
                              if getattr(args, "reset", False) else {})
     if getattr(args, "reset", False):
-        _clear_setup_artifacts(review_root)               # Task 3
+        try:
+            _clear_setup_artifacts(review_root)           # Task 3
+        except SpendRotationError as exc:
+            return runio._error_status(str(exc))
     _drop_stale_fallback_marker(review_root)
     # #run7/#run8 AGT-C1A's planted setup manifest (a preset `vocabulary_path` or
     # `host`) halts at first contact above (#3271): what loads here is ours.
