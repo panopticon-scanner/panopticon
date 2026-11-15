@@ -168,6 +168,17 @@ class TestUnansweredToolAdvisorsHoldTheLetterBack(unittest.TestCase):
         self.assertIn("**Coverage:** NOT CERTIFIED — %s" % self.REASON, text)
         self.assertIn("Grade: S (provisional; %s)" % self.REASON, html_report.render(r))
 
+    def test_a_shortfall_and_a_severity_cap_read_together(self):
+        # #3652 meets #3667: provisional, then why, then the cap.
+        summary = {"overall_grade": None, "provisional_grade": "D", "coverage_certified": False,
+                   "grade_shortfalls": ["1 tool finding unanswered by its advisor"],
+                   "grade_cap": {"band_grade": "A", "grade": "D", "severity": "CRITICAL",
+                                 "count": 1, "note": "capped from A by 1 confirmed CRITICAL"}}
+        text = ("D (provisional; 1 tool finding unanswered by its advisor; "
+                "capped from A by 1 confirmed CRITICAL)")
+        self.assertEqual(text, render_mod._grade_text(summary))
+        self.assertEqual(text, html_report._grade_badge(summary))
+
     def test_one_unanswered_tool_finding_reads_in_the_singular(self):
         summary = _build(_advisories(1, 1))["summary"]
         self.assertEqual(["1 tool finding unanswered by its advisor"],
