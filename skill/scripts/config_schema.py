@@ -65,7 +65,19 @@ TOP_LEVEL_GRAIN = ("exclude_paths",)
 
 INT_KEYS = ("max_groups", "max_per_group", "max_verify")
 BOOL_KEYS = ("include_fixtures", "tools")
-ENUM_KEYS = {"fail_on": ("critical", "high", "medium", "low"),
+# #3673: the one spelling of "no gate", on the command line and in a committed config. It is a
+# VALUE, never the absence of one: with no `--fail-on` anywhere the gate is DEFAULT_FAIL_ON.
+FAIL_ON_OFF = "off"
+DEFAULT_FAIL_ON = "critical"
+# Why a committed `fail_on: off` is refused, in the words every surface shows (#3673). The
+# config is written by the repository under review, and a target may tighten its own review,
+# never loosen it: so this is the ratchet's ordinary refusal, said loudly.
+GATE_OFF_REFUSED = ("the repository's own config asked to turn the gate off; REFUSED: the gate "
+                    "stays at %s. Only the operator's `--fail-on %s` disables it"
+                    % (DEFAULT_FAIL_ON.upper(), FAIL_ON_OFF))
+FAIL_ON_CHOICES = ("critical", "high", "medium", "low", FAIL_ON_OFF)
+
+ENUM_KEYS = {"fail_on": FAIL_ON_CHOICES,
              "gate_scope": ("on-diff", "all"),
              "security": ("standard", "redteam"),
              "severity": ("all", "critical", "high", "medium")}
@@ -81,7 +93,7 @@ CLAMPS = {"max_per_group": (8, 48), "max_groups": (4, 64)}
 # `gate_scope: all` judges more than `on-diff`, and `tools: false` removes an
 # input from every panel.
 STRICTNESS = {
-    "fail_on": (None, "critical", "high", "medium", "low"),
+    "fail_on": (FAIL_ON_OFF, "critical", "high", "medium", "low"),
     "gate_scope": ("on-diff", "all"),
     "security": ("standard", "redteam"),
     "severity": ("critical", "high", "medium", "all"),
@@ -90,8 +102,10 @@ STRICTNESS = {
 
 # What the ratchet measures against: panopticon's OWN default for each gate
 # key, verified in the tree at Plan 2's baseline.
-#   fail_on     None  -- driver/synthesize `--fail-on` default; grading reads
-#                        a falsy fail_on as gate OFF, the weakest state.
+#   fail_on     critical -- the gate when no `--fail-on` is given anywhere
+#                        (#3673, owner ruling 2026-11-15; it was None, gate OFF).
+#                        `off` is the weakest state, so a committed `off` is a
+#                        loosening like any other and is refused.
 #   gate_scope  on-diff, severity all  -- synthesize.build_parser defaults.
 #   security    standard -- phases/runio._DEFAULTS.
 #   tools       True  -- the parser's default is None, but only
@@ -102,7 +116,7 @@ STRICTNESS = {
 #                        Uncapped is the strictest setting there is, which is
 #                        why a committed max_verify is refused: see the spec's
 #                        2026-09-18 Amendments note, finding 1.
-DEFAULTS = {"fail_on": None, "gate_scope": "on-diff", "max_verify": None,
+DEFAULTS = {"fail_on": DEFAULT_FAIL_ON, "gate_scope": "on-diff", "max_verify": None,
             "security": "standard", "severity": "all", "tools": True}
 
 # Why a refusal is a refusal, for the two keys whose default is ALREADY the
@@ -224,6 +238,11 @@ def _typed(key, value):
             return True, value, ""
         return False, None, "expected true or false"
     allowed = ENUM_KEYS[key]
+    if key == "fail_on" and value is False:
+        # #3673: YAML reads a bare `off` as the boolean false. It is the natural way to write
+        # this value, and a request to turn the gate off must reach the ratchet AS one, not
+        # be turned away as a typo with the loud refusal never said.
+        return True, FAIL_ON_OFF, ""
     if isinstance(value, str) and value.strip().lower() in allowed:
         return True, value.strip().lower(), ""
     return False, None, "expected one of %s" % ", ".join(allowed)
@@ -394,6 +413,8 @@ def resolve_settings(cli, parsed, defaults=None):
                 why = DEFAULT_RATIONALE.get(key)
                 reason = ("loosens the built-in default `%s`%s"
                           % (_fmt(base), " (%s)" % why if why else ""))
+                if key == "fail_on" and value == FAIL_ON_OFF:
+                    reason = GATE_OFF_REFUSED
                 refused.append(_refusal(key, value, reason))
                 disclosures.append(_line(key, value, "refused (%s)" % reason))
             continue
@@ -458,3 +479,39 @@ def load_resolution(run_dir):
     if isinstance(disclosures, list) and all(isinstance(row, str) for row in disclosures):
         out["disclosures"] = disclosures
     return out
+
+
+# #3673: an OFF gate is LOUD. There is one way to it, the operator's `--fail-on off`, and the
+# terminal summary, the JSON summary and the HTML report each say so in these words.
+GATE_OFF_SOURCE = "--fail-on %s" % FAIL_ON_OFF
+GATE_OFF_NOTICE = ("GATE DISABLED BY OPERATOR (`%s`): no finding can fail this run. Gate OFF is "
+                   "not a PASS" % GATE_OFF_SOURCE)
+GATE_OFF_REFUSED_NOTICE = "GATE-OFF REQUEST REFUSED: " + GATE_OFF_REFUSED
+
+
+def gate_disabled(gate):
+    """`summary.gate_disabled`: None while the gate is armed, and who switched it off when it
+    is OFF. Read off the verdict itself, so the disclosure cannot be missing from an OFF run."""
+    if gate != "OFF":
+        return None
+    return {"disabled_by_operator": True, "source": GATE_OFF_SOURCE}
+
+
+def gate_notices(summary, config):
+    """The loud lines a report owes about its gate being off, or asked off: [] for every run
+    whose gate is armed and unchallenged, so tightening says nothing."""
+    notices = []
+    if isinstance(summary, dict) and summary.get("gate") == "OFF":
+        notices.append(GATE_OFF_NOTICE)
+    if gate_off_refused(config):
+        notices.append(GATE_OFF_REFUSED_NOTICE)
+    return notices
+
+
+def gate_off_refused(config):
+    """Did this run refuse a committed `fail_on: off`? Read off a `meta.config` block (or the
+    resolution it is copied from), by the refusal's own reason."""
+    refused = config.get("refused") if isinstance(config, dict) else None
+    return any(isinstance(row, dict) and row.get("key") == "fail_on"
+               and row.get("reason") == GATE_OFF_REFUSED
+               for row in (refused if isinstance(refused, list) else ()))

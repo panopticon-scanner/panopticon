@@ -39,6 +39,15 @@ import scripts.synth.validate_schema as validate_schema_mod
 import scripts.synth.verdicts as verdicts_mod
 
 
+class _FailOn(argparse.Action):
+    """`--fail-on off` parses to None: inside `synth/` a falsy threshold IS the OFF gate, and
+    `off` is now the only way to say it (#3673). Nothing else reaches that state: an omitted
+    flag is the default, not None."""
+
+    def __call__(self, parser, namespace, value, option_string=None):
+        setattr(namespace, self.dest, None if value == config_schema.FAIL_ON_OFF else value)
+
+
 def build_parser():
     """The CLI, as a named function -- `driver.py` has had one since 5.0.
 
@@ -56,8 +65,14 @@ def build_parser():
     ap.add_argument("--groups", metavar="PATH")
     ap.add_argument("--security", choices=["standard", "redteam"], default=None,
                     help="Override security mode from groups.json")
-    ap.add_argument("--fail-on", metavar="SEV", type=str.lower,
-                    choices=["critical", "high", "medium", "low"])
+    # #3673: the gate is armed at CRITICAL unless told otherwise. `off` is the operator's
+    # opt-out and the only way to an OFF gate; it is recorded so the report can say so.
+    ap.add_argument("--fail-on", metavar="SEV", type=str.lower, action=_FailOn,
+                    choices=list(config_schema.FAIL_ON_CHOICES),
+                    default=config_schema.DEFAULT_FAIL_ON,
+                    help="Fail the gate on confirmed findings at or above SEV "
+                         "(default: %(default)s). `off` disables the gate, and the "
+                         "report says so")
     ap.add_argument("--severity", metavar="LEVEL", type=str.lower,
                     choices=["all", "medium", "high", "critical"], default="all",
                     help="Minimum severity to include in the report (all, medium, high, critical)")
