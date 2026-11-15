@@ -14,6 +14,7 @@ import scripts.config_schema as config_schema
 import scripts.evidence as evidence_mod
 import scripts.host_disclosure as host_disclosure
 import scripts.inert as inert
+import scripts.matrix_identity as matrix_identity
 import scripts.hosts as hosts
 import scripts.ocrdb as ocrdb
 import scripts.redact as redact
@@ -125,6 +126,11 @@ class RunConfig:
     target_dirty: bool | None = None
     # #3582: the run manifest's `model_strict`. None when unrecorded: absent from the report.
     model_strict: bool | None = None
+    # #3651: the run manifest's record of where the matrix came from; each None when
+    # unrecorded, and `matrix_identity.block` then reports the origin as unknown.
+    matrix_origin: str | None = None
+    matrix_config_sha256: str | None = None
+    matrix_setup_draft: str | None = None
 
     @classmethod
     def from_args(cls, args, groups_json, timestamp, host_capabilities=None,
@@ -185,6 +191,9 @@ class RunConfig:
                    target_commit=_target_commit(getattr(args, "target_commit", None)),
                    target_dirty=_target_dirty(getattr(args, "target_dirty", None)),
                    model_strict=_target_dirty(getattr(args, "model_strict", None)),
+                   matrix_origin=getattr(args, "matrix_origin", None),
+                   matrix_config_sha256=getattr(args, "matrix_config_sha256", None),
+                   matrix_setup_draft=getattr(args, "matrix_setup_draft", None),
                    gate_security_mode=plan_mod.gate_security_mode(args))
 
 
@@ -365,6 +374,13 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=(), model_subs
             **({"target_commit": run.target_commit} if run.target_commit else {}),
             **({"target_dirty": run.target_dirty} if run.target_dirty is not None else {}),
             **({"model_strict": run.model_strict} if run.model_strict is not None else {}),
+            # #3651: always present. The fingerprint is measured here, off the groups and
+            # floors this run was set; the rest is the driver's record, `unknown` without one.
+            "matrix": matrix_identity.block(
+                matrix_identity.matrix_fingerprint(
+                    reconciled.groups_meta, getattr(reconciled, "coverages", None)),
+                origin=run.matrix_origin, config=run.matrix_config_sha256,
+                draft=run.matrix_setup_draft),
             "security_mode": run.security_mode,
             "gate_security_mode": run.gate_security_mode,
             "models_used": list(models_used),

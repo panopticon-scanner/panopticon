@@ -54,6 +54,8 @@ SCHEMA_VERSION = 1
 # manifest's ordinary stamp binds its identity, not arbitrary later fields.
 SETUP_OWNED_WORKTREE = "setup_owned_worktree"
 _SETUP_OWNABLE_PATHS = frozenset((".gitignore", repo_config.CONFIG_NAMES[0]))
+#: #3651: the manifest key for `matrix_provenance.describe`'s record.
+MATRIX = "matrix"
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _GIT_OID = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})\Z")
 _ABSENT_BASELINE = "absent"

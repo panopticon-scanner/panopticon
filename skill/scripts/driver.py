@@ -23,6 +23,7 @@ if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
 import scripts.config_schema as config_schema
 import scripts.diff_map as diff_map
 import scripts.first_contact as first_contact
+import scripts.matrix_provenance as matrix_provenance
 import scripts.run_manifest as run_manifest
 from scripts import hosts, loop_progress, procgroup
 from scripts.host_posture import (  # noqa: F401 -- compatibility names for #3402
@@ -381,6 +382,9 @@ def _manifest_for_run(args, review_root, worktree, base, scope, pr_base, first, 
             scope=scope, pr=args.pr, pr_base=pr_base,
             model_strict=model_resolver.strict_models())
         manifest["first_contact"] = first or {}
+        # #3651: where this run's matrix came from, measured once so a resume reports what
+        # was true when the run began. Recorded, never enforced, and not an anti-drift key.
+        manifest[run_manifest.MATRIX] = matrix_provenance.describe(review_root)
         run_manifest.write_manifest(review_root, first_contact.bind(review_root, manifest))
     else:
         cli_flags = _cli_flags(args, review_root=review_root, resolution=resolution)

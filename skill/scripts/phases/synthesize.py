@@ -371,6 +371,15 @@ def synthesize_execute(review_root, manifest):
         cmd += ["--target-commit", manifest["target_commit"]]
     if isinstance(manifest.get("target_dirty"), bool):
         cmd += ["--target-dirty", "true" if manifest["target_dirty"] else "false"]
+    # #3651: where the matrix came from, by the same route and for the same reason. Each is
+    # passed only when recorded; the child pins every value to its vocabulary.
+    matrix = manifest.get(run_manifest.MATRIX)
+    if isinstance(matrix, dict):
+        for flag, key in (("--matrix-origin", "origin"),
+                          ("--matrix-config-sha256", "config_sha256"),
+                          ("--matrix-setup-draft", "setup_draft")):
+            if isinstance(matrix.get(key), str) and matrix[key]:
+                cmd += [flag, matrix[key]]
     # #3582: whether this run's model fallbacks were off, for the report's disclosure.
     if isinstance(manifest.get("model_strict"), bool):
         cmd += ["--model-strict", "true" if manifest["model_strict"] else "false"]

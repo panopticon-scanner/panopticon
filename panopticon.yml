@@ -643,6 +643,8 @@ groups:
       - skill/scripts/coverage_model.py
       - skill/scripts/repo_config.py
       - skill/scripts/config_schema.py
+      - skill/scripts/matrix_identity.py
+      - skill/scripts/matrix_provenance.py
       - skill/scripts/setup_flow.py
       - skill/scripts/setup_preflight.py
       - skill/scripts/setup_config.py
@@ -662,6 +664,7 @@ groups:
       - tests/test_repo_config.py
       - tests/test_repo_config_literals.py
       - tests/test_config_schema.py
+      - tests/test_matrix_identity.py
       - tests/setup_helpers.py
       - tests/test_setup_catalog.py
       - tests/test_native_unparsed.py

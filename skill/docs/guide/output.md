@@ -151,6 +151,35 @@ display text is bounded and escaped. One stderr summary reports the malformed an
 without quoting scanner values or exceptions. Optional OSV severity metadata keeps its fallback
 behavior; these facts describe malformed finding containers and required identifiers or paths.
 
+**Which matrix a report ran under (#3651).** Setup proposes a different matrix nearly every time
+it is asked, and a review's results move with the matrix. So every report says which one it used,
+in `meta.matrix`, and as one `Matrix:` line among the provenance lines of the terminal summary and
+of the HTML header:
+
+- `matrix_fingerprint` — a hash of the matrix **as applied**: each review group's files and floor
+  panels on the reviewed tree. Two reports with the same fingerprint reviewed the same cells. It is
+  effect-based on purpose: groups claim files first-match-wins, so two configs whose groups are in
+  a different order are the same matrix only when they realise the same cells, and this hash is
+  equal exactly then. It is `summary.health.basis.layout_fingerprint` plus each group's floor
+  panels; panels a scout added are not included.
+- `config_sha256` — a hash of the config **as written**: groups and globs in authored order,
+  `exclude_paths`, and the settings that shape the cut. Key order, comments and whitespace do not
+  count.
+- `origin` — `committed` when the config file is part of the reviewed commit, byte for byte (a
+  **reused** matrix, pinned with the repository); `working_tree` when it is not (a **fresh** one,
+  written after the commit by setup or by hand); `unknown` when that could not be measured, which
+  is never reported as reused. The driver measures it once, when the run starts. The bytes on
+  disk are compared raw with the commit's blob, so a checkout that rewrites line endings
+  (`core.autocrlf`, or `eol=crlf` in `.gitattributes`) reads an untouched config as fresh. That
+  fails safe: commit the config with the line endings your checkout produces, or disable the
+  conversion for it.
+- `setup_draft` — for a `working_tree` config, whether it is the draft this target's last
+  `driver setup` wrote (`unchanged`) or not (`differs`); `null` when setup recorded none. That
+  record lives in the operator's state directory, never in the target.
+
+Compare two reports only when their `matrix_fingerprint` is equal. A fresh or unknown matrix says
+so on its line: `comparable only with runs on the same fingerprint`.
+
 **Per-run folders (5.1).** Each run's working artifacts — findings, verdicts, coverage, scout
 profiles, tool output, dispatch plans, hashes — live under `.panopticon/runs/<tag>/`, where `<tag>`
 = `<host>-<mode>-<scope>-<yyyymmdd>-<run-id8>`, derived from the write-once run-manifest so it is

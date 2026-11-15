@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **A report says which matrix it ran under (#3651, phase 3).** Setup proposes a different matrix
+  nearly every time it is asked, and a review's results move with it, so two reports could not
+  be compared honestly. Every report now carries `meta.matrix`, and a `Matrix:` line among the
+  provenance lines of the terminal summary and the HTML header:
+  - `matrix_fingerprint`: a hash of the matrix as applied (each group's files and floor panels
+    on the reviewed tree). Group order in the config is semantic, because groups claim files
+    first-match-wins, so the hash is effect-based: two orderings hash the same exactly when
+    they realise the same cells. `summary.health.basis.layout_fingerprint` is unchanged.
+  - `config_sha256`: a hash of the config as written, authored order kept.
+  - `origin`: `committed` (reused: the config is in the reviewed commit, byte for byte),
+    `working_tree` (FRESH: written after it) or `unknown` (not measured; never reported as
+    reused). The driver measures it once, at run start, by comparing the commit's blob with the
+    bytes on disk.
+  - `setup_draft`: for a fresh config, whether it is `driver setup`'s last draft, `unchanged`
+    or not. Setup records its draft's hash in the operator's state directory; nothing in the
+    target is trusted for it.
+
 - **A fault-injection harness drives the whole pipeline through host failures (#3669).** Tests
   only. `tests/test_fault_injection.py` reviews a small fixture target end to end with
   `driver loop` while a fake host fails a planned share of its launches: a non-zero exit, a

@@ -1057,6 +1057,30 @@ class TestAMidRunToolsDowngradeReachesSynthesize(unittest.TestCase):
                 self.assertEqual(parsed_as, synthesize_cli.build_parser().parse_args(
                     cmd[2:]).fail_on)
 
+    def test_the_matrix_record_reaches_the_report(self):
+        # #3651: where the matrix came from, off the manifest, by the same argv route.
+        import scripts.synthesize as synthesize_cli
+        sha = "sha256:" + "ab" * 32
+        cmd = self._cmd({"run_id": "R", "security_mode": "standard", "flags": {},
+                         "matrix": {"origin": "working_tree", "config": "panopticon.yml",
+                                    "config_sha256": sha, "setup_draft": "unchanged"}})
+        parsed = synthesize_cli.build_parser().parse_args(cmd[2:])
+        self.assertEqual(("working_tree", sha, "unchanged"),
+                         (parsed.matrix_origin, parsed.matrix_config_sha256,
+                          parsed.matrix_setup_draft))
+        self.assertNotIn("panopticon.yml", cmd[cmd.index("--matrix-origin"):][:6])
+        # Only what was recorded is passed; nothing is invented for a manifest without it.
+        partial = self._cmd({"run_id": "R", "security_mode": "standard", "flags": {},
+                             "matrix": {"origin": "committed", "config_sha256": None,
+                                        "setup_draft": None}})
+        self.assertEqual("committed", partial[partial.index("--matrix-origin") + 1])
+        self.assertNotIn("--matrix-config-sha256", partial)
+        self.assertNotIn("--matrix-setup-draft", partial)
+        for absent in ({}, {"matrix": None}, {"matrix": "committed"}, {"matrix": {"origin": 3}}):
+            cmd = self._cmd(dict({"run_id": "R", "security_mode": "standard", "flags": {}},
+                                 **absent))
+            self.assertFalse([arg for arg in cmd if arg.startswith("--matrix-")])
+
     def test_the_scanned_commit_reaches_the_report(self):
         # #3560: the manifest's provenance (#1492) rides the same argv route and parses back.
         import scripts.synthesize as synthesize_cli
