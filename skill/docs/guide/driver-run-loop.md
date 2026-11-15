@@ -155,8 +155,9 @@ The host contract (5.2, plan 6):
   **It takes `driver loop`'s flags (#3233)**, so `driver readiness . --security redteam && driver
   loop . --security redteam` is one argv twice, and a `run_plan` object reports what that run would
   meet. Every row is informational and none moves the exit code: `flags` (what the run would use;
-  `--reset` is reported, never acted on), `gate` (`WARN` when no `--fail-on` is given or committed,
-  because the run would end `gate: OFF`), `groups` (discovery run into a temp directory: committed
+  `--reset` is reported, never acted on), `gate` (the threshold the run would use, `critical` when
+  no `--fail-on` is given or committed; `WARN` only for `--fail-on off`, because the run would end
+  `gate: OFF`), `groups` (discovery run into a temp directory: committed
   leaves and their chunks, plus what it derives, such as `Commons`, `Docs` and `Tests`; not counted
   for `-c`, `--base` or `--pr`, which depend on a diff), `shells` (the registered enforcement shells
   compared byte for byte with a fresh render into a temp directory), `enforcement`
@@ -1350,7 +1351,7 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   finding at all, so every one classifies off-diff and a `--gate-scope on-diff` gate has nothing
   left to fail on — and with nothing rejected, an empty change and a broken artifact look
   identical, so only regenerating the artifact tells them apart; with gate-eligible findings
-  (active, admitted by the evidence policy and by `--fail-on` when one is set) that run now reads
+  (active, admitted by the evidence policy and by `--fail-on`, `critical` unless set) that run now reads
   `gate: INCONCLUSIVE` rather than PASS (#2178, narrowed by #2222). A payload rejected outright
   (unreadable, not an object, a bad `schema_version`, or a `generation-mismatch` — a `run_id` that
   is not the one this run's `groups.json` carries, #2107) carries no `base`, so the review stays a

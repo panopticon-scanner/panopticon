@@ -433,9 +433,10 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
     in the #957 register. A green gate over a change with findings is the
     failure this disclosure exists to make visible."""
 
-    NOTICE_957 = ("synthesize: DELTA REVIEW WITH Gate: OFF -- no --fail-on was "
-                  "passed, so nothing can gate this change; pass --fail-on "
-                  "{critical,high,medium,low} to arm the gate")
+    # #3673: the gate is OFF only by the operator's `--fail-on off`, and the notice says so.
+    NOTICE_957 = ("synthesize: DELTA REVIEW WITH Gate: OFF -- `--fail-on off` was "
+                  "passed, so nothing can gate this change; drop it, or pass --fail-on "
+                  "{critical,high,medium,low}, to arm the gate")
 
     def _from_args(self, payload, raw=None, **kw):
         with tempfile.TemporaryDirectory() as d:
@@ -451,7 +452,7 @@ class TestDeltaLoadDisclosure(unittest.TestCase):
                     _cli_args(diff_hunks=path, fail_on="high", **kw))
             return ctx, err.getvalue(), path
 
-    def test_the_957_notice_is_unchanged(self):
+    def test_the_957_notice_names_the_operators_off(self):
         with tempfile.TemporaryDirectory() as d:
             path = os.path.join(d, "diff-hunks.json")
             with open(path, "w", encoding="utf-8") as fh:

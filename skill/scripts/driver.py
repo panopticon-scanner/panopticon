@@ -205,9 +205,10 @@ def build_parser():
         p.add_argument("--reset", action="store_true")
         # Match synthesize's accepted values and case handling at the entry
         # point, before a review can spend work on an invalid child argument.
-        # None means the CLI supplied no opinion; committed settings still win.
+        # None means the CLI supplied no opinion; committed settings still win, and with
+        # neither the gate is `config_schema.DEFAULT_FAIL_ON` (#3673). `off` is the opt-out.
         p.add_argument("--fail-on", type=str.lower,
-                       choices=["critical", "high", "medium", "low"], default=None)
+                       choices=list(config_schema.FAIL_ON_CHOICES), default=None)
         p.add_argument("--severity", type=str.lower,
                        choices=["all", "medium", "high", "critical"], default=None)
         p.add_argument("--gate-scope", choices=["on-diff", "all"], default=None)
