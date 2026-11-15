@@ -35,7 +35,16 @@ reused by every later run.
    a tree nothing had classified.
 2. **ingest** — on re-invoke, the driver validates and assembles the proposal (aliases normalized to
    catalog names; deterministic affinity floors, or the profile's surfaces mapped to domains for
-   `custom:` groups), then applies the **size policy** over the whole repo: layers under 6 files
+   `custom:` groups), writes it **one way** whatever order and spelling the agent returned it in
+   (#3651: a `match:` list sorted and de-duplicated unless a glob negates; new groups in name
+   order, except that two groups keep the proposal's order whenever some path could match a glob
+   of each, because groups claim files first-match-wins; a custom name spelled two ways takes the
+   spelling that sorts first; a `match:` glob respelled only when the glob compiler makes the same
+   matcher of both spellings; a `tests:` glob never respelled, and a `tests:` list sorted only
+   when its globs are all literal or all wildcards — none of this rests on which files exist
+   today, because the draft is reused on later commits, and a proposal whose canonical form
+   would move a file today is used as written and the report says so),
+   then applies the **size policy** over the whole repo: layers under 6 files
    merge back into their parent, a vertical over the cap is split by its layers (the residual is
    `Core`), and over the ceiling the smallest layers collapse first — verticals are never merged.
    Unit tests ride each vertical's `tests`; the cross-cutting test trees form a `Tests` group last;
