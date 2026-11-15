@@ -197,6 +197,13 @@ class TestTheBlockIsPinnedToItsVocabulary(unittest.TestCase):
             self.assertIn("origin=unknown", line)
             self.assertNotIn("reused", line)
             self.assertIn(build_disclosure.MATRIX_COMPARABLE, line)
+        # The line pins the vocabulary itself: it also renders reports it did not write.
+        for origin in ("reused", "COMMITTED", None, 3, ["committed"], ""):
+            line = build_disclosure.matrix_line({"origin": origin, "matrix_fingerprint": SHA})
+            self.assertIn("origin=unknown", line)
+            self.assertNotIn("reused", line)
+        self.assertIn("fingerprint=unmeasured; config=unrecorded",
+                      build_disclosure.matrix_line({"origin": "committed"}))
 
 
 def _git(root, *argv):
@@ -308,6 +315,13 @@ class TestWhetherTheConfigIsInTheReviewedCommit(unittest.TestCase):
             with self.subTest(stdout=stdout), mock.patch.object(safe_git, "probe",
                                                                 return_value=reply):
                 self.assertEqual("unknown", mp.origin(root, "panopticon.yml"))
+        # The tree verifies and the path lookup answers nonsense: still unknown, not "modified".
+        tree = mock.Mock(returncode=0, stdout="a" * 40 + "\n", stderr="")
+        for stdout in ("", "not-an-object-id\n", "a" * 39 + "\n"):
+            held = mock.Mock(returncode=0, stdout=stdout, stderr="")
+            with self.subTest(held=stdout), mock.patch.object(safe_git, "probe",
+                                                              side_effect=[tree, held]):
+                self.assertEqual("unknown", mp.origin(root, "panopticon.yml"))
         with mock.patch.object(mp, "config_digest", side_effect=RuntimeError("boom")):
             self.assertEqual({"origin": "unknown", "config": None, "config_sha256": None,
                               "setup_draft": None}, mp.describe(root))
@@ -411,6 +425,16 @@ class TestSetupsDraftIsRememberedOutsideTheTarget(_StateDir):
                           "w", encoding="utf-8") as fh:
                     fh.write(body)
                 self.assertIsNone(mp.draft_state(root, SHA))
+        # Oversized is refused for its size, not because it happens not to parse: this one
+        # is a valid record followed by enough blank space to pass the cap.
+        valid = json.dumps({"schema_version": 1, "drafts": {key: SHA}})
+        with open(os.open(self._drafts(), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600),
+                  "w", encoding="utf-8") as fh:
+            fh.write(valid)
+        self.assertEqual("unchanged", mp.draft_state(root, SHA))
+        with open(self._drafts(), "a", encoding="utf-8") as fh:
+            fh.write(" " * (mp._MAX_DRAFTS_BYTES + 1 - len(valid)))
+        self.assertIsNone(mp.draft_state(root, SHA))
 
     def test_what_is_not_a_hash_is_not_recorded_and_the_record_is_bounded(self):
         root = self._target()
