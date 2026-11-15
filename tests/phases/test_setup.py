@@ -2315,6 +2315,9 @@ class TestSetupResetRotatesTheSpendRecord(unittest.TestCase):
     total. Reset now rotates both aside, named by the outgoing setup run's id."""
 
     RUN_ID = "0123456789abcdef0123456789abcdef"
+    # Borrowed, not inherited (inheriting would re-run TestDriverSetup's tests here):
+    # the one dead-pid helper, so this class adds no subprocess site of its own.
+    _dead_pid = TestDriverSetup._dead_pid
 
     def setUp(self):
         import scripts.ledger as ledger_mod
@@ -2416,9 +2419,7 @@ class TestSetupResetRotatesTheSpendRecord(unittest.TestCase):
 
     def test_a_dead_setup_loop_does_not_hold_the_rotation_back(self):
         self._cycle(10)
-        proc = subprocess.Popen([sys.executable, "-c", ""])
-        proc.wait()
-        self._record("batch-1.json", pid=proc.pid, host=batch_mod.host_id())
+        self._record("batch-1.json", pid=self._dead_pid(), host=batch_mod.host_id())
         setup._clear_setup_artifacts(self.root)
         self.assertEqual(["dispatch-ledger.%s.jsonl" % self.RUN_ID, "usage.%s.json" % self.RUN_ID],
                          self._rotated())
