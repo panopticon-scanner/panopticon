@@ -164,6 +164,9 @@ class TestWhatItMeasures(_Measured):
         doc = self.measure([run([SQLI, AUTHZ], matrix=FA), run([SQLI, unverified], matrix=FB)])
         self.assertEqual(1.0, doc["findings"]["drafts"]["all_active"]["HIGH"]["jaccard"]["mean"])
         self.assertEqual(0.0, doc["findings"]["drafts"]["gate_eligible"]["HIGH"]["jaccard"]["mean"])
+        # What is set beside the matrices' similarity is the gate-eligible HIGH+ figure:
+        # {sqli, authz} against {sqli}, not the all-active {sqli, authz} against itself.
+        self.assertEqual(0.5, doc["draft_pairs"][0]["high_plus_jaccard"])
         # Statuses outside the gate's population do not count as eligible.
         for status in ("tool_reported", "needs_more_info", "unverified", "rejected"):
             with self.subTest(status=status):
@@ -196,6 +199,25 @@ class TestWhatItMeasures(_Measured):
         self.assertEqual((1.0, 0.0, 0.0), (found["HIGH+"]["jaccard"]["mean"],
                                            found["CRITICAL"]["jaccard"]["mean"],
                                            found["HIGH"]["jaccard"]["mean"]))
+
+    def test_a_runs_two_ratings_of_one_issue_count_at_the_higher(self):
+        # One run cites the issue twice, three lines apart, at two severities.
+        twice = [confirmed(agent(10, severity="HIGH", title="sql injection")),
+                 confirmed(agent(13, severity="CRITICAL", title="sql injection, again"))]
+        doc = self.measure([run(twice, matrix=FA), run([SQLI], matrix=FB)])
+        found = doc["findings"]["drafts"]["gate_eligible"]
+        self.assertEqual((1.0, 1), (found["CRITICAL"]["jaccard"]["mean"],
+                                    found["CRITICAL"]["found"]["all"]))
+        self.assertEqual(0, found["HIGH"]["found"]["clusters"])
+
+    def test_only_critical_and_high_are_counted(self):
+        lesser = [confirmed(agent(300 + 50 * n, file="src/other.py", category="style",
+                                  severity=severity, title="lesser %s" % severity))
+                  for n, severity in enumerate(("MEDIUM", "LOW", "INFO"))]
+        doc = self.measure([run([SQLI] + lesser, matrix=FA), run([SQLI], matrix=FB)])
+        for pop in ms.POPULATIONS:
+            row = doc["findings"]["drafts"][pop]["HIGH+"]
+            self.assertEqual((1.0, 1), (row["jaccard"]["mean"], row["found"]["clusters"]))
 
     def test_the_gate_the_letter_and_the_score(self):
         doc = self.measure(
@@ -296,6 +318,7 @@ class TestHowFarTheDraftsDiffer(_Measured):
         self.assertIsNone(few["matrix_movement"]["results_follow_matrix_r"])
         self.assertIn("not measurable", "\n".join(ms.summary_lines(few)))
         self.assertIsNone(ms._pearson([1.0, 1.0, 1.0], [0.1, 0.5, 0.9]))      # no variance
+        self.assertIsNone(ms._pearson([0.1, 0.9], [0.2, 0.8]))                # two points always fit
         self.assertEqual(-1.0, ms._pearson([1, 2, 3], [3, 2, 1]))
 
 
