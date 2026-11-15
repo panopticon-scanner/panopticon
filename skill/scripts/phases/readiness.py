@@ -247,6 +247,11 @@ _SUB_SKILL_GLOBS = ("%s", "*/%s", "skills/%s", "*/skills/%s", "*/*/skills/%s",
                     "*/*/*/skills/%s", "*/*/*/*/skills/%s")
 
 NOT_MEASURED = "not measured — first `driver run` probes"
+# #3668: a stored posture that is not this run's is not shown. Neither line names the stored host.
+NOT_MEASURED_AFTER_RESET = ("not measured for this run — --reset discards the stored run and its "
+                            "measured posture; first `driver run` probes")
+NOT_MEASURED_ON_HOST = ("not measured on host %s — the stored run measured another host; first "
+                        "`driver run` probes")
 
 # Fix round 1, F4: `tools_image`'s remedy names `--no-tools`, and this one has
 # to name its own way out for the same reason. `-f`/`-d`/`-g`/`--pr` reviews run
@@ -527,19 +532,30 @@ def _existing_run_row(review_root):
                       "on" % tag}
 
 
-def _capabilities_row(review_root, tag):
-    """The LAST run's measurement, read back. Never re-probed and never gating:
-    probing is `driver._establish_host_posture`'s job on a real invocation, and
-    doing it here would start a host CLI."""
+def _capabilities_row(review_root, tag, host, reset):
+    """The stored run's measurement, read back -- and only where it is the measurement of the run
+    being asked about (#3668). Never re-probed and never gating: probing is
+    `driver._establish_host_posture`'s job on a real invocation, and doing it here would start a
+    host CLI.
+
+    `host` is the host this document is about and `reset` the plan's `--reset`. A posture measured
+    on another host says nothing about this one, and `--reset` discards the folder the posture
+    lives in, so in both cases the row is "not measured" and none of the stored text is shown."""
     envelope = None
     if tag:
         envelope = runio._load_json(os.path.join(
             review_root, plan_contract.ARTIFACT_DIR, "runs", tag, runio.HOST_CAPABILITIES))
     caps = envelope.get("capabilities") if isinstance(envelope, dict) else None
     who = host_disclosure.host_of(envelope)      # str or None, as headline() reads it
+    detail = None
     if not isinstance(caps, dict) or not who:
-        return {"measured": False, "host": None, "states": {}, "unproven": [],
-                "detail": NOT_MEASURED}
+        detail = NOT_MEASURED
+    elif reset:
+        detail = NOT_MEASURED_AFTER_RESET
+    elif who != host:
+        detail = NOT_MEASURED_ON_HOST % host
+    if detail:
+        return {"measured": False, "host": None, "states": {}, "unproven": [], "detail": detail}
     states = hosts.posture(who, caps)
     return {"measured": True, "host": who, "states": states,
             "unproven": hosts.unproven(states),
@@ -602,7 +618,8 @@ def preflight(target=".", host=None, online=None, plan=None):
             "cli": cli,
             "tools_image": tools_image,
             "egress_proxy": readiness_checks.egress_proxy_row(online, tools_flag),
-            "capabilities": _capabilities_row(review_root, existing["tag"]),
+            "capabilities": _capabilities_row(review_root, existing["tag"], host,
+                                              bool((plan or {}).get("reset"))),
             # #3233: what this run's flags describe, every row informational.
             "run_plan": readiness_plan.rows(review_root, host, plan, manifest)}
 
