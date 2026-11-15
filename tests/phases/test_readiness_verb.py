@@ -1213,6 +1213,8 @@ class TestCapabilitiesRowHostShape(unittest.TestCase):
                 self.assertIsNone(row["host"])
                 self.assertEqual({}, row["states"])
                 self.assertEqual([], row["unproven"])
+                # #3668 N1: an unreadable host is "no stored posture", not "another host's".
+                self.assertEqual(readiness.NOT_MEASURED, row["detail"])
 
     def test_a_string_host_still_measures(self):
         row = self._row_for("claude")
