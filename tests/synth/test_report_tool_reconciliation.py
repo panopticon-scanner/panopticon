@@ -197,9 +197,26 @@ class TestUnansweredToolAdvisorsHoldTheLetterBack(unittest.TestCase):
         self.assertEqual([], summary["grade_shortfalls"])
         self.assertIsNotNone(summary["overall_grade"])
 
-    def test_an_unanswered_agent_claim_is_not_a_tool_shortfall(self):
+    def test_an_unanswered_agent_claim_is_its_own_shortfall(self):
+        # Not a tool shortfall: a verify advisor's, named as such.
         summary = _build([_agentic()])["summary"]
-        self.assertEqual([], summary["grade_shortfalls"])
+        self.assertEqual(["1 finding unanswered by its verify advisor"],
+                         summary["grade_shortfalls"])
+        self.assertIsNone(summary["overall_grade"])
+
+    def test_when_every_verify_launch_fails_the_s_letter_is_held_back(self):
+        # The #3669 fault-injection finding: nothing confirmed, health 100, and S stood
+        # beside an INCONCLUSIVE gate. Every kind of undone verify work is named.
+        agents = [_agentic(fid="AG-%03d" % i, location={"file": "app.py", "line_start": 10 * i})
+                  for i in range(1, 4)]
+        summary = _build(agents + _advisories(1, 2))["summary"]
+        self.assertEqual(100.0, summary["health"]["score"])
+        self.assertEqual(("INCONCLUSIVE", None, "S"),
+                         (summary["gate"], summary["overall_grade"], summary["provisional_grade"]))
+        self.assertEqual(["2 tool findings unanswered by their advisors",
+                          "3 findings unanswered by their verify advisors"],
+                         summary["grade_shortfalls"])
+        self.assertFalse(summary["coverage_certified"])
 
 
 class TestTheSharedShortfallRule(unittest.TestCase):
@@ -230,7 +247,15 @@ class TestTheSharedShortfallRule(unittest.TestCase):
     def test_grade_shortfalls_reads_the_resolved_count(self):
         self.assertEqual([], grading_mod.grade_shortfalls(types.SimpleNamespace()))
         self.assertEqual([], grading_mod.grade_shortfalls(
-            types.SimpleNamespace(unanswered_tools=0)))
+            types.SimpleNamespace(unanswered_tools=0, unanswered_gate=0)))
+        # unanswered_gate counts the tool ones too: only the rest are verify advisors'.
+        self.assertEqual(["2 tool findings unanswered by their advisors"],
+                         grading_mod.grade_shortfalls(
+                             types.SimpleNamespace(unanswered_tools=2, unanswered_gate=2)))
+        self.assertEqual(["2 tool findings unanswered by their advisors",
+                          "1 finding unanswered by its verify advisor"],
+                         grading_mod.grade_shortfalls(
+                             types.SimpleNamespace(unanswered_tools=2, unanswered_gate=3)))
         self.assertEqual(["145 tool findings unanswered by their advisors"],
                          grading_mod.grade_shortfalls(types.SimpleNamespace(unanswered_tools=145)))
 

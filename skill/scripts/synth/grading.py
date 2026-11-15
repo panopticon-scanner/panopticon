@@ -109,14 +109,18 @@ def grade_shortfalls(resolved):
 
     Unanswered tool advisors: each such finding stays in the report as
     `tool_reported` (unverified, not gate-eligible); the letter must not read as
-    though they had been checked."""
+    though they had been checked. Unanswered verify advisors (the agent claims
+    owed a verdict, `unanswered_gate` less the tool ones): when every verify
+    launch fails nothing is confirmed, health reads 100 and the letter S stood
+    beside an INCONCLUSIVE gate -- the same undone work, the same rule."""
     reasons = []
     unanswered_tools = getattr(resolved, "unanswered_tools", 0) or 0
-    if unanswered_tools:
-        reasons.append("%d tool finding%s unanswered by %s advisor%s" % (
-            unanswered_tools, "" if unanswered_tools == 1 else "s",
-            "its" if unanswered_tools == 1 else "their",
-            "" if unanswered_tools == 1 else "s"))
+    unanswered_claims = max((getattr(resolved, "unanswered_gate", 0) or 0) - unanswered_tools, 0)
+    for count, kind in ((unanswered_tools, "tool finding"), (unanswered_claims, "finding")):
+        if count:
+            reasons.append("%d %s%s unanswered by %s %sadvisor%s" % (
+                count, kind, "" if count == 1 else "s", "its" if count == 1 else "their",
+                "" if kind == "tool finding" else "verify ", "" if count == 1 else "s"))
     return reasons
 
 

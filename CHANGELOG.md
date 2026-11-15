@@ -17,7 +17,9 @@
     (`summary.grade_shortfalls`, "S (provisional; 23 tool findings unanswered by their
     advisors)"), make coverage NOT CERTIFIED with that reason, and move a PASS gate to
     INCONCLUSIVE. The findings stay as `tool_reported`. `grade_shortfalls` is one shared rule
-    (owner ruling): any undone verify work it lists holds the letter back the same way.
+    (owner ruling): any undone verify work it lists holds the letter back the same way -- owed
+    agent claims no verify advisor answered are its second reason, so a run whose every verify
+    launch failed no longer prints S beside an INCONCLUSIVE gate.
 
 - **The read guard's grant walk no longer recurses, and reports an entry it cannot stat
   (#3658).** `guard_rules.grant_walk` ran on `os.walk`, which recurses a frame per directory

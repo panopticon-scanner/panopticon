@@ -1268,7 +1268,7 @@
           "items": {
             "type": "string"
           },
-          "description": "#3667 (owner ruling): verify work this run left undone, one reason per entry, e.g. \"145 tool findings unanswered by their advisors\". Any entry holds the letter back as provisional_grade (overall_grade null), makes coverage NOT CERTIFIED and a PASS gate INCONCLUSIVE, and is named in coverage_note. The unanswered findings stay in the report as tool_reported. Empty when nothing was left undone."
+          "description": "#3667 (owner ruling): verify work this run left undone, one reason per entry, e.g. \"145 tool findings unanswered by their advisors\" or \"3 findings unanswered by their verify advisors\" (owed agent claims, e.g. when every verify launch failed). Any entry holds the letter back as provisional_grade (overall_grade null), makes coverage NOT CERTIFIED and a PASS gate INCONCLUSIVE, and is named in coverage_note. The unanswered findings stay in the report as tool_reported. Empty when nothing was left undone."
         },
         "grade_cap": {
           "type": [
