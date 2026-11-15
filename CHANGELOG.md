@@ -13,9 +13,11 @@
   | A confirmed CRITICAL | `gate: OFF`, exits 0 | `gate: FAIL`, exits 1 |
   | A gate-relevant coverage gap (an unanswered verdict, a missing floor cell, an absent tool) | `gate: OFF`, exits 0 | `gate: INCONCLUSIVE`, exits 2 |
 
-  The exit codes are `synthesize.py`'s; `driver loop` reports the gate in the report and does not
-  move its own exit code for it. A confirmed HIGH still passes: the default is CRITICAL, not
-  everything.
+  The exit codes are `synthesize.py`'s. **`driver loop` does not move its exit code for the
+  gate: a completed run exits 0 whether the gate reads PASS, FAIL or INCONCLUSIVE (it exits
+  non-zero only for `error`, `paused` or an empty review axis). CI built on `driver loop` must
+  read `summary.gate` in the report.** A confirmed HIGH still passes: the default is CRITICAL,
+  not everything.
   - **To tighten,** pass `--fail-on high|medium|low` or commit `settings: fail_on:`. Tightening
     prints nothing.
   - **To opt out,** pass `--fail-on off`. It is the only way to an OFF gate, and it is loud: the

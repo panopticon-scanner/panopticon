@@ -293,6 +293,15 @@ class TestACommittedOffIsRefusedLoudly(_Synthesized):
         # `on`/true is no severity, and neither is false for any other key.
         self.assertEqual("expected one of critical, high, medium, low, off",
                          _resolution({"fail_on": True}).refused[0]["reason"])
+        # Only the boolean false is YAML's `off`. The other falsy values are typos like any
+        # other: the loud refusal is for a request to turn the gate off, and these are not one.
+        for typo in (None, "", 0, 0.0):
+            with self.subTest(typo=typo):
+                resolved = _resolution({"fail_on": typo})
+                self.assertEqual({}, resolved.effective)
+                self.assertEqual("expected one of critical, high, medium, low, off",
+                                 resolved.refused[0]["reason"])
+                self.assertFalse(cs.gate_off_refused({"refused": resolved.refused}))
         self.assertEqual("expected one of all, critical, high, medium",
                          _resolution({"severity": False}).refused[0]["reason"])
 
