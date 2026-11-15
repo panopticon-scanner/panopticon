@@ -686,6 +686,7 @@ groups:
       - skill/scripts/synth/render.py
       - devtools/replay_report.py
       - devtools/compare_runs.py
+      - devtools/matrix_stability.py
       - skill/scripts/model_disclosure.py
       tests:
       - tests/synth/test_report*.py
@@ -693,6 +694,7 @@ groups:
       - tests/test_fail_on_default.py
       - tests/test_replay_report.py
       - tests/test_compare_runs.py
+      - tests/test_matrix_stability.py
       - tests/test_model_disclosure.py
       - tests/test_report_redaction_e2e.py
       - tests/test_lone_surrogates.py
