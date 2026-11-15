@@ -29,21 +29,63 @@ from scripts import hosts
 _ALL_PROVEN = {c: hosts.PROVEN for c in hosts.CAPABILITIES}
 
 
+_NO_USAGE = {"input_tokens": 0, "output_tokens": 0,
+             "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}
+
+# #3669: what a launch can be told to do instead of answering. `FakeRunner(faults=...)` takes
+# any object whose `mode_for(entry_id, launch)` returns one of these, or None for "answer".
+FAULT_EXIT = "exit"            # the CLI exits non-zero: the entry's own failure
+FAULT_OUTAGE = "outage"        # the host says quota: nobody's entry is at fault
+FAULT_MALFORMED = "malformed"  # a reply came back and it does not parse
+FAULT_EMPTY = "empty"          # the launch succeeded and said nothing
+FAULT_TIMEOUT = "timeout"      # the entry timeout fired
+FAULT_MODES = (FAULT_EXIT, FAULT_OUTAGE, FAULT_MALFORMED, FAULT_EMPTY, FAULT_TIMEOUT)
+OUTAGE_LINE = "You've hit your usage limit"
+MALFORMED_TEXT = '{"findings": [ this reply was cut off'
+
+
+class Replies:
+    """What a well-behaved agent says to each kind of entry. A test that needs a richer
+    target passes its own to `FakeRunner(replies=...)` and leaves the runner alone (#3669)."""
+
+    def scout(self, entry):
+        return {"domains": ["SEC"], "files": [], "tools": []}
+
+    def findings(self, entry):
+        return [{"title": "issue", "severity": "HIGH", "domain": entry["domain"],
+                 "code": entry["domain"] + "-A1A", "category": "authz",
+                 "description": "a schema-valid test finding",
+                 "source_role": "domain_panel",
+                 "location": {"file": "src/app.py", "line_start": 1}}]
+
+    def answered(self, entry, cell):
+        """The cell's findings this advisor gives a verdict on."""
+        return cell[:1]
+
+    def verdict(self, entry, finding):
+        """(verdict, reasoning) for one claim. `finding` is the cell's finding, or None for a
+        tool advisor, whose one claim is in its own entry."""
+        return "CONFIRMED", "verified"
+
+
 class FakeRunner(base.HostRunner):
     """Answers entries like a well-behaved agent: self-writes findings/verdicts
     under the write guard (a real agent's Write would be mediated; here the
     fake writes directly, and the test asserts the guard WAS armed around it),
     returns JSON text for return-persist entries, and can be told to drop or
-    fail an entry once."""
+    fail an entry once -- or, with `faults`, to fail launches by plan (#3669)."""
     host = "claude"; mode = "headless"; default_concurrency = 4
 
-    def __init__(self, host="claude"):
+    def __init__(self, host="claude", faults=None, replies=None):
         super().__init__(host)
         self.launched = []
         self.drop_once = set()
         self.fail_once = set()
         self.seen_env = {}
         self.armed_at_launch = []
+        self.faults = faults
+        self.replies = replies or Replies()
+        self.injected = []               # (entry id, fault mode), one per failed launch
 
     def prepare(self, run_dir, review_root):
         self.run_dir, self.review_root = run_dir, review_root
@@ -54,6 +96,58 @@ class FakeRunner(base.HostRunner):
         return (
             write_guard_hook.is_armed(self.settings_path, os.path.join(self.run_dir, "write-allowlist.json"))[0],
             read_guard_hook.is_armed(self.settings_path, os.path.join(self.run_dir, "read-scope.json"))[0])
+
+    def _fault(self, entry, mode):
+        """One launch that goes wrong the way `mode` names, in the shape a host family
+        composes for it."""
+        eid = entry["id"]
+        self.injected.append((eid, mode))
+        if mode == FAULT_EXIT:
+            return base.RunResult.failed(eid, "claude -p exited 1: injected fault")
+        if mode == FAULT_OUTAGE:
+            return base.RunResult.failed(eid, "claude -p exited 1: " + OUTAGE_LINE,
+                                         host_error=OUTAGE_LINE)
+        if mode == FAULT_TIMEOUT:
+            return base.RunResult.failed(eid, "claude -p timed out after 1s",
+                                         text='{"findings": [')
+        text = MALFORMED_TEXT if mode == FAULT_MALFORMED else ""
+        if text and entry.get("delivery") != "return_json":
+            # An agent that writes its own artifact and is cut off leaves the cut-off file.
+            os.makedirs(os.path.dirname(entry["out_file"]), exist_ok=True)
+            with open(entry["out_file"], "w", encoding="utf-8") as fh:
+                fh.write(text)
+        return base.RunResult(entry_id=eid, ok=True, text=text, usage=dict(_NO_USAGE),
+                              cost_usd=0.0, model="claude-sonnet-5", session_id="s-" + eid,
+                              denials=[], error=None)
+
+    def _answer(self, entry):
+        """The reply body for `entry`, and whether its role always returns JSON."""
+        eid, run_id = entry["id"], entry.get("run_id")
+        if eid.startswith("scout-"):
+            return self.replies.scout(entry)
+        if eid.startswith("review-"):
+            return {"findings": self.replies.findings(entry),
+                    "_panopticon": {"run_id": run_id, "role": "domain_panel",
+                                    "domain": entry["domain"], "group": entry["group"]}}
+        if eid.startswith("verify-tool-"):       # before `verify-`: a tool advisor has no cell
+            verdict, reasoning = self.replies.verdict(entry, None)
+            return {"finding_id": entry["finding_id"], "verdict": verdict,
+                    "confidence": "LIKELY", "reasoning": reasoning,
+                    "explored": [], "references": [], "citations": {}}
+        if eid.startswith("verify-"):
+            cell = review._load_cell_findings(self.review_root, {"run_id": run_id},
+                                              entry["group"], entry["domain"])
+            verdicts = []
+            for finding in self.replies.answered(entry, cell):
+                verdict, reasoning = self.replies.verdict(entry, finding)
+                verdicts.append({"finding_id": finding["id"], "verdict": verdict,
+                                 "confidence": "LIKELY", "reasoning": reasoning,
+                                 "explored": [], "references": [], "citations": {}})
+            return {"verdicts": verdicts,
+                    "_panopticon": {"run_id": run_id, "role": "domain_advisor",
+                                    "domain": entry["domain"], "group": entry["group"],
+                                    "stage": entry.get("stage", "primary")}}
+        raise AssertionError("unexpected entry %s" % eid)
 
     def run_entry(self, entry, env):
         eid = entry["id"]
@@ -75,27 +169,15 @@ class FakeRunner(base.HostRunner):
                                          "cache_creation_input_tokens": 0},
                                   cost_usd=0.004, model="claude-sonnet-5",
                                   session_id="s-" + eid, denials=[], error="is_error")
-        run_id = entry.get("run_id")
-        if eid.startswith("review-"):
-            body = {"findings": [{"title": "issue", "severity": "HIGH", "domain": entry["domain"],
-                                  "code": entry["domain"] + "-A1A", "category": "authz",
-                                  "description": "a schema-valid test finding",
-                                  "source_role": "domain_panel",
-                                  "location": {"file": "src/app.py", "line_start": 1}}],
-                    "_panopticon": {"run_id": run_id, "role": "domain_panel",
-                                    "domain": entry["domain"], "group": entry["group"]}}
-        elif eid.startswith("verify-"):
-            cell = review._load_cell_findings(self.review_root, {"run_id": run_id},
-                                              entry["group"], entry["domain"])
-            body = {"verdicts": [{"finding_id": cell[0]["id"], "verdict": "CONFIRMED",
-                                  "confidence": "LIKELY", "reasoning": "verified",
-                                  "explored": [], "references": [], "citations": {}}],
-                    "_panopticon": {"run_id": run_id, "role": "domain_advisor",
-                                    "domain": entry["domain"], "group": entry["group"],
-                                    "stage": entry.get("stage", "primary")}}
-        else:
-            raise AssertionError("unexpected entry %s" % eid)
-        if entry.get("delivery") == "return_json":
+        if self.faults is not None:
+            mode = self.faults.mode_for(eid, self.launched.count(eid))
+            if mode is not None:
+                return self._fault(entry, mode)
+        body = self._answer(entry)
+        # A scout and a tool advisor hold no Write grant: their reply is always returned.
+        returned = (entry.get("delivery") == "return_json"
+                    or eid.startswith(("scout-", "verify-tool-")))
+        if returned:
             text = "```json\n" + json.dumps(body) + "\n```"
         else:
             runio._write_json(entry["out_file"], body)
