@@ -629,12 +629,7 @@ class TestTheDriverMeasuresItOnceAtRunStart(_StateDir, LoopCase):
         self.assertRegex(matrix["matrix_fingerprint"], r"\Asha256:[0-9a-f]{64}\Z")
 
     def test_a_run_over_setups_fresh_draft_says_so(self):
-        d, floor = self._repo()
-        os.replace(os.path.join(d, "panopticon.yml"), os.path.join(d, "kept.yml"))
-        self._as_checkout(d)
-        os.replace(os.path.join(d, "kept.yml"), os.path.join(d, "panopticon.yml"))
-        _git(d, "rm", "-q", "--cached", "kept.yml")
-        _git(d, "commit", "-qm", "the config is not in the commit")
+        d, floor = self._uncommitted_config()
         mp.record_draft(d, mp.config_digest(d)[1])               # as setup does for its draft
         self.assertEqual("complete", self._loop(d, floor)["status"])
         matrix = self._report(d)["meta"]["matrix"]
@@ -647,10 +642,20 @@ class TestTheDriverMeasuresItOnceAtRunStart(_StateDir, LoopCase):
         self.assertEqual("unknown", run_manifest.load_manifest(d)[run_manifest.MATRIX]["origin"])
         self.assertEqual("unknown", self._report(d)["meta"]["matrix"]["origin"])
 
-    def test_it_is_measured_once_so_a_resume_reports_the_run_as_it_began(self):
+    def _uncommitted_config(self):
+        """A checkout whose config is on disk and not in its commit."""
         d, floor = self._repo()
+        os.replace(os.path.join(d, "panopticon.yml"), os.path.join(d, "kept.yml"))
         self._as_checkout(d)
-        args = driver.build_parser().parse_args(["run", d, "--no-tools"])
+        os.replace(os.path.join(d, "kept.yml"), os.path.join(d, "panopticon.yml"))
+        _git(d, "rm", "-q", "--cached", "kept.yml")
+        _git(d, "commit", "-qm", "the config is not in the commit")
+        return d, floor
+
+    def test_it_is_measured_once_so_a_resume_reports_the_run_as_it_began(self):
+        d, floor = self._uncommitted_config()
+        # The same flags `LoopCase` loops with: a different threshold would be flag drift.
+        args = driver.build_parser().parse_args(["run", d, "--no-tools", "--fail-on", "high"])
         calls = []
         real = mp.describe
 
@@ -663,13 +668,15 @@ class TestTheDriverMeasuresItOnceAtRunStart(_StateDir, LoopCase):
                     contextlib.redirect_stderr(io.StringIO()):
                 self.assertNotEqual("error", driver.run(args)["status"])
             began = dict(run_manifest.load_manifest(d)[run_manifest.MATRIX])
-            # The config changes on disk mid-run; the run's record does not.
-            with open(os.path.join(d, "panopticon.yml"), "a", encoding="utf-8") as fh:
-                fh.write("# edited while the run was in flight\n")
+            self.assertEqual(("working_tree", None), (began["origin"], began["setup_draft"]))
+            # The world changes mid-run: setup now records this very config as its draft. A
+            # second measurement would say "unchanged". The run's record does not move.
+            mp.record_draft(d, began["config_sha256"])
+            self.assertEqual("unchanged", real(d)["setup_draft"])
             self.assertEqual("complete", self._loop(d, floor)["status"])
         self.assertEqual(1, len(calls))
         self.assertEqual(began, run_manifest.load_manifest(d)[run_manifest.MATRIX])
-        self.assertEqual("committed", self._report(d)["meta"]["matrix"]["origin"])
+        self.assertIsNone(self._report(d)["meta"]["matrix"]["setup_draft"])
 
     def test_the_manifest_key_and_the_childs_flags_are_one_vocabulary(self):
         self.assertEqual("matrix", run_manifest.MATRIX)
