@@ -16,10 +16,10 @@ span phases target the four phases AFTER the scout, not all five. A scout that n
 stops the run at its first checkpoint, so "all phases" at 50% or 10% only repeated the scout
 case ten times. "All phases" is still in the full matrix and in the transient cases.
 
-**Known gaps.** `KNOWN_GAPS` lists the invariants that do not hold on main today, by the kind
-of work left undone and the issue that owns each. A case whose only problems are listed there
+**Known gaps.** `KNOWN_GAPS` lists the checks that do not hold on main today, by the kind of
+work left undone and the issue that owns each. A case whose only problems are listed there
 is a strict `xfail` naming those issues. A problem no row covers fails the case, and so does
-a row whose invariant holds again: each fix removes its own rows.
+a row whose check holds again: each fix removes its own rows.
 """
 import dataclasses
 import functools
@@ -203,23 +203,29 @@ def _summary_lines(outcome):
             if marker in line]
 
 
-#: Words that name each kind of work. Loose on purpose: the invariant is that the reader is
-#: told what was left undone, not how the sentence is written.
-_NAMES = {fh.REVIEW: ("review", "cell", "panel", "fan-out"),
-          fh.ADVISOR: ("verif", "advisor", "verdict", "unanswered"),
-          fh.BACKUP: ("backup",), fh.TOOL: ("tool",)}
+#: What names each kind of work, as a pattern. Loose on purpose: the invariant is that the
+#: reader is told what was left undone, not how the sentence is written. But each must be
+#: about ITS work: "tool axis" in a note about review cells does not name the tool advisors,
+#: and "tool advisor" does not name the domain advisors.
+_NAMES = {fh.REVIEW: r"review|panel|fan-out|floor",
+          fh.ADVISOR: r"verif|verdict|(?<!tool[- ])(?<!backup )advisor",
+          fh.BACKUP: r"backup",
+          fh.TOOL: r"tool[- ](advisor|finding|verdict)"}
 
 
 def _unnamed(text, phases):
     """The phases with undone work whose kind of work `text` does not mention."""
-    text = (text or "").lower()
-    return [phase for phase in phases if not any(word in text for word in _NAMES[phase])]
+    return [phase for phase in phases if not re.search(_NAMES[phase], (text or "").lower())]
 
 
 # --- the invariants ----------------------------------------------------------------------
-# Each returns what is wrong as (phase, sentence) pairs, empty when the invariant holds. The
-# phase is the kind of undone work the problem is about, or None when it is about none.
-# `control` is the fault-free run of the same fixture.
+# Each returns what is wrong as (check, phase, sentence), empty when the invariant holds.
+# `check` says which part of the invariant it is, so a known gap can be named exactly; `phase`
+# is the kind of undone work the problem is about, or None when it is about none. `control`
+# is the fault-free run of the same fixture.
+LOSS, COUNTS, GATE = "1.loss", "2.counts", "4.gate"
+CERTIFIED, LETTER = "3.certified", "3.letter"
+IN_JSON, ON_TERMINAL, IN_HTML = "5.json", "5.terminal", "5.html"
 
 def no_silent_loss(control, outcome):
     """1. Every tool finding ingested, and every agent claim a cell persisted, is in the
@@ -230,22 +236,22 @@ def no_silent_loss(control, outcome):
     discarded = report["discarded_claims"]
     for claim in tool_claims():
         if not any(_accounts_for(claim, f) for f in report["findings"] + discarded):
-            wrong.append((None, "tool finding %s %s is nowhere in the report" % claim[:2]))
+            wrong.append((LOSS, None, "tool finding %s %s is nowhere in the report" % claim[:2]))
     titles = {f.get("title") for f in report["findings"] + discarded}
     for title, cell in _persisted_claims(outcome.root):
         if title not in titles:
-            wrong.append((None, "agent claim %r (persisted in %s) is nowhere in the report"
-                          % (title, cell)))
+            wrong.append((LOSS, None, "agent claim %r (persisted in %s) is nowhere in the "
+                          "report" % (title, cell)))
     for finding in discarded:
         if _status(finding) != "rejected" or not (finding.get("evidence") or {}).get("reasoning"):
-            wrong.append((None, "discarded claim %s carries no rejection reason"
+            wrong.append((LOSS, None, "discarded claim %s carries no rejection reason"
                           % finding.get("id")))
     message = outcome.statuses[-1].get("message") or ""
     for entry in outcome.unanswered_in(fh.REVIEW):
         _review, group, domain = entry.split("-")
         if "%s/%s" % (group, domain) not in message:
-            wrong.append((fh.REVIEW, "review cell %s/%s never answered and the status does "
-                          "not name it" % (group, domain)))
+            wrong.append((LOSS, fh.REVIEW, "review cell %s/%s never answered and the status "
+                          "does not name it" % (group, domain)))
     return wrong
 
 
@@ -258,30 +264,30 @@ def counts_reconcile(control, outcome):
     axis = coverage["tool_axis"]
     answered = axis["confirmed"] + axis["rejected"] + axis["needs_more_info"]
     if answered + axis["unanswered"] != axis["queued"]:
-        wrong.append((None, "tool_axis does not add up: %r" % (axis,)))
+        wrong.append((COUNTS, None, "tool_axis does not add up: %r" % (axis,)))
     if axis["queued"] != len(tool_claims()):
-        wrong.append((None, "tool_axis.queued is %d; the scanners reported %d"
+        wrong.append((COUNTS, None, "tool_axis.queued is %d; the scanners reported %d"
                       % (axis["queued"], len(tool_claims()))))
     never = len(outcome.unanswered_in(fh.TOOL)) + (
         fh.MERGED_ADVISOR in outcome.unanswered_in(fh.ADVISOR))
     if axis["unanswered"] != never:
-        wrong.append((None, "tool_axis.unanswered is %d; %d tool claim(s) had an advisor "
+        wrong.append((COUNTS, None, "tool_axis.unanswered is %d; %d tool claim(s) had an advisor "
                       "that never answered" % (axis["unanswered"], never)))
     everything = report["findings"] + report["discarded_claims"]
     for scanner in fh.SCANNERS:
         ingested = (coverage["adapters"].get(scanner) or {}).get("findings")
         claims = [c for c in tool_claims() if c[0] == scanner]
         if ingested != len(claims):
-            wrong.append((None, "%s: adapters says %r ingested; it reported %d"
+            wrong.append((COUNTS, None, "%s: adapters says %r ingested; it reported %d"
                           % (scanner, ingested, len(claims))))
         found = [c for c in claims if any(_accounts_for(c, f) for f in everything)]
         if len(found) != len(claims):
-            wrong.append((None, "%s: %d of %d findings are in the report or its discards"
+            wrong.append((COUNTS, None, "%s: %d of %d findings are in the report or its discards"
                           % (scanner, len(found), len(claims))))
     stats = report["summary"]["evidence_stats"]
     if stats["tool_reported"] != sum(1 for f in report["findings"]
                                      if _status(f) == "tool_reported"):
-        wrong.append((None, "evidence_stats.tool_reported disagrees with the findings"))
+        wrong.append((COUNTS, None, "evidence_stats.tool_reported disagrees with the findings"))
     return wrong
 
 
@@ -296,15 +302,16 @@ def no_false_certification(control, outcome):
                     for key in ("overall_grade", "provisional_grade", "coverage_certified")}
         got = {key: summary[key] for key in expected}
         return [] if got == expected else [
-            (None, "nothing was left undone, yet certification is %r; the control's is %r"
-             % (got, expected))]
+            (CERTIFIED, None, "nothing was left undone, yet certification is %r; the "
+             "control's is %r" % (got, expected))]
     if summary["coverage_certified"] is True:
-        return [(phase, "%s work was left undone and the run is coverage_certified" % phase)
-                for phase in undone]
+        return [(CERTIFIED, phase, "%s work was left undone and the run is coverage_certified"
+                 % phase) for phase in undone]
     if summary["overall_grade"] is None:
         return []
-    return [(phase, "a letter grade (%s) stands and coverage_note (%r) does not name the "
-             "undone %s work" % (summary["overall_grade"], summary.get("coverage_note"), phase))
+    return [(LETTER, phase, "a letter grade (%s) stands and coverage_note (%r) does not name "
+             "the undone %s work" % (summary["overall_grade"], summary.get("coverage_note"),
+                                     phase))
             for phase in _unnamed(summary.get("coverage_note"), undone)]
 
 
@@ -315,18 +322,18 @@ def gate_fails_closed(control, outcome):
     eligible, before = _gate_eligible(outcome.report), _gate_eligible(control.report)
     gate, control_gate = outcome.report["summary"]["gate"], control.report["summary"]["gate"]
     for issue in sorted(eligible - before, key=str):
-        wrong.append((None, "%s is gate-eligible only under the fault"
+        wrong.append((GATE, None, "%s is gate-eligible only under the fault"
                       % ":".join(map(str, issue))))
     if not outcome.unanswered:
         if eligible != before or gate != control_gate:
-            wrong.append((None, "nothing was left undone, yet the gate is %s over %d eligible "
+            wrong.append((GATE, None, "nothing was left undone, yet the gate is %s over %d eligible "
                           "finding(s); the control's is %s over %d"
                           % (gate, len(eligible), control_gate, len(before))))
         return wrong
     if gate == "PASS":
-        wrong.append((None, "work was left undone and the gate is PASS"))
+        wrong.append((GATE, None, "work was left undone and the gate is PASS"))
     if not eligible and gate != "INCONCLUSIVE":
-        wrong.append((None, "no finding is gate-eligible after the fault and the gate is %s, "
+        wrong.append((GATE, None, "no finding is gate-eligible after the fault and the gate is %s, "
                       "not INCONCLUSIVE" % gate))
     return wrong
 
@@ -359,24 +366,28 @@ def shortfall_is_disclosed(control, outcome):
     terminal, page = _not_certified_text(outcome)
     summary = outcome.report["summary"]
     if not undone:
-        return [(None, "%s says NOT CERTIFIED and nothing was left undone" % where)
-                for where, text in (("terminal", terminal), ("HTML", page))
+        return [(check, None, "%s says NOT CERTIFIED and nothing was left undone" % where)
+                for check, where, text in ((ON_TERMINAL, "terminal", terminal),
+                                           (IN_HTML, "HTML", page))
                 if control.report["summary"]["coverage_certified"] and "NOT CERTIFIED" in text]
     wrong = []
     for phase in undone:
         if summary["coverage_certified"] is not False:
-            wrong.append((phase, "JSON: coverage_certified is %r with %s work undone"
+            wrong.append((IN_JSON, phase, "JSON: coverage_certified is %r with %s work undone"
                           % (summary["coverage_certified"], phase)))
-        if not _json_counts(outcome, phase) and _unnamed(summary.get("coverage_note"), [phase]):
-            wrong.append((phase, "JSON: no field counts the undone %s work and coverage_note "
-                          "(%r) does not name it" % (phase, summary.get("coverage_note"))))
-        for where, text in (("terminal", terminal), ("HTML", page)):
+        elif not _json_counts(outcome, phase) and _unnamed(summary.get("coverage_note"),
+                                                           [phase]):
+            wrong.append((IN_JSON, phase, "JSON: no field counts the undone %s work and "
+                          "coverage_note (%r) does not name it"
+                          % (phase, summary.get("coverage_note"))))
+        for check, where, text in ((ON_TERMINAL, "terminal", terminal),
+                                   (IN_HTML, "HTML", page)):
             if "NOT CERTIFIED" not in text:
-                wrong.append((phase, "%s does not say NOT CERTIFIED with %s work undone"
+                wrong.append((check, phase, "%s does not say NOT CERTIFIED with %s work undone"
                               % (where, phase)))
             elif _unnamed(text, [phase]):
-                wrong.append((phase, "%s does not name the undone %s work beside NOT CERTIFIED "
-                              "(it says %r)" % (where, phase, text[:120])))
+                wrong.append((check, phase, "%s does not name the undone %s work beside NOT "
+                              "CERTIFIED (it says %r)" % (where, phase, text[:120])))
     return wrong
 
 
@@ -385,9 +396,8 @@ INVARIANTS = (no_silent_loss, counts_reconcile, no_false_certification, gate_fai
 
 
 def problems(control, outcome):
-    """Every (invariant name, phase, sentence) that does not hold for `outcome`."""
-    return [(check.__name__, phase, sentence) for check in INVARIANTS
-            for phase, sentence in check(control, outcome)]
+    """Every (check, phase, sentence) that does not hold for `outcome`."""
+    return [row for invariant in INVARIANTS for row in invariant(control, outcome)]
 
 
 def _comparable(outcome):
@@ -425,13 +435,24 @@ def _some_cells_answered(outcome):
         1 for e in set(outcome.launched) if fh.phase_of(e) == fh.REVIEW)
 
 
+def _backup_left_no_trace(outcome):
+    """Backup advisors alone went unanswered and left no file behind: nothing in the report
+    moves. A cut-off backup file counts as an unloadable verdict, which does sink it."""
+    return ({fh.phase_of(e) for e in outcome.unanswered} == {fh.BACKUP}
+            and outcome.plan.mode != FAULT_MALFORMED)
+
+
+def _backup_left_a_trace(outcome):
+    return _no_review_gap(outcome) and not _backup_left_no_trace(outcome)
+
+
 @dataclasses.dataclass(frozen=True)
 class Gap:
-    """One invariant known not to hold for one kind of undone work, and the issue that owns
-    it. Each fix removes its own rows: a row whose invariant holds again fails the case."""
+    """One check known not to hold for one kind of undone work, and the issue that owns it.
+    Each fix removes its own rows: a row whose check holds again fails the case."""
     issue: str
     phase: str
-    invariant: str
+    check: str
     when: object = None       # outcome -> bool: the runs this gap shows in; None means all
 
 
@@ -442,13 +463,18 @@ class Gap:
 #:        write a cut-off file sink certification with no reason; neither is named anywhere.
 #: #3677: the HTML report does not name an exhausted review cell; the terminal does.
 KNOWN_GAPS = (
-    Gap("#3641", fh.ADVISOR, "no_false_certification", _no_review_gap),
-    Gap("#3641", fh.ADVISOR, "shortfall_is_disclosed"),
-    Gap("#3667", fh.TOOL, "no_false_certification", _no_review_gap),
-    Gap("#3667", fh.TOOL, "shortfall_is_disclosed"),
-    Gap("#3676", fh.BACKUP, "no_false_certification", _no_review_gap),
-    Gap("#3676", fh.BACKUP, "shortfall_is_disclosed"),
-    Gap("#3677", fh.REVIEW, "shortfall_is_disclosed", _some_cells_answered),
+    Gap("#3641", fh.ADVISOR, LETTER, _no_review_gap),
+    Gap("#3641", fh.ADVISOR, ON_TERMINAL),
+    Gap("#3641", fh.ADVISOR, IN_HTML),
+    Gap("#3667", fh.TOOL, LETTER, _no_review_gap),
+    Gap("#3667", fh.TOOL, ON_TERMINAL),
+    Gap("#3667", fh.TOOL, IN_HTML),
+    Gap("#3676", fh.BACKUP, CERTIFIED, _backup_left_no_trace),
+    Gap("#3676", fh.BACKUP, LETTER, _backup_left_a_trace),
+    Gap("#3676", fh.BACKUP, IN_JSON),
+    Gap("#3676", fh.BACKUP, ON_TERMINAL),
+    Gap("#3676", fh.BACKUP, IN_HTML),
+    Gap("#3677", fh.REVIEW, IN_HTML, _some_cells_answered),
 )
 
 
@@ -543,19 +569,18 @@ def test_a_host_failure_is_never_silent(lab, plan, request):
 
     found = problems(control, outcome)
     expected = _expected_gaps(outcome)
-    known = {(gap.invariant, gap.phase) for gap in expected}
-    unexpected = [row for row in found if (row[0], row[1]) not in known]
+    known = {(gap.check, gap.phase) for gap in expected}
+    unexpected = [row for row in found if row[:2] not in known]
     assert not unexpected, "no issue covers:\n  " + "\n  ".join(
-        "%s: %s" % (name, sentence) for name, _phase, sentence in unexpected)
-    fixed = [gap for gap in expected
-             if (gap.invariant, gap.phase) not in {(row[0], row[1]) for row in found}]
+        "%s: %s" % (check, sentence) for check, _phase, sentence in unexpected)
+    fixed = [gap for gap in expected if (gap.check, gap.phase) not in {row[:2] for row in found}]
     assert not fixed, ("these hold again, so remove their rows from KNOWN_GAPS: "
-                       + ", ".join("%s (%s, %s)" % (gap.issue, gap.phase, gap.invariant)
+                       + ", ".join("%s (%s, %s)" % (gap.issue, gap.phase, gap.check)
                                    for gap in fixed))
     if expected:
         request.applymarker(pytest.mark.xfail(
             strict=True, reason=", ".join(sorted({gap.issue for gap in expected}))))
-        pytest.fail("known: " + "; ".join(sentence for _name, _phase, sentence in found))
+        pytest.fail("known: " + "; ".join(sentence for _check, _phase, sentence in found))
 
 
 SPLIT_BYTES = 9000
