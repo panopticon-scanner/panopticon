@@ -64,6 +64,9 @@ class FindingSet:
     verdict_bundles: dict = field(default_factory=dict)
     catalog: dict | None = None      # CWE catalog; None -> citations.load_cwe_catalog()
     doc_policy: dict | None = None   # apply_doc_severity_policy's disclosure
+    # #3676: per loadable bundle file, {"run_id", "stage", "kept"} (the
+    # controller stamps and a count; `evidence.load_verdict_bundles(accepted=)`).
+    bundle_files: dict = field(default_factory=dict)
 
     @classmethod
     def prepare(cls, args, tool_findings, security_mode):
@@ -114,7 +117,9 @@ class FindingSet:
             prepared = cls.prepare(args, tool_findings, security_mode)
         findings, doc_policy, catalog = prepared
         verdicts, verdict_unloadable = evidence_mod.load_verdicts_detailed(args.verdicts_dir)
-        verdict_bundles, bundle_unloadable = evidence_mod.load_verdict_bundles(args.verdicts_dir)
+        bundle_files: dict[str, dict] = {}
+        verdict_bundles, bundle_unloadable = evidence_mod.load_verdict_bundles(
+            args.verdicts_dir, accepted=bundle_files)
         # Both loaders scan the same verdicts_dir and independently attempt to
         # parse every *.json in it, so a single unparseable file is reported by
         # both -- dedupe on filename or a genuinely-corrupt file double-counts
@@ -128,7 +133,8 @@ class FindingSet:
         return cls(findings=findings, verdicts=verdicts,
                    verdicts_supplied=args.verdicts_dir is not None,
                    verdict_unloadable=verdict_unloadable, verdict_run_id=verdict_run_id,
-                   verdict_bundles=verdict_bundles, catalog=catalog, doc_policy=doc_policy)
+                   verdict_bundles=verdict_bundles, catalog=catalog, doc_policy=doc_policy,
+                   bundle_files=bundle_files)
 
 
 SHORT_TITLE_MAX = 100
