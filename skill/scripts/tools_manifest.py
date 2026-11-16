@@ -105,8 +105,8 @@ def dependency_audit_applicable(target):
 # no lockfile is applicable (above) and no auditor reads it, so the report said only
 # "no SCA tool produced output" -- or, beside an audited `requirements.txt`, nothing.
 #   no_auditable_file: none of the files any auditor reads for it is in the tree;
-#   needs_online:      such a file is there, and an auditor that reads it runs only
-#                      under --online, which was not given;
+#   needs_online:      such a file is there, every auditor that reads it runs only
+#                      under --online, and --online was not given;
 #   not_run:           anything else (an auditor reads it and was not selected).
 UNAUDITED_REASONS = ("no_auditable_file", "needs_online", "not_run")
 
@@ -122,28 +122,29 @@ def dependency_auditors(ecosystem):
     return readers
 
 
-def _in_tree(target, name):
-    """Is root file `name` (or anything matching it, for a pattern) in `target`?"""
-    if "*" in name:
-        return next(glob.iglob(os.path.join(glob.escape(target), name)), None) is not None
-    return os.path.exists(os.path.join(target, name))
-
-
 def dependency_audit_unaudited(target, selected, online):
     """{ecosystem: reason} for each applicable ecosystem no SELECTED auditor reads.
 
     An auditor reads an ecosystem here when one of its files for it is in the tree:
     osv-scanner selected for a `requirements.txt` does not audit the `package.json`
-    beside it. Reasons are `UNAUDITED_REASONS`; nothing of the target's is recorded."""
+    beside it. "In the tree" is each adapter's OWN test (`has_audit_file`), the one
+    its `is_applicable` runs: a directory named `package-lock.json` is no lockfile
+    to npm-audit, so it must not be one here (#3699 L1).
+
+    `needs_online` only when EVERY auditor that reads a file here is online-only
+    (#3699 L2): with osv-scanner able to read a `requirements.txt` offline, "pip-audit
+    needs --online" would be the wrong advice. Reasons are `UNAUDITED_REASONS`;
+    nothing of the target's is recorded."""
     unaudited = {}
     for ecosystem in dependency_audit_applicable(target):
         readers = [tool for tool, files in dependency_auditors(ecosystem).items()
-                   if any(_in_tree(target, name) for name in files)]
+                   if any(getattr(ADAPTERS[tool], "has_audit_file")(target, name)
+                          for name in files)]
         if set(readers) & set(selected):
             continue
         if not readers:
             unaudited[ecosystem] = "no_auditable_file"
-        elif not online and any(tool in ONLINE_ONLY for tool in readers):
+        elif not online and all(tool in ONLINE_ONLY for tool in readers):
             unaudited[ecosystem] = "needs_online"
         else:
             unaudited[ecosystem] = "not_run"

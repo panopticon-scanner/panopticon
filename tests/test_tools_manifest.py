@@ -166,6 +166,11 @@ class TestWhyAnEcosystemWentUnaudited(unittest.TestCase):
     def test_an_auditor_that_runs_only_online(self):
         self.assertEqual({"python": "needs_online"}, self._unaudited(["pyproject.toml"]))
         self.assertEqual({"python": "needs_online"}, self._unaudited(["requirements-dev.txt"]))
+        # #3699 L2: only when EVERY reader is online-only. osv-scanner reads a
+        # requirements.txt offline, so its absence is not for want of --online.
+        self.assertEqual({"python": "not_run"}, self._unaudited(["requirements.txt"]))
+        self.assertEqual({"javascript": "not_run"},
+                         self._unaudited(["package.json", "package-lock.json"]))
         # Online and still not selected: that is not for want of --online.
         self.assertEqual({"python": "not_run"},
                          self._unaudited(["pyproject.toml"], online=True))
@@ -183,12 +188,38 @@ class TestWhyAnEcosystemWentUnaudited(unittest.TestCase):
     def test_a_tree_with_no_dependency_surface_has_no_reasons(self):
         self.assertEqual({}, self._unaudited(["app.py"]))
 
-    def test_a_pattern_is_matched_under_a_path_with_glob_characters(self):
-        with tempfile.TemporaryDirectory() as root:
-            target = _tree(os.path.join(root, "repo[a]"), "requirements-dev.txt")
-            self.assertEqual({}, tm.dependency_audit_unaudited(target, ["pip-audit"], True))
-            self.assertEqual({"python": "needs_online"},
-                             tm.dependency_audit_unaudited(target, [], False))
+    def test_a_directory_with_a_lockfiles_name_is_no_lockfile(self):
+        # #3699 L1. npm-audit and osv-scanner ask for a regular file, so neither would
+        # be selected for this tree, online or not: "npm-audit needs --online" would be
+        # wrong advice. The reason uses each adapter's own test.
+        for online in (False, True):
+            with self.subTest(online=online), tempfile.TemporaryDirectory() as d:
+                _tree(d, "package.json")
+                os.mkdir(os.path.join(d, "package-lock.json"))
+                os.mkdir(os.path.join(d, "npm-shrinkwrap.json"))
+                self.assertEqual({"javascript": "no_auditable_file"},
+                                 tm.dependency_audit_unaudited(d, [], online))
+        # cargo-audit's own test is "the path exists", and it is asked the same way.
+        with tempfile.TemporaryDirectory() as d:
+            _tree(d, "Cargo.toml")
+            os.mkdir(os.path.join(d, "Cargo.lock"))
+            self.assertEqual({"rust": "not_run"}, tm.dependency_audit_unaudited(d, [], True))
+            self.assertEqual({}, tm.dependency_audit_unaudited(d, ["cargo-audit"], True))
+
+    def test_the_file_test_asked_is_the_adapters_own(self):
+        from scripts.tools import ADAPTERS
+        asked = []
+
+        def never(target, name):
+            asked.append(name)
+            return False
+
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(
+                type(ADAPTERS["npm-audit"]), "has_audit_file", staticmethod(never)):
+            _tree(d, "package.json", "npm-shrinkwrap.json")
+            self.assertEqual({"javascript": "no_auditable_file"},
+                             tm.dependency_audit_unaudited(d, [], False))
+        self.assertEqual(["npm-shrinkwrap.json", "package-lock.json"], asked)
 
     def test_the_auditors_and_their_files_come_from_the_adapters(self):
         from scripts.tools import ADAPTERS

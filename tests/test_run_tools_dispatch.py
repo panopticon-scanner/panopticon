@@ -210,6 +210,24 @@ class TestDefaultSelectionBranch(unittest.TestCase):
                 self.assertEqual({"applicable": ["python"], "selected": [], "produced": [],
                                   "unaudited": {"python": reason}}, receipt)
 
+    def test_an_offline_auditor_left_out_by_tools_is_not_a_want_of_online(self):
+        # #3699 L2, the reviewer's case: requirements.txt, offline, and `--tools`
+        # leaves osv-scanner out. osv-scanner reads that file offline, so the reason
+        # is `not_run`, never "pip-audit needs --online".
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(target, "requirements.txt"), "w") as fh:
+                fh.write("requests==2.0.0\n")
+            manifest = os.path.join(d, "manifest.json")
+            with mock.patch("scripts.run_tools.docker_available", return_value=False), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(0, rt.main(["--tools", "semgrep", "--target", target,
+                                             "--out", os.path.join(d, "out"),
+                                             "--manifest", manifest]))
+            with open(manifest, encoding="utf-8") as fh:
+                receipt = json.load(fh)["dependency_audit"]
+        self.assertEqual({"applicable": ["python"], "selected": [], "produced": [],
+                          "unaudited": {"python": "not_run"}}, receipt)
+
     def test_the_default_branch_really_is_the_one_production_takes(self):
         # Pin the premise rather than trusting it: if driver ever started
         # passing --tools, this test would be guarding the wrong arm.

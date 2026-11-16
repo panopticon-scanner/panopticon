@@ -28,9 +28,15 @@ class BundlerAuditAdapter:
     # reason from the same tuple, so the two cannot disagree.
     audit_files = {"ruby": ("Gemfile.lock",)}
 
+    @staticmethod
+    def has_audit_file(target: str, name: str) -> bool:
+        """This adapter's own test for one of `audit_files` being in the tree. Read
+        by `is_applicable` and by `tools_manifest`'s reason, so "an auditor reads
+        this file" means the same in both (#3699 L1): the path exists."""
+        return os.path.exists(os.path.join(target, name))
+
     def is_applicable(self, target: str) -> bool:
-        return any(os.path.exists(os.path.join(target, name))
-                   for name in self.audit_files["ruby"])
+        return any(self.has_audit_file(target, name) for name in self.audit_files["ruby"])
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         # ---------------------------------------------------------------

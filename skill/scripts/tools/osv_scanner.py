@@ -71,9 +71,16 @@ class OsvScannerAdapter:
                  "gradle/verification-metadata.xml"),
     }
 
+    @staticmethod
+    def has_audit_file(target: str, name: str) -> bool:
+        """This adapter's own test for one of `audit_files` being in the tree. Read
+        by `is_applicable` and by `tools_manifest`'s reason, so "an auditor reads
+        this file" means the same in both (#3699 L1): a regular file at that path."""
+        return has_any_file(target, name)
+
     def is_applicable(self, target: str) -> bool:
-        return has_any_file(target, *(name for names in self.audit_files.values()
-                                      for name in names))
+        return any(self.has_audit_file(target, name)
+                   for names in self.audit_files.values() for name in names)
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         # v1.8.2 spells it --experimental-offline, and exposes `--config` on the

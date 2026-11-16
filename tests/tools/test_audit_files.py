@@ -73,6 +73,40 @@ class TestEachAuditorIsSelectedByItsOwnList(unittest.TestCase):
                 self.assertFalse(adapter.is_applicable(
                     _tree(old, *[_example(n) for n in names], *needed)))
 
+    def test_each_adapter_is_selected_by_its_own_file_test(self):
+        # #3699 L1: `has_audit_file` is the test `is_applicable` runs, per file. They
+        # differ between adapters (a regular file for some, any path for others), so
+        # each is held to its own: a directory with the file's name, and the test
+        # patched to say no.
+        for tool in AUDITORS:
+            adapter = ADAPTERS[tool]
+            needed = [ALSO_NEEDED[tool]] if tool in ALSO_NEEDED else []
+            for names in adapter.audit_files.values():
+                for name in names:
+                    with self.subTest(tool=tool, file=name), tempfile.TemporaryDirectory() as d:
+                        _tree(d, *needed)
+                        os.makedirs(os.path.join(d, _example(name)))
+                        self.assertIs(adapter.has_audit_file(d, name), adapter.is_applicable(d))
+            with self.subTest(tool=tool), tempfile.TemporaryDirectory() as d, \
+                    mock.patch.object(type(adapter), "has_audit_file",
+                                      staticmethod(lambda target, name: False)):
+                every = [_example(n) for names in adapter.audit_files.values() for n in names]
+                self.assertFalse(adapter.is_applicable(_tree(d, *every, *needed)))
+
+    def test_a_regular_file_or_any_path(self):
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("package-lock.json", "pom.xml", "Cargo.lock", "Gemfile.lock",
+                         "requirements.txt"):
+                os.mkdir(os.path.join(d, name))
+            self.assertEqual(
+                {"npm-audit": False, "osv-scanner": False, "dependency-check": False,
+                 "cargo-audit": True, "bundler-audit": True, "pip-audit": True},
+                {tool: ADAPTERS[tool].has_audit_file(d, {
+                    "npm-audit": "package-lock.json", "osv-scanner": "package-lock.json",
+                    "dependency-check": "pom.xml", "cargo-audit": "Cargo.lock",
+                    "bundler-audit": "Gemfile.lock", "pip-audit": "requirements.txt"}[tool])
+                 for tool in AUDITORS})
+
     def test_dependency_check_needs_an_artifact_beside_its_build_file(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertFalse(ADAPTERS["dependency-check"].is_applicable(_tree(d, "pom.xml")))

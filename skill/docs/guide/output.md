@@ -108,8 +108,9 @@ so: "1 backup advisor unanswered (1 scope not recorded)".
 dependency manifest for (`applicable`), and the dedicated auditors that were `selected` and
 `produced` output. Its `unaudited` map (#3648) names each applicable ecosystem that no selected
 auditor reads, and why: `no_auditable_file` (none of the files an auditor reads for it is in the
-tree, such as a `package.json` with no lockfile), `needs_online` (pip-audit and npm-audit run only
-under `--online`), or `not_run`. `coverage_note` says it in a fixed sentence, for example
+tree, such as a `package.json` with no lockfile), `needs_online` (every auditor that reads the
+file there runs only under `--online`, as pip-audit does for a `pyproject.toml`), or `not_run`.
+`coverage_note` says it in a fixed sentence, for example
 "javascript not audited: no npm-shrinkwrap.json, package-lock.json, yarn.lock or pnpm-lock.yaml;
 npm-audit and osv-scanner need one". When no auditor produced anything, that sentence follows "no
 SCA tool produced output on an applicable tree". When another ecosystem's auditor did answer, the

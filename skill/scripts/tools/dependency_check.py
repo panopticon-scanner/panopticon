@@ -116,6 +116,13 @@ class DependencyCheckAdapter:
     # A build file alone does not make this adapter applicable: see below.
     audit_files = {"java": BUILD_MANIFESTS}
 
+    @staticmethod
+    def has_audit_file(target: str, name: str) -> bool:
+        """This adapter's own test for one of `audit_files` being in the tree. Read
+        by `is_applicable` and by `tools_manifest`'s reason, so "an auditor reads
+        this file" means the same in both (#3699 L1): a regular file at the root."""
+        return has_any_file(target, name)
+
     def is_applicable(self, target: str) -> bool:
         """A JVM build file AND resolved artifacts to actually analyse.
 
@@ -136,7 +143,7 @@ class DependencyCheckAdapter:
         Declining is the correct outcome: a disclosed `requested_unavailable`
         is non-gating (#1031) and honest, where a silent clean scan is neither.
         """
-        if not has_any_file(target, *self.audit_files["java"]):
+        if not any(self.has_audit_file(target, name) for name in self.audit_files["java"]):
             return False
         return self._has_scannable_artifacts(target)
 
