@@ -388,7 +388,11 @@ def _requirement_candidate(target):
     """
     target = os.path.abspath(target)
     exact = os.path.join(target, "requirements.txt")
-    candidates = [exact] + sorted(glob.glob(os.path.join(target, "requirements*.txt")))
+    # #3701: the directory is escaped. `glob` reads `[x]` in ANY part of the pattern as a
+    # character class, so under `/work/repo[x]` this matched nothing of the target's, and
+    # could match a sibling `/work/repox/requirements-dev.txt` instead.
+    candidates = [exact] + sorted(glob.glob(os.path.join(glob.escape(target),
+                                                         "requirements*.txt")))
     # `lexists`, not `isfile`: a DANGLING symlink is a path entry that exists and has to be judged,
     # and `isfile` is false for one (F8). Filtering on `isfile` here ran the F5 check ahead of
     # confinement, so `requirements.txt -> /nonexistent/outside/creds` reported as "no manifest" --
@@ -500,8 +504,11 @@ class PipAuditAdapter:
         """This adapter's own test for one of `audit_files` being in the tree. Read
         by `is_applicable` and by `tools_manifest`'s reason, so "an auditor reads
         this file" means the same in both (#3699 L1): the path exists, or the pattern matches something."""
-        path = os.path.join(target, name)
-        return bool(glob.glob(path)) if "*" in name else os.path.exists(path)
+        if "*" in name:
+            # #3701: only `name` is a pattern. The target's own path is escaped, or a
+            # `[` in it is read as a character class and the file there is never seen.
+            return bool(glob.glob(os.path.join(glob.escape(target), name)))
+        return os.path.exists(os.path.join(target, name))
 
     def is_applicable(self, target: str) -> bool:
         return any(self.has_audit_file(target, name) for name in self.audit_files["python"])

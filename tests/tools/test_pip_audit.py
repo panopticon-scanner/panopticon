@@ -380,6 +380,38 @@ class TestPipAuditAdapter(unittest.TestCase):
             self.assertEqual(pa.PipAuditAdapter()._find_requirement(d),
                              os.path.join(d, "requirements-dev.txt"))
 
+    def test_a_target_path_with_glob_characters_is_matched_as_itself(self):
+        # #3701. Only `requirements*.txt` is a pattern. The target's path was joined in
+        # unescaped, so `[x]` in it was read as "one character, x": the target's own file
+        # was never seen, and a SIBLING directory's file was taken for it.
+        for name in ("repo[x]", "repo[!x]", "re*po", "re?po", "repo[", "[repo]"):
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as base:
+                target = os.path.join(base, name)
+                os.mkdir(target)
+                adapter = pa.PipAuditAdapter()
+                self.assertFalse(adapter.is_applicable(target))
+                self.assertFalse(adapter.has_audit_file(target, "requirements*.txt"))
+                self.assertIsNone(adapter._find_requirement(target))
+                wanted = os.path.join(target, "requirements-dev.txt")
+                open(wanted, "w").close()
+                self.assertTrue(adapter.is_applicable(target))
+                self.assertTrue(adapter.has_audit_file(target, "requirements*.txt"))
+                self.assertEqual(wanted, adapter._find_requirement(target))
+                self.assertEqual((wanted, []), pa._requirement_candidate(target))
+
+    def test_a_sibling_directory_the_pattern_would_match_is_not_this_target(self):
+        # `repo[x]` as a pattern names the directory `repox`. Nothing in it is ours.
+        with tempfile.TemporaryDirectory() as base:
+            target, sibling = os.path.join(base, "repo[x]"), os.path.join(base, "repox")
+            os.mkdir(target)
+            os.mkdir(sibling)
+            open(os.path.join(sibling, "requirements-dev.txt"), "w").close()
+            adapter = pa.PipAuditAdapter()
+            self.assertFalse(adapter.is_applicable(target))
+            self.assertIsNone(adapter._find_requirement(target))
+            # ...and it is not reported as a manifest of ours that escaped the target.
+            self.assertEqual((None, []), pa._requirement_candidate(target))
+
     def test_find_requirement_none_when_absent(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertIsNone(pa.PipAuditAdapter()._find_requirement(d))
