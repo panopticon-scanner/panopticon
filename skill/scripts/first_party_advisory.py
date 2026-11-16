@@ -13,6 +13,11 @@ root, and its own package.json proves the same name and version and is
 publishable: ``private: true`` is npm's ``publish = false``, except for the
 review root itself.
 
+Maven and Gradle (#3623, owner rulings J1 and J2): nothing is classified. A
+gradle.lockfile lists only resolved external modules, never the build's own
+projects, and nothing shows the pinned scanners report a sibling Maven reactor
+module; every pom.xml and Gradle advisory stays with the advisor.
+
 The claim then changes from "a third-party dependency is used" to "this project
 version is affected" before the advisor queue is built. Ambiguity and unreadable
 input fail closed onto the ordinary advisor path.

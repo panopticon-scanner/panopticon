@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Maven and Gradle advisories always stay with the advisor (#3623, owner rulings).** Like Go,
+  neither has a first-party marker. A gradle.lockfile lists only resolved external modules,
+  never the build's own projects, so no lock entry is a local project a manifest proves. A Maven
+  reactor module's pom.xml can state literal coordinates, but nothing shows the pinned scanners
+  ever report a sibling module, so the owner ruled against building a marker for an unseen
+  case; it is revisited only if a real run shows one. A reactor parent, a module, a Gradle
+  project and a registry artifact are all pinned to the ordinary tool-advisor path under
+  osv-scanner and Trivy, and nothing is read from the ingest budget. No behaviour changes.
+
 - **Summoned backup advisors that never answer hold the letter back (#3676).** A run whose
   backup advisors all failed (non-zero exit, empty reply, timeout) read as fully certified, and
   a malformed backup sank certification without naming a cause. `meta.coverage.backups`

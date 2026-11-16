@@ -18,7 +18,10 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
   `publish = false` (only the review root itself is exempt), and a `publishConfig.registry` other
   than the public one is private-only. Only osv-scanner and Trivy are classified, because they
   report the installed version; npm-audit's `vulnerable_versions` is a range, even when it
-  happens to name a single version, so its advisories stay with the advisor. Gate-eligible.
+  happens to name a single version, so its advisories stay with the advisor. Maven and Gradle
+  classify nothing (#3623): a gradle.lockfile lists only external modules, never the build's own
+  projects, and nothing shows the pinned scanners report a sibling Maven reactor module, so every
+  pom.xml and Gradle advisory stays with the advisor under every scanner. Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
   Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
   by one advisor: the adversarial backup round is summoned only for primary-CONFIRMED findings in
