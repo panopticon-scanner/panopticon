@@ -240,6 +240,8 @@ CERTIFIED, LETTER = "3.certified", "3.letter"
 JSON_SAYS, JSON_COUNTS = "5.json.says", "5.json.counts"
 TERMINAL_SAYS, TERMINAL_NAMES = "5.terminal.says", "5.terminal.names"
 HTML_SAYS, HTML_NAMES = "5.html.says", "5.html.names"
+# #3677: beside naming the kind of work, the HTML names each review cell that went unanswered.
+HTML_CELLS = "5.html.cells"
 
 def no_silent_loss(control, outcome):
     """1. Every tool finding ingested, and every agent claim a cell persisted, is in the
@@ -406,7 +408,16 @@ def shortfall_is_disclosed(control, outcome):
             elif _unnamed(text, [phase]):
                 wrong.append((names, phase, "%s does not name the undone %s work beside NOT "
                               "CERTIFIED (it says %r)" % (where, phase, text[:120])))
+    unnamed = [cell for cell in _cells(outcome.unanswered_in(fh.REVIEW)) if cell not in page]
+    if unnamed and "NOT CERTIFIED" in page:
+        wrong.append((HTML_CELLS, fh.REVIEW, "HTML does not name the unanswered review cell(s) "
+                      "%s beside NOT CERTIFIED (it says %r)" % (", ".join(unnamed), page[:160])))
     return wrong
+
+
+def _cells(entries):
+    """Review entries as the cells a reader is told about: `review-app-COD` -> `app/COD`."""
+    return sorted("/".join(entry.split("-")[1:]) for entry in entries)
 
 
 INVARIANTS = (no_silent_loss, counts_reconcile, no_false_certification, gate_fails_closed,
@@ -441,12 +452,6 @@ def expected_status(plan):
 
 # --- what is known to fail today ---------------------------------------------------------
 
-def _some_cells_answered(outcome):
-    """With every cell gone the report says "no review cell answered" on every surface."""
-    return len(outcome.unanswered_in(fh.REVIEW)) < sum(
-        1 for e in set(outcome.launched) if fh.phase_of(e) == fh.REVIEW)
-
-
 @dataclasses.dataclass(frozen=True)
 class Gap:
     """One check known not to hold for one kind of undone work, and the issue that owns it.
@@ -457,12 +462,11 @@ class Gap:
     when: object = None       # outcome -> bool: the runs this gap shows in; None means all
 
 
-#: #3677: the HTML report does not name an exhausted review cell; the terminal does.
 KNOWN_GAPS = (
     # #3641 and #3667's rows are closed by #3667's shared `grading.grade_shortfalls` rule:
     # unanswered verify and tool advisors hold the letter back and are named on every surface.
     # #3676's rows are closed by `meta.coverage.backups` and its `grade_shortfalls` reasons.
-    Gap("#3677", fh.REVIEW, HTML_NAMES, _some_cells_answered),
+    # #3677's row is closed: the HTML report names each review cell that returned no answer.
 )
 
 
@@ -501,7 +505,7 @@ def test_the_known_gap_table_can_neither_hide_a_problem_nor_outlive_its_fix():
     assert triage([], []) == ([], [])
     # Every row names a real check and a phase that can leave work undone.
     checks = {LOSS, COUNTS, GATE, CERTIFIED, LETTER, JSON_SAYS, JSON_COUNTS, TERMINAL_SAYS,
-              TERMINAL_NAMES, HTML_SAYS, HTML_NAMES}
+              TERMINAL_NAMES, HTML_SAYS, HTML_NAMES, HTML_CELLS}
     for row in KNOWN_GAPS:
         assert row.check in checks and row.phase in fh.PHASES and row.issue.startswith("#")
     assert len({(row.phase, row.check, row.when) for row in KNOWN_GAPS}) == len(KNOWN_GAPS)
