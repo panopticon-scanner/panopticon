@@ -1337,6 +1337,87 @@ class TestCoverageHonesty(unittest.TestCase):
         self.assertIn("tools manifest unreadable", out)
         self.assertIn("tools-manifest.json is unreadable", out)
 
+    # --- #3677: the review cells that returned no answer are named ----------------------
+
+    def _uncertified(self, missing_floor, **summary):
+        report = self._report(gate="INCONCLUSIVE", coverage_certified=False, **summary)
+        report["meta"]["coverage"] = {"cells": {"missing_floor": missing_floor}}
+        return report
+
+    def _banner(self, report):
+        banner, = [node for node in _nodes(_parse(hr.render(report)), "div")
+                   if node["attrs"].get("class") == "not-certified"]
+        return _text(banner)
+
+    def test_one_unreviewed_cell_is_named_beside_not_certified(self):
+        self.assertEqual(
+            "NOT CERTIFIED \u2014 gate-relevant coverage did not complete; "
+            "review cell with no answer: 1 (app/COD)",
+            self._banner(self._uncertified([["app", "COD"]])))
+
+    def test_every_unreviewed_cell_is_named_once_in_a_fixed_order(self):
+        banner = self._banner(self._uncertified(
+            [["lib", "ARC"], ["app", "SEC"], ["app", "COD"], ["lib", "ARC"]]))
+        self.assertTrue(banner.endswith(
+            "; review cells with no answer: 3 (app/COD, app/SEC, lib/ARC)"), banner)
+
+    def test_the_cells_stand_beside_the_runs_own_note_not_in_place_of_it(self):
+        banner = self._banner(self._uncertified(
+            [["app", "COD"]], coverage_note="tool layer incomplete: semgrep absent"))
+        self.assertEqual("NOT CERTIFIED \u2014 tool layer incomplete: semgrep absent; "
+                         "review cell with no answer: 1 (app/COD)", banner)
+
+    def test_with_no_unreviewed_cell_the_banner_says_what_it_always_did(self):
+        plain = "NOT CERTIFIED \u2014 gate-relevant coverage did not complete"
+        self.assertEqual(plain, self._banner(self._report(coverage_certified=False)))
+        self.assertEqual(plain, self._banner(self._uncertified([])))
+        self.assertEqual("", hr.unreviewed_cells_text({"coverage": {}}))
+        # A certified report has no banner to put them in.
+        certified = self._report()
+        certified["meta"]["coverage"] = {"cells": {"missing_floor": [["app", "COD"]]}}
+        self.assertNotIn("with no answer", hr.render(certified))
+
+    def test_a_long_list_is_cut_and_says_by_how_many(self):
+        cells = [["g%02d" % n, "COD"] for n in range(hr.CELLS_NAMED_MAX + 5)]
+        banner = self._banner(self._uncertified(cells))
+        self.assertIn("review cells with no answer: %d (g00/COD, " % len(cells), banner)
+        self.assertIn("g%02d/COD, and 5 more)" % (hr.CELLS_NAMED_MAX - 1), banner)
+        self.assertNotIn("g%02d/COD" % hr.CELLS_NAMED_MAX, banner)
+        # Exactly the limit is listed whole.
+        whole = self._banner(self._uncertified(cells[:hr.CELLS_NAMED_MAX]))
+        self.assertNotIn("more", whole)
+        self.assertIn("g%02d/COD)" % (hr.CELLS_NAMED_MAX - 1), whole)
+
+    def test_a_cells_name_is_the_targets_text_and_is_rendered_inert(self):
+        hostile = "<script>alert(1)</script>"
+        out = hr.render(self._uncertified([[hostile, "COD"], ["two\nlines\x1b[31m", "SEC"],
+                                           ["n" * 500, "ARC"]]))
+        self.assertNotIn(hostile, out)
+        self.assertIn(html.escape(hostile) + "/COD", out)
+        banner = self._banner(self._uncertified([["two\nlines\x1b[31m", "SEC"], ["n" * 500, "ARC"]]))
+        self.assertNotIn("\n", banner)
+        self.assertNotIn("\x1b", banner)
+        self.assertNotIn("n" * (hr.CELL_NAME_MAX + 1), banner)
+        self.assertIn("review cells with no answer: 2 (", banner)
+
+    def test_a_report_that_states_its_cells_in_another_shape_names_none(self):
+        plain = "NOT CERTIFIED \u2014 gate-relevant coverage did not complete"
+        for missing in (None, "app/COD", 7, {"app": "COD"}, [["app"]], [["app", "COD", "x"]],
+                        [["app", 7]], [["", "COD"]], [["app", ""]], ["app", "COD"], [None],
+                        [[["app"], "COD"]]):
+            with self.subTest(missing=missing):
+                self.assertEqual(plain, self._banner(self._uncertified(missing)))
+        for meta in (None, [], {"coverage": None}, {"coverage": []}, {"coverage": {"cells": []}},
+                     {"coverage": {"cells": "x"}}):
+            with self.subTest(meta=meta):
+                self.assertEqual([], hr.unreviewed_cells(meta))
+        # One well-formed pair among malformed ones is still named.
+        self.assertEqual([("app", "COD")],
+                         hr.unreviewed_cells({"coverage": {"cells": {"missing_floor": [
+                             ["app", "COD"], ["x"], 3, ("lib",)]}}}))
+        self.assertEqual([("lib", "ARC")], hr.unreviewed_cells(
+            {"coverage": {"cells": {"missing_floor": [("lib", "ARC")]}}}))
+
     def test_grade_none_never_renders_literal_none(self):
         out = hr.render(self._report(overall_grade=None, coverage_certified=False))
         self.assertNotIn("Grade: None", out)

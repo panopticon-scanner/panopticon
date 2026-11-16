@@ -19,6 +19,14 @@
     for an id in that list. A record without one (a run started before this) reads
     `unanswered`, with "(1 scope not recorded)" beside it; `--reset` starts a run that records it.
 
+- **The HTML report names each review cell that returned no answer (#3677).** With one review
+  cell exhausted, the terminal said `panels COD 1/2` and the JSON listed the cell under
+  `meta.coverage.cells.missing_floor`, but the HTML header said only "gate-relevant coverage
+  did not complete". Its NOT CERTIFIED line now ends `review cell with no answer: 1 (app/COD)`:
+  the count, then each cell as `group/domain`, at most twelve named and the rest counted. The
+  fault-injection harness's known-gap row for this is removed, and the harness now checks that
+  the HTML names every unanswered review cell exactly.
+
 - **Fixed: a tracked-in-git check no longer depends on how the path is spelled (#3684).** A git
   pathspec is case-sensitive whatever the filesystem is. On one that ignores case (macOS by
   default), a committed `.Panopticon/` is the directory a run reads as `.panopticon/`, and git,
