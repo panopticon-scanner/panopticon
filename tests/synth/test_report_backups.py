@@ -11,6 +11,7 @@ import copy
 import json
 import os
 import tempfile
+import types
 import unittest
 
 import jsonschema
@@ -24,7 +25,7 @@ import scripts.synth.plan as plan_mod
 import scripts.synth.render as render_mod
 import scripts.synth.report as report_mod
 import scripts.synthesize as synthesize
-from tests.synth.helpers import _target_with_files
+from tests.synth.helpers import _agentic, _target_with_files
 
 SCHEMA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), "skill", "reference", "report-schema.json")
@@ -248,10 +249,8 @@ class TestUnansweredBackupsHoldTheLetterBack(unittest.TestCase):
         # #3674 review: the verify-advisor reason is `unanswered_gate` less the tool
         # ones. A finding whose PRIMARY answered is matched, so an unanswered backup on
         # it never reaches `unanswered_gate`: one reason, never two.
-        import scripts.evidence as evidence_mod2
-        from tests.synth.helpers import _agentic
         finding = _agentic(sev="CRITICAL", location={"file": "a.py", "line_start": 1})
-        verdicts = {evidence_mod2.finding_fingerprint(finding): {
+        verdicts = {evidence_mod.finding_fingerprint(finding): {
             "finding_id": finding["id"], "verdict": "CONFIRMED", "reasoning": "v"}}
         with _target_with_files(GROUPS, lines=5000) as tgt:
             r = report_mod.build_report(report_mod.ReportInputs(
@@ -313,7 +312,6 @@ class TestUnansweredBackupsHoldTheLetterBack(unittest.TestCase):
 
 class TestSynthesizeReadsTheRunRecord(_RunDir):
     def test_the_finding_set_carries_the_loader_stamps(self):
-        import types
         self.bundle("g1", "SEC", [_VERDICT])
         fs = findings_mod.FindingSet.load(types.SimpleNamespace(verdicts_dir=self.verdicts),
                                           [], "standard", RUN_ID, prepared=([], None, {}))
@@ -375,6 +373,34 @@ class TestSynthesizeBindsBackupsToThisRun(_RunDir):
 
     def test_with_no_run_to_bind_to_no_backup_is_answered(self):
         self.assertEqual(1, self._report(bundle_run_id=RUN_ID)["unanswered"])
+
+    def test_a_queue_and_a_driver_run_id_that_disagree_bind_to_nothing(self):
+        # #3679 review R2-1: a stale queue (OLD) beside a new run (--run-id NEW) must
+        # not let OLD's bundle certify, and NEW's does not answer either.
+        for bundle_run_id in ("old-run", RUN_ID):
+            with self.subTest(bundle=bundle_run_id):
+                for name in os.listdir(self.run_dir):
+                    if name.endswith(".json"):
+                        os.remove(os.path.join(self.run_dir, name))
+                for name in os.listdir(self.verdicts):
+                    os.remove(os.path.join(self.verdicts, name))
+                self.assertEqual(1, self._report(bundle_run_id=bundle_run_id, run_id=RUN_ID,
+                                                 queue_run_id="old-run")["unanswered"])
+
+    def test_the_binding_rule_itself(self):
+        rule = synthesize._backup_run_id
+        self.assertEqual("a", rule("a", None))
+        self.assertEqual("a", rule(None, "a"))
+        self.assertEqual("a", rule("a", "a"))
+        self.assertIsNone(rule("a", "b"))
+        # The driver passes "" when its manifest has no run id: that is no run.
+        for queue, driver in (("", ""), (None, ""), ("", None), (None, None)):
+            with self.subTest(queue=queue, driver=driver):
+                self.assertIsNone(rule(queue, driver))
+
+    def test_a_queue_and_a_driver_run_id_that_agree_bind(self):
+        self.assertEqual(1, self._report(bundle_run_id=RUN_ID, run_id=RUN_ID,
+                                         queue_run_id=RUN_ID)["answered"])
 
 
 if __name__ == "__main__":
