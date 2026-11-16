@@ -1178,6 +1178,14 @@ class TestNpmFirstPartyAdvisory(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIsNone(self._origin(NPM_MEMBER, path=path))
 
+    def test_a_lock_resolving_to_another_name_is_refused(self):
+        # #3686 review F1, which lives in the shared lock-path check: a package-lock.json
+        # symlinked to a shrinkwrap (or any other name) is not read.
+        _npm_tree(self.root, lock_name="npm-shrinkwrap.json")
+        os.symlink("npm-shrinkwrap.json", os.path.join(self.root, "package-lock.json"))
+        self.assertIsNone(self._origin(NPM_MEMBER))
+        self.assertEqual("first_party", self._origin(NPM_MEMBER, path="npm-shrinkwrap.json"))
+
     def test_npm_shrinkwrap_is_read_the_same_way(self):
         _npm_tree(self.root, lock_name="npm-shrinkwrap.json")
         self.assertEqual("first_party", self._origin(NPM_MEMBER, path="npm-shrinkwrap.json"))
@@ -1395,6 +1403,10 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
         "classifier, padded": 'classifiers = [" Private :: Do Not Upload "]\n',
         "poetry package-mode": '\n[tool.poetry]\npackage-mode = false\n',
         "uv package": '\n[tool.uv]\npackage = false\n',
+        # #3686 review: PyPI refuses every `Private ::` classifier, and PDM's
+        # `distribution = false` is its `package-mode = false`.
+        "another Private classifier": 'classifiers = ["Private :: Internal Only"]\n',
+        "pdm distribution": '\n[tool.pdm]\ndistribution = false\n',
     }
 
     def test_an_unpublishable_review_root_is_still_first_party(self):
@@ -1415,7 +1427,12 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
         self.assertIsNone(self._origin(PY_MEMBER))
         # Explicitly publishable flags change nothing.
         _py_tree(self.root, member=_pyproject(
-            *PY_MEMBER, '\n[tool.poetry]\npackage-mode = true\n[tool.uv]\npackage = true\n'))
+            *PY_MEMBER, '\n[tool.poetry]\npackage-mode = true\n[tool.uv]\npackage = true\n'
+            '[tool.pdm]\ndistribution = true\n'))
+        self.assertEqual("first_party", self._origin(PY_MEMBER))
+        # `Private ::` is a prefix, not a substring.
+        _py_tree(self.root, member=_pyproject(
+            *PY_MEMBER, 'classifiers = ["Topic :: Private :: X", "Private::Tight"]\n'))
         self.assertEqual("first_party", self._origin(PY_MEMBER))
 
     def test_the_root_exemption_belongs_to_the_review_root_only(self):
@@ -1489,6 +1506,8 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
                        _pyproject(*PY_MEMBER, '\n[tool.uv]\npackage = 0\n'),
                        _pyproject(*PY_MEMBER, '[tool]\npoetry = 1\n'),
                        _pyproject(*PY_MEMBER, '[tool]\nuv = 1\n'),
+                       _pyproject(*PY_MEMBER, '[tool]\npdm = 1\n'),
+                       _pyproject(*PY_MEMBER, '\n[tool.pdm]\ndistribution = "no"\n'),
                        '[project]\nname = 1\nversion = "1.2.0"\n',
                        '[project]\nname = "acme-lib"\nversion = ""\n',
                        '[build-system]\nrequires = []\n',
@@ -1517,6 +1536,85 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
                 _py_tree(self.root, lock=_uv_lock(extra=_uv_entry(*PY_MEMBER, source)))
                 self.assertIsNone(self._origin(PY_MEMBER))
                 self.assertEqual("first_party", self._origin(PY_ROOT))
+
+    def test_a_pep_440_equal_non_local_spelling_is_ambiguous(self):
+        # #3686 review: confirmation stays an exact match, but a registry copy spelled
+        # differently for the same release still makes the identity ambiguous.
+        local = _uv_entry(PY_MEMBER[0], "1.2.0rc1", '{ editable = "packages/lib" }')
+        for registry, expected in (("1.2.0-rc1", None), ("1.2rc1", None),
+                                   ("v1.2.0.RC1", None), ("0!1.2.0c1", None),
+                                   ("1.2.0rc2", "first_party"), ("1.2.0", "first_party"),
+                                   ("1.2.0rc1+local", "first_party")):
+            with self.subTest(registry=registry):
+                _py_tree(self.root, member=_pyproject(PY_MEMBER[0], "1.2.0rc1"),
+                         lock=_uv_lock(member=None, extra=local + _uv_entry(
+                             PY_MEMBER[0], registry, _UV_REGISTRY)))
+                self.assertEqual(expected, self._origin((PY_MEMBER[0], "1.2.0rc1")))
+        # An advisory naming another spelling of a proved local release is not confirmed.
+        _py_tree(self.root, member=_pyproject(PY_MEMBER[0], "1.2.0rc1"),
+                 lock=_uv_lock(member=None, extra=local))
+        self.assertEqual("first_party", self._origin((PY_MEMBER[0], "1.2.0rc1")))
+        self.assertIsNone(self._origin((PY_MEMBER[0], "1.2.0-rc1")))
+
+    def test_the_pep_440_key_agrees_only_on_equal_releases(self):
+        key = first_party_advisory._pep440_key
+        for a, b in (("1.0", "1.0.0"), ("1.0a1", "1.0.alpha1"), ("1.0b2", "1.0-beta.2"),
+                     ("1.0rc1", "1.0c1"), ("1.0rc1", "1.0pre1"), ("1.0rc1", "1.0preview1"),
+                     ("1.0-1", "1.0.post1"), ("1.0.post1", "1.0r1"), ("1.0.post1", "1.0rev1"),
+                     ("1.0.dev", "1.0dev0"), ("1.0a", "1.0a0"), ("1.0.post", "1.0post0"),
+                     ("V1.0", " 1.0 "), ("0!1.0", "1.0"), ("1.0+Ubuntu.1", "1.0+ubuntu-1"),
+                     ("1.0+1", "1.0+01"), ("not a version", " NOT A VERSION")):
+            with self.subTest(equal=(a, b)):
+                self.assertEqual(key(a), key(b))
+        for a, b in (("1.0", "1.0.post0"), ("1.0a1", "1.0b1"), ("1.0", "1.0.dev0"),
+                     ("1.0", "1.0+local"), ("1!1.0", "1.0"), ("1.0rc1", "1.0rc2"),
+                     ("1.0", "1.1"), ("1.0.post1", "1.0.post2"), ("1.0.dev1", "1.0.dev2"),
+                     ("1.0+a", "1.0+b"), ("1.0-1", "1.0-2")):
+            with self.subTest(different=(a, b)):
+                self.assertNotEqual(key(a), key(b))
+
+    def test_a_lock_symlinked_to_another_format_is_refused(self):
+        # #3686 review F1: the parser follows the resolved name, so a lock must resolve
+        # to a file of its own name. P2: poetry.lock -> pdm.lock, where PDM's `path`
+        # would read a PyPI package as local.
+        _write_text(os.path.join(self.root, "vend", "pyproject.toml"),
+                    _pyproject(*PY_REGISTRY))
+        _write_text(os.path.join(self.root, "pdm.lock"),
+                    '[[package]]\nname = "requests"\nversion = "2.0.0"\npath = "./vend"\n')
+        os.symlink("pdm.lock", os.path.join(self.root, "poetry.lock"))
+        cache = first_party_advisory.IngestCache()
+        self.assertIsNone(self._origin(PY_REGISTRY, path="poetry.lock", cache=cache))
+        # P10: a verdict cached for the real pdm.lock is never served to the symlink.
+        self.assertEqual("first_party", self._origin(PY_REGISTRY, path="pdm.lock",
+                                                     cache=cache))
+        self.assertIsNone(self._origin(PY_REGISTRY, path="poetry.lock", cache=cache))
+
+    def test_a_uv_lock_symlinked_to_pdm_or_cargo_is_refused(self):
+        # P1: uv.lock -> pdm.lock, where the PDM parser cannot see the registry source.
+        _py_tree(self.root, lock_name="pdm.lock", lock=(
+            '[[package]]\nname = "acme-lib"\nversion = "1.2.0"\npath = "./packages/lib"\n'
+            'source = { registry = "https://pypi.org/simple" }\n'))
+        os.symlink("pdm.lock", os.path.join(self.root, "uv.lock"))
+        self.assertIsNone(self._origin(PY_MEMBER))
+        # uv.lock -> Cargo.lock would reach the Cargo branch.
+        _write_lock(self.root)
+        _write_manifest(self.root)
+        os.remove(os.path.join(self.root, "uv.lock"))
+        os.symlink("Cargo.lock", os.path.join(self.root, "uv.lock"))
+        self.assertIsNone(self._origin((WORKSPACE_NAME, WORKSPACE_VERSION)))
+        self.assertEqual("first_party", self._origin((WORKSPACE_NAME, WORKSPACE_VERSION),
+                                                     path="Cargo.lock"))
+
+    def test_a_symlinked_python_lock_is_never_the_review_roots_own(self):
+        # Same name: it resolves into another directory, which is not the review root.
+        _py_tree(self.root, lock_name=os.path.join("locks", "uv.lock"))
+        os.symlink(os.path.join("locks", "uv.lock"), os.path.join(self.root, "uv.lock"))
+        self.assertIsNone(self._origin(PY_MEMBER))
+        # Root directory: it resolves to another name.
+        _py_tree(self.root, lock_name="real.lock")
+        os.remove(os.path.join(self.root, "uv.lock"))
+        os.symlink("real.lock", os.path.join(self.root, "uv.lock"))
+        self.assertIsNone(self._origin(PY_MEMBER))
 
     def test_a_directory_source_is_local_too(self):
         _py_tree(self.root, lock=_uv_lock(member='{ directory = "packages/lib" }'))
@@ -1576,6 +1674,7 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
                 extra=_uv_entry("other", "1", '{ registry = "r", editable = "x" }')),
             "unknown source kind": _uv_lock(extra=_uv_entry("other", "1", '{ svn = "x" }')),
             "source not a table": _uv_lock(extra=_uv_entry("other", "1", '"pypi"')),
+            "source a list": _uv_lock(extra=_uv_entry("other", "1", '["editable", "."]')),
             "empty local path": _uv_lock(extra=_uv_entry("other", "1", '{ editable = "" }')),
             "non-string local path": _uv_lock(extra=_uv_entry("other", "1",
                                                               '{ directory = 1 }')),

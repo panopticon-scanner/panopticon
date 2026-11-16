@@ -18,11 +18,11 @@ Python (#3623): a uv.lock, poetry.lock or pdm.lock records local-path packages
 source, a PDM ``path``). An exact match under PEP 503 names against only those
 entries is first-party when the package's realpath is inside the review root and
 its own pyproject.toml proves the same name and static version and is
-publishable: the ``Private :: Do Not Upload`` classifier, Poetry's
-``package-mode = false``, uv's ``package = false`` and a uv ``virtual`` source
-are not, except for the review root itself. A dynamic version fails closed.
-Pipfile.lock and requirements.txt carry no versioned local identity and stay with
-the advisor.
+publishable: a ``Private ::`` classifier, Poetry's ``package-mode = false``,
+uv's ``package = false``, PDM's ``distribution = false`` and a uv ``virtual``
+source are not, except for the review root itself. A dynamic version fails closed,
+and so does a PEP 440-equal non-local spelling of the same release. Pipfile.lock
+and requirements.txt carry no versioned local identity and stay with the advisor.
 
 The claim then changes from "a third-party dependency is used" to "this project
 version is affected" before the advisor queue is built. Ambiguity and unreadable
@@ -57,7 +57,8 @@ NPM_INSTALLED_VERSION_TOOLS = frozenset({"osv-scanner", "trivy"})
 # the lock, so it never classifies -- like npm-audit.
 PYTHON_LOCKS = ("uv.lock", "poetry.lock", "pdm.lock")
 MAX_PYTHON_LOCK_BYTES = 16 * 1024 * 1024
-PYTHON_PRIVATE_CLASSIFIER = "Private :: Do Not Upload"
+# PyPI refuses every `Private ::` classifier (#3686 review), not only Do Not Upload.
+PYTHON_PRIVATE_CLASSIFIER_PREFIX = "Private ::"
 _PEP503_SEPARATORS = re.compile(r"[-_.]+")
 _TRIVY_PACKAGE = re.compile(
     r"(?:^|\s)Package:\s*(\S+)\s+Installed Version:\s*(\S+)(?:\s|$)")
@@ -104,6 +105,11 @@ def _lock_path(target_root, finding, names):
         return None
     root = target_root
     candidate = os.path.realpath(os.path.join(root, *rel.split("/")))
+    # #3686 review: the format, and the origin cache, follow the realpath's name. A
+    # `poetry.lock` symlinked to a `pdm.lock` (or a `Cargo.lock`) would be parsed as a
+    # format no scanner read it as, so the resolved name must be the reported one.
+    if os.path.basename(candidate) != os.path.basename(rel):
+        return None
     try:
         if os.path.commonpath((root, candidate)) != root:
             return None
@@ -580,6 +586,41 @@ def _pep503(name):
     return _PEP503_SEPARATORS.sub("-", name).lower()
 
 
+_PEP440 = re.compile(r"""
+    ^\s*v?
+    (?:(?P<epoch>[0-9]+)!)?
+    (?P<release>[0-9]+(?:\.[0-9]+)*)
+    (?P<pre>[-_.]?(?P<pre_l>alpha|a|beta|b|preview|pre|c|rc)[-_.]?(?P<pre_n>[0-9]+)?)?
+    (?P<post>-(?P<post_n1>[0-9]+)|[-_.]?(?P<post_l>post|rev|r)[-_.]?(?P<post_n2>[0-9]+)?)?
+    (?P<dev>[-_.]?dev[-_.]?(?P<dev_n>[0-9]+)?)?
+    (?:\+(?P<local>[a-z0-9]+(?:[-_.][a-z0-9]+)*))?
+    \s*$""", re.VERBOSE | re.IGNORECASE)
+_PEP440_PRE = {"alpha": "a", "beta": "b", "c": "rc", "pre": "rc", "preview": "rc"}
+
+
+def _pep440_key(version):
+    """A comparison key under which PEP 440-equal spellings agree (``1.2.0-rc1`` and
+    ``1.2rc1``). Only used to find ambiguity, never to confirm: an unparseable version
+    keys as its own lower-cased text."""
+    match = _PEP440.match(version)
+    if match is None:
+        return version.strip().lower()
+    release = [int(part) for part in match["release"].split(".")]
+    while len(release) > 1 and release[-1] == 0:
+        release.pop()
+    pre = None
+    if match["pre"]:
+        label = match["pre_l"].lower()
+        pre = (_PEP440_PRE.get(label, label), int(match["pre_n"] or 0))
+    post = int(match["post_n1"] or match["post_n2"] or 0) if match["post"] else None
+    dev = int(match["dev_n"] or 0) if match["dev"] else None
+    local = None
+    if match["local"]:
+        local = tuple(int(part) if part.isdigit() else part
+                      for part in re.split(r"[-_.]", match["local"].lower()))
+    return (int(match["epoch"] or 0), tuple(release), pre, post, dev, local)
+
+
 def _local_path(value):
     """A lock's relative local path, else None; a non-string or empty path raises."""
     if not isinstance(value, str) or not value:
@@ -650,9 +691,9 @@ def _python_manifest_fact(package_dir, target_root, cache: IngestCache, *, virtu
     """``((name, version), publishable)`` from one in-tree pyproject.toml, else None.
 
     ``[project]`` comes first; Poetry's legacy ``[tool.poetry]`` only without it. A
-    dynamic or missing version is None (#3623 ruling: fail closed). The private
-    classifier, ``package-mode = false``, ``[tool.uv] package = false`` and a uv
-    virtual source are unpublishable, except for the review root itself (#3623
+    dynamic or missing version is None (#3623 ruling: fail closed). A ``Private ::``
+    classifier, ``package-mode = false``, ``[tool.uv] package = false``,
+    ``[tool.pdm] distribution = false`` and a uv virtual source are unpublishable, except for the review root itself (#3623
     ruling, as npm's ``private``). Anything malformed is None."""
     real_dir = os.path.realpath(package_dir)
     # _read_toml confines the realpath to the review root, cache hits included.
@@ -663,9 +704,10 @@ def _python_manifest_fact(package_dir, target_root, cache: IngestCache, *, virtu
     if not isinstance(tool, dict):
         return None
     poetry, uv = tool.get("poetry", _MISSING), tool.get("uv", _MISSING)
+    pdm = tool.get("pdm", _MISSING)
     project = document.get("project", _MISSING)
     if any(table is not _MISSING and not isinstance(table, dict)
-           for table in (poetry, uv, project)):
+           for table in (poetry, uv, pdm, project)):
         return None
     if project is not _MISSING:
         dynamic = project.get("dynamic", [])
@@ -688,9 +730,10 @@ def _python_manifest_fact(package_dir, target_root, cache: IngestCache, *, virtu
         if (not isinstance(classifiers, list)
                 or not all(isinstance(row, str) for row in classifiers)):
             return None
-        if any(row.strip() == PYTHON_PRIVATE_CLASSIFIER for row in classifiers):
+        if any(row.strip().startswith(PYTHON_PRIVATE_CLASSIFIER_PREFIX)
+               for row in classifiers):
             publishable = False
-    for table, key in ((poetry, "package-mode"), (uv, "package")):
+    for table, key in ((poetry, "package-mode"), (uv, "package"), (pdm, "distribution")):
         flag = table.get(key, True) if table is not _MISSING else True
         if not isinstance(flag, bool):
             return None
@@ -723,6 +766,8 @@ def _python_package_origins(lock_path, target_root, cache: IngestCache):
     classify = _PYTHON_SOURCES[os.path.basename(lock_path)]
     lock_dir = os.path.dirname(lock_path)
     found: PackageOrigins = {}
+    # #3686 review: a registry `1.2.0-rc1` is the same release as a local `1.2.0rc1`.
+    loose: dict[tuple[str, object], set[str]] = {}
     local = []
     try:
         for entry in packages:
@@ -742,6 +787,7 @@ def _python_package_origins(lock_path, target_root, cache: IngestCache):
                 local.append((identity, kind, path))
             else:
                 found.setdefault(identity, set()).add(kind)
+                loose.setdefault((identity[0], _pep440_key(version)), set()).add(kind)
     except ValueError:
         return origins
     if len(local) > MAX_CARGO_MANIFESTS:
@@ -752,6 +798,9 @@ def _python_package_origins(lock_path, target_root, cache: IngestCache):
         origin = (evidence.FIRST_PARTY_PACKAGE_ORIGIN if fact == (identity, True)
                   else "unknown")
         found.setdefault(identity, set()).add(origin)
+        # Confirmation stays an exact match; a PEP 440-equal non-local spelling only
+        # makes the identity ambiguous.
+        found[identity] |= loose.get((identity[0], _pep440_key(identity[1])), set())
     origins.update(found)
     return origins
 

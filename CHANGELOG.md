@@ -10,16 +10,21 @@
   `directory` source, a PDM `path` -- whose realpath is inside the review root and whose own
   `pyproject.toml` has the same name and a static version and is publishable. `[project]` comes
   first; Poetry's legacy `[tool.poetry]` is read only without it.
-  - **Unpublishable:** the `Private :: Do Not Upload` classifier, `package-mode = false`,
-    `[tool.uv] package = false` and a uv `virtual` source. The review root itself is exempt, as
-    for npm's `private`; a member is not.
+  - **Unpublishable:** any `Private ::` classifier (PyPI refuses them all), `package-mode =
+    false`, `[tool.uv] package = false`, `[tool.pdm] distribution = false` and a uv `virtual`
+    source. The review root itself is exempt, as for npm's `private`; a member is not.
   - **Fails closed onto the advisor path:** a dynamic version, a registry / git / url / archive
-    copy of the same identity, an outside-tree package, a version mismatch, a malformed lock or
-    manifest, and an unread manifest.
+    copy of the same identity (or of a PEP 440-equal spelling of it, such as `1.2.0-rc1` beside
+    `1.2.0rc1`; confirmation itself stays an exact match), an outside-tree package, a version
+    mismatch, a malformed lock or manifest, and an unread manifest.
   - **Out of scope:** `Pipfile.lock` and `requirements.txt` (no versioned local identity), and
     pip-audit, which audits an environment rather than the lock.
 
   Every read spends #3634's shared ingest budget; fingerprints and reconcile keys are unchanged.
+  - **All ecosystems:** a lock that resolves to a file of another name (`poetry.lock` symlinked
+    to `pdm.lock`, `uv.lock` to `Cargo.lock`, `package-lock.json` to `npm-shrinkwrap.json`) is
+    no longer read. The parser and its cache follow the resolved name, so such a lock could be
+    parsed as a format no scanner read it as.
 
 - **Changed: `driver setup` writes a proposal one way, whatever order and spelling the agent
   returned it in (#3651, phase 2b).** The same matrix used to come out as a different draft each
