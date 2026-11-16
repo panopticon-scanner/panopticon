@@ -506,7 +506,14 @@ def main(argv=None):
                                     # #3676: which backups were summoned, read
                                     # against what the verdicts dir holds.
                                     verdict_unloadable=fs.verdict_unloadable,
-                                    verdict_run_id=fs.verdict_run_id,
+                                    # #3679 review F2: bind backups to THIS run. The
+                                    # driver writes no verify queue (verify_tools
+                                    # `_tool_verify_entry`), so its run id is the
+                                    # manifest's, passed as --run-id -- the id the
+                                    # controller stamps on every backup bundle. With
+                                    # neither, no backup can be shown answered.
+                                    verdict_run_id=(fs.verdict_run_id
+                                                    or getattr(args, "run_id", None) or None),
                                     bundle_files=fs.bundle_files,
                                     # #2962: #2964's check reads the names
                                     # unspelled; every other reader keeps `gj`.

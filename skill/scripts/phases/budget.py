@@ -63,19 +63,28 @@ def bump(path, key, what):
     return bump_many(path, [key], what)[key]
 
 
-def bump_many(path, keys, what):
+def bump_many(path, keys, what, record=None):
     """Charge one attempt against each of `keys` in ONE write, returning
     {key: new count}. A key listed twice is charged twice: review's fan-out
     counts one charge per dispatched ENTRY, so two entries for one cell are two
     attempts. (`give_back` is the asymmetric half -- see its own note.) The
     whole document is written back, so keys this call never named keep their
-    counts. An empty batch charges nothing and writes nothing."""
+    counts. An empty batch charges nothing and writes nothing.
+
+    `record` ({key: count}) SETS keys in the same write: a fact recorded at
+    dispatch beside the charge, such as a backup cell's part count (#3679). A
+    present value that is not a count still refuses, as for a charge."""
     if not keys:
         return {}
     data = runio._load_state_json(path, what)
     charged = {}
     for key in keys:
         charged[key] = data[key] = _count_in(data, path, key, what) + 1
+    for key, value in (record or {}).items():
+        _count_in(data, path, key, what)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError("a recorded value must be a count: %r" % (value,))
+        data[key] = value
     runio._write_json(path, data)
     return charged
 

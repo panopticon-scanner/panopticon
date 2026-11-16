@@ -363,7 +363,12 @@ def _json_counts(outcome, phase):
         return coverage["tool_axis"]["unanswered"] >= len(undone)
     if phase == fh.ADVISOR:
         return (coverage["verdicts"]["unanswered"] or 0) >= 1
-    return False                                 # backup: no field counts it
+    if phase == fh.BACKUP:
+        # #3676: `meta.coverage.backups` counts the summoned backups that never
+        # answered (or came back unloadable); #3679 review F3 reads it here.
+        backups = coverage.get("backups") or {}
+        return (backups.get("unanswered") or 0) + (backups.get("unloadable") or 0) >= 1
+    return False
 
 
 def _not_certified_text(outcome):

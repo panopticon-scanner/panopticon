@@ -23,6 +23,7 @@ import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.render as render_mod
 import scripts.synth.report as report_mod
+import scripts.synthesize as synthesize
 from tests.synth.helpers import _target_with_files
 
 SCHEMA_PATH = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
@@ -39,8 +40,11 @@ class _RunDir(unittest.TestCase):
         self.verdicts = os.path.join(d.name, "verdicts")
         os.makedirs(self.verdicts)
 
-    def summon(self, *cells, count=1, extra=None):
+    def summon(self, *cells, count=1, parts=1, extra=None):
+        """Charge each cell's backup, recording `parts` beside it (None: no record)."""
         body = {"%s/%s/backup" % cell: count for cell in cells}
+        if parts is not None:
+            body.update({"%s/%s/backup/parts" % cell: parts for cell in cells})
         body.update(extra or {})
         with open(os.path.join(self.run_dir, backups_mod.ATTEMPTS_FILE), "w",
                   encoding="utf-8") as fh:
@@ -94,10 +98,67 @@ class TestBackupCoverage(_RunDir):
         self.assertEqual({"verdicts-g1-SEC-backup.json":
                           {"run_id": RUN_ID, "stage": "backup", "kept": 1}}, accepted)
 
-    def test_a_chunked_cell_answers_through_any_part(self):
-        self.summon(("g1", "SEC"))
+    def test_a_chunked_cell_is_answered_only_when_every_part_is(self):
+        # #3679 review F1: verify splits a backup scope of more than 25 claims into
+        # parts answered separately; one part answering is not the cell answering.
+        for written, expected in (((0, 1), "answered"), ((0,), "unanswered"),
+                                  ((1,), "unanswered"), ((0, 2), "unanswered"),
+                                  ((0, 1, 2), "answered")):
+            with self.subTest(written=written):
+                for name in os.listdir(self.verdicts):
+                    os.remove(os.path.join(self.verdicts, name))
+                self.summon(("g1", "SEC"), parts=3 if 2 in written else 2)
+                for part in written:
+                    self.bundle("g1", "SEC", [_VERDICT], part=part)
+                block = self.coverage()
+                self.assertEqual(1, block[expected], block)
+                if expected == "unanswered":
+                    self.assertEqual(["1 backup advisor unanswered"],
+                                     backups_mod.shortfall_reasons(block))
+
+    def test_a_part_gap_or_a_stale_part_leaves_the_cell_unanswered(self):
+        self.summon(("g1", "SEC"), parts=3)
+        self.bundle("g1", "SEC", [_VERDICT], part=0)
+        self.bundle("g1", "SEC", [_VERDICT], part=2)
+        self.assertEqual(1, self.coverage()["unanswered"])          # part 1 is the gap
+        self.bundle("g1", "SEC", [_VERDICT], part=1, run_id="old-run")
+        self.assertEqual(1, self.coverage()["unanswered"])          # part 1 is stale
         self.bundle("g1", "SEC", [_VERDICT], part=1)
         self.assertEqual(1, self.coverage()["answered"])
+        # A part past the recorded count answers nothing.
+        self.summon(("g2", "SEC"), parts=1)
+        self.bundle("g2", "SEC", [_VERDICT], part=1)
+        self.assertEqual({"summoned": 1, "answered": 0, "unanswered": 1, "unloadable": 0,
+                          "record_unreadable": False}, self.coverage())
+
+    def test_no_valid_part_count_is_unanswered(self):
+        for parts in (None, 0, -1, True, "1", 1.0):
+            with self.subTest(parts=parts):
+                if parts is None:
+                    self.summon(("g1", "SEC"), parts=None)
+                else:
+                    self.summon(("g1", "SEC"), parts=parts)
+                self.bundle("g1", "SEC", [_VERDICT])
+                self.assertEqual({"summoned": 1, "answered": 0, "unanswered": 1,
+                                  "unloadable": 0, "record_unreadable": False},
+                                 self.coverage())
+
+    def test_without_a_verify_queue_no_backup_is_answered(self):
+        # #3679 review F2: a backup cannot be summoned without a queue, so with no
+        # run_id to bind to, another run's bundle (or this one's) answers nothing.
+        self.summon(("g1", "SEC"))
+        self.bundle("g1", "SEC", [_VERDICT], run_id="old-run")
+        accepted, unloadable = self.loaded()
+        for run_id in (None, RUN_ID):
+            with self.subTest(run_id=run_id):
+                self.assertEqual(1, backups_mod.coverage(self.run_dir, accepted, unloadable,
+                                                         run_id)["unanswered"])
+        self.bundle("g1", "SEC", [_VERDICT])
+        accepted, unloadable = self.loaded()
+        self.assertEqual(1, backups_mod.coverage(self.run_dir, accepted, unloadable,
+                                                 None)["unanswered"])
+        self.assertEqual(1, backups_mod.coverage(self.run_dir, accepted, unloadable,
+                                                 RUN_ID)["answered"])
 
     def test_only_charged_backup_keys_are_summoned(self):
         self.summon(("g1", "SEC"), count=0,
@@ -108,7 +169,7 @@ class TestBackupCoverage(_RunDir):
 
     def test_a_group_name_with_a_slash_keeps_its_domain(self):
         self.summon(("api/v1", "SEC"))
-        self.assertEqual([("api/v1", "SEC")], backups_mod._summoned(self.run_dir))
+        self.assertEqual([("api/v1", "SEC", 1)], backups_mod._summoned(self.run_dir))
 
     def test_an_unreadable_record_is_its_own_shortfall(self):
         for raw in ("{not json", "[1, 2]"):
@@ -129,6 +190,11 @@ class TestBackupCoverage(_RunDir):
         self.assertEqual(["1 backup advisor unanswered", "2 backup advisors unloadable"],
                          backups_mod.shortfall_reasons(
                              {"summoned": 3, "answered": 0, "unanswered": 1, "unloadable": 2}))
+        # #3679 review F4: anything but a count of at least one names nothing.
+        for bad in ("2", -1, True, 1.5, [1], None, 0):
+            with self.subTest(count=bad):
+                self.assertEqual([], backups_mod.shortfall_reasons(
+                    {"summoned": 1, "unanswered": bad, "unloadable": bad}))
 
 
 class TestTheVerifyPhaseSpellsTheSameRecord(unittest.TestCase):
@@ -138,11 +204,14 @@ class TestTheVerifyPhaseSpellsTheSameRecord(unittest.TestCase):
         self.assertEqual(verify._VERIFY_ATTEMPTS_FILE, backups_mod.ATTEMPTS_FILE)
         self.assertEqual("g1/SEC" + backups_mod.BACKUP_SUFFIX,
                          verify._verify_key("g1", "SEC", "backup"))
+        self.assertEqual(verify._verify_key("g1", "SEC", "backup") + backups_mod.PARTS_SUFFIX,
+                         verify._backup_parts_key("g1", "SEC"))
         with tempfile.TemporaryDirectory() as root:
             for part in (0, 2):
                 name = os.path.basename(verify._verify_out_file(root, "g1", "SEC", "backup", part))
                 with self.subTest(part=part):
                     self.assertEqual([name], backups_mod._cell_files([name], "g1", "SEC"))
+                    self.assertEqual(name, backups_mod._part_file("g1", "SEC", part))
 
 
 def _build(backups, lines=5000):
@@ -253,6 +322,52 @@ class TestSynthesizeReadsTheRunRecord(_RunDir):
                                         bundle_files=accepted)
         self.assertEqual({"summoned": 1, "answered": 0, "unanswered": 1, "unloadable": 0,
                           "record_unreadable": False}, plan.backups)
+
+
+class TestSynthesizeBindsBackupsToThisRun(_RunDir):
+    """#3679 review F2, through `synthesize.main`: a backup answers only when bound
+    to this run -- the verify queue's run id, else the driver's `--run-id` (the
+    driver writes no queue). With neither, a summoned backup is unanswered."""
+
+    def _report(self, *, bundle_run_id, run_id=None, queue_run_id=None):
+        findings = os.path.join(self.run_dir, "findings-g1-SEC.json")
+        with open(findings, "w", encoding="utf-8") as fh:
+            json.dump({"findings": [{
+                "domain": "SEC", "code": "SEC-A1A", "severity": "HIGH", "title": "t",
+                "description": "x", "location": {"file": "a.py", "line_start": 1},
+                "category": "authz"}]}, fh)
+        if queue_run_id is not None:
+            with open(os.path.join(self.run_dir, "verify-queue.json"), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"run_id": queue_run_id, "entries": []}, fh)
+        self.summon(("g1", "SEC"))
+        self.bundle("g1", "SEC", [_VERDICT], run_id=bundle_run_id)
+        out = os.path.join(self.run_dir, "report.json")
+        argv = ["--repo", "--run-dir", self.run_dir, "--verdicts-dir", self.verdicts,
+                "--out", out]
+        if run_id is not None:
+            argv += ["--run-id", run_id]
+        cwd = os.getcwd()
+        try:
+            os.chdir(self.run_dir)
+            synthesize.main(argv + [findings])
+        finally:
+            os.chdir(cwd)
+        with open(out, encoding="utf-8") as fh:
+            return json.load(fh)["meta"]["coverage"]["backups"]
+
+    def test_the_drivers_run_id_binds_the_backup(self):
+        self.assertEqual(1, self._report(bundle_run_id=RUN_ID, run_id=RUN_ID)["answered"])
+
+    def test_another_runs_backup_is_unanswered(self):
+        self.assertEqual(1, self._report(bundle_run_id="old-run", run_id=RUN_ID)["unanswered"])
+
+    def test_the_queue_run_id_binds_without_a_driver_run_id(self):
+        self.assertEqual(1, self._report(bundle_run_id=RUN_ID,
+                                         queue_run_id=RUN_ID)["answered"])
+
+    def test_with_no_run_to_bind_to_no_backup_is_answered(self):
+        self.assertEqual(1, self._report(bundle_run_id=RUN_ID)["unanswered"])
 
 
 if __name__ == "__main__":

@@ -6,6 +6,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import scripts.phases.runio as runio
 import scripts.phases.requests as requests
@@ -17,6 +18,7 @@ import scripts.phases.evidence_scope as evidence_scope
 
 import scripts.ocrdb as ocrdb
 import scripts.evidence as evidence
+import scripts.synth.backups as backups_mod
 
 
 class TestVerifyCreatesDir(unittest.TestCase):
@@ -581,6 +583,71 @@ class TestAnUnloadableBackupReturnIsCapped(TestBackupCellFixture):
                 fh.write("not json")
         self.assertEqual(3, dispatches)
         self.assertTrue(verify._verify_backup_done(self.root, self.manifest))
+
+
+class TestTheBackupPartCountIsRecordedAtDispatch(TestBackupCellFixture):
+    """#3679 review F1: a backup scope of more than `_CELL_CLAIMS_CAP` claims is
+    split into parts answered separately, and synth cannot infer how many there
+    were. Verify records the WHOLE cell's part count beside its charge, in the same
+    write, and synth answers the cell only when every part did."""
+
+    def _attempts(self):
+        with open(runio._pano(self.root, verify._VERIFY_ATTEMPTS_FILE),
+                  encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def _dispatch(self):
+        return verify._verify_backup_execute(self.root, self.manifest, "claude",
+                                             ocrdb.load_bundle())
+
+    def _answer(self, part):
+        runio._write_json(
+            verify._verify_out_file(self.root, "G", "SEC", "backup", part),
+            {"verdicts": [{"finding_id": f["id"], "verdict": "CONFIRMED",
+                           "reasoning": "checked"} for f in self.scope[part]],
+             "_panopticon": {"run_id": self.RUN_ID, "role": "domain_advisor",
+                             "domain": "SEC", "group": "G", "stage": "backup"}})
+
+    def test_one_part_is_recorded_beside_the_charge(self):
+        self._cell()
+        self.assertIsNotNone(self._dispatch())
+        self.assertEqual({"G/SEC/backup": 1, "G/SEC/backup/parts": 1}, self._attempts())
+
+    def test_a_chunked_cell_records_every_part_and_keeps_the_count_on_redispatch(self):
+        self._cell()
+        with mock.patch.object(verify, "_CELL_CLAIMS_CAP", 2):
+            self.scope = verify._cell_chunks(
+                verify._cell_backup_findings(self.root, self.manifest, "G", "SEC"))
+            self.assertEqual(2, len(self.scope))
+            self.assertIsNotNone(self._dispatch())
+            self.assertEqual({"G/SEC/backup": 1, "G/SEC/backup/parts": 2}, self._attempts())
+            # Part 0 answers and part 1 never comes back: the re-dispatch sends part 1
+            # alone, but the cell still has two parts.
+            self._answer(0)
+            self.assertIsNotNone(self._dispatch())
+            entries = requests.load_dispatch_request(self.root)["entries"]
+            self.assertEqual(1, len(entries))
+            self.assertEqual({"G/SEC/backup": 2, "G/SEC/backup/parts": 2}, self._attempts())
+        # The seat's probe, through the real loader: one part of two is unanswered.
+        accepted = {}
+        verdicts_dir = runio._pano(self.root, "verdicts")
+        _by_fid, unloadable = evidence.load_verdict_bundles(verdicts_dir, accepted=accepted)
+        block = backups_mod.coverage(runio._pano(self.root), accepted, unloadable,
+                                     self.RUN_ID)
+        self.assertEqual({"summoned": 1, "answered": 0, "unanswered": 1, "unloadable": 0,
+                          "record_unreadable": False}, block)
+        self._answer(1)
+        accepted = {}
+        _by_fid, unloadable = evidence.load_verdict_bundles(verdicts_dir, accepted=accepted)
+        self.assertEqual(1, backups_mod.coverage(runio._pano(self.root), accepted, unloadable,
+                                                 self.RUN_ID)["answered"])
+
+    def test_a_planted_part_count_refuses_like_a_planted_charge(self):
+        self._cell()
+        runio._write_json(runio._pano(self.root, verify._VERIFY_ATTEMPTS_FILE),
+                          {"G/SEC/backup/parts": "many"})
+        with self.assertRaises(runio.DriverError):
+            self._dispatch()
 
 
 class TestNoBackupEntryIsEverDispatchedWithAnEmptyGrant(TestBackupCellFixture):
