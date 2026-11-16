@@ -18,7 +18,14 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
   `publish = false` (only the review root itself is exempt), and a `publishConfig.registry` other
   than the public one is private-only. Only osv-scanner and Trivy are classified, because they
   report the installed version; npm-audit's `vulnerable_versions` is a range, even when it
-  happens to name a single version, so its advisories stay with the advisor. Gate-eligible.
+  happens to name a single version, so its advisories stay with the advisor. Ruby follows it too
+  (#3623): an exact match against a `PATH` source gem in the review root's own `Gemfile.lock`, where
+  every lock entry with that identity is local, the source carries no option but `remote` and its
+  realpath is inside the review root, and its one `*.gemspec` proves the name and version with plain
+  string literals (`x.name = "lit"`, `x.version = "lit"`; `Foo::VERSION` and every other form fail
+  closed). A literal `allowed_push_host` other than rubygems.org is private-only, and any other
+  mention of it fails closed; only the review root is exempt. bundler-audit and `gems.locked` stay
+  with the advisor. Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
   Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
   by one advisor: the adversarial backup round is summoned only for primary-CONFIRMED findings in
