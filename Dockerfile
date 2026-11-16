@@ -24,7 +24,7 @@ FROM ${NVD_DATA_REF} AS nvd-data
 # The split is scheduled for 5.3 -- one stage per
 # toolchain, still ONE published image, so a break in one toolchain cannot invalidate
 # the others' layers.
-FROM python:3.12-slim@sha256:2c941e860699f878900b0edc2403613c234d4b32eda3cc9fa7036991a2a63c4a
+FROM python:3.15-slim@sha256:65a65fc7b30b06cb6df4930fd4650697cb23f4c2698ab81fc87e4b031bc36928
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
