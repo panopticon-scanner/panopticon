@@ -816,6 +816,8 @@ def main(argv=None):
                 sanitized=sanitized, exclude_globs=a.exclude, cleanup_failures={},
                 language_detection_skips=language_detection_skips,
                 dependency_applicable=tools_manifest.dependency_audit_applicable(a.target),
+                dependency_unaudited=tools_manifest.dependency_audit_unaudited(
+                    a.target, effective, a.online),
                 image={"ref": tools_image.DEFAULT_IMAGE, "id": None})
         return 0
     image = dict(found, adapter_code=tools_image.adapter_code(os.path.dirname(os.path.abspath(__file__))))
@@ -830,7 +832,9 @@ def main(argv=None):
             run_id=a.run_id, excluded_dirs=venv_rows, withheld=withheld,
             sanitized=sanitized, exclude_globs=a.exclude,
             language_detection_skips=language_detection_skips, image=image, apps=apps,
-            dependency_applicable=tools_manifest.dependency_audit_applicable(a.target))
+            dependency_applicable=tools_manifest.dependency_audit_applicable(a.target),
+            dependency_unaudited=tools_manifest.dependency_audit_unaudited(
+                a.target, effective, a.online))
     print("\n".join(paths))
     return 0
 

@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **The report says why a dependency ecosystem was not audited (#3648).** A JavaScript tree with
+  `package.json` and no lockfile is counted as having dependencies, and no auditor reads it:
+  npm-audit needs `package-lock.json` or `npm-shrinkwrap.json`, and osv-scanner needs one of those
+  or `yarn.lock` or `pnpm-lock.yaml`. `--online` does not change that. The report said only "no SCA
+  tool produced output on an applicable tree". `coverage_note` now adds a fixed sentence per
+  ecosystem: "javascript not audited: no npm-shrinkwrap.json, package-lock.json, yarn.lock or
+  pnpm-lock.yaml; npm-audit and osv-scanner need one", or "python not audited: pip-audit needs
+  --online". `meta.coverage.dependency_audit.unaudited` carries the same as `{ecosystem: reason}`.
+  - The sentence is also written when another ecosystem's auditor answered and the tree certifies,
+    for example `requirements.txt` beside a `package.json` with no lockfile. Before, nothing said
+    JavaScript had gone unaudited there.
+  - Disclosure only: the gate and `coverage_certified` are computed exactly as before.
+  - `tools-manifest.json`'s `dependency_audit` gains the optional `unaudited` key. A manifest
+    written before this still loads.
+
 - **A backup advisor that answers part of its claims no longer counts as answered (#3695).** A
   backup that confirmed 1 of the 20 claims it was handed and said nothing of the other 19 was
   done for the verify phase and `answered` in the report: those 19 findings lost

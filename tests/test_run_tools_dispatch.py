@@ -142,7 +142,91 @@ class TestDefaultSelectionBranch(unittest.TestCase):
             "applicable": ["python"],
             "selected": [],
             "produced": [],
+            # #3648: and why -- pip-audit reads pyproject.toml, under --online only.
+            "unaudited": {"python": "needs_online"},
         })
+
+    def _receipt(self, files, extra=()):
+        with tempfile.TemporaryDirectory() as target:
+            for name, body in files.items():
+                with open(os.path.join(target, name), "w") as fh:
+                    fh.write(body)
+            return self._selection_for(target, extra=["--deps"] + list(extra))["dependency_audit"]
+
+    def test_a_js_repo_with_no_lockfile_records_why_nothing_audited_it(self):
+        # #3648. `package.json` makes the tree applicable, and no auditor reads it:
+        # npm-audit and osv-scanner both need a lockfile. `--online` changes nothing.
+        package = {"package.json": '{"name": "x", "dependencies": {"left-pad": "1.0.0"}}'}
+        for extra in ([], ["--online"]):
+            with self.subTest(extra=extra):
+                self.assertEqual({"applicable": ["javascript"], "selected": [], "produced": [],
+                                  "unaudited": {"javascript": "no_auditable_file"}},
+                                 self._receipt(package, extra))
+
+    def test_a_js_repo_with_a_lockfile_is_audited_and_records_no_reason(self):
+        receipt = self._receipt({"package.json": "{}", "package-lock.json": "{}"})
+        self.assertEqual((["javascript"], ["osv-scanner"], {}),
+                         (receipt["applicable"], receipt["selected"], receipt["unaudited"]))
+        receipt = self._receipt({"package.json": "{}", "package-lock.json": "{}"}, ["--online"])
+        self.assertEqual((["npm-audit", "osv-scanner"], {}),
+                         (receipt["selected"], receipt["unaudited"]))
+
+    def test_python_under_online_is_audited_and_records_no_reason(self):
+        receipt = self._receipt({"pyproject.toml": "[project]\nname = 'sample'\n"}, ["--online"])
+        self.assertEqual((["pip-audit"], {}), (receipt["selected"], receipt["unaudited"]))
+
+    def test_an_auditor_selected_for_one_ecosystem_does_not_audit_another(self):
+        # The mixed tree: osv-scanner is selected for requirements.txt, and reads
+        # nothing of the package.json beside it.
+        receipt = self._receipt({"requirements.txt": "requests==2.0.0\n", "package.json": "{}"})
+        self.assertEqual({"applicable": ["javascript", "python"], "selected": ["osv-scanner"],
+                          "produced": [], "unaudited": {"javascript": "no_auditable_file"}},
+                         receipt)
+
+    def test_the_reason_is_recorded_when_the_scan_runs_too(self):
+        # The other arm of `main`: the image is there, the scan runs (stubbed), and the
+        # manifest is written after it. Same record, and `--online` reaches it: with
+        # only semgrep asked for, pip-audit was not left out for want of --online.
+        # Both arms are asked, so `--online` is pinned on the skipped scan as well.
+        found = {"ref": rt.tools_image.DEFAULT_IMAGE, "id": "sha256:" + "0" * 64}
+        for image, extra, reason in ((found, [], "needs_online"), (found, ["--online"], "not_run"),
+                                     (False, [], "needs_online"), (False, ["--online"], "not_run")):
+            with self.subTest(image=bool(image), extra=extra), \
+                    tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(target, "pyproject.toml"), "w") as fh:
+                    fh.write("[project]\nname = 'sample'\n")
+                manifest = os.path.join(d, "manifest.json")
+                with mock.patch("scripts.run_tools.docker_available", return_value=image), \
+                        mock.patch("scripts.run_tools.run_tools", return_value=[]) as scan, \
+                        contextlib.redirect_stderr(io.StringIO()), \
+                        contextlib.redirect_stdout(io.StringIO()):
+                    rc = rt.main(["--tools", "semgrep", "--target", target,
+                                  "--out", os.path.join(d, "out"), "--manifest", manifest]
+                                 + extra)
+                self.assertEqual(0, rc)
+                self.assertEqual(1 if image else 0, scan.call_count)
+                with open(manifest, encoding="utf-8") as fh:
+                    receipt = json.load(fh)["dependency_audit"]
+                self.assertEqual({"applicable": ["python"], "selected": [], "produced": [],
+                                  "unaudited": {"python": reason}}, receipt)
+
+    def test_an_offline_auditor_left_out_by_tools_is_not_a_want_of_online(self):
+        # #3699 L2, the reviewer's case: requirements.txt, offline, and `--tools`
+        # leaves osv-scanner out. osv-scanner reads that file offline, so the reason
+        # is `not_run`, never "pip-audit needs --online".
+        with tempfile.TemporaryDirectory() as target, tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(target, "requirements.txt"), "w") as fh:
+                fh.write("requests==2.0.0\n")
+            manifest = os.path.join(d, "manifest.json")
+            with mock.patch("scripts.run_tools.docker_available", return_value=False), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(0, rt.main(["--tools", "semgrep", "--target", target,
+                                             "--out", os.path.join(d, "out"),
+                                             "--manifest", manifest]))
+            with open(manifest, encoding="utf-8") as fh:
+                receipt = json.load(fh)["dependency_audit"]
+        self.assertEqual({"applicable": ["python"], "selected": [], "produced": [],
+                          "unaudited": {"python": "not_run"}}, receipt)
 
     def test_the_default_branch_really_is_the_one_production_takes(self):
         # Pin the premise rather than trusting it: if driver ever started
