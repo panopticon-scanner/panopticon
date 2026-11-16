@@ -9,11 +9,13 @@ from unittest import mock
 from tests._test_helpers import fake_pem, pem_begin
 import scripts.phases.persist as persist
 import scripts.phases.rejected_replies as rejected_replies
+import scripts.phases.requests as requests
 import scripts.phases.review as review
 import scripts.phases.runio as runio
 import scripts.redact as redact
 import scripts.phases.verify as verify
 import scripts.ocrdb as ocrdb
+from tests.phases.test_verify import TestBackupCellFixture
 
 
 def _entry(out_file, delivery="return_json", **extra):
@@ -551,6 +553,84 @@ class TestVerifyCellCompleteness(unittest.TestCase):
                            "_panopticon": {"run_id": "RID", "group": "app",
                                            "domain": "SEC", "stage": "primary"}})
         self.assertFalse(persist.is_done(entry))
+
+
+class TestABackupReplyMustAnswerEveryScopedClaim(TestBackupCellFixture):
+    """#3695: the same rule for a backup reply. It used to be accepted once it was
+    stamped for its cell, so a backup that answered 1 of its 3 scoped claims was
+    written, read back done, and never asked again."""
+
+    def setUp(self):
+        super().setUp()
+        self._cell()
+        self.assertIsNotNone(verify._verify_backup_execute(
+            self.root, self.manifest, "claude", ocrdb.load_bundle()))
+        (self.entry,) = requests.load_dispatch_request(self.root)["entries"]
+        self.assertEqual(("verify-G-SEC-backup", "backup"),
+                         (self.entry["id"], self.entry["stage"]))
+        self.ids = [f["id"] for f in verify._cell_backup_findings(
+            self.root, self.manifest, "G", "SEC")]
+        self.assertEqual(3, len(self.ids))
+
+    def _bundle(self, ids):
+        return {"verdicts": [_advisor_verdict(i) for i in ids],
+                "_panopticon": {"run_id": self.RUN_ID, "group": "G", "domain": "SEC",
+                                "role": "domain_advisor", "stage": "backup"}}
+
+    def test_a_reply_that_leaves_a_scoped_claim_unanswered_is_refused(self):
+        for ids in ([], self.ids[:1], self.ids[:2] + ["not-in-scope"],
+                    [self.ids[0]] * 3):
+            with self.subTest(ids=ids):
+                ok, reason = persist.write_reply(self.entry, json.dumps(self._bundle(ids)))
+                self.assertFalse(ok)
+                self.assertIn("does not adjudicate every claim it was handed", reason)
+                self.assertFalse(os.path.exists(self.entry["out_file"]))
+
+    def test_a_reply_that_answers_every_scoped_claim_is_accepted_and_reads_back_done(self):
+        self.assertFalse(persist.is_done(self.entry))
+        ok, reason = persist.write_reply(
+            self.entry, json.dumps(self._bundle(list(reversed(self.ids)))))
+        self.assertTrue(ok, reason)
+        self.assertTrue(persist.is_done(self.entry))
+
+    def test_a_short_backup_bundle_on_disk_does_not_read_back_done(self):
+        # The self-write path: `write_reply` never saw this bundle.
+        runio._write_json(self.entry["out_file"], self._bundle(self.ids[:1]))
+        self.assertFalse(persist.is_done(self.entry))
+        runio._write_json(self.entry["out_file"], self._bundle(self.ids))
+        self.assertTrue(persist.is_done(self.entry))
+
+
+class TestABackupReplyIsHeldToTheBackupRoundsOwnScope(TestBackupCellFixture):
+    """The claims a backup reply must answer are the ones the backup was handed, not the
+    review cell: the primary rejected one of the three here, so two are owed."""
+
+    def test_the_two_scoped_claims_are_all_a_backup_reply_owes(self):
+        seen = []
+
+        def verdicts(fid):
+            seen.append(fid)
+            return [_advisor_verdict(fid, "REJECTED" if len(seen) == 1 else "CONFIRMED")]
+
+        cell = self._cell(verdicts_for=verdicts)
+        self.assertIsNotNone(verify._verify_backup_execute(
+            self.root, self.manifest, "claude", ocrdb.load_bundle()))
+        (entry,) = requests.load_dispatch_request(self.root)["entries"]
+        scoped = [f["id"] for f in cell[1:]]
+
+        def reply(ids):
+            return json.dumps({"verdicts": [_advisor_verdict(i) for i in ids],
+                               "_panopticon": {"run_id": self.RUN_ID, "group": "G",
+                                               "domain": "SEC", "role": "domain_advisor",
+                                               "stage": "backup"}})
+
+        # The rejected claim and one scoped claim: two verdicts, and one claim still owed.
+        ok, reason = persist.write_reply(entry, reply([cell[0]["id"], scoped[0]]))
+        self.assertFalse(ok)
+        self.assertIn("does not adjudicate every claim it was handed", reason)
+        ok, reason = persist.write_reply(entry, reply(scoped))
+        self.assertTrue(ok, reason)
+        self.assertTrue(persist.is_done(entry))
 
 
 class TestRetainRejected(unittest.TestCase):

@@ -173,6 +173,37 @@ class FixtureReplies(Replies):
         return "CONFIRMED", "verified"
 
 
+class PartialBackup(FixtureReplies):
+    """#3695: a backup advisor that answers part of what it was handed. One review cell
+    makes `CLAIMS` claims in one category, so its backup is handed all of them; the backup
+    gives a verdict on the first and says nothing of the rest, on every attempt. With
+    `whole`, it answers them all: the same target with nothing left undone."""
+    CELL = ("app", "COD")
+    CLAIMS = 3
+    SHORT = "verify-app-COD-backup"
+
+    def __init__(self, whole=False):
+        self.whole = whole
+
+    def findings(self, entry):
+        if (entry["group"], entry["domain"]) != self.CELL:
+            return super().findings(entry)
+        line, category = _CLAIM[entry["domain"]]
+        return [{"title": "%s/%s defect %d" % (self.CELL + (n,)), "severity": "CRITICAL",
+                 "domain": entry["domain"], "code": "%s-A1A" % entry["domain"],
+                 "category": category, "description": "a schema-valid test finding",
+                 "source_role": "domain_panel",
+                 "location": {"file": GROUP_FILE[entry["group"]], "line_start": line + n}}
+                for n in range(self.CLAIMS)]
+
+    def answered(self, entry, cell):
+        return cell[:1] if entry["id"] == self.SHORT and not self.whole else cell
+
+    def short(self):
+        """The entries that answer only part of what they are handed."""
+        return [] if self.whole else [self.SHORT]
+
+
 def build_target(test_case):
     root = os.path.realpath(tempfile.mkdtemp())
     test_case.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
@@ -278,6 +309,7 @@ class Outcome:
     recovered: bool = False   # the plan was lifted and the loop run again
     stalled: list = dataclasses.field(default_factory=list)   # statuses before the recovery
     stalled_report: bool = False                              # ...and whether a report existed
+    short: list = dataclasses.field(default_factory=list)     # entries that answered in part
 
     @property
     def status(self):
@@ -285,10 +317,11 @@ class Outcome:
 
     @property
     def unanswered(self):
-        """Entries the plan kept from ever answering: the undone work."""
+        """Entries with undone work: the ones the plan kept from ever answering, and the
+        ones that answered only part of what they were handed (#3695)."""
         if self.plan is None or not self.plan.persistent or self.recovered:
-            return []
-        return self.plan.selected(self.launched)
+            return sorted(self.short)
+        return sorted(set(self.plan.selected(self.launched)) | set(self.short))
 
     def unanswered_in(self, *phases):
         return [e for e in self.unanswered if phase_of(e) in phases]
@@ -352,12 +385,14 @@ def _loop_once(root, runner, split_bytes):
     return status, err.getvalue()
 
 
-def drive(test_case, plan=None, recover=False, split_bytes=None):
+def drive(test_case, plan=None, recover=False, split_bytes=None, replies=None):
     """One case: a fresh target, reviewed under `plan` until the loop stops for a reason other
     than a pause (or `MAX_INVOCATIONS` pauses). With `recover`, the host then heals and the
-    loop is run again, as an operator would after an outage."""
+    loop is run again, as an operator would after an outage. `replies` is what the agents
+    say, when it is not the fixture's usual answers."""
     root = build_target(test_case)
-    runner = FakeRunner(faults=plan, replies=FixtureReplies())
+    replies = replies or FixtureReplies()
+    runner = FakeRunner(faults=plan, replies=replies)
     statuses, terminal = [], []
 
     def invoke():
@@ -385,7 +420,8 @@ def drive(test_case, plan=None, recover=False, split_bytes=None):
     return Outcome(plan=plan, root=root, statuses=statuses, terminal="".join(terminal),
                    launched=list(runner.launched), injected=list(runner.injected),
                    report=report, part_files=part_files, html=html, recovered=recovered,
-                   stalled=stalled, stalled_report=stalled_report)
+                   stalled=stalled, stalled_report=stalled_report,
+                   short=list(getattr(replies, "short", list)()))
 
 
 def module_patches():

@@ -494,12 +494,16 @@
                 "object",
                 "null"
               ],
-              "description": "#3676: the backup advisors this run summoned (cells charged a `<group>/<domain>/backup` dispatch in the verify phase's verify-attempts.json) and what came back, counted in cells. answered: a loadable backup bundle bound to this run holds a verdict; unloadable: a backup bundle file failed to load; unanswered: anything else (no file, an empty bundle, another run's). summoned == answered + unanswered + unloadable. unanswered and unloadable are summary.grade_shortfalls reasons: the letter is held back and coverage is NOT CERTIFIED. record_unreadable: the attempts record is present but unreadable, so the counts are null and that is itself a shortfall. null when the run left no record (no verify phase, or a direct synthesize call).",
+              "description": "#3676: the backup advisors this run summoned (cells charged a `<group>/<domain>/backup` dispatch in the verify phase's verify-attempts.json) and what came back, counted in cells. answered: every part has a loadable backup bundle bound to this run holding a verdict, and every claim the cell was handed has one (#3695); unloadable: a backup bundle file failed to load; unanswered: anything else (no file, an empty bundle, another run's, a scoped claim with no verdict, no recorded scope). summoned == answered + unanswered + unloadable. #3695: claims_scoped counts the claims those cells were handed (the ids verify records under `<group>/<domain>/backup/claims`) and claims_unanswered the ones with no backup verdict; a verdict counts only for an id in the recorded scope. scope_not_recorded counts cells whose record holds no scope: each is unanswered, or unloadable when one of its bundle files failed to load (scope_not_recorded_unloadable counts those), and is left out of both claim counts; the reason for the state it landed in says so. unanswered, unloadable and claims_unanswered are summary.grade_shortfalls reasons: the letter is held back and coverage is NOT CERTIFIED. record_unreadable: the attempts record is present but unreadable, so the counts are null and that is itself a shortfall. null when the run left no record (no verify phase, or a direct synthesize call).",
               "required": [
                 "summoned",
                 "answered",
                 "unanswered",
                 "unloadable",
+                "claims_scoped",
+                "claims_unanswered",
+                "scope_not_recorded",
+                "scope_not_recorded_unloadable",
                 "record_unreadable"
               ],
               "additionalProperties": false,
@@ -526,6 +530,34 @@
                   "minimum": 0
                 },
                 "unloadable": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "claims_scoped": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "claims_unanswered": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "scope_not_recorded": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "scope_not_recorded_unloadable": {
                   "type": [
                     "integer",
                     "null"
