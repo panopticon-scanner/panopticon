@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **A backup advisor that answers part of its claims no longer counts as answered (#3695).** A
+  backup that confirmed 1 of the 20 claims it was handed and said nothing of the other 19 was
+  done for the verify phase and `answered` in the report: those 19 findings lost
+  `backup_confirmed` and no surface named them. Backup coverage is now counted per claim.
+  - **Verify** holds a backup part to the primary advisor's rule: every claim it was handed has
+    a verdict. A short backup reply is refused or asked again, up to the verify budget of three
+    dispatches. That is up to two more dispatches for a backup that keeps omitting claims.
+  - **The report** adds `claims_scoped`, `claims_unanswered` and `scope_not_recorded` to
+    `meta.coverage.backups`. A backup is `answered` only when every claim it was handed has a
+    verdict, and `summary.grade_shortfalls` names the findings beside the advisors: "1 backup
+    advisor unanswered", "19 findings unanswered by their backup advisors". The letter is held
+    back and coverage is NOT CERTIFIED, as for any other shortfall.
+  - Verify records the claim ids it hands each backup in `verify-attempts.json`
+    (`<group>/<domain>/backup/claims`), in the same write as the charge. A verdict counts only
+    for an id in that list. A record without one (a run started before this) reads
+    `unanswered`, with "(1 scope not recorded)" beside it; `--reset` starts a run that records it.
+
 - **Fixed: a tracked-in-git check no longer depends on how the path is spelled (#3684).** A git
   pathspec is case-sensitive whatever the filesystem is. On one that ignores case (macOS by
   default), a committed `.Panopticon/` is the directory a run reads as `.panopticon/`, and git,

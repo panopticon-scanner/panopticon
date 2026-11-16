@@ -710,10 +710,12 @@ def load_verdict_bundles(verdicts_dir, accepted=None):
     valid same-run primary before run_id was ever consulted.
 
     #3676: `accepted`, when a dict, is filled per loadable bundle FILE with
-    {"run_id", "stage", "kept": entries that passed the sanitizer} -- the
-    controller stamps and the count, never agent text -- so `synth.backups` can
-    tell an answered backup cell from one that never answered without reading a
-    verdict file of its own.
+    {"run_id", "stage", "kept": entries that passed the sanitizer, "finding_ids":
+    the ids those entries echoed} -- the controller stamps, the count and the ids,
+    never agent prose -- so `synth.backups` can tell an answered backup cell from
+    one that never answered without reading a verdict file of its own. The ids are
+    what the advisor wrote: `claims_unanswered` counts one only when the
+    controller handed that claim out (#3695).
     """
     by_fid: dict[str, list[dict[str, Any]]] = {}
     unloadable = []
@@ -734,6 +736,7 @@ def load_verdict_bundles(verdicts_dir, accepted=None):
         run_id = pano.get("run_id")
         stage_default = pano.get("stage") or "primary"
         kept = 0
+        kept_ids: set[str] = set()
         for index, raw in enumerate(data["verdicts"]):
             reason = _bundle_entry_defect(raw)
             if reason:
@@ -755,8 +758,10 @@ def load_verdict_bundles(verdicts_dir, accepted=None):
             v["run_id"], v["stage"] = run_id, stage_default
             by_fid.setdefault(str(v["finding_id"]), []).append(v)
             kept += 1
+            kept_ids.add(str(v["finding_id"]))
         if isinstance(accepted, dict):
-            accepted[name] = {"run_id": run_id, "stage": stage_default, "kept": kept}
+            accepted[name] = {"run_id": run_id, "stage": stage_default, "kept": kept,
+                              "finding_ids": sorted(kept_ids)}
     return by_fid, unloadable
 
 
@@ -845,6 +850,25 @@ def by_finding_id(verdicts, stage="primary"):
         if fid is not None:
             pools.setdefault(str(fid), []).append(v)
     return {fid: resolve_duplicates(pool, stage) for fid, pool in pools.items()}
+
+
+def claims_unanswered(claim_ids, verdict_ids):
+    """THE rule for "did every claim an advisor was handed come back" (#3695): the
+    ids in `claim_ids` that have no verdict in `verdict_ids`, in the order handed,
+    each once. [] means every claim was answered.
+
+    One definition, for the verify phase (`verify._chunk_answered`: is this part
+    done, and `persist`: is this reply acceptable) and for synthesis
+    (`synth.backups`: which scoped claims a backup advisor left unanswered). A
+    backup part used to be done once its bundle was labelled, and a backup cell
+    answered once a bundle kept ONE verdict, so an advisor that answered 1 of its
+    20 claims read as answered in both places.
+
+    `claim_ids` is the controller's list. `verdict_ids` comes from an advisor's
+    file, so only an id the controller handed out can answer anything: an id
+    nobody was asked about, or one id said twice, changes nothing here."""
+    got = {str(i) for i in verdict_ids if i is not None}
+    return [claim for claim in dict.fromkeys(map(str, claim_ids)) if claim not in got]
 
 
 def match_verdict_by_id(finding, by_fid, run_id=None):

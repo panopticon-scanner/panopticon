@@ -34,6 +34,7 @@ import pytest
 from scripts import evidence
 import scripts.loop_progress as loop_progress
 import scripts.phases.runio as runio
+import scripts.phases.verify as verify
 import scripts.run_manifest as run_manifest
 import scripts.runners.outage as outage
 from tests import fault_harness as fh
@@ -605,6 +606,68 @@ def test_a_host_failure_is_never_silent(lab, plan, request):
         request.applymarker(pytest.mark.xfail(
             strict=True, reason=", ".join(sorted({gap.issue for gap in expected}))))
         pytest.fail("known: " + "; ".join(sentence for _check, _phase, sentence in found))
+
+
+# --- a backup that answers part of what it was handed (#3695) -----------------------------
+
+@pytest.fixture(scope="module")
+def partial(lab):
+    """(whole, short): the three-claim target with its backup answering every claim, and
+    with it answering one of the three on every attempt."""
+    return (fh.drive(lab, replies=fh.PartialBackup(whole=True)),
+            fh.drive(lab, replies=fh.PartialBackup()))
+
+
+def _backup_charges(outcome):
+    with open(runio._pano(outcome.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        return json.load(fh_)[verify._verify_key(*fh.PartialBackup.CELL, "backup")]
+
+
+def _cell_claims(outcome):
+    return [f for f in outcome.report["findings"]
+            if (f.get("title") or "").startswith("%s/%s defect" % fh.PartialBackup.CELL)]
+
+
+def test_a_backup_that_answers_one_of_its_three_claims_holds_every_invariant(lab, partial):
+    """The partial-backup row. Nothing failed to launch, so no plan is involved: the entry
+    answered, and left two of its three claims without a verdict. That is undone backup
+    work, and the five invariants are asked of it as of any other."""
+    whole, short = partial
+    assert (whole.status, short.status) == ("complete", "complete")
+    assert whole.unanswered == [] and short.unanswered == [fh.PartialBackup.SHORT]
+    assert problems(whole, whole) == []
+    assert problems(whole, short) == []
+    # Asked again, on the budget a short primary advisor has: every dispatch is charged
+    # until the cell has spent its three.
+    assert _backup_charges(whole) == 1
+    assert _backup_charges(short) == verify._MAX_VERIFY_ATTEMPTS == 3
+    assert whole.launched.count(fh.PartialBackup.SHORT) == 1
+    assert short.launched.count(fh.PartialBackup.SHORT) > 1
+
+
+def test_the_two_claims_a_partial_backup_left_are_counted_and_named(partial):
+    whole, short = partial
+    before, after = (o.report["meta"]["coverage"]["backups"] for o in (whole, short))
+    assert before["summoned"] == before["answered"] and before["claims_unanswered"] == 0
+    assert before["claims_scoped"] >= fh.PartialBackup.CLAIMS
+    assert after == dict(before, answered=before["answered"] - 1, unanswered=1,
+                         claims_unanswered=2)
+    reasons = ["1 backup advisor unanswered", "2 findings unanswered by their backup advisors"]
+    assert whole.report["summary"]["grade_shortfalls"] == []
+    assert short.report["summary"]["grade_shortfalls"] == reasons
+    # The same three findings either way; the two the backup skipped carry no backup verdict.
+    assert [f["title"] for f in _cell_claims(short)] == [f["title"] for f in _cell_claims(whole)]
+    assert [f.get("backup_confirmed") for f in _cell_claims(whole)] == [True, True, True]
+    assert sorted(str(f.get("backup_confirmed")) for f in _cell_claims(short)) == [
+        "None", "None", "True"]
+    # Each surface says how many findings, beside how many advisors.
+    summary = short.report["summary"]
+    assert (summary["overall_grade"], summary["coverage_certified"]) == (None, False)
+    assert summary["provisional_grade"] == whole.report["summary"]["overall_grade"]
+    terminal, page = _not_certified_text(short)
+    for surface in (summary["coverage_note"], terminal, page):
+        for reason in reasons:
+            assert reason in surface, (reason, surface)
 
 
 SPLIT_BYTES = 9000
