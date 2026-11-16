@@ -81,12 +81,20 @@ def origin(review_root, relpath, runner=subprocess.run):
     `rev-parse` is the whole of what is asked: it is plumbing the probe's allowlist already
     admits, it reads no configuration, and the object id it prints is compared with a hash
     of the bytes on disk taken here. A tree or a submodule at that path has another id, and
-    a symlink in the working tree is refused before this is reached."""
+    a symlink in the working tree is refused before this is reached.
+
+    #3684: HEAD is asked about the file, not only about the spelling. `HEAD:./<name>` is
+    case-sensitive whatever the filesystem is, so on one that ignores case a config the commit
+    spells with a capital -- the very file read as the config -- had no such path in HEAD, and
+    the target's own committed matrix was reported as the working tree's. When HEAD has
+    nothing under the exact name it is asked about each other name the review root's own
+    listing gives this file (`_other_names`)."""
     if relpath not in repo_config.CONFIG_NAMES:
         return matrix_identity.ORIGIN_UNKNOWN
     path = os.path.join(review_root, relpath)
     try:
-        if not stat.S_ISREG(os.lstat(path).st_mode):     # a link or a device is not a config
+        info = os.lstat(path)
+        if not stat.S_ISREG(info.st_mode):               # a link or a device is not a config
             return matrix_identity.ORIGIN_UNKNOWN
         with open(path, "rb") as fh:
             data = fh.read(repo_config.MAX_CONFIG_BYTES + 1)
@@ -103,6 +111,11 @@ def origin(review_root, relpath, runner=subprocess.run):
         # committed root config would read as committed. `./` anchors it to the review root.
         held = safe_git.probe(review_root, ["rev-parse", "--verify", "HEAD:./" + relpath],
                               runner=runner)
+        for name in () if held.returncode == 0 else _other_names(review_root, relpath, info):
+            held = safe_git.probe(review_root, ["rev-parse", "--verify", "HEAD:./" + name],
+                                  runner=runner)
+            if held.returncode == 0:
+                break
     except (OSError, subprocess.SubprocessError, safe_git.RepositoryRefused):
         return matrix_identity.ORIGIN_UNKNOWN
     if held.returncode != 0:
@@ -112,6 +125,26 @@ def origin(review_root, relpath, runner=subprocess.run):
         return matrix_identity.ORIGIN_UNKNOWN
     return (matrix_identity.ORIGIN_COMMITTED if _blob_oid(data, len(oid)) == oid
             else matrix_identity.ORIGIN_WORKING_TREE)
+
+
+# The other names `_other_names` will ask HEAD about. One is what a filesystem that folds
+# names gives; more are hard links, which first contact halts on (H4).
+_OTHER_NAMES_MAX = 8
+
+
+def _other_names(review_root, relpath, info):
+    """The names, other than `relpath`, under which the review root lists the file `relpath`
+    opened (`info`, its `lstat`): the same device and inode. On a filesystem that folds case
+    that is how the checkout spelled it; a hard link beside it is such a name too. Sorted and
+    capped. The filesystem is asked, so no fold has to be known here."""
+    names = []
+    with os.scandir(review_root) as entries:
+        for entry in entries:
+            if entry.name == relpath or entry.inode() != info.st_ino:
+                continue
+            if entry.stat(follow_symlinks=False).st_dev == info.st_dev:
+                names.append(entry.name)
+    return sorted(names)[:_OTHER_NAMES_MAX]
 
 
 def _drafts_path():

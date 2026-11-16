@@ -24,8 +24,9 @@ import scripts.phases.readiness_checks as readiness_checks
 import scripts.phases.runio as runio
 import scripts.phases.verify_tools as verify_tools
 import scripts.run_manifest as run_manifest
+import scripts.safe_git as safe_git
 from scripts import hosts
-from tests._test_helpers import our_manifest
+from tests._test_helpers import hard_link_or_skip, our_manifest
 from tests.phases.test_readiness_verb import _docker_runner
 from tests.tools.git_repo import make_git_repo
 
@@ -311,6 +312,179 @@ class TestAPlantedRunFolderIsNobodysRun(_Case):
         doc, _table = self._both()
         self.assertEqual(("claude", "default"), (doc["host"], doc["selected_from"]))
         self.assertIs(False, doc["capabilities"]["measured"])
+
+
+class TestACommittedManifestUnderAnotherName(_Case):
+    """#3684. `:(icase)` folds ASCII only; a filesystem folds more. APFS reads a long s
+    (U+017F) as `s`, so a committed `run-manife\u017ft.json` was the manifest readiness read
+    and git called it untracked. The filesystem is asked instead: a path git tracks in the
+    manifest's directory that is the same file (device and inode) makes it committed."""
+
+    LONG_S = "run-manife\u017ft.json"
+
+    def _commit_beside(self, name, manifest, directory=".panopticon"):
+        there = os.path.join(self.root, directory)
+        os.makedirs(there, exist_ok=True)
+        with open(os.path.join(there, name), "w", encoding="utf-8") as fh:
+            json.dump(manifest, fh)
+        self._git("add", "-f", "--", os.path.join(directory, name))
+        self._git("commit", "-q", "-m", "ship a manifest under another name")
+        return os.path.join(there, name)
+
+    def _planted(self):
+        manifest = self._planted_manifest(self.root)          # forges this checkout's path
+        tag = run_manifest.run_tag(manifest)
+        self._plant(tag=tag, complete=True)
+        return manifest, tag
+
+    def test_a_name_the_filesystem_folds_onto_ours(self):
+        manifest, tag = self._planted()
+        self._commit_beside(self.LONG_S, manifest)
+        exact = run_manifest.manifest_path(self.root)
+        if not os.path.isfile(exact):
+            # This filesystem keeps the two names apart, so the committed file is another
+            # file. A manifest of ours beside it is still ours, and still untracked.
+            self._our_run()
+            self.assertFalse(runio._manifest_committed(self.root, exact))
+            self.assertIsNotNone(readiness._trusted_manifest(self.root))
+            return
+        self.assertTrue(runio._manifest_committed(self.root, exact))
+        self.assertIsNone(readiness._trusted_manifest(self.root))
+        doc, table = self._both()
+        self._assert_nothing_stored_is_shown(doc, table, planted=(tag, "deadbeef"))
+        self.assertEqual(readiness.NOT_MEASURED_NOT_THIS_RUN, doc["capabilities"]["detail"])
+        self.assertEqual(readiness.NO_RUN_OF_THIS_CHECKOUT, doc["existing_run"]["detail"])
+        self.assertEqual(("claude", "default"), (doc["host"], doc["selected_from"]))
+
+    def test_a_hard_link_to_a_committed_file_is_that_file(self):
+        # One file under two names, on any filesystem: what a fold is, without needing one.
+        manifest, tag = self._planted()
+        shipped = self._commit_beside("shipped.json", manifest)
+        exact = hard_link_or_skip(shipped, run_manifest.manifest_path(self.root))
+        self.assertTrue(runio._manifest_committed(self.root, exact))
+        self.assertIsNone(readiness._trusted_manifest(self.root))
+        doc, table = self._both()
+        self._assert_nothing_stored_is_shown(doc, table, planted=(tag, "deadbeef"))
+
+    def test_the_same_at_the_review_root_and_under_a_directory_spelled_in_another_case(self):
+        # The listing is of the manifest's directory, under any case, or of the root.
+        shipped = self._commit_beside("shipped.json", {}, directory=".")
+        at_root = hard_link_or_skip(shipped, os.path.join(self.root, "manifest.json"))
+        self.assertTrue(runio._manifest_committed(self.root, at_root))
+        os.unlink(at_root)
+        with open(at_root, "w", encoding="utf-8") as fh:
+            fh.write("{}")
+        self.assertFalse(runio._manifest_committed(self.root, at_root))
+        asked = self._asked(at_root)
+        self.assertEqual(["ls-files", "-z", "--", ":(icase)."], asked[-1][0])
+        self._our_run()
+        asked = self._asked(run_manifest.manifest_path(self.root))
+        self.assertEqual([(["ls-files", "--error-unmatch", "--",
+                            ":(icase).panopticon/run-manifest.json"], 30),
+                          (["ls-files", "-z", "--", ":(icase).panopticon"], 30)], asked)
+
+    def _asked(self, manifest_file):
+        asked = []
+        real = safe_git.probe
+
+        def probe(target, args, **kw):
+            asked.append((list(args), kw.get("timeout")))
+            return real(target, args, **kw)
+
+        with mock.patch.object(safe_git, "probe", side_effect=probe):
+            runio._manifest_committed(self.root, manifest_file)
+        return asked
+
+    def test_a_committed_symlink_that_points_at_our_manifest_is_not_our_manifest(self):
+        # `lstat`, never `stat`: the link is another directory entry. Followed, any tracked
+        # link to an operator's own manifest would make that manifest read as committed.
+        self._our_run()
+        os.symlink("run-manifest.json", os.path.join(self.pano, "alias.json"))
+        self._git("add", "-f", "--", ".panopticon/alias.json")
+        self._git("commit", "-q", "-m", "a link to the manifest")
+        self.assertFalse(runio._manifest_committed(self.root, run_manifest.manifest_path(self.root)))
+        self.assertIsNotNone(readiness._trusted_manifest(self.root))
+
+    def test_a_tracked_path_that_is_not_on_disk_is_not_our_manifest(self):
+        self._our_run()
+        folder = self._plant()
+        shutil.rmtree(folder)                                  # tracked, and gone
+        os.unlink(os.path.join(self.runs, "latest"))
+        with open(folder, "w", encoding="utf-8") as fh:        # ...and a file where its
+            fh.write("x")                                      # directory was: ENOTDIR
+        self.assertFalse(runio._manifest_committed(self.root, run_manifest.manifest_path(self.root)))
+
+    def test_more_tracked_paths_than_the_cap_reads_as_committed(self):
+        self._our_run()
+        self._plant()
+        tracked = subprocess.run(["git", "-C", self.root, "ls-files", "--", ".panopticon"],
+                                 check=True, capture_output=True, text=True).stdout.split()
+        self.assertEqual(3, len(tracked))
+        exact = run_manifest.manifest_path(self.root)
+        with mock.patch.object(runio, "_TRACKED_BESIDE_MAX", 3):
+            self.assertFalse(runio._manifest_committed(self.root, exact))
+        with mock.patch.object(runio, "_TRACKED_BESIDE_MAX", 2):
+            self.assertTrue(runio._manifest_committed(self.root, exact))
+            self.assertIsNone(readiness._trusted_manifest(self.root))
+        self.assertEqual(4096, runio._TRACKED_BESIDE_MAX)
+
+    def test_a_path_that_cannot_be_stat_ed_reads_as_committed(self):
+        self._our_run()
+        self._plant()
+        exact = run_manifest.manifest_path(self.root)
+        real = os.lstat
+        for refused in ("a tracked path", "the manifest"):
+            def lstat(path, *args, _refused=refused, **kw):
+                path = os.fspath(path)
+                if _refused == "the manifest" and path == exact:
+                    raise FileNotFoundError(2, "gone", path)
+                if _refused == "a tracked path" and path.startswith(self.runs + os.sep):
+                    raise PermissionError(13, "refused", path)
+                return real(path, *args, **kw)
+
+            with self.subTest(refused=refused), mock.patch.object(runio.os, "lstat", lstat):
+                self.assertTrue(runio._manifest_committed(self.root, exact))
+
+    def test_the_same_inode_number_on_another_device_is_another_file(self):
+        self._our_run()
+        self._plant()
+        exact = run_manifest.manifest_path(self.root)
+        ours, real = os.lstat(exact), os.lstat
+
+        def lstat(path, *args, **kw):
+            info = real(path, *args, **kw)
+            if os.fspath(path).startswith(self.runs + os.sep):   # a tracked path: our inode
+                fields = list(info)                             # number, on another device
+                fields[1], fields[2] = ours.st_ino, ours.st_dev + 1
+                return os.stat_result(fields)
+            return info
+
+        with mock.patch.object(runio.os, "lstat", lstat):
+            self.assertFalse(runio._manifest_committed(self.root, exact))
+
+    def test_a_listing_git_cannot_give_is_an_error_not_a_verdict(self):
+        self._our_run()
+        exact = run_manifest.manifest_path(self.root)
+        real = safe_git.probe
+        failing = mock.Mock(returncode=2, stdout="", stderr="boom")
+
+        def probe(target, args, **kw):
+            return failing if "-z" in args else real(target, args, **kw)
+
+        with mock.patch.object(safe_git, "probe", side_effect=probe), \
+                self.assertRaises(runio.DriverError) as caught:
+            runio._manifest_committed(self.root, exact)
+        self.assertIn("git check failed (exit 2): boom", str(caught.exception))
+        for failure in (OSError("no git"), subprocess.TimeoutExpired("git", 30)):
+            def probe(target, args, _failure=failure, **kw):
+                if "-z" in args:
+                    raise _failure
+                return real(target, args, **kw)
+
+            with self.subTest(failure=failure), \
+                    mock.patch.object(safe_git, "probe", side_effect=probe), \
+                    self.assertRaises(runio.DriverError):
+                runio._manifest_committed(self.root, exact)
 
 
 class TestTheFolderIsTheOneTheManifestNames(_Case):
