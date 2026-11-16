@@ -10,6 +10,27 @@
   fault-injection harness's known-gap row for this is removed, and the harness now checks that
   the HTML names every unanswered review cell exactly.
 
+- **Fixed: a tracked-in-git check no longer depends on how the path is spelled (#3684).** A git
+  pathspec is case-sensitive whatever the filesystem is. On one that ignores case (macOS by
+  default), a committed `.Panopticon/` is the directory a run reads as `.panopticon/`, and git,
+  asked about `.panopticon`, said nothing there was tracked. Three checks asked that way:
+  - **First contact H1.** A committed `.Panopticon/` did not halt as tracked. Nothing planted
+    was trusted (H2 still halted on its stamp), but `--reset` moved the tracked directory aside
+    and ran on. H1 now asks under any case, and names the spelling the index holds, so the
+    `git rm -r --cached` it suggests works: `".Panopticon" is tracked in the target's git index,
+    and a filesystem that ignores case reads it as .panopticon/; ...`.
+  - **`driver readiness`'s "is this manifest git-tracked".** #3671 made it ignore ASCII case.
+    A filesystem folds more than that: APFS reads `run-manifeſt.json` (a long s) as
+    `run-manifest.json`, and `run-manifeﬆ.json` (a ligature) too, so that committed file still
+    read as this checkout's own untracked manifest. The check now compares the manifest with
+    every path git tracks in its directory by file identity, so it holds for any spelling the
+    filesystem reads as the same file. Two more ways to commit that file under another path
+    read as tracked now: a submodule at `.panopticon` (it read as untracked, and its manifest
+    chose the host `readiness` reported on), and a symlink on the way to the manifest (the
+    verb already refused a linked `.panopticon`; the check no longer relies on that).
+  - **`meta.matrix.origin`.** A config the commit holds as `Panopticon.yml` read as
+    `working_tree`. It reads `committed` now, when its bytes are the commit's.
+
 - **Summoned backup advisors that never answer hold the letter back (#3676).** A run whose
   backup advisors all failed (non-zero exit, empty reply, timeout) read as fully certified, and
   a malformed backup sank certification without naming a cause. `meta.coverage.backups`
