@@ -628,7 +628,7 @@ def _gem_lock_sections(text):
             continue
         if skipping:
             continue
-        if current is None or not line.strip():
+        if current is None:
             raise ValueError("Gemfile.lock line outside a section")
         if line.startswith("      "):
             if not in_specs:

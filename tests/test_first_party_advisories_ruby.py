@@ -468,6 +468,11 @@ class TestTheReviewProbes(_RubyCase):
                                       package=("rack", "2.0")))
         # A local spec with a platform never proves its release.
         lock = self.PATH.replace("foo (1.0)", "foo (1.0-java)")
+        # A second, platform-suffixed local spec of the same release is ambiguous too.
+        other = "PATH\n  remote: gems/foo-java\n  specs:\n    foo (1.0-java)\n\n"
+        _write(os.path.join(self.root, "gems", "foo-java", "foo.gemspec"),
+               _gemspec("foo", "1.0-java"))
+        self.assertIsNone(self._probe(self.PATH + other))
         for version in ("1.0", "1.0-java"):
             with self.subTest(local_platform=version):
                 gemspec = _gemspec("foo", version)
@@ -501,6 +506,7 @@ class TestTheReviewProbes(_RubyCase):
                 ("PATH with a trailing space",
                  self.PATH.replace("PATH\n", "PATH \n") + self._gem("    rack (2.0)\n")),
                 ("lower-case header", self.PATH + "platforms\n  ruby\n"),
+                ("skipped header with a trailing space", self.PATH + "PLATFORMS \n  ruby\n"),
                 ("unknown header", self.PATH + "SOMETHING NEW\n  x\n"),
                 ("indented line before any header", "  remote: x\n" + self.PATH)):
             with self.subTest(lock=label):
@@ -560,6 +566,16 @@ class TestTheReviewProbes(_RubyCase):
                 ("Gem semicolon", "Gem;" + self._spec(lit)),
                 ("assigned spec", "x = " + self._spec(lit) + 'x.version = "9.9"\n'),
                 ("chained end", self._spec(lit).replace("end\n", "end.tap { }\n")),
+                ("code after the opener",
+                 self._spec(lit).replace("|s|\n", '|s|; s.name.replace("bar")\n')),
+                ("mention after a nested block's end",
+                 "module Foo\n  Gem::Specification.new do |s|\n    s.name = \"foo\"\n"
+                 "    s.version = \"1.0\"\n  end\n  s.summary = 1\nend\n"),
+                ("comparison", self._spec(lit + '  s.summary == "x"\n')),
+                ("match", self._spec(lit + "  s.summary =~ /x/\n")),
+                ("unknown add_ method", self._spec(lit + '  s.add_signing_key("x")\n')),
+                ("setter symbol", self._spec(lit + "  x = :version=\n")),
+                ("name setter symbol", self._spec(lit + "  x = :name=\n")),
                 ("name outside the block", self._spec('  s.version = "1.0"\n')
                  + '  s.name = "foo"\n'),
                 ("mention outside the block", self._spec(lit) + "s.summary = 1\n"),
@@ -622,6 +638,8 @@ class TestTheReviewProbes(_RubyCase):
                 ("constant value", '  s.metadata["homepage_uri"] = HOME\n'),
                 ("interpolated value", '  s.metadata["homepage_uri"] = "#{x}"\n'),
                 ("host named elsewhere", '  s.summary = "allowed_push_host"\n'),
+                ("host inside a longer key",
+                 '  s.metadata["allowed_push_host_note"] = "https://rubygems.org"\n'),
                 ("two hosts", '  s.metadata["allowed_push_host"] = "https://rubygems.org"\n'
                               '  s.metadata["allowed_push_host"] = "https://gems.corp"\n')):
             with self.subTest(metadata=label):
@@ -645,7 +663,11 @@ class TestTheReviewProbes(_RubyCase):
                 ("nested in a module", "module Foo\n  Gem::Specification.new do |s|\n"
                                        "    s.name = \"foo\"\n    s.version = \"1.0\"\n"
                                        "  end\nend\n"),
-                ("brace block", "Gem::Specification.new { |s|\n" + lit + "}\n")):
+                ("brace block", "Gem::Specification.new { |s|\n" + lit + "}\n"),
+                ("other receivers named like the variable", self._spec(
+                    lit + '  s.require_paths = [Foo::s, @s, $s, :s, x.s, s!, s?, "s#{1}"]\n')),
+                ("comparisons naming the fields", self._spec(
+                    lit + '  s.summary = "a" if version == "1" || name =~ /x/\n'))):
             with self.subTest(gemspec=label):
                 self.assertEqual("first_party", self._probe(self.PATH, gemspec=gemspec))
 
