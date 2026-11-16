@@ -393,6 +393,29 @@ class TestWhetherTheConfigIsInTheReviewedCommit(unittest.TestCase):
                           ["rev-parse", "--verify", "HEAD:./A-copy.yml"],       # not in HEAD
                           ["rev-parse", "--verify", "HEAD:./Panopticon.yml"]], asked)
 
+    def test_the_first_name_head_holds_decides_and_no_later_one_is_asked(self):
+        root = self._spelled_by_the_commit()
+        hard_link_or_skip(os.path.join(root, "panopticon.yml"), os.path.join(root, "z-copy.yml"))
+        asked = []
+        real = safe_git.probe
+
+        def probe(target, args, **kw):
+            asked.append(args[-1])
+            return real(target, args, **kw)
+
+        with mock.patch.object(safe_git, "probe", side_effect=probe):
+            self.assertEqual("committed", mp.origin(root, "panopticon.yml"))
+        self.assertEqual(["HEAD^{tree}", "HEAD:./panopticon.yml", "HEAD:./Panopticon.yml"], asked)
+
+    def test_a_config_head_holds_under_its_exact_name_is_asked_about_no_other(self):
+        # An untracked hard link beside a committed config: HEAD has no such name, and
+        # that must not turn the committed config into the working tree's.
+        root = self._repo()
+        hard_link_or_skip(os.path.join(root, "panopticon.yml"), os.path.join(root, "copy.yml"))
+        with mock.patch.object(mp, "_other_names", side_effect=AssertionError("not asked")):
+            self.assertEqual("committed", mp.origin(root, "panopticon.yml"))
+        self.assertEqual("committed", mp.origin(root, "panopticon.yml"))
+
     def test_another_name_the_commit_does_not_hold_is_still_the_working_trees(self):
         root = make_git_repo(test_case=self, files=dict(FILES))
         self._write(root, "version: 1\n" + self.GROUPS)
