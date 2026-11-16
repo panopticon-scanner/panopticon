@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Go advisories always stay with the advisor (#3623, owner ruling).** Unlike Cargo, npm and
+  Python, Go has no first-party marker: a go.mod declares `module M` but no version of its own
+  (the main module's comes from VCS tags at build time), so there is no identity a manifest can
+  prove. A main module, a go.work `use` module and a local `replace` target -- whose version is
+  the consumer's `require` line, often a placeholder pseudo-version -- are all pinned to the
+  ordinary tool-advisor path under osv-scanner and Trivy, and nothing Go is read from the
+  ingest budget. No behaviour changes; this documents and pins it.
+
 - **`driver readiness` reads a stored run only when a run in this checkout wrote it (#3671).** A
   target could commit a run folder holding a posture with every control PROVEN, and a
   `runs/latest` symlink to it. Readiness read through the symlink and printed that posture as
