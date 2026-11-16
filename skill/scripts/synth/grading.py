@@ -6,6 +6,7 @@ import stat
 
 import scripts.coverage_model as coverage_model
 import scripts.evidence as evidence_mod
+from . import backups as backups_mod
 from . import coverage_io
 from . import health_basis
 from . import delta as delta_mod
@@ -99,7 +100,7 @@ GATE_GAP_NOTE = "gate-relevant coverage did not complete"
 PROVISIONAL_PREFIX = "grade provisional: "
 
 
-def grade_shortfalls(resolved):
+def grade_shortfalls(resolved, backups=None):
     """#3667 (owner ruling 2026-11-15): verify work this run left UNDONE, one
     reason per entry. ONE shared rule reads this list: any reason here holds the
     letter back as `provisional_grade`, sinks `coverage_certified`, moves a PASS
@@ -112,7 +113,9 @@ def grade_shortfalls(resolved):
     though they had been checked. Unanswered verify advisors (the agent claims
     owed a verdict, `unanswered_gate` less the tool ones): when every verify
     launch fails nothing is confirmed, health reads 100 and the letter S stood
-    beside an INCONCLUSIVE gate -- the same undone work, the same rule."""
+    beside an INCONCLUSIVE gate -- the same undone work, the same rule.
+    Summoned backup advisors that never answered, or answered unloadably
+    (#3676, `meta.coverage.backups`), are the third."""
     reasons = []
     unanswered_tools = getattr(resolved, "unanswered_tools", 0) or 0
     unanswered_claims = max((getattr(resolved, "unanswered_gate", 0) or 0) - unanswered_tools, 0)
@@ -121,7 +124,7 @@ def grade_shortfalls(resolved):
             reasons.append("%d %s%s unanswered by %s %sadvisor%s" % (
                 count, kind, "" if count == 1 else "s", "its" if count == 1 else "their",
                 "" if kind == "tool finding" else "verify ", "" if count == 1 else "s"))
-    return reasons
+    return reasons + backups_mod.shortfall_reasons(backups)
 
 
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
@@ -794,7 +797,8 @@ def grade_report(run, resolved, reconciled, delta=None):
         delta_zero_hunks = delta_mod.delta_gate_gap(
             delta, len(would_have_judged), run.gate_scope)
     coverages = getattr(reconciled, "coverages", None)
-    shortfalls = grade_shortfalls(resolved)
+    shortfalls = grade_shortfalls(resolved, (getattr(reconciled, "coverage", None) or {})
+                                  .get("backups"))
     cert = certify(overall, gate_eligible, run.fail_on, reconciled.panels_incomplete,
                    reconciled.tools_absent,
                    integrity_ok=reconciled.integrity_ok,

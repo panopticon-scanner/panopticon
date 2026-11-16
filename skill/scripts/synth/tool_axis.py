@@ -575,6 +575,9 @@ def reconcile(plan, tools, resolved, run=None):
             & EXECUTES_TARGET_BUILD),
         "tool_policy_mode": tools.policy_mode or "unknown",
         "tool_axis": resolved.tool_axis,
+        # #3676: summoned backup advisors and what came back, in cells; None when
+        # the run left no verify record.
+        "backups": getattr(plan, "backups", None),
         # #471: with scout_requested, lets consumers tell "no scouts
         # ran" (0) apart from "scouts ran and requested no tools"
         # (N>0 with scout_requested []).

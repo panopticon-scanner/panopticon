@@ -691,7 +691,7 @@ def _bundle_entry_defect(raw):
     return findings_contract.schema_version_defect(raw)   # #2104: this entry only
 
 
-def load_verdict_bundles(verdicts_dir):
+def load_verdict_bundles(verdicts_dir, accepted=None):
     """Load per-cell verdict BUNDLES ({"verdicts": [...], "_panopticon": {...}})
     into a finding_id -> list of candidate verdicts map.
 
@@ -708,6 +708,12 @@ def load_verdict_bundles(verdicts_dir):
     match_verdict_by_id, where the caller's run_id is known. Collapsing here
     (e.g. backup-wins on stage alone) let a stale cross-run backup evict a
     valid same-run primary before run_id was ever consulted.
+
+    #3676: `accepted`, when a dict, is filled per loadable bundle FILE with
+    {"run_id", "stage", "kept": entries that passed the sanitizer} -- the
+    controller stamps and the count, never agent text -- so `synth.backups` can
+    tell an answered backup cell from one that never answered without reading a
+    verdict file of its own.
     """
     by_fid: dict[str, list[dict[str, Any]]] = {}
     unloadable = []
@@ -727,6 +733,7 @@ def load_verdict_bundles(verdicts_dir):
             pano = {}
         run_id = pano.get("run_id")
         stage_default = pano.get("stage") or "primary"
+        kept = 0
         for index, raw in enumerate(data["verdicts"]):
             reason = _bundle_entry_defect(raw)
             if reason:
@@ -747,6 +754,9 @@ def load_verdict_bundles(verdicts_dir):
             # and persist refuses such a bundle anyway.
             v["run_id"], v["stage"] = run_id, stage_default
             by_fid.setdefault(str(v["finding_id"]), []).append(v)
+            kept += 1
+        if isinstance(accepted, dict):
+            accepted[name] = {"run_id": run_id, "stage": stage_default, "kept": kept}
     return by_fid, unloadable
 
 
