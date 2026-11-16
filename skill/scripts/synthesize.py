@@ -326,6 +326,21 @@ def _resolve_analysis_root(args):
     args.root = os.path.abspath(chosen)
 
 
+def _backup_run_id(queue_run_id, driver_run_id):
+    """The run a backup bundle must be bound to (#3679 review F2 / R2-1).
+
+    The driver writes no verify queue (`verify_tools._tool_verify_entry`), so its
+    run id is the manifest's, passed as --run-id: the id the controller stamps on
+    every backup bundle. A hand run binds to its queue instead. With only one, use
+    it; with neither, or with two that DISAGREE (a stale queue beside a new run),
+    bind to nothing, so no backup can be shown answered and the report fails
+    closed."""
+    queue_run_id, driver_run_id = queue_run_id or None, driver_run_id or None
+    if queue_run_id and driver_run_id and queue_run_id != driver_run_id:
+        return None
+    return queue_run_id or driver_run_id
+
+
 def main(argv=None):
     """Main entry point: load findings, enrich citations, build and validate report."""
     args = build_parser().parse_args(argv)
@@ -503,6 +518,12 @@ def main(argv=None):
                                     sec_carve_out=gj.get(
                                         "exclude_paths_sec_carve_out"),
                                     groups_valid=groups_valid == [True],
+                                    # #3676: which backups were summoned, read
+                                    # against what the verdicts dir holds.
+                                    verdict_unloadable=fs.verdict_unloadable,
+                                    verdict_run_id=_backup_run_id(
+                                        fs.verdict_run_id, getattr(args, "run_id", None)),
+                                    bundle_files=fs.bundle_files,
                                     # #2962: #2964's check reads the names
                                     # unspelled; every other reader keeps `gj`.
                                     raw_groups=raw_groups)

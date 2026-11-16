@@ -11,6 +11,18 @@
   every moved guard is unknown for that host-class reason, the run stays `paused`, with the resume
   advice and the stored posture unchanged. A probe that ran and proved less is still drift.
 
+- **Summoned backup advisors that never answer hold the letter back (#3676).** A run whose
+  backup advisors all failed (non-zero exit, empty reply, timeout) read as fully certified, and
+  a malformed backup sank certification without naming a cause. `meta.coverage.backups`
+  (`summoned`, `answered`, `unanswered`, `unloadable`, in cells, off the verify phase's own
+  `verify-attempts.json`, where verify now also records each backup cell's part count) feeds
+  the shared `grade_shortfalls` rule from #3667. A chunked cell (more than 25 claims, answered
+  in parts) is answered only when every part is, and a backup binds to this run through the
+  verify queue or the driver's `--run-id`; with neither, it is never answered. Unanswered
+  and unloadable backups are named reasons, the letter is provisional ("S (provisional; 5
+  backup advisors unanswered)"), coverage is NOT CERTIFIED and a PASS gate is INCONCLUSIVE. A
+  run whose backups all answered is unchanged.
+
 - **`driver readiness` reads a stored run only when a run in this checkout wrote it (#3671).** A
   target could commit a run folder holding a posture with every control PROVEN, and a
   `runs/latest` symlink to it. Readiness read through the symlink and printed that posture as
