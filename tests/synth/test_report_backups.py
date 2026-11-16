@@ -159,6 +159,13 @@ class TestBackupCoverage(_RunDir):
                                                  None)["unanswered"])
         self.assertEqual(1, backups_mod.coverage(self.run_dir, accepted, unloadable,
                                                  RUN_ID)["answered"])
+        # A bundle with no run stamp at all never matches "no run" either.
+        self.bundle("g1", "SEC", None, raw=json.dumps(
+            {"verdicts": [_VERDICT], "_panopticon": {"stage": "backup"}}))
+        accepted, unloadable = self.loaded()
+        self.assertIsNone(accepted["verdicts-g1-SEC-backup.json"]["run_id"])
+        self.assertEqual(1, backups_mod.coverage(self.run_dir, accepted, unloadable,
+                                                 None)["unanswered"])
 
     def test_only_charged_backup_keys_are_summoned(self):
         self.summon(("g1", "SEC"), count=0,
