@@ -424,5 +424,231 @@ class TestTheGemfileLockFailsClosed(_RubyCase):
             self.assertIsNone(self._origin(MEMBER))
 
 
+class TestTheReviewProbes(_RubyCase):
+    """#3692 review H1, H2, M1, M2 and L2: every probe the review seat ran returned
+    first_party before; each must fail closed, beside an honest control."""
+
+    PATH = "PATH\n  remote: gems/foo\n  specs:\n    foo (1.0)\n\n"
+    FOO = ("foo", "1.0")
+
+    @staticmethod
+    def _gem(body):
+        return "GEM\n  remote: https://rubygems.org/\n  specs:\n" + body
+
+    @staticmethod
+    def _spec(body):
+        return 'Gem::Specification.new do |s|\n' + body + 'end\n'
+
+    def _probe(self, lock, gemspec=None, package=None):
+        _write(os.path.join(self.root, "app.gemspec"), _gemspec("app", "0.1"))
+        _write(os.path.join(self.root, "gems", "foo", "foo.gemspec"),
+               gemspec if gemspec is not None else _gemspec(*self.FOO))
+        with open(os.path.join(self.root, "Gemfile.lock"), "w", encoding="utf-8",
+                  newline="") as fh:
+            fh.write(lock)
+        return self._origin(package or self.FOO)
+
+    def test_the_controls(self):
+        self.assertEqual("first_party", self._probe(self.PATH + self._gem("    rack (2.0)\n")))
+        self.assertIsNone(self._probe(self.PATH + self._gem("    foo (1.0)\n")))
+        # Every skipped header, exactly as Bundler writes it, still parses.
+        skipped = ("PLATFORMS\n  ruby\n\nDEPENDENCIES\n  foo!\n\nCHECKSUMS\n  foo (1.0)\n\n"
+                   "RUBY VERSION\n   ruby 3.3.0p0\n\nBUNDLED WITH\n   2.5.6\n")
+        self.assertEqual("first_party", self._probe(self.PATH + skipped))
+
+    def test_a_platform_suffixed_copy_shares_the_release(self):
+        # H1: Bundler reads `foo (1.0-x86_64-linux)` as foo 1.0 on that platform.
+        for copy in ("1.0-x86_64-linux", "1.0-java", "1.0-x86_64-linux-musl"):
+            with self.subTest(copy=copy):
+                self.assertIsNone(self._probe(self.PATH + self._gem("    foo (%s)\n" % copy)))
+        self.assertEqual("first_party",
+                         self._probe(self.PATH + self._gem("    foo (1.1-java)\n")))
+        # The platform copy is itself external under both spellings.
+        self.assertIsNone(self._probe(self.PATH + self._gem("    rack (2.0-java)\n"),
+                                      package=("rack", "2.0")))
+        # A local spec with a platform never proves its release.
+        lock = self.PATH.replace("foo (1.0)", "foo (1.0-java)")
+        for version in ("1.0", "1.0-java"):
+            with self.subTest(local_platform=version):
+                gemspec = _gemspec("foo", version)
+                self.assertIsNone(self._probe(lock, gemspec=gemspec))
+                self.assertIsNone(self._probe(lock, gemspec=gemspec,
+                                              package=("foo", "1.0-java")))
+
+    def test_whitespace_bundler_reads_differently_fails_the_lock(self):
+        # H2: each of these hid the GEM copy below it from the old parser.
+        for label, line in (("tab", "\tjunk\n"), ("form feed", "\x0c\n"),
+                            ("form feed text", "\x0cx\n"), ("cr-led", "\r    bar (2)\n"),
+                            ("u2028", "\u2028x\n"), ("nel", "\x85x\n"), ("vt", "\x0bx\n"),
+                            ("nbsp", "\u00a0x\n"), ("u2029", "\u2029x\n"),
+                            ("spaces only", "   \n")):
+            with self.subTest(line=label):
+                self.assertIsNone(self._probe(self.PATH + self._gem(line + "    foo (1.0)\n")))
+        # Anywhere in the lock, not just inside a source.
+        for label, lock in (
+                ("bom", "\ufeff" + self._gem("    foo (1.0)\n") + "\n" + self.PATH),
+                ("crlf", (self.PATH + self._gem("    rack (2.0)\n")).replace("\n", "\r\n")),
+                ("tab in a skipped section", self.PATH + "PLATFORMS\n\truby\n"),
+                ("trailing tab on a header", self.PATH.replace("PATH\n", "PATH\t\n"))):
+            with self.subTest(lock=label):
+                self.assertIsNone(self._probe(lock))
+
+    def test_only_known_headers_are_read_or_skipped(self):
+        # H2: exact header match; anything else fails the lock.
+        gem = self._gem("    foo (1.0)\n")
+        for label, lock in (
+                ("GEM with a trailing space", self.PATH + gem.replace("GEM\n", "GEM \n")),
+                ("PATH with a trailing space",
+                 self.PATH.replace("PATH\n", "PATH \n") + self._gem("    rack (2.0)\n")),
+                ("lower-case header", self.PATH + "platforms\n  ruby\n"),
+                ("unknown header", self.PATH + "SOMETHING NEW\n  x\n"),
+                ("indented line before any header", "  remote: x\n" + self.PATH)):
+            with self.subTest(lock=label):
+                self.assertIsNone(self._probe(lock))
+        # A second GEM section is still read.
+        self.assertIsNone(self._probe(self.PATH + self._gem("    rack (1)\n") + "\n" + gem))
+        self.assertIsNone(self._probe(self.PATH + "PLATFORMS\n  ruby\n" + gem))
+
+    def test_spec_lines_bundler_reads_differently_fail_the_lock(self):
+        for label, body in (("pinned bang", "    foo (1.0)!\n"),
+                            ("two-space spec", "  foo (1.0)\n")):
+            with self.subTest(spec=label):
+                self.assertIsNone(self._probe(self.PATH + self._gem(body)))
+
+    def test_an_option_after_specs_fails_the_lock(self):
+        # L2: Bundler builds the source at `specs:`.
+        self.assertIsNone(self._probe("PATH\n  specs:\n    foo (1.0)\n  remote: gems/foo\n\n"))
+        self.assertIsNone(self._probe(self.PATH.replace("    foo (1.0)\n",
+                                                        "    foo (1.0)\n  glob: x\n")))
+        self.assertIsNone(self._probe(self.PATH.replace("    foo (1.0)\n",
+                                                        "    foo (1.0)\n  specs:\n")))
+
+    def test_ruby_the_reader_cannot_follow_fails_the_gemspec(self):
+        # M1: each was evaluated by ruby and overrides or hides the proven literals.
+        lit = '  s.name = "foo"\n  s.version = "1.0"\n'
+        hidden = 'Gem::Specification.new do |s|\n  s.send(:name=, "bar")\n' \
+                 '  s.send(:version=, "9.9")\nend\n'
+        for label, gemspec in (
+                ("send", self._spec(lit + '  s.send(:version=, "9.9")\n')),
+                ("colon colon", self._spec(lit + '  s::version = "9.9"\n')),
+                ("backslash continuation", self._spec(lit + '  s.version \\\n= "9.9"\n')),
+                ("dot continuation", self._spec(lit + '  s.\n  version = "9.9"\n')),
+                ("leading dot", self._spec(lit + '  s\n  .version = "9.9"\n')),
+                ("name replace", self._spec(lit + '  s.name.replace("bar")\n')),
+                ("name append", self._spec(lit + '  s.name << "x"\n')),
+                ("multiple assignment", self._spec(lit + '  s.name, _x = "bar", 1\n')),
+                ("ivar set", self._spec(
+                    lit + '  s.instance_variable_set(:@version, Gem::Version.new("9.9"))\n')),
+                ("instance eval", self._spec(lit + '  s.instance_eval { @name = "bar" }\n')),
+                ("__END__", hidden + "__END__\n" + lit),
+                ("=begin", "=begin\n" + lit + "=end\n" + hidden),
+                ("heredoc", "X = <<-R\n" + lit + "R\n" + hidden),
+                ("aliased Gem", self._spec(lit) + 'G = Gem\nG::Specification.new { |t| '
+                                                  't.send(:name=, "bar") }\n'),
+                ("semicolon", self._spec('  s.name = "foo"\n  s.version = "1.0"; '
+                                         's.send(:version=, "9.9")\n')),
+                ("public_send", self._spec(lit + '  s.public_send(:version=, "9.9")\n')),
+                ("__send__", self._spec(lit + '  s.__send__(:version=, "9.9")\n')),
+                ("method object", self._spec(lit + '  s.method(:version=).call("9.9")\n')),
+                ("symbol to proc", self._spec(lit + '  [s].each(&:"version=")\n')),
+                ("class eval", self._spec(lit) + 'Gem::Specification.class_eval { }\n'),
+                ("reopened method", self._spec(lit + '  def s.version; "9.9"; end\n')),
+                ("eval", self._spec(lit + '  eval("s.version = 9")\n')),
+                ("define_method", self._spec(lit + '  define_method(:x) { }\n')),
+                ("ObjectSpace", self._spec(lit) + "ObjectSpace.each_object { }\n"),
+                ("binding", self._spec(lit + "  binding.local_variable_get(:s)\n")),
+                ("Gem semicolon", "Gem;" + self._spec(lit)),
+                ("assigned spec", "x = " + self._spec(lit) + 'x.version = "9.9"\n'),
+                ("chained end", self._spec(lit).replace("end\n", "end.tap { }\n")),
+                ("name outside the block", self._spec('  s.version = "1.0"\n')
+                 + '  s.name = "foo"\n'),
+                ("mention outside the block", self._spec(lit) + "s.summary = 1\n"),
+                ("mention mid-line", self._spec(lit + '  x = s\n')),
+                ("getter on the rhs", self._spec(lit + '  s.summary = s.name.replace("y")\n')),
+                ("interpolated mention",
+                 self._spec(lit + '  s.summary = "#{s.name.replace(%q(y))}"\n')),
+                ("or-assign", self._spec(lit + '  s.version ||= "9.9"\n')),
+                ("safe navigation", self._spec(lit + '  s&.version = "9.9"\n')),
+                ("block var in a nested block", self._spec(lit + '  [1].each { s }\n')),
+                ("two Specifications", self._spec(lit) + "# Gem::Specification\n"),
+                ("unclosed block", self._spec(lit).replace("end\n", "  end\n")),
+                ("tab whitespace", self._spec(lit.replace("  s.name", "\ts.name"))),
+                ("u2028", self._spec(lit + "  s.summary = 1\u2028\n"))):
+            with self.subTest(gemspec=label):
+                self.assertIsNone(self._probe(self.PATH, gemspec=gemspec))
+
+    def test_each_refused_form_fails_the_gemspec_alone(self):
+        # M1's refusal list, one at a time, each in a line no other rule objects to.
+        lit = '  s.name = "foo"\n  s.version = "1.0"\n'
+        calls = ("send", "public_send", "__send__", "instance_variable_set",
+                 "instance_variable_get", "instance_eval", "instance_exec", "class_eval",
+                 "class_exec", "module_eval", "module_exec", "define_method",
+                 "define_singleton_method", "eval", "method", "binding")
+        cases = [(call, self._spec(lit + "  x = Object.%s(:y)\n" % call)) for call in calls]
+        cases += [
+            ("def", self._spec(lit + "  def y; end\n")),
+            ("alias", self._spec(lit + "  alias y z\n")),
+            ("alias_method", self._spec(lit + "  alias_method :y, :z\n")),
+            ("undef", self._spec(lit + "  undef y\n")),
+            ("ObjectSpace", self._spec(lit + "  x = ObjectSpace\n")),
+            ("__END__", self._spec(lit) + "__END__\n"),
+            ("=begin", "=begin\n=end\n" + self._spec(lit)),
+            ("<<", self._spec(lit + "  x = [] << 1\n")),
+            ("&:", self._spec(lit + "  x = [1].map(&:to_s)\n")),
+            ("bare Gem", self._spec(lit + "  x = Gem\n")),
+            ("trailing backslash", self._spec(lit + "  x = 1 \\\n  + 2\n")),
+            ("trailing dot", self._spec(lit + "  x = 1.\n  to_s\n")),
+            ("leading dot", self._spec(lit + "  x = 1\n  .to_s\n")),
+            ("leading safe navigation", self._spec(lit + "  x = 1\n  &.to_s\n"))]
+        for label, gemspec in cases:
+            with self.subTest(refused=label):
+                self.assertIsNone(self._probe(self.PATH, gemspec=gemspec))
+        self.assertEqual("first_party", self._probe(
+            self.PATH, gemspec=self._spec(lit + "  x = Object.sender(:y)\n")))
+
+    def test_metadata_must_be_literal_lines(self):
+        # M2: an escaped or computed key, or a whole-hash assignment, may set a host.
+        lit = '  s.name = "foo"\n  s.version = "1.0"\n'
+        for label, line in (
+                ("escaped key", '  s.metadata["allowed\\x5fpush_host"] = "https://gems.corp"\n'),
+                ("unicode-escaped key",
+                 '  s.metadata["allowed\\u005fpush_host"] = "https://gems.corp"\n'),
+                ("concatenated key",
+                 '  s.metadata["allowed_" + "push_host"] = "https://gems.corp"\n'),
+                ("constant metadata", "  s.metadata = Foo::METADATA\n"),
+                ("merged metadata", '  s.metadata.merge!("a" => "b")\n'),
+                ("literal private host",
+                 '  s.metadata["allowed_push_host"] = "https://gems.corp"\n'),
+                ("constant value", '  s.metadata["homepage_uri"] = HOME\n'),
+                ("interpolated value", '  s.metadata["homepage_uri"] = "#{x}"\n'),
+                ("host named elsewhere", '  s.summary = "allowed_push_host"\n'),
+                ("two hosts", '  s.metadata["allowed_push_host"] = "https://rubygems.org"\n'
+                              '  s.metadata["allowed_push_host"] = "https://gems.corp"\n')):
+            with self.subTest(metadata=label):
+                self.assertIsNone(self._probe(self.PATH, gemspec=self._spec(lit + line)))
+
+    def test_honest_gemspecs_still_prove_their_identity(self):
+        lit = '  s.name = "foo"\n  s.version = "1.0"\n'
+        for label, gemspec in (
+                ("plain", self._spec(lit)),
+                ("crlf", self._spec(lit).replace("\n", "\r\n")),
+                ("dependencies", self._spec(lit + '  s.add_dependency "rack", "~> 2.2"\n'
+                                                  '  s.add_runtime_dependency("rake")\n'
+                                                  '  s.add_development_dependency "rspec"\n')),
+                ("literal metadata", self._spec(
+                    lit + '  s.metadata["homepage_uri"] = "https://example.invalid"\n'
+                          "  s.metadata['allowed_push_host'] = 'https://rubygems.org'\n")),
+                ("prose mentioning the variable", self._spec(
+                    lit + '  s.description = "s is a gem\'s spec; it == s"\n')),
+                ("other fields", self._spec(lit + '  s.files = Dir["lib/**/*.rb"]\n'
+                                                  '  s.required_ruby_version = ">= 3.0"\n')),
+                ("nested in a module", "module Foo\n  Gem::Specification.new do |s|\n"
+                                       "    s.name = \"foo\"\n    s.version = \"1.0\"\n"
+                                       "  end\nend\n"),
+                ("brace block", "Gem::Specification.new { |s|\n" + lit + "}\n")):
+            with self.subTest(gemspec=label):
+                self.assertEqual("first_party", self._probe(self.PATH, gemspec=gemspec))
+
+
 if __name__ == "__main__":
     unittest.main()

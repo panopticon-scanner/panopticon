@@ -8,17 +8,24 @@
   ingest, without an advisor, when every lock entry with that identity sits under a `PATH`
   source whose realpath is inside the review root, and the source's one `*.gemspec` proves the
   same name and version.
-  - **Literal only (R1):** exactly one `x.name = "lit"` and one `x.version = "lit"` on the
-    `Gem::Specification.new` block's variable, plain string literals. `Foo::VERSION`,
+  - **Literal only (R1):** exactly one `x.name = "lit"` and one `x.version = "lit"` inside the
+    one `Gem::Specification.new do |x|` block, plain string literals. `Foo::VERSION`,
     interpolation, `.freeze`, `%q{}`, a second assignment (even commented) and every other form
     fail closed -- so most real gems, which read a `VERSION` constant, stay with the advisor.
-  - **Publishable (R2):** a literal `metadata["allowed_push_host"]` other than rubygems.org is
-    private-only, and any other mention of that key fails closed. The review root is exempt; a
-    member is not.
-  - **Fails closed:** a GEM or GIT copy of the same identity, an outside-tree or symlinked-out
-    source, a `PATH` source with any option besides `remote` (such as `glob:`), a directory
-    without exactly one gemspec, a version mismatch, and a malformed lock. bundler-audit and
-    `gems.locked` stay with the advisor.
+    The reader is an allowlist: every other use of `x` must be a line `x.<field> = ...`,
+    `x.add_*dependency ...` or a literal metadata line, and dynamic dispatch (`send`,
+    `instance_eval`, `method`, ...), `def`, heredocs, `__END__`, `=begin`, line continuations,
+    an aliased `Gem` and whitespace other than spaces fail closed.
+  - **Publishable (R2):** every line naming `metadata` must be `x.metadata["key"] = "lit"`. A
+    literal `allowed_push_host` other than rubygems.org is private-only, and any other mention
+    of that key fails closed. The review root is exempt; a member is not.
+  - **Fails closed:** a GEM or GIT copy of the same identity, including a platform copy such as
+    `foo (1.0-java)` (Bundler reads it as foo 1.0), an outside-tree or symlinked-out source, a
+    `PATH` source with any option besides `remote` (such as `glob:`), a directory without
+    exactly one gemspec, a version mismatch, and a malformed lock. The lock parser is an
+    allowlist too: an unknown header (even `GEM ` with a trailing space), whitespace other than
+    spaces (a tab, `\r`, U+2028, a BOM), and an option after `specs:` fail the whole lock.
+    bundler-audit and `gems.locked` stay with the advisor.
 
   Every read spends #3634's shared ingest budget; fingerprints and reconcile keys are unchanged.
 

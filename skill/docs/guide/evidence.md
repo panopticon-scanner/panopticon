@@ -22,10 +22,13 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
   (#3623): an exact match against a `PATH` source gem in the review root's own `Gemfile.lock`, where
   every lock entry with that identity is local, the source carries no option but `remote` and its
   realpath is inside the review root, and its one `*.gemspec` proves the name and version with plain
-  string literals (`x.name = "lit"`, `x.version = "lit"`; `Foo::VERSION` and every other form fail
-  closed). A literal `allowed_push_host` other than rubygems.org is private-only, and any other
-  mention of it fails closed; only the review root is exempt. bundler-audit and `gems.locked` stay
-  with the advisor. Gate-eligible.
+  string literals inside the `Gem::Specification.new` block (`x.name = "lit"`, `x.version = "lit"`;
+  `Foo::VERSION` and every form the allowlist reader does not know fail closed). A platform copy
+  such as `foo (1.0-java)` shares foo 1.0's identity, and an unknown lock header or whitespace other
+  than spaces fails the whole lock. Every `metadata` line must be a literal key and value; a literal
+  `allowed_push_host` other than rubygems.org is private-only, and any other mention of it fails
+  closed; only the review root is exempt. bundler-audit and `gems.locked` stay with the advisor.
+  Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
   Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
   by one advisor: the adversarial backup round is summoned only for primary-CONFIRMED findings in

@@ -574,6 +574,9 @@ def _npm_package_origins(lock_path, target_root, cache: IngestCache):
 
 _GEM_SECTIONS = {"PATH": "local", "GEM": "external", "GIT": "external",
                  "PLUGIN SOURCE": "external"}
+# Headers Bundler writes whose contents never name a source (#3692 review H2).
+_GEM_SKIPPED = frozenset(("PLATFORMS", "DEPENDENCIES", "CHECKSUMS", "RUBY VERSION",
+                          "BUNDLED WITH"))
 _GEM_SPEC = re.compile(r"    ([^ ()]+) \(([^ ()]+)\)\Z")
 _GEM_OPTION = re.compile(r"  ([a-z_]+):(?: (.*))?\Z")
 
@@ -588,29 +591,45 @@ class _GemSection:
         self.specs: list[tuple[str, str]] = []
 
 
-def _gem_lock_sections(text):
-    """Each source section of a Gemfile.lock, in order.
+def _odd_whitespace(text):
+    """True when the text holds whitespace other than a plain space or a newline, or a
+    byte-order mark: Ruby and Python disagree on where such a line starts or ends."""
+    return "\ufeff" in text or any(ch.isspace() and ch not in " \n" for ch in text)
 
-    A source section is a column-0 header from ``_GEM_SECTIONS``; any other header
-    (PLATFORMS, DEPENDENCIES, CHECKSUMS, ...) is skipped to the next one. Inside a
-    source, only ``remote:`` and ``specs:`` are understood -- any other option
-    (``glob:``, ``revision:``, ...) is kept as an unknown marker -- and a spec line
-    that is not ``    name (version)`` fails the whole lock (ValueError)."""
+
+def _gem_lock_sections(text):
+    """Each source section of a Gemfile.lock, in order (#3692 review H2 and L2).
+
+    An allowlist: a column-0 header must be exactly a ``_GEM_SECTIONS`` source or a
+    ``_GEM_SKIPPED`` header, whose contents are skipped. Any other header, any
+    whitespace but plain spaces (a tab, ``\r``, U+2028, a BOM, ...), an indented line
+    before the first header, an option after ``specs:``, and a spec line that is not
+    ``    name (version)`` fails the whole lock (ValueError). Inside a source, only
+    ``remote:`` and ``specs:`` are understood; any other option is kept as an unknown
+    marker."""
+    if _odd_whitespace(text):
+        raise ValueError("Gemfile.lock whitespace Bundler reads differently")
     sections: list[_GemSection] = []
     current: _GemSection | None = None
+    skipping = False
     in_specs = False
     for line in text.split("\n"):
-        if not line.strip():
+        if not line:
             continue
         if not line.startswith(" "):
-            kind = _GEM_SECTIONS.get(line.strip())
-            current = None if kind is None else _GemSection(kind)
-            if current is not None:
+            if line in _GEM_SKIPPED:
+                current, skipping = None, True
+            elif line in _GEM_SECTIONS:
+                current, skipping = _GemSection(_GEM_SECTIONS[line]), False
                 sections.append(current)
+            else:
+                raise ValueError("unknown Gemfile.lock header")
             in_specs = False
             continue
-        if current is None:
+        if skipping:
             continue
+        if current is None or not line.strip():
+            raise ValueError("Gemfile.lock line outside a section")
         if line.startswith("      "):
             if not in_specs:
                 raise ValueError("indented line outside specs")
@@ -622,7 +641,8 @@ def _gem_lock_sections(text):
             current.specs.append((match[1], match[2]))
             continue
         option = _GEM_OPTION.match(line)
-        if option is None:
+        if option is None or in_specs:
+            # Bundler builds the source at `specs:`; a later option is not part of it.
             raise ValueError("malformed Gemfile.lock option")
         in_specs = option[1] == "specs"
         if option[1] == "remote":
@@ -634,27 +654,42 @@ def _gem_lock_sections(text):
     return sections
 
 
-_GEMSPEC_NEW = re.compile(r"Gem::Specification\.new\s*(?:do\s*\|\s*(\w+)\s*\||\{\s*\|\s*(\w+)\s*\|)")
-_GEMSPEC_ANY = {"name": re.compile(r"\.name\s*="), "version": re.compile(r"\.version\s*=")}
+def _gem_release(version):
+    """``(release, platform)``: Bundler splits a spec's version at its first ``-``, so
+    ``1.0-x86_64-linux`` is release 1.0 on that platform (#3692 review H1)."""
+    release, _, platform = version.partition("-")
+    return release, platform
+
+
+_GEMSPEC_OPEN = re.compile(r"( *)Gem::Specification\.new *"
+                           r"(?:(do) *\| *(\w+) *\||\{ *\| *(\w+) *\|) *\Z")
+_PLAIN_LITERAL = r"""(?:"([^"\\#]*)"|'([^'\\]*)')"""
 _GEMSPEC_LITERAL = {
-    field: re.compile(r"\A\s*(\w+)\.%s\s*=\s*(?:\"([^\"\\\\#]*)\"|'([^'\\\\]*)')\s*\Z" % field)
+    field: re.compile(r" *(\w+)\.%s *= *%s *\Z" % (field, _PLAIN_LITERAL))
     for field in ("name", "version")}
-_PUSH_HOST_ANY = re.compile(r"allowed_push_host")
-_PUSH_HOST_LITERAL = re.compile(
-    r"\A\s*(\w+)\.metadata\[\s*(?:\"allowed_push_host\"|'allowed_push_host')\s*\]\s*=\s*"
-    r"(?:\"([^\"\\\\#]*)\"|'([^'\\\\]*)')\s*\Z")
+# Any assignment-looking mention of the field, as code, symbol or text (`:version=`).
+_GEMSPEC_ANY = {field: re.compile(r"\b%s\b[^\w=\n]*=(?![=~>])" % field)
+                for field in ("name", "version")}
+_GEMSPEC_METADATA = re.compile(r" *(\w+)\.metadata\[(?:\"([\w.-]+)\"|'([\w.-]+)')\]"
+                               r" *= *%s *\Z" % _PLAIN_LITERAL)
+# #3692 review M1: Ruby the reader cannot follow fails the whole gemspec.
+_GEMSPEC_REFUSED = re.compile(
+    r"__END__|=begin|<<|&:|\\\Z|\.\Z|\A *&?\.|ObjectSpace"
+    r"|\b(?:send|public_send|__send__|instance_variable_set|instance_variable_get"
+    r"|instance_eval|instance_exec|class_eval|class_exec|module_eval|module_exec"
+    r"|define_method|define_singleton_method|eval|def|alias|alias_method|undef|method"
+    r"|binding)\b"
+    r"|\bGem\b(?!::)")
+_GEMSPEC_STRING = re.compile(r"""\"[^"\\#]*\"|'[^'\\]*'""")
 
 
 def _gemspec_fact(package_dir, target_root, cache: IngestCache):
     """``((name, version), publishable)`` from the one ``*.gemspec`` in an in-tree
-    directory, else None (#3623 rulings R1 and R2).
+    directory, else None (#3623 rulings R1 and R2, #3692 review M1 and M2).
 
-    R1, literal only: exactly one ``Gem::Specification.new`` block whose variable
-    makes exactly one ``x.name = "lit"`` and one ``x.version = "lit"`` assignment,
-    each a plain string literal on its own line (no interpolation, no constant, no
-    second assignment anywhere). R2: a literal ``x.metadata["allowed_push_host"]``
-    other than rubygems.org is private-only, and any other mention of that key
-    fails closed. The review root itself is exempt from R2."""
+    R1, literal only: see ``_gemspec_document``. R2: a literal
+    ``x.metadata["allowed_push_host"]`` other than rubygems.org is private-only. The
+    review root itself is exempt from R2."""
     real_dir = os.path.realpath(package_dir)
     if not _inside(target_root, real_dir):
         return None
@@ -686,29 +721,76 @@ def _gemspec_fact(package_dir, target_root, cache: IngestCache):
             publishable or real_dir == target_root)
 
 
+def _literal(match, group):
+    """The plain literal a ``_PLAIN_LITERAL`` pair of groups captured."""
+    return match[group] if match[group] is not None else match[group + 1]
+
+
 def _gemspec_document(text):
-    """The literal facts of one gemspec's text, else None."""
-    blocks = [m[1] or m[2] for m in _GEMSPEC_NEW.finditer(text)]
-    if len(blocks) != 1 or text.count("Gem::Specification") != 1:
+    """The literal facts of one gemspec's text, else None (#3623 R1, #3692 M1/M2).
+
+    An allowlist. The gemspec holds one ``Gem::Specification.new do |x|`` (or
+    ``{ |x|``) line, once ``Specification`` in all, closed by ``end`` (``}``) at its own
+    indentation. Inside that block, ``x.name = "lit"`` and ``x.version = "lit"`` each
+    appear exactly once as plain literals, and nothing else anywhere assigns, names
+    or symbolizes ``name=``/``version=``. Every other mention of ``x`` is one per line,
+    inside the block, and of the form ``x.<ident> = ...``,
+    ``x.add_(runtime_|development_)?dependency ...`` or a literal metadata line. Every
+    line mentioning ``metadata`` is ``x.metadata["key"] = "lit"``; one mentioning
+    ``allowed_push_host`` is that line with that key, at most once. ``_GEMSPEC_REFUSED``
+    (dynamic dispatch, reopening, heredocs, ``__END__``, line continuations, an aliased
+    ``Gem``) and whitespace other than spaces fail closed."""
+    text = text.replace("\r\n", "\n")
+    if _odd_whitespace(text) or text.count("Specification") != 1:
         return None
-    var = blocks[0]
-    document: ManifestDocument = {}
     lines = text.split("\n")
+    if any(_GEMSPEC_REFUSED.search(line) for line in lines):
+        return None
+    opened = [(i, match) for i, match in enumerate(map(_GEMSPEC_OPEN.match, lines)) if match]
+    if len(opened) != 1:
+        return None
+    first, opener = opened[0]
+    var = opener[3] or opener[4]
+    closer = opener[1] + ("end" if opener[2] else "}")
+    try:
+        last = lines.index(closer, first + 1, len(lines))
+    except ValueError:
+        return None
+    document: ManifestDocument = {}
     for field, loose in _GEMSPEC_ANY.items():
-        found = [line for line in lines if loose.search(line)]
+        # The mention rule below keeps this line inside the block.
+        found = [i for i, line in enumerate(lines) if loose.search(line)]
         if len(found) != 1:
             return None
-        match = _GEMSPEC_LITERAL[field].match(found[0])
-        value = None if match is None else (match[2] if match[2] is not None else match[3])
-        if match is None or match[1] != var or not value:
+        match = _GEMSPEC_LITERAL[field].fullmatch(lines[found[0]])
+        if match is None or match[1] != var or not _literal(match, 2):
             return None
-        document[field] = value
-    mentions = [line for line in lines if _PUSH_HOST_ANY.search(line)]
-    if mentions:
-        match = _PUSH_HOST_LITERAL.match(mentions[0])
-        if len(mentions) != 1 or match is None or match[1] != var:
+        document[field] = _literal(match, 2)
+    mention = re.compile(r"(?<![\w'\"$@:.])%s(?![\w?!])" % re.escape(var))
+    hosts = []
+    for i, line in enumerate(lines):
+        if i == first:
+            continue
+        metadata = _GEMSPEC_METADATA.fullmatch(line)
+        if "metadata" in line and (metadata is None or metadata[1] != var):
             return None
-        document["allowed_push_host"] = match[2] if match[2] is not None else match[3]
+        if "allowed_push_host" in line:
+            if metadata is None or _literal(metadata, 2) != "allowed_push_host":
+                return None
+            hosts.append(_literal(metadata, 4))
+        mentions = len(mention.findall(_GEMSPEC_STRING.sub("", line)))
+        if not mentions:
+            continue
+        if mentions != 1 or not first < i < last or not (
+                metadata is not None
+                or re.match(r" *%s\.\w+ *=(?![=~>])" % re.escape(var), line)
+                or re.match(r" *%s\.add_(?:runtime_|development_)?dependency\b"
+                            % re.escape(var), line)):
+            return None
+    if len(hosts) > 1:
+        return None
+    if hosts:
+        document["allowed_push_host"] = hosts[0]
     return document
 
 
@@ -718,8 +800,10 @@ def _ruby_package_origins(lock_path, target_root, cache: IngestCache):
     A gem under a ``PATH`` source is first-party only when the source's realpath is
     inside the review root, the source carries no option but ``remote``/``specs``,
     and the directory's one gemspec proves the exact identity and is publishable.
-    ``GEM``, ``GIT`` and plugin sources are external. A malformed lock classifies
-    nothing."""
+    ``GEM``, ``GIT`` and plugin sources are external, under both the spec's version
+    and its release, so a platform-suffixed copy makes the release ambiguous (#3692
+    review H1); a local spec with a platform is never first-party. A malformed lock
+    classifies nothing."""
     if lock_path in cache.package_origins:
         return cache.package_origins[lock_path]
     origins: PackageOrigins = {}
@@ -741,17 +825,21 @@ def _ruby_package_origins(lock_path, target_root, cache: IngestCache):
     lock_dir = os.path.dirname(lock_path)
     for section in sections:
         if section.kind == "external":
-            for spec in section.specs:
-                found.setdefault(spec, set()).add("external")
+            for name, version in section.specs:
+                # Keyed by release too: Bundler reads `foo (1.0-java)` as foo 1.0.
+                for identity in {(name, version), (name, _gem_release(version)[0])}:
+                    found.setdefault(identity, set()).add("external")
     for section, spec in local:
         remote = section.remote
+        release, platform = _gem_release(spec[1])
         fact = None
-        if (isinstance(remote, str) and not section.options
+        if (isinstance(remote, str) and not section.options and not platform
                 and not os.path.isabs(remote) and not _URL_SCHEME.match(remote)):
             fact = _gemspec_fact(os.path.join(lock_dir, remote), target_root, cache)
         origin = (evidence.FIRST_PARTY_PACKAGE_ORIGIN if fact == (spec, True)
                   else "unknown")
-        found.setdefault(spec, set()).add(origin)
+        for identity in {spec, (spec[0], release)}:
+            found.setdefault(identity, set()).add(origin)
     origins.update(found)
     return origins
 
