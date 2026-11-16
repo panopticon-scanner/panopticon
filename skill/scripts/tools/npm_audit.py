@@ -72,9 +72,13 @@ def _staged_bytes(path: str) -> bytes | None:
 class NpmAuditAdapter:
     name = "npm-audit"
     prefix = "NA"
+    # #3648: the root files this adapter reads, by ecosystem. `is_applicable` reads
+    # it, and `tools_manifest` builds the "why was this ecosystem not audited"
+    # reason from the same tuple, so the two cannot disagree.
+    audit_files = {"javascript": LOCKFILES}
 
     def is_applicable(self, target: str) -> bool:
-        return has_any_file(target, *LOCKFILES)
+        return has_any_file(target, *self.audit_files["javascript"])
 
     def _manifest(self, target: str) -> str:
         """The manifest `npm audit` actually reads for *target*, target-relative.

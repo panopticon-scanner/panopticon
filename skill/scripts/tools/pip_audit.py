@@ -490,10 +490,13 @@ UNBUILT_REASON = ("pip-audit audited nothing: a requirement has no wheel, and pa
 class PipAuditAdapter:
     name = "pip-audit"
     prefix = "PA"
+    # #3648: the root files this adapter reads, by ecosystem. `is_applicable` reads
+    # it, and `tools_manifest` builds the "why was this ecosystem not audited"
+    # reason from the same tuple, so the two cannot disagree.
+    audit_files = {"python": ("requirements.txt", "requirements*.txt", "pyproject.toml")}
 
     def is_applicable(self, target: str) -> bool:
-        patterns = ["requirements.txt", "requirements*.txt", "pyproject.toml"]
-        for pat in patterns:
+        for pat in self.audit_files["python"]:
             path = os.path.join(target, pat)
             if "*" in pat:
                 if glob.glob(path):

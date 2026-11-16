@@ -50,7 +50,7 @@ from scripts.tolerant_json import depth_checked
 from scripts.scanner_config import _SCANNER_CONFIG_POSTURE, _SUPPRESSION_POSTURE
 from scripts.tool_capture import (
     MAX_TOOL_OUTPUT_BYTES, _CONTAINER_CLEANUP_FAILURES, _REDACTED_CAPTURES)
-from scripts.tools import egress
+from scripts.tools import ADAPTERS, ONLINE_ONLY, egress
 from scripts.tools.legacy_sarif import LEGACY_SARIF_TOOLS
 
 # How deep the virtualenv walk that found `excluded_dirs` looked, published as
@@ -99,6 +99,80 @@ def dependency_audit_applicable(target):
     if next(glob.iglob(os.path.join(glob.escape(target), "requirements*.txt")), None):
         found.add("python")
     return sorted(found)
+
+
+# #3648: why an applicable ecosystem went unaudited. A tree with `package.json` and
+# no lockfile is applicable (above) and no auditor reads it, so the report said only
+# "no SCA tool produced output" -- or, beside an audited `requirements.txt`, nothing.
+#   no_auditable_file: none of the files any auditor reads for it is in the tree;
+#   needs_online:      such a file is there, and an auditor that reads it runs only
+#                      under --online, which was not given;
+#   not_run:           anything else (an auditor reads it and was not selected).
+UNAUDITED_REASONS = ("no_auditable_file", "needs_online", "not_run")
+
+
+def dependency_auditors(ecosystem):
+    """{auditor: the root files it reads for `ecosystem`}, off each adapter's own
+    `audit_files` -- the tuple its `is_applicable` reads, so this cannot drift."""
+    readers = {}
+    for tool in sorted(DEPENDENCY_AUDIT_TOOLS):
+        files = getattr(ADAPTERS[tool], "audit_files", {}).get(ecosystem)
+        if files:
+            readers[tool] = tuple(files)
+    return readers
+
+
+def _in_tree(target, name):
+    """Is root file `name` (or anything matching it, for a pattern) in `target`?"""
+    if "*" in name:
+        return next(glob.iglob(os.path.join(glob.escape(target), name)), None) is not None
+    return os.path.exists(os.path.join(target, name))
+
+
+def dependency_audit_unaudited(target, selected, online):
+    """{ecosystem: reason} for each applicable ecosystem no SELECTED auditor reads.
+
+    An auditor reads an ecosystem here when one of its files for it is in the tree:
+    osv-scanner selected for a `requirements.txt` does not audit the `package.json`
+    beside it. Reasons are `UNAUDITED_REASONS`; nothing of the target's is recorded."""
+    unaudited = {}
+    for ecosystem in dependency_audit_applicable(target):
+        readers = [tool for tool, files in dependency_auditors(ecosystem).items()
+                   if any(_in_tree(target, name) for name in files)]
+        if set(readers) & set(selected):
+            continue
+        if not readers:
+            unaudited[ecosystem] = "no_auditable_file"
+        elif not online and any(tool in ONLINE_ONLY for tool in readers):
+            unaudited[ecosystem] = "needs_online"
+        else:
+            unaudited[ecosystem] = "not_run"
+    return unaudited
+
+
+def _listed(names, last):
+    names = list(names)
+    return names[0] if len(names) == 1 else "%s %s %s" % (", ".join(names[:-1]), last, names[-1])
+
+
+def unaudited_sentence(ecosystem, reason):
+    """The fixed sentence for one unaudited ecosystem: closed enums in, and file and
+    tool names from the adapters' own constants. None for anything else."""
+    readers = dependency_auditors(ecosystem)
+    if reason == "no_auditable_file" and readers:
+        files = list(dict.fromkeys(name for names in readers.values() for name in names))
+        return "%s not audited: no %s; %s need%s one" % (
+            ecosystem, _listed(files, "or"), _listed(readers, "and"),
+            "s" if len(readers) == 1 else "")
+    online = [tool for tool in readers if tool in ONLINE_ONLY]
+    if reason == "needs_online" and online:
+        return "%s not audited: %s need%s --online" % (
+            ecosystem, _listed(online, "and"), "s" if len(online) == 1 else "")
+    if reason in UNAUDITED_REASONS and ecosystem in _DEPENDENCY_AUDIT_MARKERS:
+        # `not_run`, and any pair the two sentences above have no words for: an
+        # ecosystem recorded as unaudited is always named.
+        return "%s not audited: no dependency auditor ran on it" % ecosystem
+    return None
 
 
 # What egress each tool was granted this run, keyed by tool name (#1645). Same
@@ -201,7 +275,8 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    network=None, exclude_globs=(), suppression_comments=None,
                    scanner_config=None, ignore_files=None, scanner_scope=None,
                    cleanup_failures=None, language_detection_skips=None,
-                   withheld=(), image=None, apps=None, dependency_applicable=None):
+                   withheld=(), image=None, apps=None, dependency_applicable=None,
+                   dependency_unaudited=None):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `withheld` (#3265) names applicable adapters the operator did not enable:
@@ -410,6 +485,12 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
             "selected": sorted(set(selected) & DEPENDENCY_AUDIT_TOOLS),
             "produced": sorted(set(produced) & DEPENDENCY_AUDIT_TOOLS),
         }
+        if dependency_unaudited is not None:
+            # #3648: closed enums on both sides, and only for an ecosystem listed above.
+            payload["dependency_audit"]["unaudited"] = {
+                ecosystem: reason for ecosystem, reason in sorted(dependency_unaudited.items())
+                if ecosystem in payload["dependency_audit"]["applicable"]
+                and reason in UNAUDITED_REASONS}
     if language_detection_skips is not None:
         rows = list(language_detection_skips)
         assert len(rows) <= LANGUAGE_DETECTION_SKIPS_MAX

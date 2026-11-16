@@ -93,6 +93,18 @@ bundle, another run's, no part count, no run to bind to) or `unloadable`, and "5
 unanswered" holds the letter back the same way. An unreadable attempts record is a reason of its
 own; a run whose backups all answered is unchanged. A finding whose primary answered is not owed
 again, so its unanswered backup is a backup reason only, never also a verify-advisor one.
+`meta.coverage.dependency_audit` is the dependency-audit receipt: the ecosystems the tree has a
+dependency manifest for (`applicable`), and the dedicated auditors that were `selected` and
+`produced` output. Its `unaudited` map (#3648) names each applicable ecosystem that no selected
+auditor reads, and why: `no_auditable_file` (none of the files an auditor reads for it is in the
+tree, such as a `package.json` with no lockfile), `needs_online` (pip-audit and npm-audit run only
+under `--online`), or `not_run`. `coverage_note` says it in a fixed sentence, for example
+"javascript not audited: no npm-shrinkwrap.json, package-lock.json, yarn.lock or pnpm-lock.yaml;
+npm-audit and osv-scanner need one". When no auditor produced anything, that sentence follows "no
+SCA tool produced output on an applicable tree". When another ecosystem's auditor did answer, the
+tree certifies as before and the sentence is the only sign that one ecosystem went unaudited: read
+`coverage_note` in the JSON, since the terminal and the HTML show it only beside NOT CERTIFIED or a
+provisional letter. It is disclosure only and moves neither the gate nor `coverage_certified`.
 A legitimate catalog-gap finding without `location.file` cannot satisfy X0X's required occurrence
 shape. It remains in the main JSON and HTML, while `synthesize` excludes it from the X0X candidate
 set and writes `<report-stem>-x0x-failures.json` beside the X0X, where `<report-stem>` means the

@@ -10,6 +10,10 @@ from .exec import run_tool
 class CargoAuditAdapter:
     name = "cargo-audit"
     prefix = "CA"
+    # #3648: the root files this adapter reads, by ecosystem. `is_applicable` reads
+    # it, and `tools_manifest` builds the "why was this ecosystem not audited"
+    # reason from the same tuple, so the two cannot disagree.
+    audit_files = {"rust": ("Cargo.lock",)}
 
     def is_applicable(self, target: str) -> bool:
         # #run7 COD-C2A: `cargo audit --no-fetch` reads a RESOLVED Cargo.lock and
@@ -19,7 +23,8 @@ class CargoAuditAdapter:
         # (mirrors bundler-audit/Gemfile.lock). The dependency-audit receipt
         # still marks a Cargo.toml-only repo applicable and refuses to certify
         # it when no dedicated SCA adapter produced output (#3269 SCA).
-        return os.path.exists(os.path.join(target, "Cargo.lock"))
+        return any(os.path.exists(os.path.join(target, name))
+                   for name in self.audit_files["rust"])
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         # ---------------------------------------------------------------

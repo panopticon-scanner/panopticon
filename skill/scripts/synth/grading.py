@@ -6,6 +6,7 @@ import stat
 
 import scripts.coverage_model as coverage_model
 import scripts.evidence as evidence_mod
+import scripts.tools_manifest as tools_manifest
 from . import backups as backups_mod
 from . import coverage_io
 from . import health_basis
@@ -95,6 +96,18 @@ _SUPPRESSED_DRIVER_EFFECT = ("paths under a suppressed driver compare as "
 NO_SCA_COVERAGE_NOTE = "no SCA tool produced output on an applicable tree"
 
 
+def unaudited_notes(dependency_audit):
+    """#3648: one fixed sentence per ecosystem the repaired SCA receipt records as
+    unaudited, in ecosystem order; [] for a receipt without the record. Disclosure
+    only: nothing here moves the gate or certification."""
+    rows = (dependency_audit or {}).get("unaudited") if isinstance(dependency_audit, dict) else None
+    if not isinstance(rows, dict):
+        return []
+    sentences = (tools_manifest.unaudited_sentence(ecosystem, rows[ecosystem])
+                 for ecosystem in sorted(rows))
+    return [sentence for sentence in sentences if sentence]
+
+
 # What NOT CERTIFIED says when a gate-relevant gap names no reason of its own.
 GATE_GAP_NOTE = "gate-relevant coverage did not complete"
 PROVISIONAL_PREFIX = "grade provisional: "
@@ -132,7 +145,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
             missing_floor=0, tools_manifest_invalid=None, tools_network_excluded=None,
             delta_scope_suppressed_git_drivers=None, tools_file_partial=None,
             delta_zero_hunks=None, dependency_audit_gap=False, custom_profile=None,
-            config_notes=None, native_unparsed_gap=None, shortfalls=()):
+            config_notes=None, native_unparsed_gap=None, shortfalls=(),
+            dependency_unaudited=()):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
     (+ requested-absent tools + artifact integrity + verdict loadability +
     missing FLOOR review cells); grade is holistic (provisional on ANY gap).
@@ -257,7 +271,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     if shortfalls:
         note = "; ".join(filter(None, (note, *shortfalls)))
     if dependency_audit_gap:
-        note = "; ".join(filter(None, (note, NO_SCA_COVERAGE_NOTE)))
+        # #3648: which ecosystem, and why, beside the bare "no SCA output".
+        note = "; ".join(filter(None, (note, NO_SCA_COVERAGE_NOTE, *dependency_unaudited)))
     if delta_zero_hunks:
         # Directly after the manifest note and before every other caveat: an
         # empty gate scope invalidates the gate WHOLESALE, where a missing online
@@ -317,6 +332,10 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
             gap += "; %d additional file(s) omitted" % disclosure["files_omitted"]
         note = "%s; %s" % (note, gap) if note else gap
     note = coverage_model.with_asset_skip_note(note, asset_skips)     # #3283: disclosed, not counted
+    if not dependency_audit_gap:
+        # #3648 (ruling b): an ecosystem no auditor read is named even when another
+        # ecosystem's auditor answered and the tree certifies. It moves nothing.
+        note = "; ".join(filter(None, (note, *dependency_unaudited))) or None
     # #3548: config disclosures that move nothing (a scout-only exclude, `exclude_paths:`).
     note = "; ".join(filter(None, (note, *(config_notes or ())))) or None
 
@@ -815,7 +834,9 @@ def grade_report(run, resolved, reconciled, delta=None):
                    native_unparsed_gap=getattr(reconciled, "native_unparsed_gap", None),
                    custom_profile=health_basis.custom_profile_reasons(run, coverages),
                    config_notes=health_basis.config_notes(run, coverages),
-                   shortfalls=shortfalls)
+                   shortfalls=shortfalls,
+                   dependency_unaudited=unaudited_notes(
+                       (getattr(reconciled, "coverage", None) or {}).get("dependency_audit")))
     summary = {
         "overall_grade": cert["overall_grade"],
         "provisional_grade": cert["provisional_grade"],

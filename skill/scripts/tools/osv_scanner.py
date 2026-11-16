@@ -54,21 +54,26 @@ def _database_severity(vuln: dict) -> str | None:
 class OsvScannerAdapter:
     name = "osv-scanner"
     prefix = "OS"
+    # Exact intersection of v1.8.2's automatic parser basenames and the
+    # npm/PyPI/Go/RubyGems/crates.io/Maven databases Dockerfile bakes.
+    # A broader dependency surface belongs in dependency_audit.applicable;
+    # claiming it here makes "selected but no bytes" depend on a parser the
+    # pinned binary does not have (#3269 SCA).
+    # #3648: keyed by ecosystem, and read by `is_applicable` and by
+    # `tools_manifest`'s "why was this ecosystem not audited" reason alike.
+    audit_files = {
+        "javascript": ("package-lock.json", "yarn.lock", "pnpm-lock.yaml"),
+        "python": ("requirements.txt", "Pipfile.lock", "poetry.lock", "pdm.lock"),
+        "go": ("go.mod",),
+        "rust": ("Cargo.lock",),
+        "ruby": ("Gemfile.lock",),
+        "java": ("pom.xml", "buildscript-gradle.lockfile", "gradle.lockfile",
+                 "gradle/verification-metadata.xml"),
+    }
 
     def is_applicable(self, target: str) -> bool:
-        # Exact intersection of v1.8.2's automatic parser basenames and the
-        # npm/PyPI/Go/RubyGems/crates.io/Maven databases Dockerfile bakes.
-        # A broader dependency surface belongs in dependency_audit.applicable;
-        # claiming it here makes "selected but no bytes" depend on a parser the
-        # pinned binary does not have (#3269 SCA).
-        markers = [
-            "package-lock.json", "yarn.lock", "pnpm-lock.yaml",
-            "requirements.txt", "Pipfile.lock", "poetry.lock", "pdm.lock",
-            "go.mod", "Cargo.lock", "Gemfile.lock", "pom.xml",
-            "buildscript-gradle.lockfile", "gradle.lockfile",
-            "gradle/verification-metadata.xml",
-        ]
-        return has_any_file(target, *markers)
+        return has_any_file(target, *(name for names in self.audit_files.values()
+                                      for name in names))
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         # v1.8.2 spells it --experimental-offline, and exposes `--config` on the

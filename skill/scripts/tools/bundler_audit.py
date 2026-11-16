@@ -23,9 +23,14 @@ _BLOCK_RE = re.compile(
 class BundlerAuditAdapter:
     name = "bundler-audit"
     prefix = "BA"
+    # #3648: the root files this adapter reads, by ecosystem. `is_applicable` reads
+    # it, and `tools_manifest` builds the "why was this ecosystem not audited"
+    # reason from the same tuple, so the two cannot disagree.
+    audit_files = {"ruby": ("Gemfile.lock",)}
 
     def is_applicable(self, target: str) -> bool:
-        return os.path.exists(os.path.join(target, "Gemfile.lock"))
+        return any(os.path.exists(os.path.join(target, name))
+                   for name in self.audit_files["ruby"])
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         # ---------------------------------------------------------------

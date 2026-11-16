@@ -403,6 +403,15 @@
                   "type": "array",
                   "uniqueItems": true,
                   "items": {"enum": ["bundler-audit", "cargo-audit", "dependency-check", "npm-audit", "osv-scanner", "pip-audit"]}
+                },
+                "unaudited": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "propertyNames": {"enum": ["go", "java", "javascript", "python", "ruby", "rust"]},
+                  "patternProperties": {
+                    "^(go|java|javascript|python|ruby|rust)$": {"enum": ["no_auditable_file", "needs_online", "not_run"]}
+                  },
+                  "description": "#3648: each applicable ecosystem that no selected dependency auditor reads, and why. no_auditable_file: none of the root files any auditor reads for it is in the tree (a package.json with no lockfile); needs_online: such a file is there and an auditor that reads it runs only under --online; not_run: an auditor reads it and was not selected. summary.coverage_note names each one with a fixed sentence, whether or not the tree certifies; it moves neither the gate nor coverage_certified. Absent on a receipt written before the record existed."
                 }
               },
               "description": "#3269 SCA: the runner's repaired dependency-coverage receipt. applicable names deterministic dependency ecosystems in the tree; selected and produced name only dedicated SCA adapters intersected with the runner's actual selection and output receipt, and produced is further reconciled against usable ingest coverage. Failed or forged output and empty Trivy SARIF earn no credit. A non-empty applicable list with no produced adapter makes coverage NOT CERTIFIED and a PASS gate INCONCLUSIVE. `unknown` is the fixed fail-closed repair of a malformed target-adjacent receipt. The key is absent on legacy/direct manifests that never measured this axis."
