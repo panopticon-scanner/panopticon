@@ -93,6 +93,17 @@ bundle, another run's, no part count, no run to bind to) or `unloadable`, and "5
 unanswered" holds the letter back the same way. An unreadable attempts record is a reason of its
 own; a run whose backups all answered is unchanged. A finding whose primary answered is not owed
 again, so its unanswered backup is a backup reason only, never also a verify-advisor one.
+Backup coverage is also counted per claim (#3695). Verify records the ids of the claims it hands
+each backup, and a backup is `answered` only when every one of them has a verdict in its own
+bundles: one that answers 1 of its 20 claims is `unanswered`, and is asked again on the verify
+budget (three dispatches) like a short primary advisor. `claims_scoped` counts the claims handed
+out and `claims_unanswered` the ones with no backup verdict, named beside the cells: "1 backup
+advisor unanswered" and "19 findings unanswered by their backup advisors". A verdict counts only
+for a claim the backup was handed. A record that holds no claim list (written before this) is
+never `answered`: its cell is `unanswered`, or `unloadable` when one of its bundle files failed to
+load. It is counted in `scope_not_recorded` (`scope_not_recorded_unloadable` says how many of those
+are unloadable) and left out of both claim counts, and the reason for the state it landed in says
+so: "1 backup advisor unanswered (1 scope not recorded)".
 `meta.coverage.dependency_audit` is the dependency-audit receipt: the ecosystems the tree has a
 dependency manifest for (`applicable`), and the dedicated auditors that were `selected` and
 `produced` output. Its `unaudited` map (#3648) names each applicable ecosystem that no selected

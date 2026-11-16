@@ -97,19 +97,23 @@ def _chunk_answered(chunk, verdicts):
     to a bundle that is not on disk yet -- the reply a return-persist advisor
     just handed back (spec 4.5). Two copies of one rule drift; this is the one
     copy, and `persist` reads it by module attribute."""
-    got = {str(v.get("finding_id")) for v in verdicts
-           if isinstance(v, dict) and v.get("finding_id") is not None}
-    return {str(f["id"]) for f in chunk}.issubset(got)
+    return not evidence.claims_unanswered(
+        [f["id"] for f in chunk],
+        [v.get("finding_id") for v in verdicts if isinstance(v, dict)])
 
 
 def _part_done(review_root, manifest, group, domain, stage, part, chunk):
-    """One chunk's advisor answered it: bundle labeled, and (primary) every
-    claim in THIS slice adjudicated somewhere in the cell's bundles."""
+    """One chunk's advisor answered it: bundle labeled, and every claim in THIS
+    slice adjudicated somewhere in the cell's bundles.
+
+    #3695: for a backup part too. It used to be done once its bundle was labeled,
+    so a backup that answered 1 of its 20 scoped claims was never asked again and
+    the other 19 silently went without a second opinion. `chunk` is a slice of the
+    backup round's OWN scope there (`_cell_backup_findings`), never the review
+    cell."""
     if not _verify_bundle_labeled(review_root, manifest, group, domain,
                                   stage, part):
         return False
-    if stage != "primary":
-        return True
     return _chunk_answered(
         chunk, _cell_verdicts(review_root, group, domain, stage, part + 1))
 
@@ -142,6 +146,13 @@ def _backup_parts_key(group, domain):
     only when EVERY recorded part did (`synth/backups.py`)."""
     return _verify_key(group, domain, "backup") + "/parts"
 
+def _backup_claims_key(group, domain):
+    """#3695: the claim ids a backup cell was handed -- its whole scope, in order --
+    recorded beside its attempt and part counts. Synth cannot derive the scope
+    (it is `_cell_backup_findings`, and synth may not import phases), so it reads
+    this to count the scoped claims that got no backup verdict."""
+    return _verify_key(group, domain, "backup") + "/claims"
+
 def _verify_budget(review_root, group, domain, stage):
     """This budget's (path, key) for the one owner of the arithmetic."""
     return (runio._pano(review_root, _VERIFY_ATTEMPTS_FILE),
@@ -168,8 +179,8 @@ def _charge_verify_dispatch(review_root, entries, record=None):
     AT DISPATCH -- review's rule (`review._record_attempts`). Charging only when a
     labeled bundle came back short left every other return uncapped: nothing
     written, a garbage bundle, one nested past the depth bound, a refused reply.
-    `record` (#3679: backup part counts) lands in the same write, so a charged
-    backup cell always carries its part count."""
+    `record` (#3679: backup part counts; #3695: the claim ids each was handed)
+    lands in the same write, so a charged backup cell always carries both."""
     budget.bump_many(runio._pano(review_root, _VERIFY_ATTEMPTS_FILE),
                      _dispatch_keys(entries), _VERIFY_ATTEMPTS_WHAT, record=record)
 
@@ -528,10 +539,10 @@ def _verify_backup_execute(review_root, manifest, host, bundle, guide_path=None)
     # independent -- streaming one group per checkpoint just serialized 19 round
     # trips against a 20-wide host (run-7).
     all_entries, ngroups = [], 0
-    parts: dict[str, int] = {}
+    record: dict[str, Any] = {}
     for group, files in coverage._discovered_groups(review_root):
         pending: list[tuple[str, list[dict[str, Any]], int]] = []
-        group_parts: dict[str, int] = {}
+        group_record: dict[str, Any] = {}
         for domain in coverage._effective_domains(review_root, group):
             scope = _cell_backup_findings(review_root, manifest, group, domain)
             if not scope:
@@ -545,7 +556,10 @@ def _verify_backup_execute(review_root, manifest, host, bundle, guide_path=None)
                                               "backup", part, chunk)]
             if cell_pending:
                 # #3679: the WHOLE cell's part count, not just the parts re-sent now.
-                group_parts[_backup_parts_key(group, domain)] = len(chunks)
+                # #3695: and its whole scope, for the same reason.
+                group_record[_backup_parts_key(group, domain)] = len(chunks)
+                group_record[_backup_claims_key(group, domain)] = [
+                    str(f["id"]) for f in scope]
             pending.extend(cell_pending)
         if pending and not files:
             # Fix round 4, N2: `grant()` keeps the grant non-empty by falling
@@ -560,7 +574,7 @@ def _verify_backup_execute(review_root, manifest, host, bundle, guide_path=None)
             continue
         if pending:
             ngroups += 1
-            parts.update(group_parts)
+            record.update(group_record)
             # #1029/#1638 P16: the backup reads its scoped claims' BOUNDED
             # EVIDENCE CLOSURE -- their files, the producers those claims name,
             # and a one-hop import neighbourhood -- not the whole group, and the
@@ -574,7 +588,7 @@ def _verify_backup_execute(review_root, manifest, host, bundle, guide_path=None)
                                   part, grant=grant, ambiguous=ambiguous,
                                   guide_path=guide_path))
     if all_entries:
-        _charge_verify_dispatch(review_root, all_entries, record=parts)
+        _charge_verify_dispatch(review_root, all_entries, record=record)
         req, sha = requests.write_dispatch_request_bound(
             review_root, manifest["run_id"], "verify", None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group=None,

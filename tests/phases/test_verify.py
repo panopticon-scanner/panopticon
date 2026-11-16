@@ -585,11 +585,8 @@ class TestAnUnloadableBackupReturnIsCapped(TestBackupCellFixture):
         self.assertTrue(verify._verify_backup_done(self.root, self.manifest))
 
 
-class TestTheBackupPartCountIsRecordedAtDispatch(TestBackupCellFixture):
-    """#3679 review F1: a backup scope of more than `_CELL_CLAIMS_CAP` claims is
-    split into parts answered separately, and synth cannot infer how many there
-    were. Verify records the WHOLE cell's part count beside its charge, in the same
-    write, and synth answers the cell only when every part did."""
+class BackupDispatch(TestBackupCellFixture):
+    """The backup cell dispatched, answered and read back. No test of its own."""
 
     def _attempts(self):
         with open(runio._pano(self.root, verify._VERIFY_ATTEMPTS_FILE),
@@ -600,18 +597,37 @@ class TestTheBackupPartCountIsRecordedAtDispatch(TestBackupCellFixture):
         return verify._verify_backup_execute(self.root, self.manifest, "claude",
                                              ocrdb.load_bundle())
 
-    def _answer(self, part):
+    def _answer(self, part, ids=None):
+        """Part `part`'s backup bundle: a verdict for each of `ids`, or for the whole
+        slice of the scope that part was handed."""
+        if ids is None:
+            ids = [f["id"] for f in self.scope[part]]
         runio._write_json(
             verify._verify_out_file(self.root, "G", "SEC", "backup", part),
-            {"verdicts": [{"finding_id": f["id"], "verdict": "CONFIRMED",
-                           "reasoning": "checked"} for f in self.scope[part]],
+            {"verdicts": [{"finding_id": fid, "verdict": "CONFIRMED",
+                           "reasoning": "checked"} for fid in ids],
              "_panopticon": {"run_id": self.RUN_ID, "role": "domain_advisor",
                              "domain": "SEC", "group": "G", "stage": "backup"}})
 
+    def _scope_ids(self):
+        return [f["id"] for f in
+                verify._cell_backup_findings(self.root, self.manifest, "G", "SEC")]
+
+
+class TestTheBackupPartCountIsRecordedAtDispatch(BackupDispatch):
+    """#3679 review F1: a backup scope of more than `_CELL_CLAIMS_CAP` claims is
+    split into parts answered separately, and synth cannot infer how many there
+    were. Verify records the WHOLE cell's part count beside its charge, in the same
+    write, and synth answers the cell only when every part did. #3695: the claim ids
+    the cell was handed are recorded in that write too."""
+
     def test_one_part_is_recorded_beside_the_charge(self):
         self._cell()
+        ids = self._scope_ids()
+        self.assertEqual(3, len(ids))
         self.assertIsNotNone(self._dispatch())
-        self.assertEqual({"G/SEC/backup": 1, "G/SEC/backup/parts": 1}, self._attempts())
+        self.assertEqual({"G/SEC/backup": 1, "G/SEC/backup/parts": 1,
+                          "G/SEC/backup/claims": ids}, self._attempts())
 
     def test_a_chunked_cell_records_every_part_and_keeps_the_count_on_redispatch(self):
         self._cell()
@@ -619,15 +635,19 @@ class TestTheBackupPartCountIsRecordedAtDispatch(TestBackupCellFixture):
             self.scope = verify._cell_chunks(
                 verify._cell_backup_findings(self.root, self.manifest, "G", "SEC"))
             self.assertEqual(2, len(self.scope))
+            ids = self._scope_ids()
             self.assertIsNotNone(self._dispatch())
-            self.assertEqual({"G/SEC/backup": 1, "G/SEC/backup/parts": 2}, self._attempts())
+            self.assertEqual({"G/SEC/backup": 1, "G/SEC/backup/parts": 2,
+                              "G/SEC/backup/claims": ids}, self._attempts())
             # Part 0 answers and part 1 never comes back: the re-dispatch sends part 1
             # alone, but the cell still has two parts.
             self._answer(0)
             self.assertIsNotNone(self._dispatch())
             entries = requests.load_dispatch_request(self.root)["entries"]
             self.assertEqual(1, len(entries))
-            self.assertEqual({"G/SEC/backup": 2, "G/SEC/backup/parts": 2}, self._attempts())
+            # #3695: ...and its whole scope, in order, not only the claims re-sent.
+            self.assertEqual({"G/SEC/backup": 2, "G/SEC/backup/parts": 2,
+                              "G/SEC/backup/claims": ids}, self._attempts())
         # The seat's probe, through the real loader: one part of two is unanswered.
         accepted = {}
         verdicts_dir = runio._pano(self.root, "verdicts")
@@ -635,7 +655,8 @@ class TestTheBackupPartCountIsRecordedAtDispatch(TestBackupCellFixture):
         block = backups_mod.coverage(runio._pano(self.root), accepted, unloadable,
                                      self.RUN_ID)
         self.assertEqual({"summoned": 1, "answered": 0, "unanswered": 1, "unloadable": 0,
-                          "record_unreadable": False}, block)
+                          "claims_scoped": 3, "claims_unanswered": 1, "scope_not_recorded": 0,
+                          "scope_not_recorded_unloadable": 0, "record_unreadable": False}, block)
         self._answer(1)
         accepted = {}
         _by_fid, unloadable = evidence.load_verdict_bundles(verdicts_dir, accepted=accepted)
@@ -648,6 +669,121 @@ class TestTheBackupPartCountIsRecordedAtDispatch(TestBackupCellFixture):
                           {"G/SEC/backup/parts": "many"})
         with self.assertRaises(runio.DriverError):
             self._dispatch()
+
+    def test_a_planted_scope_refuses_like_a_planted_charge(self):
+        self._cell()
+        for planted in (3, "SEC-1", {"SEC-1": 1}, ["SEC-1", 2]):
+            with self.subTest(planted=planted):
+                runio._write_json(runio._pano(self.root, verify._VERIFY_ATTEMPTS_FILE),
+                                  {"G/SEC/backup/claims": planted})
+                with self.assertRaises(runio.DriverError) as caught:
+                    self._dispatch()
+                self.assertIn("G/SEC/backup/claims is not a list of ids", str(caught.exception))
+
+
+class TestABackupPartIsDoneWhenEveryScopedClaimIsAnswered(BackupDispatch):
+    """#3695. A backup part was done once its bundle was labeled, so a backup that
+    answered 1 of its 3 scoped claims was never asked again, and the other two went
+    without a second opinion that nothing named. A backup part is now done on the
+    primary rule: every claim in its slice of the backup round's own scope answered."""
+
+    def _done(self):
+        scope = verify._cell_backup_findings(self.root, self.manifest, "G", "SEC")
+        return (verify._part_done(self.root, self.manifest, "G", "SEC", "backup", 0, scope),
+                verify._verify_cell_done(self.root, self.manifest, "G", "SEC", "backup",
+                                         cell=scope),
+                verify._verify_backup_done(self.root, self.manifest))
+
+    def test_one_claim_of_three_answered_is_not_done_and_is_asked_again(self):
+        self._cell()
+        ids = self._scope_ids()
+        dispatches = 0
+        for _ in range(8):
+            if self._dispatch() is None:
+                break
+            dispatches += 1
+            self._answer(0, ids[:1])
+            if dispatches < verify._MAX_VERIFY_ATTEMPTS:
+                self.assertEqual((False, False, False), self._done())
+        # The primary advisor's budget: three dispatches, and then the cell is done with
+        # the gap left for synthesis to count.
+        self.assertEqual(3, dispatches)
+        self.assertEqual((False, True, True), self._done())
+        self.assertEqual(3, self._attempts()["G/SEC/backup"])
+
+    def test_every_scoped_claim_answered_is_done_after_one_dispatch(self):
+        self._cell()
+        ids = self._scope_ids()
+        self.assertIsNotNone(self._dispatch())
+        self.assertEqual((False, False, False), self._done())          # nothing back yet
+        self._answer(0, list(reversed(ids)))
+        self.assertEqual((True, True, True), self._done())
+        self.assertIsNone(self._dispatch())
+        self.assertEqual(1, self._attempts()["G/SEC/backup"])
+
+    def test_a_verdict_for_a_claim_nobody_handed_it_answers_nothing(self):
+        self._cell()
+        ids = self._scope_ids()
+        self.assertIsNotNone(self._dispatch())
+        self._answer(0, ids[:2] + ["not-in-scope", ids[0]])
+        self.assertEqual((False, False, False), self._done())
+
+    def test_the_scope_is_the_backup_rounds_own_not_the_review_cell(self):
+        # The primary rejected one claim, so the backup is handed two. Answering those
+        # two is answering everything: the review cell's third claim is not owed.
+        rejected = []
+
+        def verdicts(fid):
+            rejected.append(fid)
+            return [{"finding_id": fid, "reasoning": "real",
+                     "verdict": "REJECTED" if len(rejected) == 1 else "CONFIRMED"}]
+
+        cell = self._cell(verdicts_for=verdicts)
+        ids = self._scope_ids()
+        self.assertEqual([f["id"] for f in cell[1:]], ids)
+        self.assertIsNotNone(self._dispatch())
+        self.assertEqual(ids, self._attempts()["G/SEC/backup/claims"])
+        self._answer(0, ids[:1])
+        self.assertEqual((False, False, False), self._done())
+        self._answer(0, ids)
+        self.assertEqual((True, True, True), self._done())
+
+    def test_a_chunked_backup_cell_is_done_part_by_part(self):
+        self._cell()
+        with mock.patch.object(verify, "_CELL_CLAIMS_CAP", 2):
+            self.scope = verify._cell_chunks(
+                verify._cell_backup_findings(self.root, self.manifest, "G", "SEC"))
+            self.assertIsNotNone(self._dispatch())
+            self._answer(0, [self.scope[0][0]["id"]])          # part 0: one of its two
+            self._answer(1)                                    # part 1: its one claim
+            parts = [verify._part_done(self.root, self.manifest, "G", "SEC", "backup",
+                                       part, chunk) for part, chunk in enumerate(self.scope)]
+            self.assertEqual([False, True], parts)
+            self.assertIsNotNone(self._dispatch())
+            entries = requests.load_dispatch_request(self.root)["entries"]
+            self.assertEqual(["verify-G-SEC-backup"], [e["id"] for e in entries])
+
+    def test_synthesis_counts_the_two_claims_by_the_same_rule(self):
+        self._cell()
+        ids = self._scope_ids()
+        self.assertIsNotNone(self._dispatch())
+        self._answer(0, ids[:1])
+        accepted = {}
+        _by_fid, unloadable = evidence.load_verdict_bundles(
+            runio._pano(self.root, "verdicts"), accepted=accepted)
+        block = backups_mod.coverage(runio._pano(self.root), accepted, unloadable, self.RUN_ID)
+        self.assertEqual((1, 0, 1, 3, 2), tuple(block[key] for key in (
+            "summoned", "answered", "unanswered", "claims_scoped", "claims_unanswered")))
+        self.assertEqual(["1 backup advisor unanswered",
+                          "2 findings unanswered by their backup advisors"],
+                         backups_mod.shortfall_reasons(block))
+        self._answer(0, ids)
+        accepted = {}
+        _by_fid, unloadable = evidence.load_verdict_bundles(
+            runio._pano(self.root, "verdicts"), accepted=accepted)
+        block = backups_mod.coverage(runio._pano(self.root), accepted, unloadable, self.RUN_ID)
+        self.assertEqual((1, 0, 0), (block["answered"], block["unanswered"],
+                                     block["claims_unanswered"]))
 
 
 class TestNoBackupEntryIsEverDispatchedWithAnEmptyGrant(TestBackupCellFixture):

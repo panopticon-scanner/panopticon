@@ -336,10 +336,8 @@ def _verify_accepts(entry, data):
         return False, ("cannot place verdict bundle %r against a review root"
                        % entry.get("out_file"))
     review_root, manifest, group, domain, stage, part = placed
-    if stage != "primary":
-        # verify._part_done: a backup bundle is answered once it is LABELED
-        # for its cell, and the stamp check above is that label, entry-anchored.
-        return True, ""
+    # #3695: a backup reply too. `_verify_claims` gives the backup round's own
+    # scope, so this asks for exactly the claims that advisor was handed.
     chunks = verify._cell_chunks(
         _verify_claims(review_root, manifest, group, domain, stage))
     if part >= len(chunks):
