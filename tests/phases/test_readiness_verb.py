@@ -47,6 +47,7 @@ import scripts.phases.readiness as readiness
 import scripts.phases.readiness_plan as readiness_plan
 import scripts.phases.readiness_checks as readiness_checks
 import scripts.repo_config as repo_config
+import scripts.run_manifest as run_manifest
 import scripts.tools_image as tools_image
 from scripts import hosts
 
@@ -138,6 +139,28 @@ class _VerbCase(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as fh:
                 fh.write(GROUPS_YML)
         return root
+
+    def _manifest(self, d, host):
+        with open(os.path.join(d, ".panopticon", "run-manifest.json"), "w",
+                  encoding="utf-8") as fh:
+            json.dump({"schema_version": 1, "run_id": "abcd1234",
+                       "host": host, "review_root": d,
+                       "created": "2026-09-15T00:00:00Z",
+                       "security_mode": "standard", "flags": {}}, fh)
+        # Manifest provenance is fail-closed when trusted Git is unavailable.
+        # These targets are deliberately non-repositories, so provide an
+        # external Git fixture that answers `ls-files --error-unmatch` with 1.
+        bin_dir = self._tmpdir()
+        git = os.path.join(bin_dir, "git")
+        with open(git, "w", encoding="utf-8") as fh:
+            fh.write("#!/bin/sh\nexit 1\n")
+        os.chmod(git, 0o755)
+        return git
+
+    @staticmethod
+    def _with_git(git, cli):
+        """The `_run`/`_json` keywords for a machine with `cli` installed and the fixture git."""
+        return {"which": dict(cli, git=git), "path": os.path.dirname(git)}
 
     def _git_repo(self, groups_yml=None):
         """The same fixture as a real git repo -- for the ONE case that is
@@ -462,12 +485,14 @@ class TestTheReadyMachine(_VerbCase):
                                             "detail": "fixture"}
                                         for c in hosts.CAPABILITIES}}, fh)
         os.symlink(tag, os.path.join(d, ".panopticon", "runs", "latest"))
+        # #3671: a run folder is a run of this checkout only when its manifest names it.
+        self.world = self._with_git(self._manifest(d, "claude"), READY_CLI)
         return tag, folder
 
     def test_it_exits_0_and_the_counts_and_tag_are_right(self):
         d = self._repo(groups_yml=GROUPS_YML)
         tag, _folder = self._with_a_finished_run(d)
-        code, body = self._json(d, which=READY_CLI)
+        code, body = self._json(d, **self.world)
         self.assertEqual(0, code, json.dumps(body, indent=2))
         self.assertIs(True, body["ready"])
         self.assertEqual(2, body["matrix"]["groups"])
@@ -486,7 +511,7 @@ class TestTheReadyMachine(_VerbCase):
     def test_the_last_run_s_capabilities_are_read_back_not_re_probed(self):
         d = self._repo(groups_yml=GROUPS_YML)
         self._with_a_finished_run(d)
-        _code, body = self._json(d, which=READY_CLI)
+        _code, body = self._json(d, **self.world)
         self.assertIs(True, body["capabilities"]["measured"])
         self.assertEqual("claude", body["capabilities"]["host"])
         self.assertEqual({c: hosts.PROVEN for c in hosts.CAPABILITIES},
@@ -514,7 +539,7 @@ class TestTheReadyMachine(_VerbCase):
                                        folder, "findings-Core-SEC.json")},
                                    {"id": "c", "out_file": os.path.join(
                                        folder, "findings-Tests-TST.json")}]}, fh)
-        code, body = self._json(d, which=READY_CLI)
+        code, body = self._json(d, **self.world)
         self.assertEqual(0, code)
         self.assertEqual("checkpoint", body["existing_run"]["status"])
         self.assertEqual(2, body["existing_run"]["pending"])
@@ -882,23 +907,6 @@ class TestTheAssumedHost(_VerbCase):
     the document says which host it assumed and why.
     """
 
-    def _manifest(self, d, host):
-        with open(os.path.join(d, ".panopticon", "run-manifest.json"), "w",
-                  encoding="utf-8") as fh:
-            json.dump({"schema_version": 1, "run_id": "abcd1234",
-                       "host": host, "review_root": d,
-                       "created": "2026-09-15T00:00:00Z",
-                       "security_mode": "standard", "flags": {}}, fh)
-        # Manifest provenance is fail-closed when trusted Git is unavailable.
-        # These targets are deliberately non-repositories, so provide an
-        # external Git fixture that answers `ls-files --error-unmatch` with 1.
-        bin_dir = self._tmpdir()
-        git = os.path.join(bin_dir, "git")
-        with open(git, "w", encoding="utf-8") as fh:
-            fh.write("#!/bin/sh\nexit 1\n")
-        os.chmod(git, 0o755)
-        return git
-
     def test_a_bare_invocation_gates_on_the_host_the_loop_would_pick(self):
         d = self._repo(groups_yml=GROUPS_YML)
         code, body = self._json(d)             # nothing installed
@@ -975,10 +983,15 @@ class TestTheCapabilitiesRowIsThisRunsOwn(_VerbCase):
 
     AGY = {"agy": "/opt/bin/agy"}
 
-    def _stored_run(self, d, host, state=hosts.PROVEN):
-        tag = "%s-standard-repo-20260915-abcd1234" % host
+    def _stored_run(self, d, host, state=hosts.PROVEN, ours=True, tag_host=None):
+        """A stored run measured on `host`. `ours` (#3671) writes the manifest that makes it a
+        run of this checkout, on the same host, and sets `self.git` to the fixture git that
+        manifest needs. `tag_host` names the folder for another host than the envelope's."""
+        tag = "%s-standard-repo-20260915-abcd1234" % (tag_host or host)
         folder = os.path.join(d, ".panopticon", "runs", tag)
         os.makedirs(folder)
+        if ours:
+            self.git = self._manifest(d, tag_host or host)
         with open(os.path.join(folder, runio.HOST_CAPABILITIES), "w", encoding="utf-8") as fh:
             json.dump({"schema_version": 1, "host": host, "probed_at": "2026-09-15T00:00:00Z",
                        "capabilities": {c: {"state": state, "by": "fixture", "detail": "fixture"}
@@ -1009,7 +1022,7 @@ class TestTheCapabilitiesRowIsThisRunsOwn(_VerbCase):
         # The control: what the other tests must not see is really there to be seen.
         d = self._repo(groups_yml=GROUPS_YML)
         self._stored_run(d, "claude")
-        row, line = self._row(d, "--host", "claude", which=READY_CLI)
+        row, line = self._row(d, "--host", "claude", **self._with_git(self.git, READY_CLI))
         self.assertIs(True, row["measured"])
         self.assertEqual("claude", row["host"])
         self.assertIn("all measured and PROVEN", line)
@@ -1018,7 +1031,7 @@ class TestTheCapabilitiesRowIsThisRunsOwn(_VerbCase):
     def test_another_hosts_stored_posture_is_not_this_hosts(self):
         d = self._repo(groups_yml=GROUPS_YML)
         self._stored_run(d, "claude")
-        row, line = self._row(d, "--host", "agy", which=self.AGY)
+        row, line = self._row(d, "--host", "agy", **self._with_git(self.git, self.AGY))
         self._assert_not_measured(row, line)
         self.assertEqual(readiness.NOT_MEASURED_ON_HOST % "agy", row["detail"])
         self.assertIn("host agy", line)
@@ -1026,13 +1039,14 @@ class TestTheCapabilitiesRowIsThisRunsOwn(_VerbCase):
     def test_another_hosts_unproven_posture_is_not_shown_either(self):
         d = self._repo(groups_yml=GROUPS_YML)
         self._stored_run(d, "claude", state=hosts.REFUTED)
-        row, line = self._row(d, "--host", "agy", which=self.AGY)
+        row, line = self._row(d, "--host", "agy", **self._with_git(self.git, self.AGY))
         self._assert_not_measured(row, line)
 
     def test_reset_discards_the_stored_posture_of_the_same_host(self):
         d = self._repo(groups_yml=GROUPS_YML)
         self._stored_run(d, "claude")
-        row, line = self._row(d, "--host", "claude", "--reset", which=READY_CLI)
+        row, line = self._row(d, "--host", "claude", "--reset",
+                              **self._with_git(self.git, READY_CLI))
         self._assert_not_measured(row, line)
         self.assertEqual(readiness.NOT_MEASURED_AFTER_RESET, row["detail"])
         self.assertIn("--reset", line)
@@ -1041,26 +1055,26 @@ class TestTheCapabilitiesRowIsThisRunsOwn(_VerbCase):
         # The invocation in the issue.
         d = self._repo(groups_yml=GROUPS_YML)
         self._stored_run(d, "claude")
-        row, line = self._row(d, "--host", "agy", "--reset", which=self.AGY)
+        row, line = self._row(d, "--host", "agy", "--reset", **self._with_git(self.git, self.AGY))
         self._assert_not_measured(row, line)
 
     def test_a_bare_invocation_compares_against_the_host_it_assumed(self):
-        # No `--host` and no manifest: the document is about the default host, so a stored run
-        # on any other host is not its posture.
+        # No `--host` and no manifest: the document is about the default host. A run folder
+        # with no manifest of this checkout's behind it is nobody's run (#3671), whatever host
+        # it says it measured.
         d = self._repo(groups_yml=GROUPS_YML)
-        self._stored_run(d, "agy")
+        self._stored_run(d, "agy", ours=False)
         row, line = self._row(d, which=READY_CLI)
         self.assertEqual(DEFAULT_HOST, self._json(d, which=READY_CLI)[1]["host"])
         self.assertIs(False, row["measured"])
-        self.assertEqual(readiness.NOT_MEASURED_ON_HOST % DEFAULT_HOST, row["detail"])
+        self.assertEqual(readiness.NOT_MEASURED_NOT_THIS_RUN, row["detail"])
         self.assertNotIn("PROVEN", line)
         self.assertNotIn("agy", line)
 
     def test_a_host_taken_from_the_manifest_reads_its_own_stored_posture(self):
         d = self._repo(groups_yml=GROUPS_YML)
         self._stored_run(d, "agy")
-        git = TestTheAssumedHost._manifest(self, d, "agy")
-        row, line = self._row(d, which=dict(self.AGY, git=git), path=os.path.dirname(git))
+        row, line = self._row(d, **self._with_git(self.git, self.AGY))
         self.assertIs(True, row["measured"])
         self.assertEqual("agy", row["host"])
         self.assertIn("all measured and PROVEN", line)
@@ -1081,11 +1095,12 @@ class TestTheCapabilitiesRowIsThisRunsOwn(_VerbCase):
         for stored in ("Claude", "claude ", "claudex"):
             with self.subTest(stored=stored):
                 d = self._repo(groups_yml=GROUPS_YML)
-                self._stored_run(d, stored)
-                row = readiness._capabilities_row(
-                    d, "%s-standard-repo-20260915-abcd1234" % stored, "claude", False)
+                # This checkout's own claude run, whose envelope names a near-miss host.
+                self._stored_run(d, stored, tag_host="claude")
+                row, line = self._row(d, "--host", "claude", **self._with_git(self.git, READY_CLI))
                 self.assertIs(False, row["measured"])
                 self.assertEqual(readiness.NOT_MEASURED_ON_HOST % "claude", row["detail"])
+                self.assertNotIn("PROVEN", line)
 
 
 class TestAHealthyCliRowReadsOk(_VerbCase):
@@ -1195,7 +1210,10 @@ class TestCapabilitiesRowHostShape(unittest.TestCase):
     def _row_for(self, host):
         d = tempfile.mkdtemp()
         self.addCleanup(lambda: shutil.rmtree(d, ignore_errors=True))
-        folder = os.path.join(d, ".panopticon", "runs", "t1")
+        # #3671: the row reads the folder the run's own manifest names.
+        own = {"host": "claude", "run_id": "abcd1234", "created": "2026-09-15T00:00:00Z",
+               "security_mode": "standard"}
+        folder = os.path.join(d, ".panopticon", "runs", run_manifest.run_tag(own))
         os.makedirs(folder)
         with open(os.path.join(folder, runio.HOST_CAPABILITIES), "w",
                   encoding="utf-8") as fh:
@@ -1203,7 +1221,7 @@ class TestCapabilitiesRowHostShape(unittest.TestCase):
                        "capabilities": {c: {"state": hosts.PROVEN, "by": "p",
                                             "detail": "d"}
                                         for c in hosts.CAPABILITIES}}, fh)
-        return readiness._capabilities_row(d, "t1", "claude", False)
+        return readiness._capabilities_row(d, "claude", own)
 
     def test_a_non_string_host_reads_as_not_measured(self):
         for host in (["claude"], {"name": "claude"}, 1, True):

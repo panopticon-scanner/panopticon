@@ -124,17 +124,21 @@ The host contract (5.2, plan 6):
   `dependencies` (the Python packages a run imports, which are missing, and the `pip install` that
   fixes it), `sub_skills` (each required `superpowers:*` sub-skill and where it was found, or null),
   `matrix` (the resolved config path, plus groups, code files and test files from the committed
-  `panopticon.yml`, or the remedy when there is none), `existing_run` (the tag under `runs/latest`,
+  `panopticon.yml`, or the remedy when there is none), `existing_run` (the tag of the run this
+  checkout's own manifest names — never the `runs/latest` symlink, which the target can write —
   the last state recorded for that run — `complete`, `checkpoint`, `error`, `started` for a run
-  folder that has recorded none of those yet, and `none` for no run in this tree at all — and how
+  folder that has recorded none of those yet, and `none` for no run of this checkout, which is
+  also what a run folder the target shipped reads as — and how
   many dispatch entries are still pending, or `null` when that run's request no longer matches the
   hash its manifest recorded, in which case the row says why), `cli` (each host whose registry row
   names a headless binary, plus the selected host always, and whether it is on PATH), `tools_image`
   (the daemon, the image, and the same copy-pasteable remedy the readiness checkpoint refuses with)
-  and `capabilities` (what the stored run MEASURED, read back from
-  `runs/latest/host-capabilities.json`, never re-probed; shown only when that run measured the host
-  this document is about and `--reset` is not given, and `not measured` otherwise, because another
-  host's posture, or one `--reset` discards, is not this run's). The host the document is ABOUT is resolved
+  and `capabilities` (what the stored run MEASURED, read back from that run's
+  `host-capabilities.json`, never re-probed; shown only when a run in this checkout wrote the
+  manifest that names the folder, that run measured the host this document is about and `--reset`
+  is not given, and `not measured` otherwise, because a posture the target shipped, another
+  host's, or one `--reset` discards, is not this run's; the `tool-findings` and `egress-proxy`
+  rows read the stored run by the same rule). The host the document is ABOUT is resolved
   by `runio.resolve_host` — the very function `driver loop` asks, in the same order: `--host`, else
   this run's manifest, else the driver's default. So a BARE `driver readiness <target>` reports on
   the same host a bare `driver loop <target>` would drive, and `selected_from` (`"--host"` |

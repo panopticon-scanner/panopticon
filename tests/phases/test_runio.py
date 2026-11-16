@@ -1200,8 +1200,9 @@ class TestManifestDiagnosticRedaction(unittest.TestCase):
                 fake_git.assert_called_once()
                 args = fake_git.call_args.args
                 command = args[0] if isinstance(args[0], list) else args[1]
+                # #3671 F1: asked whatever its case, since the filesystem may not care.
                 self.assertEqual(command[-4:],
-                                 ["ls-files", "--error-unmatch", "--", "manifest.json"])
+                                 ["ls-files", "--error-unmatch", "--", ":(icase)manifest.json"])
                 self.assertIn("git check failed (exit 2):", str(caught.exception))
                 diagnostic = str(caught.exception).split(": ", 1)[1]
                 self.assertEqual(diagnostic, expected)
