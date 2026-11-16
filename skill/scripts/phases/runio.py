@@ -654,31 +654,104 @@ def _manifest_committed(review_root, manifest_file):
     possibly forged matching stamp."""
     if not manifest_file or not os.path.isfile(manifest_file):
         return False
+    rel = os.path.relpath(manifest_file, review_root)
+    # #3684 review F1: a symlink on the way to the manifest. A target that commits
+    # `evil/run-manifest.json` and a link `.panopticon -> evil` has committed the file
+    # this reads, under a path git never lists as `.panopticon/...`, and the manifest's
+    # reader refuses a link only at the last component. So any link between the review
+    # root and the manifest reads as committed, tracked or not, in a git tree or not:
+    # first contact refuses a linked `.panopticon` (H3), so no run of ours is behind one.
+    if os.path.realpath(os.path.dirname(manifest_file)) != os.path.normpath(
+            os.path.join(os.path.realpath(review_root), os.path.dirname(rel))):
+        return True
+    # #3671 F1: `:(icase)`. A git pathspec is case-sensitive whatever the filesystem
+    # is. On a case-insensitive one (APFS, NTFS) a target that commits
+    # `.panopticon/RUN-MANIFEST.json`, or `.Panopticon/run-manifest.json`, has
+    # committed the very file this reads, and the exact spelling found no such path:
+    # tracked read as untracked, and only the forgeable stamp was left.
+    r = _manifest_probe(review_root, ["ls-files", "--error-unmatch", "--", ":(icase)" + rel])
+    if r.returncode == 0:
+        return True
+    if r.returncode == 1:
+        return _tracked_as_another_name(review_root, manifest_file, os.path.dirname(rel))
+    if r.returncode == 128 and "not a git repository" in (r.stderr or ""):
+        return False
+    raise _manifest_probe_failed(r)
+
+
+# What `_tracked_as_another_name` will compare. Nothing of ours under `.panopticon/` is
+# ever tracked, so a tree with more than this there is not one to reason about finely.
+_TRACKED_BESIDE_MAX = 4096
+
+
+def _manifest_probe(review_root, argv):
+    """One `safe_git.probe` for `_manifest_committed`, its launch failures as DriverError.
+
+    #2006 fix round 2: this resolved a trusted git but launched it without the
+    `GIT_CONFIG_*` suppression and without `core.fsmonitor=false`, so the target's
+    own config still applied to the one check that decides whether its manifest is
+    forged. `safe_git.probe` carries all of it."""
     try:
-        # #2006 fix round 2: this resolved a trusted git but launched it without
-        # the `GIT_CONFIG_*` suppression and without `core.fsmonitor=false`, so
-        # the target's own config still applied to the one check that decides
-        # whether its manifest is forged. `safe_git.probe` carries all of it.
-        rel = os.path.relpath(manifest_file, review_root)
-        # #3671 F1: `:(icase)`. A git pathspec is case-sensitive whatever the filesystem
-        # is. On a case-insensitive one (APFS, NTFS) a target that commits
-        # `.panopticon/RUN-MANIFEST.json`, or `.Panopticon/run-manifest.json`, has
-        # committed the very file this reads, and the exact spelling found no such path:
-        # tracked read as untracked, and only the forgeable stamp was left.
-        r = safe_git.probe(review_root, ["ls-files", "--error-unmatch", "--", ":(icase)" + rel],
-                           timeout=30)
+        return safe_git.probe(review_root, argv, timeout=30)
     except executable.ExecutableResolutionError as exc:
         raise DriverError("manifest provenance cannot be checked: no trusted git: %s" % exc)
     except (OSError, subprocess.SubprocessError) as exc:
         raise DriverError("manifest provenance git check failed: %s" % exc)
-    if r.returncode == 0:
+
+
+def _manifest_probe_failed(r):
+    return DriverError("manifest provenance git check failed (exit %s): %s"
+                       % (r.returncode, redact.redact_diagnostic((r.stderr or "").strip(), 300)))
+
+
+def _tracked_as_another_name(review_root, manifest_file, directory):
+    """#3684: whether a path git tracks IS `manifest_file` on this filesystem, however
+    the index spells it. `:(icase)` folds ASCII only, and a filesystem folds more: APFS
+    reads `run-manife\u017ft.json` (a long s) as `run-manifest.json`, and likewise
+    `run-manife\ufb06.json` (the ligature for `st`; both measured), so that committed
+    file was the manifest read here and git called it untracked.
+
+    So the filesystem is asked, not a list of folds: every path git tracks in the
+    manifest's directory (the directory under any case) is compared with the manifest
+    by device and inode. `lstat` only -- a tracked symlink that POINTS at the manifest
+    is another directory entry and is not it, while a tracked hard link to it is. (The
+    manifest's own entry is what is compared: its reader opens no link.)
+
+    The directory itself is compared the same way. Git tracks a directory only as a
+    gitlink (a submodule), and a manifest inside one is committed -- in that repository,
+    which this one's index cannot be asked about (measured: a gitlink at `.panopticon`
+    read as untracked).
+
+    Every doubt reads as committed, the cautious verdict: more tracked paths there than
+    `_TRACKED_BESIDE_MAX`, a manifest that can no longer be stat'ed, a tracked path that
+    cannot be stat'ed for any reason but not being on disk. A listing git cannot give is
+    a DriverError, as it is for the first probe."""
+    listing = _manifest_probe(review_root,
+                              ["ls-files", "-z", "--", ":(icase)" + (directory or ".")])
+    if listing.returncode != 0:
+        raise _manifest_probe_failed(listing)
+    tracked = [path for path in (listing.stdout or "").split("\0") if path]
+    if len(tracked) > _TRACKED_BESIDE_MAX:
         return True
-    if r.returncode == 1:
-        return False
-    if r.returncode == 128 and "not a git repository" in (r.stderr or ""):
-        return False
-    raise DriverError("manifest provenance git check failed (exit %s): %s"
-                      % (r.returncode, redact.redact_diagnostic((r.stderr or "").strip(), 300)))
+    try:
+        ours = {_identity(manifest_file), _identity(os.path.join(review_root, directory))}
+        for path in tracked:
+            try:
+                theirs = _identity(os.path.join(review_root, path))
+            except (FileNotFoundError, NotADirectoryError):
+                continue                     # in the index, not on disk: not this file
+            if theirs in ours:
+                return True
+    except (OSError, ValueError):
+        return True
+    return False
+
+
+def _identity(path):
+    """Which file a directory entry is: device and inode, and no link followed."""
+    info = os.lstat(path)
+    return info.st_dev, info.st_ino
+
 
 def _foreign_manifest(manifest, review_root, manifest_file=None):
     """#1093 / #run8 AGT-C1A: True if a loaded manifest was NOT written by a

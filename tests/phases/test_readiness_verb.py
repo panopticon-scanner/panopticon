@@ -150,10 +150,13 @@ class _VerbCase(unittest.TestCase):
         # Manifest provenance is fail-closed when trusted Git is unavailable.
         # These targets are deliberately non-repositories, so provide an
         # external Git fixture that answers `ls-files --error-unmatch` with 1.
+        # Asked what it tracks beside the manifest (#3684, `ls-files -z -- :(icase)DIR`)
+        # it lists nothing, as git does; everything else still fails.
         bin_dir = self._tmpdir()
         git = os.path.join(bin_dir, "git")
         with open(git, "w", encoding="utf-8") as fh:
-            fh.write("#!/bin/sh\nexit 1\n")
+            fh.write('#!/bin/sh\ncase " $* " in *" --error-unmatch "*) exit 1;;'
+                     ' *" -z -- :(icase)"*) exit 0;; esac\nexit 1\n')
         os.chmod(git, 0o755)
         return git
 

@@ -198,7 +198,8 @@ of the HTML header:
   disk are compared raw with the commit's blob, so a checkout that rewrites line endings
   (`core.autocrlf`, or `eol=crlf` in `.gitattributes`) reads an untouched config as fresh. That
   fails safe: commit the config with the line endings your checkout produces, or disable the
-  conversion for it.
+  conversion for it. A config the commit holds under another spelling of the name
+  (`Panopticon.yml`), on a filesystem that reads the two as one file, is `committed` (#3684).
 - `setup_draft` — for a `working_tree` config, whether it is the draft this target's last
   `driver setup` wrote (`unchanged`) or not (`differs`); `null` when setup recorded none. That
   record lives in the operator's state directory, never in the target.
