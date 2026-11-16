@@ -1569,7 +1569,13 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
         for a, b in (("1.0", "1.0.post0"), ("1.0a1", "1.0b1"), ("1.0", "1.0.dev0"),
                      ("1.0", "1.0+local"), ("1!1.0", "1.0"), ("1.0rc1", "1.0rc2"),
                      ("1.0", "1.1"), ("1.0.post1", "1.0.post2"), ("1.0.dev1", "1.0.dev2"),
-                     ("1.0+a", "1.0+b"), ("1.0-1", "1.0-2")):
+                     ("1.0+a", "1.0+b"), ("1.0-1", "1.0-2"),
+                     # Not versions: each keys as its own text.
+                     ("1.0.", "1.0"), ("1..0", "1.0"), (".1", "1"), ("1.0+", "1.0"),
+                     ("1!", "1"), ("x!1.0", "1.0"), ("1.0+a..b", "1.0+a.b"),
+                     ("1.0rc1x", "1.0rc1"), ("\u0661.0", "1.0"),
+                     # An invalid local label is not a version, so a `v` still differs.
+                     ("v1.0+a..b", "1.0+a..b")):
             with self.subTest(different=(a, b)):
                 self.assertNotEqual(key(a), key(b))
 

@@ -586,39 +586,66 @@ def _pep503(name):
     return _PEP503_SEPARATORS.sub("-", name).lower()
 
 
-_PEP440 = re.compile(r"""
-    ^\s*v?
-    (?:(?P<epoch>[0-9]+)!)?
-    (?P<release>[0-9]+(?:\.[0-9]+)*)
-    (?P<pre>[-_.]?(?P<pre_l>alpha|a|beta|b|preview|pre|c|rc)[-_.]?(?P<pre_n>[0-9]+)?)?
-    (?P<post>-(?P<post_n1>[0-9]+)|[-_.]?(?P<post_l>post|rev|r)[-_.]?(?P<post_n2>[0-9]+)?)?
-    (?P<dev>[-_.]?dev[-_.]?(?P<dev_n>[0-9]+)?)?
-    (?:\+(?P<local>[a-z0-9]+(?:[-_.][a-z0-9]+)*))?
-    \s*$""", re.VERBOSE | re.IGNORECASE)
+# PEP 440 suffixes, each matched flat at one position: no nested quantifier, so no
+# input can backtrack (#3686 CI: semgrep regex_dos on the one-pattern form).
+_PEP440_PRE_RE = re.compile(r"[-_.]?(alpha|a|beta|b|preview|pre|c|rc)[-_.]?([0-9]*)")
+_PEP440_POST_RE = re.compile(r"-([0-9]+)|[-_.]?(post|rev|r)[-_.]?([0-9]*)")
+_PEP440_DEV_RE = re.compile(r"[-_.]?dev[-_.]?([0-9]*)")
 _PEP440_PRE = {"alpha": "a", "beta": "b", "c": "rc", "pre": "rc", "preview": "rc"}
+
+
+def _pep440_parts(text):
+    """(epoch, release, pre, post, dev, local) for a PEP 440 version, else None."""
+    epoch = "0"
+    if "!" in text:
+        epoch, text = text.split("!", 1)
+        if not (epoch.isascii() and epoch.isdigit()):
+            return None
+    local = None
+    if "+" in text:
+        text, label = text.split("+", 1)
+        segments = re.split(r"[-_.]", label)
+        if not all(seg.isascii() and seg.isalnum() for seg in segments):
+            return None
+        local = tuple(int(seg) if seg.isdigit() else seg for seg in segments)
+    end = 0
+    while end < len(text) and (text[end].isdigit() or text[end] == ".") and text[end].isascii():
+        end += 1
+    release_text, rest = text[:end], text[end:]
+    if release_text.endswith("."):
+        # `1.0.post1`: that dot is the suffix's separator, not part of the release.
+        release_text, rest = release_text[:-1], "." + rest
+    parts = release_text.split(".")
+    if not all(part.isdigit() for part in parts):
+        return None
+    release = [int(part) for part in parts]
+    while len(release) > 1 and release[-1] == 0:
+        release.pop()
+    pre = post = dev = None
+    match = _PEP440_PRE_RE.match(rest)
+    if match:
+        pre = (_PEP440_PRE.get(match[1], match[1]), int(match[2] or 0))
+        rest = rest[match.end():]
+    match = _PEP440_POST_RE.match(rest)
+    if match:
+        post = int(match[1] or match[3] or 0)
+        rest = rest[match.end():]
+    match = _PEP440_DEV_RE.match(rest)
+    if match:
+        dev = int(match[1] or 0)
+        rest = rest[match.end():]
+    if rest:
+        return None
+    return (int(epoch), tuple(release), pre, post, dev, local)
 
 
 def _pep440_key(version):
     """A comparison key under which PEP 440-equal spellings agree (``1.2.0-rc1`` and
     ``1.2rc1``). Only used to find ambiguity, never to confirm: an unparseable version
     keys as its own lower-cased text."""
-    match = _PEP440.match(version)
-    if match is None:
-        return version.strip().lower()
-    release = [int(part) for part in match["release"].split(".")]
-    while len(release) > 1 and release[-1] == 0:
-        release.pop()
-    pre = None
-    if match["pre"]:
-        label = match["pre_l"].lower()
-        pre = (_PEP440_PRE.get(label, label), int(match["pre_n"] or 0))
-    post = int(match["post_n1"] or match["post_n2"] or 0) if match["post"] else None
-    dev = int(match["dev_n"] or 0) if match["dev"] else None
-    local = None
-    if match["local"]:
-        local = tuple(int(part) if part.isdigit() else part
-                      for part in re.split(r"[-_.]", match["local"].lower()))
-    return (int(match["epoch"] or 0), tuple(release), pre, post, dev, local)
+    text = version.strip().lower()
+    parts = _pep440_parts(text[1:] if text.startswith("v") else text)
+    return text if parts is None else parts
 
 
 def _local_path(value):
