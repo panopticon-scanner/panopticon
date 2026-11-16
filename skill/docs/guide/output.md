@@ -99,9 +99,11 @@ bundles: one that answers 1 of its 20 claims is `unanswered`, and is asked again
 budget (three dispatches) like a short primary advisor. `claims_scoped` counts the claims handed
 out and `claims_unanswered` the ones with no backup verdict, named beside the cells: "1 backup
 advisor unanswered" and "19 findings unanswered by their backup advisors". A verdict counts only
-for a claim the backup was handed. A record that holds no claim list (written before this) makes
-its cell `unanswered`, counted in `scope_not_recorded` and left out of both claim counts, and the
-reason says so: "1 backup advisor unanswered (1 scope not recorded)".
+for a claim the backup was handed. A record that holds no claim list (written before this) is
+never `answered`: its cell is `unanswered`, or `unloadable` when one of its bundle files failed to
+load. It is counted in `scope_not_recorded` (`scope_not_recorded_unloadable` says how many of those
+are unloadable) and left out of both claim counts, and the reason for the state it landed in says
+so: "1 backup advisor unanswered (1 scope not recorded)".
 A legitimate catalog-gap finding without `location.file` cannot satisfy X0X's required occurrence
 shape. It remains in the main JSON and HTML, while `synthesize` excludes it from the X0X candidate
 set and writes `<report-stem>-x0x-failures.json` beside the X0X, where `<report-stem>` means the

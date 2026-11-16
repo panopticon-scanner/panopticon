@@ -31,9 +31,12 @@ records the ids it handed each backup beside the part count
 (`<group>/<domain>/backup/claims`), and `evidence.claims_unanswered` -- the one
 rule the verify phase applies to a part -- says which of them have no verdict.
 `claims_scoped` and `claims_unanswered` are those counts. A cell whose record
-holds no scope (written before the scope was recorded) is `unanswered`, counted
-in `scope_not_recorded`, and stays out of both claim counts: nothing can show
-which claims it was owed, so its zero must not read as "none missing".
+holds no scope (written before the scope was recorded) is never `answered`: it
+is `unanswered`, or `unloadable` when one of its bundle files failed to load. It
+is counted in `scope_not_recorded` (and in `scope_not_recorded_unloadable` when
+that is where it landed) and stays out of both claim counts: nothing can show
+which claims it was owed, so its zero must not read as "none missing", and the
+reason for the state it landed in says so.
 
 `grading.grade_shortfalls` turns `unanswered`, `unloadable` and
 `claims_unanswered` into reasons, so they hold the letter back under the one
@@ -145,8 +148,9 @@ def _claims_unanswered(stamps, group, domain, parts, scope, run_id):
 def coverage(run_dir, bundle_files, verdict_unloadable=(), run_id=None):
     """`meta.coverage.backups`: {summoned, answered, unanswered, unloadable} counted
     in cells, {claims_scoped, claims_unanswered} in the claims those cells were
-    handed, {scope_not_recorded} in cells again, and record_unreadable; None when
-    the run left no record.
+    handed, {scope_not_recorded, scope_not_recorded_unloadable} in cells again (the
+    second is how many of the first are `unloadable`; the rest are `unanswered`),
+    and record_unreadable; None when the run left no record.
 
     `bundle_files` is `evidence.load_verdict_bundles(accepted=)`'s per-file map and
     `verdict_unloadable` the loaders' unloadable rows: no verdict file is read here."""
@@ -156,12 +160,13 @@ def coverage(run_dir, bundle_files, verdict_unloadable=(), run_id=None):
     if summoned == "unreadable":
         return {"summoned": None, "answered": None, "unanswered": None,
                 "unloadable": None, "claims_scoped": None, "claims_unanswered": None,
-                "scope_not_recorded": None, "record_unreadable": True}
+                "scope_not_recorded": None, "scope_not_recorded_unloadable": None,
+                "record_unreadable": True}
     stamps = bundle_files if isinstance(bundle_files, dict) else {}
     bad = {str(u.get("file")) for u in verdict_unloadable or () if isinstance(u, dict)}
     names = set(stamps) | bad
     answered = unanswered = unloadable = 0
-    claims_scoped = claims_unanswered = scope_not_recorded = 0
+    claims_scoped = claims_unanswered = scope_not_recorded = unrecorded_unloadable = 0
     for group, domain, parts, scope in summoned:
         if scope is None:
             scope_not_recorded += 1
@@ -173,6 +178,7 @@ def coverage(run_dir, bundle_files, verdict_unloadable=(), run_id=None):
         cell = _cell_files(names, group, domain)
         if any(name in bad for name in cell):
             unloadable += 1
+            unrecorded_unloadable += scope is None
         elif missing == [] and _cell_answered(stamps, group, domain, parts, run_id):
             answered += 1
         else:
@@ -180,7 +186,9 @@ def coverage(run_dir, bundle_files, verdict_unloadable=(), run_id=None):
     return {"summoned": len(summoned), "answered": answered, "unanswered": unanswered,
             "unloadable": unloadable, "claims_scoped": claims_scoped,
             "claims_unanswered": claims_unanswered,
-            "scope_not_recorded": scope_not_recorded, "record_unreadable": False}
+            "scope_not_recorded": scope_not_recorded,
+            "scope_not_recorded_unloadable": unrecorded_unloadable,
+            "record_unreadable": False}
 
 
 def shortfall_reasons(backups):
@@ -191,14 +199,17 @@ def shortfall_reasons(backups):
     if backups.get("record_unreadable"):
         return ["the backup advisor record is unreadable"]
     reasons = []
-    for key, what in (("unanswered", "unanswered"), ("unloadable", "unloadable")):
+    # The cells with no recorded scope, by the state each landed in: the claim
+    # counts leave them out, so the reason for that state says so (#3697 N1).
+    in_all = _count(backups.get("scope_not_recorded")) or 0
+    in_unloadable = min(_count(backups.get("scope_not_recorded_unloadable")) or 0, in_all)
+    unrecorded = {"unanswered": in_all - in_unloadable, "unloadable": in_unloadable}
+    for key in ("unanswered", "unloadable"):
         count = _count(backups.get(key))
         if count:
-            reasons.append("%d backup advisor%s %s" % (count, "" if count == 1 else "s", what))
-            unrecorded = _count(backups.get("scope_not_recorded"))
-            if key == "unanswered" and unrecorded:
-                # The claim counts leave these cells out; say so beside the cells.
-                reasons[-1] += " (%d scope not recorded)" % unrecorded
+            reasons.append("%d backup advisor%s %s" % (count, "" if count == 1 else "s", key))
+            if unrecorded[key]:
+                reasons[-1] += " (%d scope not recorded)" % min(unrecorded[key], count)
     # #3695: the cells say how many advisors fell short, this how many findings.
     claims = _count(backups.get("claims_unanswered"))
     if claims:

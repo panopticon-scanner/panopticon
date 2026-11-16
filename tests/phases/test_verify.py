@@ -656,7 +656,7 @@ class TestTheBackupPartCountIsRecordedAtDispatch(BackupDispatch):
                                      self.RUN_ID)
         self.assertEqual({"summoned": 1, "answered": 0, "unanswered": 1, "unloadable": 0,
                           "claims_scoped": 3, "claims_unanswered": 1, "scope_not_recorded": 0,
-                          "record_unreadable": False}, block)
+                          "scope_not_recorded_unloadable": 0, "record_unreadable": False}, block)
         self._answer(1)
         accepted = {}
         _by_fid, unloadable = evidence.load_verdict_bundles(verdicts_dir, accepted=accepted)

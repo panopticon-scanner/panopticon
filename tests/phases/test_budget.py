@@ -190,13 +190,15 @@ class TestTheArithmeticItself(BudgetCase):
 
     def test_a_recorded_value_is_a_count_or_a_list_of_ids_and_nothing_else(self):
         path = self.path()
-        for value in ([1], [""], ["a", ""], ["a", None], ["a", ["b"]], ("a",), {"a": 1},
+        # An empty list too (#3697 N2): its reader takes it for no record at all.
+        for value in ([], [1], [""], ["a", ""], ["a", None], ["a", ["b"]], ("a",), {"a": 1},
                       {"a"}, "a", b"a"):
             with self.subTest(value=value):
                 with self.assertRaises(ValueError) as caught:
                     budget.bump_many(path, ["G/SEC/backup"], self.WHAT,
                                      record={"G/SEC/backup/claims": value})
-                self.assertIn("a count or a list of non-empty strings", str(caught.exception))
+                self.assertIn("a count or a non-empty list of non-empty strings",
+                              str(caught.exception))
                 self.assertFalse(os.path.exists(path))
 
     def test_a_planted_value_of_the_other_kind_refuses(self):
@@ -204,6 +206,7 @@ class TestTheArithmeticItself(BudgetCase):
                 ("G/SEC/backup/claims", 3, ["SEC-1"], "a list of ids"),
                 ("G/SEC/backup/claims", ["SEC-1", 2], ["SEC-1"], "a list of ids"),
                 ("G/SEC/backup/claims", "SEC-1", ["SEC-1"], "a list of ids"),
+                ("G/SEC/backup/claims", [], ["SEC-1"], "a list of ids"),
                 ("G/SEC/backup/parts", ["SEC-1"], 2, "a count")):
             with self.subTest(key=key, planted=planted):
                 path = self.plant(self.path(), {key: planted})

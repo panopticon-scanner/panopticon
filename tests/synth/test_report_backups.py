@@ -83,7 +83,7 @@ def _block(**counts):
     """A `meta.coverage.backups` block: every count 0 unless given."""
     return dict({"summoned": 0, "answered": 0, "unanswered": 0, "unloadable": 0,
                  "claims_scoped": 0, "claims_unanswered": 0, "scope_not_recorded": 0,
-                 "record_unreadable": False}, **counts)
+                 "scope_not_recorded_unloadable": 0, "record_unreadable": False}, **counts)
 
 
 def _verdict(finding_id):
@@ -317,6 +317,33 @@ class TestBackupCoverageIsCountedPerScopedClaim(_RunDir):
         self.assertEqual(["1 backup advisor unanswered (1 scope not recorded)"],
                          backups_mod.shortfall_reasons(block))
 
+    def test_an_unloadable_cell_with_no_scope_carries_the_note_itself(self):
+        # #3697 N1, the reviewer's two probes. The note sits beside the state the cell
+        # landed in: alone on the unloadable reason, and never doubled onto the other.
+        self.summon(("g1", "SEC"), claims=None)
+        self.bundle("g1", "SEC", None, raw="{not json")
+        block = self.coverage()
+        self.assertEqual(_block(summoned=1, unloadable=1, scope_not_recorded=1,
+                                scope_not_recorded_unloadable=1), block)
+        self.assertEqual(["1 backup advisor unloadable (1 scope not recorded)"],
+                         backups_mod.shortfall_reasons(block))
+        self.summon(("g1", "SEC"), ("g2", "SEC"), claims=None)
+        self.bundle("g2", "SEC", [_VERDICT])
+        block = self.coverage()
+        self.assertEqual(_block(summoned=2, unanswered=1, unloadable=1, scope_not_recorded=2,
+                                scope_not_recorded_unloadable=1), block)
+        self.assertEqual(["1 backup advisor unanswered (1 scope not recorded)",
+                          "1 backup advisor unloadable (1 scope not recorded)"],
+                         backups_mod.shortfall_reasons(block))
+        # An unloadable cell whose scope WAS recorded carries no note.
+        self.summon(("g1", "SEC"), claims=SCOPE)
+        block = self.coverage()
+        self.assertEqual((1, 0, 0), (block["unloadable"], block["scope_not_recorded"],
+                                     block["scope_not_recorded_unloadable"]))
+        self.assertEqual(["1 backup advisor unloadable",
+                          "3 findings unanswered by their backup advisors"],
+                         backups_mod.shortfall_reasons(block))
+
     def test_a_scope_that_is_not_a_list_of_ids_is_no_scope(self):
         for scope in ([], [""], ["A", ""], ["A", 1], "A", {"A": 1}, 3, True, None):
             with self.subTest(scope=scope):
@@ -356,9 +383,32 @@ class TestBackupCoverageIsCountedPerScopedClaim(_RunDir):
                                                     scope_not_recorded=3)))
                 self.assertEqual(["1 backup advisor unanswered"],
                                  reasons(_block(unanswered=1, scope_not_recorded=bad)))
-        # The note belongs to the unanswered cells, not to the unloadable ones.
-        self.assertEqual(["2 backup advisors unloadable"],
-                         reasons(_block(unloadable=2, scope_not_recorded=1)))
+        # The note sits beside the state each such cell landed in (#3697 N1).
+        self.assertEqual(["2 backup advisors unloadable (1 scope not recorded)"],
+                         reasons(_block(unloadable=2, scope_not_recorded=1,
+                                        scope_not_recorded_unloadable=1)))
+        self.assertEqual(["2 backup advisors unanswered (1 scope not recorded)",
+                          "3 backup advisors unloadable (2 scope not recorded)"],
+                         reasons(_block(unanswered=2, unloadable=3, scope_not_recorded=3,
+                                        scope_not_recorded_unloadable=2)))
+        self.assertEqual(["1 backup advisor unanswered", "1 backup advisor unloadable"],
+                         reasons(_block(unanswered=1, unloadable=1)))
+        # A block that does not add up names no more cells than the state holds.
+        self.assertEqual(["1 backup advisor unloadable (1 scope not recorded)"],
+                         reasons(_block(unloadable=1, scope_not_recorded=1,
+                                        scope_not_recorded_unloadable=5)))
+        self.assertEqual(["1 backup advisor unanswered (1 scope not recorded)"],
+                         reasons(_block(unanswered=1, scope_not_recorded=4)))
+        self.assertEqual(["1 backup advisor unanswered",
+                          "1 backup advisor unloadable (1 scope not recorded)"],
+                         reasons(_block(unanswered=1, unloadable=1, scope_not_recorded=1,
+                                        scope_not_recorded_unloadable=5)))
+        for bad in ("2", -1, True, 1.5, [1], None):
+            with self.subTest(unloadable_share=bad):
+                self.assertEqual(["1 backup advisor unanswered (1 scope not recorded)",
+                                  "1 backup advisor unloadable"],
+                                 reasons(_block(unanswered=1, unloadable=1, scope_not_recorded=1,
+                                                scope_not_recorded_unloadable=bad)))
 
     def test_the_rule_is_the_verify_phases_own(self):
         self.summon(("g1", "SEC"), claims=SCOPE)
@@ -492,7 +542,9 @@ class TestUnansweredBackupsHoldTheLetterBack(unittest.TestCase):
                               ("a missing flag", "record_unreadable"),
                               ("no claim count", "claims_unanswered"),
                               ("no scoped count", "claims_scoped"),
-                              ("no count of unrecorded scopes", "scope_not_recorded")):
+                              ("no count of unrecorded scopes", "scope_not_recorded"),
+                              ("no count of the unloadable ones",
+                               "scope_not_recorded_unloadable")):
             with self.subTest(label):
                 bad = copy.deepcopy(_build(self.ALL_FAILED))
                 block = bad["meta"]["coverage"]["backups"]

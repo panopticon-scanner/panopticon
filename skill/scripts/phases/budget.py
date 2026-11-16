@@ -47,8 +47,11 @@ def _is_count(value):
 
 
 def _is_id_list(value):
-    """A recorded list of ids: non-empty strings and nothing else (#3695)."""
-    return isinstance(value, list) and all(isinstance(i, str) and i for i in value)
+    """A recorded list of ids: at least one, each a non-empty string, and nothing
+    else (#3695). An empty list is refused here because its reader
+    (`synth/backups._scope`) takes it for no record at all."""
+    return (isinstance(value, list) and bool(value)
+            and all(isinstance(i, str) and i for i in value))
 
 
 def _count_in(data, path, key, what):
@@ -81,9 +84,9 @@ def bump_many(path, keys, what, record=None):
     counts. An empty batch charges nothing and writes nothing.
 
     `record` SETS keys in the same write: a fact recorded at dispatch beside the
-    charge. A value is a count (a backup cell's part count, #3679) or a list of
-    non-empty strings (the claim ids that backup was handed, #3695), and nothing
-    else. A present value of the other kind still refuses, as for a charge."""
+    charge. A value is a count (a backup cell's part count, #3679) or a non-empty
+    list of non-empty strings (the claim ids that backup was handed, #3695), and
+    nothing else. A present value of the other kind still refuses, as for a charge."""
     if not keys:
         return {}
     data = runio._load_state_json(path, what)
@@ -94,10 +97,10 @@ def bump_many(path, keys, what, record=None):
         if _is_count(value):
             _count_in(data, path, key, what)
         elif _is_id_list(value):
-            if not _is_id_list(data.get(key, [])):
+            if key in data and not _is_id_list(data[key]):
                 _refuse(path, key, what, "a list of ids")
         else:
-            raise ValueError("a recorded value must be a count or a list of "
+            raise ValueError("a recorded value must be a count or a non-empty list of "
                              "non-empty strings: %r" % (value,))
         data[key] = value
     runio._write_json(path, data)

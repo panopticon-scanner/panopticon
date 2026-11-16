@@ -16,8 +16,9 @@
     back and coverage is NOT CERTIFIED, as for any other shortfall.
   - Verify records the claim ids it hands each backup in `verify-attempts.json`
     (`<group>/<domain>/backup/claims`), in the same write as the charge. A verdict counts only
-    for an id in that list. A record without one (a run started before this) reads
-    `unanswered`, with "(1 scope not recorded)" beside it; `--reset` starts a run that records it.
+    for an id in that list. A record without one (a run started before this) is never
+    `answered`: it reads `unanswered`, or `unloadable`, with "(1 scope not recorded)" beside it.
+    `--reset` starts a run that records it.
 
 - **The HTML report names each review cell that returned no answer (#3677).** With one review
   cell exhausted, the terminal said `panels COD 1/2` and the JSON listed the cell under
