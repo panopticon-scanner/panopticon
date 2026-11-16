@@ -1556,14 +1556,26 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
         self.assertEqual("first_party", self._origin((PY_MEMBER[0], "1.2.0rc1")))
         self.assertIsNone(self._origin((PY_MEMBER[0], "1.2.0-rc1")))
 
+    def test_a_version_past_the_int_digit_limit_fails_closed_for_its_identity_only(self):
+        # #3686 review N1: int() refuses more than 4300 digits. Such a version keys as
+        # its own text, so the lock still parses and only that identity is affected.
+        huge = "1." + "9" * 5000
+        self.assertEqual(huge, first_party_advisory._pep440_key(" %s " % huge.upper()))
+        self.assertEqual("1!" + huge, first_party_advisory._pep440_key("1!" + huge))
+        _py_tree(self.root, lock=_uv_lock(extra=_uv_entry("other", huge, _UV_REGISTRY)))
+        self.assertEqual("first_party", self._origin(PY_MEMBER))
+        self.assertEqual("first_party", self._origin(PY_ROOT))
+        self.assertIsNone(self._origin(("other", huge)))
+
     def test_the_pep_440_key_agrees_only_on_equal_releases(self):
         key = first_party_advisory._pep440_key
         for a, b in (("1.0", "1.0.0"), ("1.0a1", "1.0.alpha1"), ("1.0b2", "1.0-beta.2"),
                      ("1.0rc1", "1.0c1"), ("1.0rc1", "1.0pre1"), ("1.0rc1", "1.0preview1"),
                      ("1.0-1", "1.0.post1"), ("1.0.post1", "1.0r1"), ("1.0.post1", "1.0rev1"),
                      ("1.0.dev", "1.0dev0"), ("1.0a", "1.0a0"), ("1.0.post", "1.0post0"),
-                     ("V1.0", " 1.0 "), ("0!1.0", "1.0"), ("1.0+Ubuntu.1", "1.0+ubuntu-1"),
-                     ("1.0+1", "1.0+01"), ("not a version", " NOT A VERSION")):
+                     ("V1.0", " 1.0 "), ("0!1.0", "1.0"), ("00!1.0", "1.0"),
+                     ("1.0+Ubuntu.1", "1.0+ubuntu-1"), ("1.0+1", "1.0+01"),
+                     ("not a version", " NOT A VERSION")):
             with self.subTest(equal=(a, b)):
                 self.assertEqual(key(a), key(b))
         for a, b in (("1.0", "1.0.post0"), ("1.0a1", "1.0b1"), ("1.0", "1.0.dev0"),
@@ -1681,6 +1693,9 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
             "unknown source kind": _uv_lock(extra=_uv_entry("other", "1", '{ svn = "x" }')),
             "source not a table": _uv_lock(extra=_uv_entry("other", "1", '"pypi"')),
             "source a list": _uv_lock(extra=_uv_entry("other", "1", '["editable", "."]')),
+            # #3686 review N2: a string or list naming a known kind is still not a table.
+            "source a registry string": _uv_lock(extra=_uv_entry("other", "1", '"registry"')),
+            "source a registry list": _uv_lock(extra=_uv_entry("other", "1", '["registry"]')),
             "empty local path": _uv_lock(extra=_uv_entry("other", "1", '{ editable = "" }')),
             "non-string local path": _uv_lock(extra=_uv_entry("other", "1",
                                                               '{ directory = 1 }')),

@@ -642,9 +642,13 @@ def _pep440_parts(text):
 def _pep440_key(version):
     """A comparison key under which PEP 440-equal spellings agree (``1.2.0-rc1`` and
     ``1.2rc1``). Only used to find ambiguity, never to confirm: an unparseable version
-    keys as its own lower-cased text."""
+    keys as its own lower-cased text, as does one with a number past Python's int()
+    digit limit, so it fails closed for that identity alone, not the whole lock."""
     text = version.strip().lower()
-    parts = _pep440_parts(text[1:] if text.startswith("v") else text)
+    try:
+        parts = _pep440_parts(text[1:] if text.startswith("v") else text)
+    except ValueError:
+        return text
     return text if parts is None else parts
 
 
@@ -720,8 +724,9 @@ def _python_manifest_fact(package_dir, target_root, cache: IngestCache, *, virtu
     ``[project]`` comes first; Poetry's legacy ``[tool.poetry]`` only without it. A
     dynamic or missing version is None (#3623 ruling: fail closed). A ``Private ::``
     classifier, ``package-mode = false``, ``[tool.uv] package = false``,
-    ``[tool.pdm] distribution = false`` and a uv virtual source are unpublishable, except for the review root itself (#3623
-    ruling, as npm's ``private``). Anything malformed is None."""
+    ``[tool.pdm] distribution = false`` and a uv virtual source are unpublishable, except
+    for the review root itself (#3623 ruling, as npm's ``private``). Anything malformed
+    is None."""
     real_dir = os.path.realpath(package_dir)
     # _read_toml confines the realpath to the review root, cache hits included.
     document = _read_toml(os.path.join(real_dir, "pyproject.toml"), target_root, cache)
