@@ -365,7 +365,12 @@ def _json_counts(outcome, phase):
         return coverage["tool_axis"]["unanswered"] >= len(undone)
     if phase == fh.ADVISOR:
         return (coverage["verdicts"]["unanswered"] or 0) >= 1
-    return False                                 # backup: no field counts it
+    if phase == fh.BACKUP:
+        # #3676: `meta.coverage.backups` counts the summoned backups that never
+        # answered (or came back unloadable); #3679 review F3 reads it here.
+        backups = coverage.get("backups") or {}
+        return (backups.get("unanswered") or 0) + (backups.get("unloadable") or 0) >= 1
+    return False
 
 
 def _not_certified_text(outcome):
@@ -447,28 +452,6 @@ def expected_status(plan):
 
 # --- what is known to fail today ---------------------------------------------------------
 
-def _no_review_gap(outcome):
-    """A missing review cell already makes the letter provisional, which hides whether the
-    verification shortfall beside it would have."""
-    return not outcome.unanswered_in(fh.REVIEW)
-
-
-def _backup_left_no_trace(outcome):
-    """Backup advisors alone went unanswered and left no file behind: nothing in the report
-    moves. A cut-off backup file counts as an unloadable verdict, which does sink it."""
-    return ({fh.phase_of(e) for e in outcome.unanswered} == {fh.BACKUP}
-            and outcome.plan.mode != FAULT_MALFORMED)
-
-
-def _backup_was_noticed(outcome):
-    """The report is not certified, by the cut-off backup files or by other undone work."""
-    return not _backup_left_no_trace(outcome)
-
-
-def _backup_left_a_trace(outcome):
-    return _no_review_gap(outcome) and _backup_was_noticed(outcome)
-
-
 @dataclasses.dataclass(frozen=True)
 class Gap:
     """One check known not to hold for one kind of undone work, and the issue that owns it.
@@ -479,22 +462,11 @@ class Gap:
     when: object = None       # outcome -> bool: the runs this gap shows in; None means all
 
 
-#: #3676: backup advisors that never answer leave the report fully certified, and ones that
-#:        write a cut-off file sink certification with no reason; neither is named anywhere.
 KNOWN_GAPS = (
     # #3641 and #3667's rows are closed by #3667's shared `grading.grade_shortfalls` rule:
     # unanswered verify and tool advisors hold the letter back and are named on every surface.
-    # Backup advisors that left no trace: the report is certified and no surface says a word.
-    Gap("#3676", fh.BACKUP, CERTIFIED, _backup_left_no_trace),
-    Gap("#3676", fh.BACKUP, JSON_SAYS, _backup_left_no_trace),
-    Gap("#3676", fh.BACKUP, TERMINAL_SAYS, _backup_left_no_trace),
-    Gap("#3676", fh.BACKUP, HTML_SAYS, _backup_left_no_trace),
-    # ...and ones that did, or that failed beside other work: not certified, but unnamed.
-    Gap("#3676", fh.BACKUP, LETTER, _backup_left_a_trace),
-    Gap("#3676", fh.BACKUP, TERMINAL_NAMES, _backup_was_noticed),
-    Gap("#3676", fh.BACKUP, HTML_NAMES, _backup_was_noticed),
-    # No field counts backup work in either case.
-    Gap("#3676", fh.BACKUP, JSON_COUNTS),
+    # #3676's rows are closed by `meta.coverage.backups` and its `grade_shortfalls` reasons.
+    # #3677's row is closed: the HTML report names each review cell that returned no answer.
 )
 
 

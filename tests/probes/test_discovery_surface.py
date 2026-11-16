@@ -1188,15 +1188,17 @@ class TestTheRoundTrip(unittest.TestCase):
         # the last run's artifact. So the probe reaches its posture block the
         # way every other probe does -- through the row `run_probes` wrote.
         import scripts.phases.readiness as readiness
+        import scripts.run_manifest as run_manifest
         from scripts.phases import runio
         _plant(self.root, "CLAUDE.md")
         self._establish(allow=True)
         envelope = self._artifact()
-        tag = "t1"
-        folder = os.path.join(self.root, ".panopticon", "runs", tag)
+        # #3671: the row reads the folder the run's own manifest names.
+        own = {"host": envelope["host"], "run_id": "abcd1234"}
+        folder = os.path.join(self.root, ".panopticon", "runs", run_manifest.run_tag(own))
         os.makedirs(folder, exist_ok=True)
         runio._write_json(os.path.join(folder, runio.HOST_CAPABILITIES), envelope)
-        row = readiness._capabilities_row(self.root, tag, envelope["host"], False)
+        row = readiness._capabilities_row(self.root, envelope["host"], own)
         self.assertTrue(row["measured"])
         self.assertEqual(hosts.REFUTED, row["states"][hosts.TOOL_POLICY_ENFORCED])
         self.assertIn(hosts.TOOL_POLICY_ENFORCED, row["detail"])

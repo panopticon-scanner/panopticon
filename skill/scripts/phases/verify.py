@@ -135,6 +135,13 @@ def _verify_key(group, domain, stage):
     contract a resumed run reads back, so it is spelled here, once."""
     return "%s/%s/%s" % (group, domain, stage)
 
+def _backup_parts_key(group, domain):
+    """#3679 review: how many parts a backup cell was dispatched in, recorded beside
+    its attempt count. A chunked cell's parts are answered separately, and synth
+    cannot infer the part count from what came back, so a cell reads as answered
+    only when EVERY recorded part did (`synth/backups.py`)."""
+    return _verify_key(group, domain, "backup") + "/parts"
+
 def _verify_budget(review_root, group, domain, stage):
     """This budget's (path, key) for the one owner of the arithmetic."""
     return (runio._pano(review_root, _VERIFY_ATTEMPTS_FILE),
@@ -156,13 +163,15 @@ def _dispatch_key(entry):
 def _dispatch_keys(entries):
     return list(dict.fromkeys(k for k in map(_dispatch_key, entries or []) if k))
 
-def _charge_verify_dispatch(review_root, entries):
+def _charge_verify_dispatch(review_root, entries, record=None):
     """#3185: one attempt per dispatched cell/stage or tool item, in ONE write,
     AT DISPATCH -- review's rule (`review._record_attempts`). Charging only when a
     labeled bundle came back short left every other return uncapped: nothing
-    written, a garbage bundle, one nested past the depth bound, a refused reply."""
+    written, a garbage bundle, one nested past the depth bound, a refused reply.
+    `record` (#3679: backup part counts) lands in the same write, so a charged
+    backup cell always carries its part count."""
     budget.bump_many(runio._pano(review_root, _VERIFY_ATTEMPTS_FILE),
-                     _dispatch_keys(entries), _VERIFY_ATTEMPTS_WHAT)
+                     _dispatch_keys(entries), _VERIFY_ATTEMPTS_WHAT, record=record)
 
 def _give_back_verify_dispatch(review_root, entries):
     """Refund what `_charge_verify_dispatch` charged a checkpoint that never ran
@@ -519,8 +528,10 @@ def _verify_backup_execute(review_root, manifest, host, bundle, guide_path=None)
     # independent -- streaming one group per checkpoint just serialized 19 round
     # trips against a 20-wide host (run-7).
     all_entries, ngroups = [], 0
+    parts: dict[str, int] = {}
     for group, files in coverage._discovered_groups(review_root):
         pending: list[tuple[str, list[dict[str, Any]], int]] = []
+        group_parts: dict[str, int] = {}
         for domain in coverage._effective_domains(review_root, group):
             scope = _cell_backup_findings(review_root, manifest, group, domain)
             if not scope:
@@ -528,11 +539,14 @@ def _verify_backup_execute(review_root, manifest, host, bundle, guide_path=None)
             if _verify_cell_done(review_root, manifest, group, domain, "backup",
                                   cell=scope):
                 continue
-            pending.extend(
-                (domain, chunk, part)
-                for part, chunk in enumerate(_cell_chunks(scope))
-                if not _part_done(review_root, manifest, group, domain,
-                                  "backup", part, chunk))
+            chunks = _cell_chunks(scope)
+            cell_pending = [(domain, chunk, part) for part, chunk in enumerate(chunks)
+                            if not _part_done(review_root, manifest, group, domain,
+                                              "backup", part, chunk)]
+            if cell_pending:
+                # #3679: the WHOLE cell's part count, not just the parts re-sent now.
+                group_parts[_backup_parts_key(group, domain)] = len(chunks)
+            pending.extend(cell_pending)
         if pending and not files:
             # Fix round 4, N2: `grant()` keeps the grant non-empty by falling
             # back to THIS list, which guarantees nothing when it is empty --
@@ -546,6 +560,7 @@ def _verify_backup_execute(review_root, manifest, host, bundle, guide_path=None)
             continue
         if pending:
             ngroups += 1
+            parts.update(group_parts)
             # #1029/#1638 P16: the backup reads its scoped claims' BOUNDED
             # EVIDENCE CLOSURE -- their files, the producers those claims name,
             # and a one-hop import neighbourhood -- not the whole group, and the
@@ -559,7 +574,7 @@ def _verify_backup_execute(review_root, manifest, host, bundle, guide_path=None)
                                   part, grant=grant, ambiguous=ambiguous,
                                   guide_path=guide_path))
     if all_entries:
-        _charge_verify_dispatch(review_root, all_entries)
+        _charge_verify_dispatch(review_root, all_entries, record=parts)
         req, sha = requests.write_dispatch_request_bound(
             review_root, manifest["run_id"], "verify", None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group=None,

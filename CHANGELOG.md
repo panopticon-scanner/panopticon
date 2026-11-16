@@ -10,6 +10,38 @@
   fault-injection harness's known-gap row for this is removed, and the harness now checks that
   the HTML names every unanswered review cell exactly.
 
+- **Summoned backup advisors that never answer hold the letter back (#3676).** A run whose
+  backup advisors all failed (non-zero exit, empty reply, timeout) read as fully certified, and
+  a malformed backup sank certification without naming a cause. `meta.coverage.backups`
+  (`summoned`, `answered`, `unanswered`, `unloadable`, in cells, off the verify phase's own
+  `verify-attempts.json`, where verify now also records each backup cell's part count) feeds
+  the shared `grade_shortfalls` rule from #3667. A chunked cell (more than 25 claims, answered
+  in parts) is answered only when every part is, and a backup binds to this run through the
+  verify queue or the driver's `--run-id`; with neither, it is never answered. Unanswered
+  and unloadable backups are named reasons, the letter is provisional ("S (provisional; 5
+  backup advisors unanswered)"), coverage is NOT CERTIFIED and a PASS gate is INCONCLUSIVE. A
+  run whose backups all answered is unchanged.
+
+- **`driver readiness` reads a stored run only when a run in this checkout wrote it (#3671).** A
+  target could commit a run folder holding a posture with every control PROVEN, and a
+  `runs/latest` symlink to it. Readiness read through the symlink and printed that posture as
+  this run's ("every control this run relies on was verified, not assumed"), and called a
+  shipped report a `complete` run, for a run `driver loop` would halt on or never resume. Now
+  every row that describes a stored run reads the folder this checkout's own manifest names,
+  and only when that manifest loads and is not foreign (not git-tracked, and stamped for this
+  checkout). `runs/latest` is never followed. Otherwise:
+  - `capabilities` says `not measured` and shows none of the stored text.
+  - `existing-run` says `none -- no run of this checkout found` and names nothing it found.
+  - `tool-findings` gives no count, and `egress-proxy` does not inherit the stored flags.
+
+  Under `--reset`, and for a host other than the stored run's, `tool-findings` and
+  `egress-proxy` no longer describe the stored run either, and a bare `readiness --reset` now
+  reports on the host `driver loop --reset` would drive, not the outgoing manifest's.
+  The "is this manifest git-tracked" check now asks whatever the path's case: on a
+  case-insensitive filesystem a committed `.panopticon/RUN-MANIFEST.json`, or
+  `.Panopticon/run-manifest.json`, is the file being read, and the exact spelling had found
+  no such tracked path.
+
 - **Changed: `driver setup` writes a proposal one way, whatever order and spelling the agent
   returned it in (#3651, phase 2b).** The same matrix used to come out as a different draft each
   run: groups in the agent's order, globs in the agent's order, the same glob spelled two ways.
