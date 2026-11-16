@@ -250,6 +250,13 @@ NOT_MEASURED = "not measured — first `driver run` probes"
 # #3668: a stored posture that is not this run's is not shown. Neither line names the stored host.
 NOT_MEASURED_AFTER_RESET = ("not measured for this run — --reset discards the stored run and its "
                             "measured posture; first `driver run` probes")
+# #3671: neither names anything found in the tree.
+NOT_MEASURED_NOT_THIS_RUN = ("not measured for this run — the stored run folder is not one a run in "
+                             "this checkout wrote; first `driver run` probes")
+NO_RUN_OF_THIS_CHECKOUT = ("none -- no run of this checkout found; the stored run folder is not one "
+                           "a run here wrote")
+OUR_RUN_FOLDER_MISSING = ("none -- this checkout's run manifest names a run folder that is not "
+                          "there, so there is no run to resume")
 NOT_MEASURED_ON_HOST = ("not measured on host %s — the stored run measured another host; first "
                         "`driver run` probes")
 
@@ -459,7 +466,7 @@ def _entry_pending(entry):
 
 
 def _existing_run_row(review_root):
-    """What a bare `driver loop` here would resume, from `runs/latest`.
+    """What a bare `driver loop` here would resume: the run this checkout's manifest names.
 
     `status` is the last state RECORDED for that run: `complete` (a durable
     report exists), `error` (the run stopped at the readiness checkpoint, which
@@ -467,8 +474,8 @@ def _existing_run_row(review_root):
     pending), and `started` for a run folder that exists but has recorded none
     of those yet.
 
-    `none` means exactly one thing -- there is no run in this tree -- and that
-    is fix round 1's F3: it used to cover both that and "a run in progress with
+    `none` means exactly one thing -- there is no run of this checkout in this
+    tree, whatever else the tree holds (#3671) -- and that is fix round 1's F3: it used to cover both that and "a run in progress with
     nothing pending", so a `--json` consumer keying on `status` alone could not
     tell them apart while the row's own `detail` said which. A non-null `tag`
     with `none` was the contradiction.
@@ -479,15 +486,18 @@ def _existing_run_row(review_root):
     `detail` carries the refusal.
     """
     runs = os.path.join(review_root, plan_contract.ARTIFACT_DIR, "runs")
-    try:
-        tag = os.path.basename(os.readlink(os.path.join(runs, "latest")))
-    except OSError:
-        # No symlink (a platform without them, or a run that never got that
-        # far): the manifest anchors the same tag.
-        tag = run_manifest.run_tag(run_manifest.load_manifest(review_root))
-    if not tag or not os.path.isdir(os.path.join(runs, tag)):
+    # #3671: the folder is the one this checkout's own manifest names. `runs/latest` is a
+    # symlink in the reviewed tree, so the target can point it at a folder it committed; read
+    # through it, this row said "complete" for a run nobody here did.
+    tag = run_manifest.run_tag(_trusted_manifest(review_root))
+    if tag and not os.path.isdir(os.path.join(runs, tag)):
+        # Our own manifest, and the folder it names is gone: not a run to resume, and not
+        # something the target shipped either.
+        return {"tag": None, "status": "none", "pending": 0, "detail": OUR_RUN_FOLDER_MISSING}
+    if not tag:
         return {"tag": None, "status": "none", "pending": 0,
-                "detail": "none -- no previous run in this tree"}
+                "detail": NO_RUN_OF_THIS_CHECKOUT if _anything_stored(runs)
+                else "none -- no previous run in this tree"}
     folder = os.path.join(runs, tag)
     report = os.path.join(review_root, plan_contract.ARTIFACT_DIR, "%s-report.json" % tag)
     if os.path.isfile(report):
@@ -532,26 +542,70 @@ def _existing_run_row(review_root):
                       "on" % tag}
 
 
-def _capabilities_row(review_root, tag, host, reset):
+def _trusted_manifest(review_root):
+    """The run manifest, when a run in THIS checkout wrote it; else None (#3671).
+
+    Everything under `.panopticon/` is in the reviewed tree, so the target can write it: a
+    committed run folder, a `runs/latest` symlink to it, a manifest of its own. A manifest is
+    trusted when it loads and is not foreign (`runio._foreign_manifest`: not git-tracked, and
+    stamped for this checkout). Every row that reads a stored run reads the folder THIS
+    manifest names (`run_manifest.run_tag`) and no other, so none of them can describe a run
+    nobody here did: `driver loop` halts at first contact on a foreign manifest (#3271), and
+    with no manifest it starts a new run."""
+    manifest = run_manifest.load_manifest(review_root)
+    if not isinstance(manifest, dict) or runio._foreign_manifest(
+            manifest, review_root, run_manifest.manifest_path(review_root)):
+        return None
+    return manifest
+
+
+def _anything_stored(runs):
+    """Does the tree hold any run folder at all? Asked only to choose between two ways of
+    saying "nothing of ours": no name found here is ever shown."""
+    try:
+        with os.scandir(runs) as entries:
+            return any(True for _entry in entries)
+    except OSError:
+        return False
+
+
+def _own_run(manifest, host, reset):
+    """`(manifest, None)` when the stored run is the run this document is about, else
+    `(None, why)` with the "not measured" line that says why not (#3668, #3671).
+
+    `manifest` is `_trusted_manifest`'s answer. The stored run is this document's when there
+    is one, it names the host the document is about, and `--reset` is not about to discard
+    it. Every row that says "this run's" asks here."""
+    if reset:
+        return None, NOT_MEASURED_AFTER_RESET
+    if manifest is None:
+        return None, NOT_MEASURED_NOT_THIS_RUN
+    if (manifest.get("host") or runio._DEFAULTS["host"]) != host:
+        return None, NOT_MEASURED_ON_HOST % host
+    return manifest, None
+
+
+def _capabilities_row(review_root, host, own, why=None):
     """The stored run's measurement, read back -- and only where it is the measurement of the run
-    being asked about (#3668). Never re-probed and never gating: probing is
+    being asked about (#3668, #3671). Never re-probed and never gating: probing is
     `driver._establish_host_posture`'s job on a real invocation, and doing it here would start a
     host CLI.
 
-    `host` is the host this document is about and `reset` the plan's `--reset`. A posture measured
-    on another host says nothing about this one, and `--reset` discards the folder the posture
-    lives in, so in both cases the row is "not measured" and none of the stored text is shown."""
-    envelope = None
-    if tag:
-        envelope = runio._load_json(os.path.join(
-            review_root, plan_contract.ARTIFACT_DIR, "runs", tag, runio.HOST_CAPABILITIES))
+    `host` is the host this document is about; `own` and `why` are `_own_run`'s answer. The
+    posture is read from the folder `own` names and shown only when it was measured on this
+    host. Otherwise the row is "not measured" and none of the stored text is shown: not the
+    stored host's name, and not a word of its notes."""
+    runs = os.path.join(review_root, plan_contract.ARTIFACT_DIR, "runs")
+    tag = run_manifest.run_tag(own)                 # None when there is no run of ours
+    if not tag:
+        detail = (why or NOT_MEASURED_NOT_THIS_RUN) if _anything_stored(runs) else NOT_MEASURED
+        return {"measured": False, "host": None, "states": {}, "unproven": [], "detail": detail}
+    envelope = runio._load_json(os.path.join(runs, tag, runio.HOST_CAPABILITIES))
     caps = envelope.get("capabilities") if isinstance(envelope, dict) else None
     who = host_disclosure.host_of(envelope)      # str or None, as headline() reads it
     detail = None
     if not isinstance(caps, dict) or not who:
         detail = NOT_MEASURED
-    elif reset:
-        detail = NOT_MEASURED_AFTER_RESET
     elif who != host:
         detail = NOT_MEASURED_ON_HOST % host
     if detail:
@@ -579,14 +633,16 @@ def preflight(target=".", host=None, online=None, plan=None):
     meant.
     """
     review_root = runio.resolve_review_root(target)[0]
-    host, selected_from = runio.resolve_host(host, review_root)
+    reset = bool((plan or {}).get("reset"))
+    # `reset` as `driver loop` passes it: a `--reset` run is minted from argv, so the outgoing
+    # manifest's host must not be the host this document is about (#3671).
+    host, selected_from = runio.resolve_host(host, review_root, reset)
     tools_flag = None
-    manifest = run_manifest.load_manifest(review_root)
-    if manifest and not runio._foreign_manifest(
-            manifest, review_root, run_manifest.manifest_path(review_root)):
-        tools_flag = (manifest.get("flags") or {}).get("tools")
+    own, why = _own_run(_trusted_manifest(review_root), host, reset)
+    if own:
+        tools_flag = (own.get("flags") or {}).get("tools")
         if online is None:
-            online = bool((manifest.get("flags") or {}).get("online"))
+            online = bool((own.get("flags") or {}).get("online"))
     guide = _guide_row()
     matrix = _matrix_row(review_root)
     existing = _existing_run_row(review_root)
@@ -618,10 +674,10 @@ def preflight(target=".", host=None, online=None, plan=None):
             "cli": cli,
             "tools_image": tools_image,
             "egress_proxy": readiness_checks.egress_proxy_row(online, tools_flag),
-            "capabilities": _capabilities_row(review_root, existing["tag"], host,
-                                              bool((plan or {}).get("reset"))),
-            # #3233: what this run's flags describe, every row informational.
-            "run_plan": readiness_plan.rows(review_root, host, plan, manifest)}
+            "capabilities": _capabilities_row(review_root, host, own, why),
+            # #3233: what this run's flags describe, every row informational. `own`, not
+            # whatever manifest the tree holds: a row about "this run's scan" is about this run.
+            "run_plan": readiness_plan.rows(review_root, host, plan, own)}
 
 
 def _row_lines(document):
