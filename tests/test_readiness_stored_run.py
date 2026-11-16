@@ -550,9 +550,13 @@ class TestAManifestBehindATrackedDirectoryEntry(_Case):
         manifest = self._planted_manifest(self.root)
         tag = run_manifest.run_tag(manifest)
         self._plant(tag=tag, complete=True, manifest=manifest, commit=False)
-        inner = ["git", "-C", self.pano, "-c", "user.name=t", "-c", "user.email=t@t"]
-        for argv in (["init", "-q"], ["add", "-f", "--", "."], ["commit", "-q", "-m", "inner"]):
-            subprocess.run(inner + argv, check=True, capture_output=True)
+        def inner(*argv):
+            subprocess.run(["git", "-C", self.pano, "-c", "user.name=t", "-c", "user.email=t@t",
+                            *argv], check=True, capture_output=True)
+
+        inner("init", "-q")
+        inner("add", "-f", "--", ".")
+        inner("commit", "-q", "-m", "inner")
         self._git("add", "-f", "--", ".panopticon")
         self._git("commit", "-q", "-m", "ship a submodule")
         tracked = subprocess.run(["git", "-C", self.root, "ls-files", "-s", "--", ".panopticon"],
