@@ -215,6 +215,11 @@ class TestTheGemspecIsReadAsLiteralsOnly(_RubyCase):
         for label, member in (
                 ("no block", 'Gem::Specification.new("acme-lib", "1.2.0")\n'),
                 ("two specs", _gemspec(*MEMBER) + _gemspec(*MEMBER)),
+                ("name and version split over two blocks",
+                 'Gem::Specification.new do |s|\n  s.name = "acme-lib"\nend\n'
+                 'Gem::Specification.new do |s|\n  s.version = "1.2.0"\nend\n'),
+                ("another Gem::Specification mention",
+                 _gemspec(*MEMBER) + 'Gem::Specification.load("other.gemspec")\n'),
                 ("not utf-8", None)):
             with self.subTest(form=label):
                 _tree(self.root, member=member if member is not None else "")
@@ -309,6 +314,32 @@ class TestTheGemfileLockFailsClosed(_RubyCase):
         _tree(self.root, lock=_lock(member_remote="gems/linked"))
         self.assertIsNone(self._origin(MEMBER))
 
+    def test_the_gemspec_and_its_directory_must_both_resolve_in_tree(self):
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        # An absolute remote is refused even when it names an in-tree directory.
+        _tree(self.root, lock=_lock(member_remote=os.path.join(self.root, "gems", "acme-lib")))
+        self.assertIsNone(self._origin(MEMBER))
+        os.remove(os.path.join(self.root, "gems", "acme-lib", "acme-lib.gemspec"))
+        # A gemspec symlinked out of the tree.
+        _write(os.path.join(outside.name, "acme-lib.gemspec"), _gemspec(*MEMBER))
+        _tree(self.root, member=False)
+        os.makedirs(os.path.join(self.root, "gems", "acme-lib"), exist_ok=True)
+        os.symlink(os.path.join(outside.name, "acme-lib.gemspec"),
+                   os.path.join(self.root, "gems", "acme-lib", "acme-lib.gemspec"))
+        self.assertIsNone(self._origin(MEMBER))
+        # An outside directory whose gemspec links back into the tree.
+        _write(os.path.join(self.root, "inside", "acme-lib.gemspec"), _gemspec(*MEMBER))
+        away = os.path.join(outside.name, "away")
+        os.makedirs(away)
+        os.symlink(os.path.join(self.root, "inside", "acme-lib.gemspec"),
+                   os.path.join(away, "acme-lib.gemspec"))
+        _tree(self.root, member=False, lock=_lock(member_remote=os.path.relpath(away, self.root)))
+        self.assertIsNone(self._origin(MEMBER))
+        os.remove(os.path.join(self.root, "gems", "acme-lib", "acme-lib.gemspec"))
+        _tree(self.root)
+        self.assertEqual("first_party", self._origin(MEMBER))
+
     def test_a_path_source_with_any_other_option_stays_on_the_advisor_path(self):
         _tree(self.root, lock=_lock(member_options="  glob: **/*.gemspec\n"))
         self.assertIsNone(self._origin(MEMBER))
@@ -318,6 +349,10 @@ class TestTheGemfileLockFailsClosed(_RubyCase):
         good = _lock()
         for label, lock in (
                 ("bad spec line", good.replace("    acme-lib (1.2.0)", "    acme-lib 1.2.0")),
+                ("trailing text", good.replace("    acme-lib (1.2.0)", "    acme-lib (1.2.0) x")),
+                ("a space in the version", good.replace("    acme-lib (1.2.0)",
+                                                        "    acme-lib (1.2.0 x)")),
+                ("an odd indent", good.replace("      rack (~> 2.2)", "     rack (~> 2.2)")),
                 ("spec outside specs", good.replace("  specs:\n    acme-lib",
                                                     "    acme-lib (9.9.9)\n  specs:\n    acme-lib")),
                 ("dependency outside specs", good.replace(
@@ -364,6 +399,17 @@ class TestTheGemfileLockFailsClosed(_RubyCase):
             cache = first_party_advisory.IngestCache()
             self.assertIsNone(self._origin(MEMBER, cache=cache))
         self.assertTrue(cache.manifest_budget_exhausted)
+
+    def test_one_directory_serving_two_specs_reads_its_gemspec_once(self):
+        lock = _lock().replace("    acme-app (0.3.0)\n", "    acme-app (0.3.0)\n    acme-extra (0.3.0)\n")
+        _tree(self.root, lock=lock)
+        cache = first_party_advisory.IngestCache()
+        self.assertEqual("first_party", self._origin(ROOT, cache=cache))
+        self.assertIsNone(self._origin(("acme-extra", "0.3.0"), cache=cache))
+        spent = sum(os.path.getsize(os.path.join(self.root, p)) for p in (
+            "Gemfile.lock", "acme-app.gemspec", "gems/acme-lib/acme-lib.gemspec"))
+        self.assertEqual(first_party_advisory.MAX_CARGO_MANIFEST_INGEST_BYTES - spent,
+                         cache.manifest_bytes_remaining)
 
     def test_an_oversized_lock_or_gemspec_classifies_nothing(self):
         _tree(self.root)
