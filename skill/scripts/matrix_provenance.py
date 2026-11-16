@@ -128,7 +128,9 @@ def origin(review_root, relpath, runner=subprocess.run):
 
 
 # The other names `_other_names` will ask HEAD about. One is what a filesystem that folds
-# names gives; more are hard links, which first contact halts on (H4).
+# names gives; more are hard links, which first contact halts on (H4). A commit cannot
+# create a hard link, so more than one is something done on this machine, not something a
+# target ships: the cap bounds local clutter, and no target can fill it to hide a name.
 _OTHER_NAMES_MAX = 8
 
 

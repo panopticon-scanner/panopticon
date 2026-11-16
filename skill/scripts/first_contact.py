@@ -98,9 +98,10 @@ def _tracked(review_root, runner):
     filesystem is, so on one that ignores case (APFS, NTFS) a committed
     `.Panopticon/` is the directory every later read opens, and the exact spelling
     found nothing tracked. `:(icase)` folds ASCII only, which is all there is to
-    fold here: no other code point reads as a character of `.panopticon` (measured
-    on APFS, every code point against every character). The exact spelling is
-    preferred when the index has both."""
+    fold here: no other code point reads as a character of `.panopticon`, or as
+    two of them (measured on APFS; it does fold a long s and the `st` ligatures,
+    which this name has no use for). The exact spelling is preferred when the
+    index has both."""
     try:
         proc = safe_git.probe(review_root, ["ls-files", "-z", "--", ":(icase)" + PANO],
                               runner=runner or subprocess.run, timeout=30)

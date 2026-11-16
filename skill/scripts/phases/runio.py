@@ -655,6 +655,15 @@ def _manifest_committed(review_root, manifest_file):
     if not manifest_file or not os.path.isfile(manifest_file):
         return False
     rel = os.path.relpath(manifest_file, review_root)
+    # #3684 review F1: a symlink on the way to the manifest. A target that commits
+    # `evil/run-manifest.json` and a link `.panopticon -> evil` has committed the file
+    # this reads, under a path git never lists as `.panopticon/...`, and the manifest's
+    # reader refuses a link only at the last component. So any link between the review
+    # root and the manifest reads as committed, tracked or not, in a git tree or not:
+    # first contact refuses a linked `.panopticon` (H3), so no run of ours is behind one.
+    if os.path.realpath(os.path.dirname(manifest_file)) != os.path.normpath(
+            os.path.join(os.path.realpath(review_root), os.path.dirname(rel))):
+        return True
     # #3671 F1: `:(icase)`. A git pathspec is case-sensitive whatever the filesystem
     # is. On a case-insensitive one (APFS, NTFS) a target that commits
     # `.panopticon/RUN-MANIFEST.json`, or `.Panopticon/run-manifest.json`, has
@@ -698,14 +707,20 @@ def _manifest_probe_failed(r):
 def _tracked_as_another_name(review_root, manifest_file, directory):
     """#3684: whether a path git tracks IS `manifest_file` on this filesystem, however
     the index spells it. `:(icase)` folds ASCII only, and a filesystem folds more: APFS
-    reads `run-manife\u017ft.json` (a long s) as `run-manifest.json` (measured), so that
-    committed file was the manifest read here and git called it untracked.
+    reads `run-manife\u017ft.json` (a long s) as `run-manifest.json`, and likewise
+    `run-manife\ufb06.json` (the ligature for `st`; both measured), so that committed
+    file was the manifest read here and git called it untracked.
 
     So the filesystem is asked, not a list of folds: every path git tracks in the
     manifest's directory (the directory under any case) is compared with the manifest
     by device and inode. `lstat` only -- a tracked symlink that POINTS at the manifest
     is another directory entry and is not it, while a tracked hard link to it is. (The
     manifest's own entry is what is compared: its reader opens no link.)
+
+    The directory itself is compared the same way. Git tracks a directory only as a
+    gitlink (a submodule), and a manifest inside one is committed -- in that repository,
+    which this one's index cannot be asked about (measured: a gitlink at `.panopticon`
+    read as untracked).
 
     Every doubt reads as committed, the cautious verdict: more tracked paths there than
     `_TRACKED_BESIDE_MAX`, a manifest that can no longer be stat'ed, a tracked path that
@@ -719,17 +734,23 @@ def _tracked_as_another_name(review_root, manifest_file, directory):
     if len(tracked) > _TRACKED_BESIDE_MAX:
         return True
     try:
-        ours = os.lstat(manifest_file)
+        ours = {_identity(manifest_file), _identity(os.path.join(review_root, directory))}
         for path in tracked:
             try:
-                theirs = os.lstat(os.path.join(review_root, path))
+                theirs = _identity(os.path.join(review_root, path))
             except (FileNotFoundError, NotADirectoryError):
                 continue                     # in the index, not on disk: not this file
-            if (theirs.st_dev, theirs.st_ino) == (ours.st_dev, ours.st_ino):
+            if theirs in ours:
                 return True
     except (OSError, ValueError):
         return True
     return False
+
+
+def _identity(path):
+    """Which file a directory entry is: device and inode, and no link followed."""
+    info = os.lstat(path)
+    return info.st_dev, info.st_ino
 
 
 def _foreign_manifest(manifest, review_root, manifest_file=None):

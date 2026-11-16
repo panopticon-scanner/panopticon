@@ -316,11 +316,13 @@ class TestAPlantedRunFolderIsNobodysRun(_Case):
 
 class TestACommittedManifestUnderAnotherName(_Case):
     """#3684. `:(icase)` folds ASCII only; a filesystem folds more. APFS reads a long s
-    (U+017F) as `s`, so a committed `run-manife\u017ft.json` was the manifest readiness read
-    and git called it untracked. The filesystem is asked instead: a path git tracks in the
-    manifest's directory that is the same file (device and inode) makes it committed."""
+    (U+017F) as `s`, and the ligatures U+FB05 and U+FB06 as `st`, so a committed
+    `run-manife\u017ft.json` was the manifest readiness read and git called it untracked.
+    The filesystem is asked instead: a path git tracks in the manifest's directory that is
+    the same file (device and inode) makes it committed."""
 
     LONG_S = "run-manife\u017ft.json"
+    LIGATURE = "run-manife\ufb06.json"          # one code point for two of our letters
 
     def _commit_beside(self, name, manifest, directory=".panopticon"):
         there = os.path.join(self.root, directory)
@@ -338,8 +340,14 @@ class TestACommittedManifestUnderAnotherName(_Case):
         return manifest, tag
 
     def test_a_name_the_filesystem_folds_onto_ours(self):
+        self._a_name_this_filesystem_may_fold(self.LONG_S)
+
+    def test_a_ligature_the_filesystem_folds_onto_two_of_our_letters(self):
+        self._a_name_this_filesystem_may_fold(self.LIGATURE)
+
+    def _a_name_this_filesystem_may_fold(self, name):
         manifest, tag = self._planted()
-        self._commit_beside(self.LONG_S, manifest)
+        self._commit_beside(name, manifest)
         exact = run_manifest.manifest_path(self.root)
         if not os.path.isfile(exact):
             # This filesystem keeps the two names apart, so the committed file is another
@@ -485,6 +493,79 @@ class TestACommittedManifestUnderAnotherName(_Case):
                     mock.patch.object(safe_git, "probe", side_effect=probe), \
                     self.assertRaises(runio.DriverError):
                 runio._manifest_committed(self.root, exact)
+
+
+class TestAManifestBehindATrackedDirectoryEntry(_Case):
+    """#3684 review F1. The manifest's path can be the target's own file with no fold at
+    all: `.panopticon` can be a link to a committed directory, or a submodule. Git lists
+    neither as `.panopticon/run-manifest.json`, and the manifest's reader refuses a link
+    only at the last component. Both hold on any filesystem."""
+
+    def _ship_behind_a_link(self, commit=True):
+        """`evil/` holds a whole planted run, its manifest forging this checkout's path,
+        and `.panopticon` is a link to it."""
+        manifest = self._planted_manifest(self.root)
+        self._plant(tag=run_manifest.run_tag(manifest), complete=True, manifest=manifest,
+                    commit=False)
+        os.rename(self.pano, os.path.join(self.root, "evil"))
+        os.symlink("evil", self.pano)
+        if commit:
+            self._git("add", "-f", "--", "evil", ".panopticon")
+            self._git("commit", "-q", "-m", "ship a run folder behind a link")
+
+    def test_a_tracked_link_to_a_committed_directory(self):
+        self._ship_behind_a_link()
+        tracked = subprocess.run(["git", "-C", self.root, "ls-files", "-s", "--", ".panopticon"],
+                                 check=True, capture_output=True, text=True).stdout.split()
+        self.assertEqual(("120000", ".panopticon"), (tracked[0], tracked[-1]))
+        manifest_file = run_manifest.manifest_path(self.root)
+        self.assertTrue(os.path.isfile(manifest_file))       # it is there to be read
+        self.assertTrue(runio._manifest_committed(self.root, manifest_file))
+        self.assertIsNone(readiness._trusted_manifest(self.root))
+        self.assertEqual(("claude", "default"), runio.resolve_host(None, self.root))
+        # The verb has its own refusal of a linked `.panopticon`, before it reads anything
+        # (#3452). So this check is the second line there, and nothing is printed.
+        self.assertEqual(("", ""), (self._readiness("--json"), self._readiness()))
+
+    def test_a_link_reads_as_committed_tracked_or_not_and_in_a_tree_that_is_not_git(self):
+        # First contact refuses a linked `.panopticon` (H3), so no run of ours is behind one.
+        self._ship_behind_a_link(commit=False)
+        self.assertTrue(runio._manifest_committed(self.root, run_manifest.manifest_path(self.root)))
+        self.assertIsNone(readiness._trusted_manifest(self.root))
+        shutil.rmtree(os.path.join(self.root, ".git"))
+        self.assertTrue(runio._manifest_committed(self.root, run_manifest.manifest_path(self.root)))
+        self.assertIsNone(readiness._trusted_manifest(self.root))
+
+    def test_a_review_root_that_is_itself_reached_through_a_link_is_not_such_a_link(self):
+        # Only what lies between the review root and the manifest is the target's to plant.
+        self._our_run()
+        alias = self.root + "-alias"
+        os.symlink(self.root, alias)
+        self.addCleanup(os.unlink, alias)
+        self.assertFalse(runio._manifest_committed(alias, run_manifest.manifest_path(alias)))
+
+    def test_a_submodule_where_the_artifact_directory_is(self):
+        # A gitlink: `.panopticon` is another repository, and the manifest is committed
+        # there. This repository's index lists the directory, and no file inside it.
+        manifest = self._planted_manifest(self.root)
+        tag = run_manifest.run_tag(manifest)
+        self._plant(tag=tag, complete=True, manifest=manifest, commit=False)
+        inner = ["git", "-C", self.pano, "-c", "user.name=t", "-c", "user.email=t@t"]
+        for argv in (["init", "-q"], ["add", "-f", "--", "."], ["commit", "-q", "-m", "inner"]):
+            subprocess.run(inner + argv, check=True, capture_output=True)
+        self._git("add", "-f", "--", ".panopticon")
+        self._git("commit", "-q", "-m", "ship a submodule")
+        tracked = subprocess.run(["git", "-C", self.root, "ls-files", "-s", "--", ".panopticon"],
+                                 check=True, capture_output=True, text=True).stdout.split()
+        self.assertEqual(("160000", ".panopticon"), (tracked[0], tracked[-1]))
+        manifest_file = run_manifest.manifest_path(self.root)
+        self.assertTrue(runio._manifest_committed(self.root, manifest_file))
+        self.assertIsNone(readiness._trusted_manifest(self.root))
+        self.assertEqual(("claude", "default"), runio.resolve_host(None, self.root))
+        doc, table = self._both()                            # the verb reads this tree
+        self._assert_nothing_stored_is_shown(doc, table, planted=(tag, "deadbeef"))
+        self.assertEqual(readiness.NO_RUN_OF_THIS_CHECKOUT, doc["existing_run"]["detail"])
+        self.assertEqual(("claude", "default"), (doc["host"], doc["selected_from"]))
 
 
 class TestTheFolderIsTheOneTheManifestNames(_Case):

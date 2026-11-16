@@ -13,9 +13,13 @@
     and a filesystem that ignores case reads it as .panopticon/; ...`.
   - **`driver readiness`'s "is this manifest git-tracked".** #3671 made it ignore ASCII case.
     A filesystem folds more than that: APFS reads `run-manifeſt.json` (a long s) as
-    `run-manifest.json`, so that committed file still read as this checkout's own untracked
-    manifest. The check now compares the manifest with every path git tracks in its directory
-    by file identity, so it holds for any spelling the filesystem reads as the same file.
+    `run-manifest.json`, and `run-manifeﬆ.json` (a ligature) too, so that committed file still
+    read as this checkout's own untracked manifest. The check now compares the manifest with
+    every path git tracks in its directory by file identity, so it holds for any spelling the
+    filesystem reads as the same file. Two more ways to commit that file under another path
+    read as tracked now: a submodule at `.panopticon` (it read as untracked, and its manifest
+    chose the host `readiness` reported on), and a symlink on the way to the manifest (the
+    verb already refused a linked `.panopticon`; the check no longer relies on that).
   - **`meta.matrix.origin`.** A config the commit holds as `Panopticon.yml` read as
     `working_tree`. It reads `committed` now, when its bytes are the commit's.
 
