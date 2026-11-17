@@ -15,6 +15,7 @@ import scripts.discovery as discovery
 import scripts.driver as driver
 import scripts.phases.readiness as readiness
 import scripts.phases.runio as runio
+import scripts.repo_config as repo_config
 import scripts.phases.synthesize as synthesize_phase
 import scripts.run_manifest as run_manifest
 import scripts.synthesize as synthesize
@@ -27,7 +28,12 @@ ADVICE = ("Run a whole-repository review, or scope one with -f, -d, -g or --file
 # Each flag on its own, as an operator types it, and how the refusal names it.
 DRIVER = (("--pr", ["--pr", "7"]), ("--changes (-c)", ["--changes"]), ("--changes (-c)", ["-c"]),
           ("--base", ["--base", "main"]), ("--gate-scope", ["--gate-scope", "on-diff"]),
-          ("--gate-scope", ["--gate-scope", "all"]), ("--diff-context", ["--diff-context", "5"]))
+          ("--gate-scope", ["--gate-scope", "all"]), ("--diff-context", ["--diff-context", "5"]),
+          # #3737 review F1: zero is a value. `0 == False`, and it read as not given.
+          ("--pr", ["--pr", "0"]), ("--pr", ["--pr=0"]), ("--pr", ["--pr", "-0"]),
+          ("--pr", ["--pr", "7", "--pr", "0"]),
+          ("--diff-context", ["--diff-context", "0"]), ("--diff-context", ["--diff-context=0"]),
+          ("--diff-context", ["--diff-c", "0"]), ("--base", ["--base", ""]))
 
 
 def refused(call, argv):
@@ -57,7 +63,8 @@ class TestTheDriverRefusesEveryDeltaFlag(unittest.TestCase):
                         touched.assert_not_called()
 
     def test_persist_refuses_the_two_it_takes(self):
-        for name, flags in (("--pr", ["--pr", "7"]), ("--base", ["--base", "main"])):
+        for name, flags in (("--pr", ["--pr", "7"]), ("--base", ["--base", "main"]),
+                            ("--pr", ["--pr", "0"]), ("--pr", ["--pr=0"])):
             with self.subTest(flags=flags), \
                     mock.patch.object(runio, "resolve_review_root") as resolve, \
                     mock.patch("scripts.orchestrate.main_verb") as persist:
@@ -114,7 +121,7 @@ class TestARunStartedAsADeltaReviewIsNotResumed(unittest.TestCase):
     run started with `-c` went on as a delta run with no flag typed at all."""
 
     DELTA = ({"scope": {"mode": "changed", "target": None}}, {"base": "main"}, {"pr": 7},
-             {"pr_base": "main"}, {"worktree": "/tmp/pr-7"})
+             {"pr": 0}, {"pr_base": "main"}, {"worktree": "/tmp/pr-7"})
 
     def test_what_makes_a_manifest_a_delta_run(self):
         whole = {"scope": {"mode": "repo", "target": None}, "base": None, "pr": None,
@@ -195,7 +202,8 @@ class TestTheChildScriptsRefuseThemToo(unittest.TestCase):
         cases = (("--scope-changed", ["--scope-changed"]), ("--base", ["--base", "main"]),
                  ("--base", ["--scope-files", "a.py", "--base", "main"]),
                  ("--pr-base", ["--pr-base", "main"]), ("--pr-worktree", ["--pr-worktree"]),
-                 ("--diff-context", ["--diff-context", "5"]))
+                 ("--diff-context", ["--diff-context", "5"]),
+                 ("--diff-context", ["--diff-context", "0"]), ("--diff-context", ["--diff-context=0"]))
         with tempfile.TemporaryDirectory() as d:
             for name, flags in cases:
                 with self.subTest(flags=flags):
@@ -212,7 +220,8 @@ class TestTheChildScriptsRefuseThemToo(unittest.TestCase):
                  ("--diff-hunks-run-id", ["--diff-hunks-run-id", "R"]),
                  ("--gate-scope", ["--gate-scope", "on-diff"]),      # the default, typed
                  ("--gate-scope", ["--gate-scope", "all"]),
-                 ("--diff-context", ["--diff-context", "5"]))        # the default, typed
+                 ("--diff-context", ["--diff-context", "5"]),        # the default, typed
+                 ("--diff-context", ["--diff-context", "0"]), ("--diff-context", ["--diff-context=0"]))
         with tempfile.TemporaryDirectory() as d:
             for name, flags in cases:
                 with self.subTest(flags=flags):
@@ -242,6 +251,80 @@ class TestTheChildScriptsRefuseThemToo(unittest.TestCase):
         self.assertEqual([], delta_withdrawn.given(
             delta_withdrawn.typed(synthesize.build_parser(), [], delta_withdrawn.SYNTHESIZE_FLAGS),
             delta_withdrawn.SYNTHESIZE_FLAGS))
+
+
+class TestZeroIsAValue(unittest.TestCase):
+    """#3737 review F1. `given` tested `not in (None, False)`, and `0 == False`: `--pr 0`
+    went on to `gh pr view 0`, a PR worktree and a delta manifest."""
+
+    def test_given_reads_a_flag_by_identity(self):
+        flags = (("pr", "--pr"), ("changes", "--changes"), ("base", "--base"))
+        for value, typed in ((0, True), (0.0, True), ("", True), ("0", True), (7, True),
+                             (True, True), ([], True), (None, False), (False, False)):
+            with self.subTest(value=value):
+                args = mock.Mock(spec=["pr", "changes", "base"], pr=value, changes=False, base=None)
+                self.assertEqual(["--pr"] if typed else [], delta_withdrawn.given(args, flags))
+
+    def test_the_real_driver_stops_on_pr_zero_before_it_looks_for_a_pull_request(self):
+        with tempfile.TemporaryDirectory() as empty:
+            for argv in (["run", ".", "--no-tools", "--pr", "0"], ["loop", ".", "--pr=0"],
+                         ["readiness", ".", "--pr", "0"], ["persist", "x", ".", "--pr", "0"],
+                         ["run", ".", "--diff-context", "0"]):
+                with self.subTest(argv=argv):
+                    done = subprocess.run(
+                        [sys.executable, os.path.join(ROOT, "skill", "scripts", "driver.py")] + argv,
+                        cwd=empty, capture_output=True, text=True, timeout=120, check=False)
+                    self.assertEqual(2, done.returncode, done.stderr)
+                    self.assertIn("delta review is withdrawn in 5.4 (#3735)", done.stderr)
+                    self.assertNotIn("Traceback", done.stderr)
+                    self.assertEqual([], os.listdir(empty))
+
+
+class TestNoCodeLiftsTheRefusal(unittest.TestCase):
+    """The delta code's own tests reach it with `refuse_delta=False`. That is acceptable
+    only while nothing a command line can run passes it: read from the source of every
+    module under `skill/scripts` and `devtools`."""
+
+    ENTRY = {"main", "_repo_scan", "_repo_scan_args"}
+
+    def modules(self):
+        for top in ("skill/scripts", "devtools"):
+            for folder, _dirs, names in os.walk(os.path.join(ROOT, top)):
+                for name in sorted(names):
+                    if name.endswith(".py"):
+                        yield os.path.join(folder, name)
+
+    def test_nothing_passes_refuse_delta_and_nothing_else_reads_it(self):
+        import ast
+        seen, holders = 0, set()
+        for path in self.modules():
+            with open(path, encoding="utf-8") as fh:
+                tree = ast.parse(fh.read(), path)
+            seen += 1
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Call):
+                    self.assertEqual([], [k.arg for k in node.keywords if k.arg == "refuse_delta"],
+                                     "%s:%d passes refuse_delta" % (path, node.lineno))
+                    called = getattr(node.func, "attr", getattr(node.func, "id", None))
+                    if called in self.ENTRY:
+                        # ...or by position: only the parameter itself, handed down.
+                        extra = node.args[1:]
+                        self.assertTrue(all(isinstance(arg, ast.Name) and arg.id == "refuse_delta"
+                                            for arg in extra),
+                                        "%s:%d passes a second argument to %s" % (
+                                            path, node.lineno, called))
+                if isinstance(node, ast.Name) and node.id == "refuse_delta":
+                    holders.add(os.path.relpath(path, ROOT))
+                if isinstance(node, ast.arg) and node.arg == "refuse_delta":
+                    holders.add(os.path.relpath(path, ROOT))
+        self.assertGreater(seen, 150)
+        self.assertEqual({"skill/scripts/discovery.py", "skill/scripts/synthesize.py"}, holders)
+
+    def test_the_parameter_defaults_to_refusing(self):
+        import inspect
+        for function in (discovery.main, discovery._repo_scan, discovery._repo_scan_args,
+                         synthesize.main):
+            self.assertIs(True, inspect.signature(function).parameters["refuse_delta"].default)
 
 
 class TestAHunkMapLeftInARunFolderTurnsNothingOn(unittest.TestCase):
@@ -281,6 +364,33 @@ class TestAHunkMapLeftInARunFolderTurnsNothingOn(unittest.TestCase):
         parsed = delta_withdrawn.typed(synthesize.build_parser(), cmd[2:],
                                        delta_withdrawn.SYNTHESIZE_FLAGS)
         self.assertEqual([], delta_withdrawn.given(parsed, delta_withdrawn.SYNTHESIZE_FLAGS))
+
+    def test_the_discovery_child_is_handed_no_diff_context_either(self):
+        """#3737 review F2: a run started on 5.3 with `--diff-context N` and no diff is a
+        whole-repository run. Its manifest still holds the flag, and the driver forwarded
+        it: the child then refused a flag nobody had typed."""
+        import scripts.phases.discovery as discovery_phase
+        captured = {}
+
+        def child(cmd, **_kw):
+            captured["cmd"] = list(cmd)
+            return mock.Mock(returncode=2, stdout="", stderr="stopped here")
+        for scope, forwarded in (({"mode": "repo", "target": None}, False),
+                                 ({"mode": "files", "target": ["a.py"]}, False),
+                                 ({"mode": "changed", "target": None}, True)):
+            manifest = {"run_id": "R", "security_mode": "standard", "scope": scope,
+                        "flags": {"diff_context": 0}}
+            with self.subTest(scope=scope), tempfile.TemporaryDirectory() as root, \
+                    mock.patch("scripts.phases.child._run_child", side_effect=child), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                root = os.path.realpath(root)
+                os.makedirs(os.path.join(root, ".panopticon"))
+                with open(os.path.join(root, repo_config.CONFIG_NAMES[0]), "w",
+                          encoding="utf-8") as fh:
+                    fh.write("version: 1\ngroups:\n  Core:\n    match: ['src/**']\n")
+                with self.assertRaises(runio.DriverError):
+                    discovery_phase.discovery_execute(root, manifest)
+                self.assertEqual(forwarded, "--diff-context" in captured["cmd"])
 
 
 if __name__ == "__main__":

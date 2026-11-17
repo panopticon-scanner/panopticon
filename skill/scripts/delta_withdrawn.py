@@ -40,9 +40,17 @@ SYNTHESIZE_FLAGS = (("changes", "--changes (-c)"), ("diff_hunks", "--diff-hunks"
 
 def given(args, flags):
     """The delta flags `args` carries, as typed. Each one's parser default is None (or
-    False): a value is one the caller gave."""
-    return [name for dest, name in flags
-            if getattr(args, dest, None) not in (None, False)]
+    False): a value is one the caller gave.
+
+    By identity, not equality: `0 == False`, so `--pr 0` and `--diff-context 0` read as
+    not given, and `driver run --pr 0` went on to `gh pr view 0` and a PR worktree
+    (#3737 review F1)."""
+    names = []
+    for dest, name in flags:
+        value = getattr(args, dest, None)
+        if value is not None and value is not False:
+            names.append(name)
+    return names
 
 
 def typed(parser, argv, flags):
