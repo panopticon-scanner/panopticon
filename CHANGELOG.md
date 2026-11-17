@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **A full scan leaves out of review only the config file it loaded, and the report names it
+  (#3708).** Discovery dropped both root config names, `panopticon.yml` and `.panopticon.yml`,
+  from every review group (#3642), whichever one was in use. A repo configured by
+  `panopticon.yml` could carry anything in a file named `.panopticon.yml`, and no review agent
+  read it. The only disclosure was in `groups.json` and one stderr line.
+  - Only the file the scanner loaded as its config is left out. With both names at the root that
+    is `panopticon.yml`, and `.panopticon.yml` goes to review like any other file. When neither
+    was loaded (a symlink at either name is refused), neither is left out.
+  - The report names the file in `meta.coverage.scanner_config_excluded`. It is a disclosure:
+    the letter, the gate, the certification and `coverage_note` do not move.
+  - Each name alone is left out as before. `--pr` reviews, `--scope-*` runs and tool scans are
+    unchanged.
+
 - **A malformed Semgrep result no longer stops the tool scan (#3713).** In a tree with a
   Dockerfile variant Semgrep runs twice and the two captures are folded into one. A result
   whose `message.text`, `ruleId` or `startLine` was a list or an object, or whose `region` was

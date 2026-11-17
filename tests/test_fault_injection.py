@@ -521,6 +521,9 @@ def test_the_control_certifies_and_shows_every_state(lab):
     assert {fh.phase_of(e) for e in control.launched} == set(fh.PHASES)
     summary, coverage = control.report["summary"], control.report["meta"]["coverage"]
     assert summary["coverage_certified"] is True and summary["coverage_note"] is None
+    # #3708: the target is configured by `panopticon.yml`, which a full scan does not hand to
+    # review. `meta` names it; a clean run's coverage note stays empty.
+    assert coverage["scanner_config_excluded"] == ["panopticon.yml"]
     assert summary["overall_grade"] is not None and summary["provisional_grade"] is None
     # The default gate: no `--fail-on` was passed and none is committed (#3673).
     assert summary["gate_severities"]["fail_on"] == "CRITICAL" and summary["gate_disabled"] is None
