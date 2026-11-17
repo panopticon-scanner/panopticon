@@ -137,7 +137,7 @@ kept, not deleted. Rotation was chosen over scoping `usage.json` by run tag: a s
 `runs/<tag>/` folder, and the ledger is the one source both files are read from. Both files of a
 cycle get one tag, and a name already taken (even by a dangling link) moves the pair to a fresh one.
 While a `driver loop --setup` is still running on the tree, reset leaves both in place and says so:
-that loop's `--budget` reads the ledger's total. A move that fails stops the reset before anything
+that loop's `--max-budget-usd` reads the ledger's total. A move that fails stops the reset before anything
 else is removed and is the reset's error status, so the next cycle never counts the old spend.
 
 **Glob semantics.** `match:`, `tests:` and `exclude_paths:` take gitignore-flavored globs: `*` and
@@ -228,8 +228,9 @@ only one there. Where the root holds both names, `panopticon.yml` is the config 
 either name is refused), nothing is left out. The report names the file too, in
 `meta.coverage.scanner_config_excluded`; it does not change the letter, the certification or the
 coverage note. A nested `sub/panopticon.yml` is not the scanner's config and is reviewed as
-usual. An explicit `--scope-files panopticon.yml`, and a plain `-c`/`--base` delta that changes it,
-still review it. Tool scans are unchanged.
+usual. Naming it explicitly, and a plain `-c`/`--base` delta that changes it, still review it. The
+driver's flag is `--files panopticon.yml`; `discovery.py`, run directly, takes `--scope-files`, and
+the driver refuses that spelling. Tool scans are unchanged.
 
 **What these settings do to the letter (#3548).** On a full review, a per-group `exclude:` that
 removes a domain the run would otherwise have used makes the letter provisional, the same way a

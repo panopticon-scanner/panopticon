@@ -233,7 +233,8 @@
   named by the outgoing setup run's id (only a 32-hex id becomes a filename; anything else gets a
   fresh one, and a rotation never overwrites an earlier one). The next cycle's usage is its own
   rows only, and the previous cycle's spend is kept. Both files of a cycle share one tag. Under a
-  still-running `driver loop --setup` the pair stays in place (its `--budget` reads the ledger),
+  still-running `driver loop --setup` the pair stays in place (its `--max-budget-usd` reads the
+  ledger),
   and a failed move stops the reset with an error before anything else is removed.
 
 - **Tool findings a split report put out of sight, and a letter that read as checked (#3667).**
@@ -243,8 +244,8 @@
   `report.json` held almost none of them. Meanwhile the letter printed as certified.
   - `findings[]` is now published worst first (gate-eligible, severity, evidence status, then the
     old order), split or not, so the main file carries what matters most.
-  - A split main file names what each part holds (`meta.parts_findings`), and the terminal and
-    HTML print a `**Report parts:**` line.
+  - A split main file names what each part holds (`meta.parts_findings`), and the terminal
+    prints a `**Report parts:**` line; the HTML's reads `JSON report split:`.
   - `meta.coverage.tool_axis.by_tool` reconciles each scanner: ingested, in the report, merged
     into an agent finding, or dropped into another tool finding, with the reason.
   - Unanswered tool advisors hold the letter back as provisional with the reason
@@ -294,8 +295,8 @@
   is never certified, the gate never passes over undone work, and the shortfall is disclosed on
   the terminal, in the JSON and in the HTML. No model, network or Docker is used. The default
   run is 56 of 126 cases (about 45 s serial); `PANOPTICON_FAULT_MATRIX=full` runs them all.
-  Invariants that do not hold today are strict `xfail`s naming their issue (#3641, #3667, #3676,
-  #3677), so each fix must un-mark its own cases.
+  Invariants that did not hold when the harness landed were strict `xfail`s naming their issue
+  (#3641, #3667, #3676, #3677). Each has since been fixed and un-marked, so `KNOWN_GAPS` is empty.
 
 - **Changed: the gate is armed at CRITICAL by default (#3673, owner ruling 2026-11-15).** With
   no `--fail-on` flag and no committed `fail_on`, a run used to gate nothing (`gate: OFF`) and
@@ -410,8 +411,9 @@
   like target code, and an owner-observed run graded a HIGH finding against the matrix itself.
   Discovery now leaves the same `repo_config.CONFIG_NAMES` that `--pr` mode drops (#1681) out of
   the whole-repo surface and discloses them under `excluded.scanner_config` and on stderr. A nested
-  `sub/panopticon.yml` is still reviewed; an explicit `--scope-files` and a plain delta that
-  changes the root config are unchanged, as are tool scans. This supersedes #1681 Task 7's
+  `sub/panopticon.yml` is still reviewed; naming the file explicitly (`--files` on the driver,
+  `--scope-files` on `discovery.py` itself) and a plain delta that changes the root config are
+  unchanged, as are tool scans. This supersedes #1681 Task 7's
   grouping of the root config under Commons `Config` in full-repo scans.
 
 - **agy's `Individual quota reached` response now pauses as a host outage (#3640).** The
@@ -549,11 +551,15 @@
   configuration starts `agy --gemini_dir <run>/gemini`: a per-run directory holding only our guard
   hook, the emitted shells, an empty MCP list and two settings, in place of `~/.gemini`. Before
   any entry, a fail-closed preflight checks that `agy agents` lists exactly the run's shells and
-  that agy's log recorded the hook load, then runs one minimal real turn (default model, no agent
-  shell); auth trouble raises `AgyAuthUnreachable`, anything else `AgyPreflightRefused`, and
-  nothing falls back. The token file link is retired. The routes are now `signin` (the default)
+  that agy's log recorded the hook load, then runs one minimal real turn (no agent shell; agy's
+  default model on the sign-in route, `--model gemini-4-argon-high` on the API-key route, which
+  refuses the run when `agy models` does not list that name); auth trouble raises
+  `AgyAuthUnreachable`, as does an `agy models` that fails or lists nothing, anything else
+  `AgyPreflightRefused`, and nothing falls back. The token file link is retired. The routes are now `signin` (the default)
   and `key`, and the key route runs only when `PANOPTICON_AGY_AUTH=key` names it. Off that route
-  no agy child holds `GEMINI_API_KEY`, so an expired sign-in cannot fall back to it, and a failed
+  no agy child that loads the run's configuration holds `GEMINI_API_KEY` (the probes' `agy
+  --version` and `agy --help` reads inherit the operator's environment: #3714), so an expired
+  sign-in cannot fall back to it, and a failed
   sign-in with a key set says how to choose the key route and does not. For agy, the shadow-shell
   scan no longer reads `~/.gemini/agents`, which `--gemini_dir` replaces.
 
@@ -686,9 +692,12 @@
   guard-state rule (#3545) are unchanged.
 
 - **agy can sign in with a Gemini API key, and those runs use Argon (High) (#3576).** With
-  no consumer sign-in, or with `PANOPTICON_AGY_AUTH=key`, agy runs on `GEMINI_API_KEY`, which
-  reaches the child only through its environment and is never written to disk. The consumer
-  sign-in still wins when both are present. The API-key route does not offer Carbon, so its
+  `PANOPTICON_AGY_AUTH=key`, agy runs on `GEMINI_API_KEY`, which reaches the child only through
+  its environment and is never written to disk. Route selection is as #3613 left it: a key
+  alone never selects this route, whether or not there is a consumer sign-in, and
+  `PANOPTICON_AGY_AUTH=key` takes it even when there is one. (As first shipped, the key was
+  also used when there was no consumer sign-in, and the sign-in won when both were present.)
+  The API-key route does not offer Carbon, so its
   domain roles run `gemini-4-argon-high`. That route takes the effort as part of the model
   name, never as `--effort`, and a run checks every name against `agy models` before
   launching. Ledger rows record the requested and the bound model. A model named with
@@ -718,11 +727,13 @@
 - **agy fails closed when its sign-in is unreachable (#3576).** When an interactive `agy`
   session refreshed its token, agy 1.5.6 moved the token into the macOS Keychain and deleted the
   token file a run home links. Every agy child after that opened a browser sign-in, and the probes
-  timed out. Now a run home is refused before any child launches when the token file is missing
-  or dangling, with `agy auth not reachable from the isolated HOME` and what to do. Any agy child
-  that reaches agy's interactive-OAuth fallback anyway is ended at that line, before a browser
-  opens. An entry ended that way is a host failure; a probe reads UNKNOWN. How a sign-in should
-  survive a token refresh is a separate decision.
+  timed out. As first shipped, a run home was refused before any child launched when the token
+  file was missing or dangling. #3613 superseded that check: the token-file link is retired, and
+  the refusal is now the preflight's (`agy is not authenticated: its preflight turn could not
+  sign in`). What stands from this entry: an agy entry, a preflight child, or a probe child that
+  loads the run's configuration is ended at agy's interactive-OAuth fallback line, before a
+  browser opens. An entry ended that way is a host failure; a probe reads UNKNOWN. The probes'
+  `agy --version` and `agy --help` reads carry no such stop line (#3714).
 
 - **The egress sidecar uses the reviewed current tinyproxy image (#3558).**
   The new OCI index still provides `linux/amd64` and `linux/arm64`, and both
@@ -756,7 +767,9 @@
   argument, as Google's Antigravity CLI documents. A model change can move findings. An unknown
   effort, or an effort beside a model that already names one, fails the entry before launch.
   The `agy-model-bound` probe passes `--effort` on its `/model` check and reads back
-  `/effort`; it reports UNKNOWN until the owner's capture shows which field carries the level.
+  `/effort`. Since the owner's capture the fields are known: `/model` must report
+  `<model>-<effort>` with the level in `data.effort`, and `/effort` must report the level as
+  current and available on a model whose effort is adjustable.
   A `PANOPTICON_MODEL_*` override that gives agy codex's `model_reasoning_effort` (or another
   host agy's `effort`), or an agy effort outside the documented levels, is refused at driver
   start instead of silently running at the model's default effort.
@@ -788,8 +801,10 @@
   `gemini-3-pro-preview`, `gemini-3-flash`, and `auto-gemini-3` were removed;
   a config naming one now gets a loud refusal before launch.
 - **Antigravity's model catalogue now covers its current models (#3563).**
-  Existing Argon/3.8 defaults stay fixed because the runner does not yet carry
-  a separate effort input; 4.6 and GPT-OSS remain until their 2026-11-18 removal.
+  When this landed the Argon/3.8 defaults stayed fixed, because the runner did
+  not yet carry a separate effort input. #3564 (above) added `--effort` and
+  moved the domain roles to `gemini-4-carbon` at high effort. 4.6 and GPT-OSS
+  remain until their 2026-11-18 removal.
 - **More disk headroom for the Dockerfile PR build (#3441).** Its `load: true` import of
   the tools image intermittently ran out of space. The job now removes preinstalled
   toolchains it never uses before building, and logs the free disk and the image's layer IDs
@@ -827,8 +842,9 @@
 - **PR config sync always rewrites the operator config (#3535).** It no longer re-reads both files
   to prove byte equality; each sync publishes the selected config and emits one direct sync note.
 - **The written artifact is the report schema authority (#3535).** The hydrated report and X0X
-  siblings are schema-validated once after publication; `meta.schema_errors` records those errors
-  together with advisory in-memory semantic-policy errors, which remain separately labelled.
+  siblings are schema-validated once after publication; `meta.schema_errors` is the count of
+  those errors together with advisory in-memory semantic-policy errors, which remain separately
+  labelled.
 - **Tool receipts, not a directory-wide file cap, select ingestion inputs (#3535).** Unrecorded
   files cannot consume selected capacity, while their disclosed names retain a named bound well
   above the supported adapter set; direct ingestion without a receipt stays compatible.
