@@ -1443,6 +1443,25 @@ class TestAMergeGroupIsCountedOnceAtItsHeaviestFinding(_Lines):
         for key in ("weight_from", "weight_with"):
             self.assertNotIn(key, rows["the decoy"])
 
+    def test_of_two_instances_of_a_claim_the_one_published_higher_comes_back(self):
+        """#3727, pinned by name (the property test's stream used to reach it, and no
+        longer does). One claim, filed twice: as an uncapped `TST-A1*` HIGH, which the
+        merge ranks at MEDIUM, and as a plain MEDIUM that is CERTAIN, which outranks
+        it. Under a decoy that is not confirmed, one instance comes back: the one
+        published at the higher severity, not the one the merge would keep."""
+        decoy = self.at("b.py", "the decoy", 10, title="another reading", severity="CRITICAL",
+                        confidence="CERTAIN")
+        plain = self.at("b.py", "the plain copy", 10, severity="MEDIUM", confidence="CERTAIN")
+        untested = dict(self.at("b.py", "the untested", 10, confidence="POSSIBLE"),
+                        code="TST-A1A")
+        report = self.report_of({"g1": [(decoy, "NEEDS_MORE_INFO"), (plain, "CONFIRMED")],
+                                 "g2": [(untested, "CONFIRMED")]})
+        self.assertEqual(self.ids["the plain copy"], self.ids["the untested"])
+        self.assertEqual([("the decoy", "CRITICAL", "needs_more_info", 10, 10),
+                          ("the untested", "HIGH", "advisor_confirmed", 10, 10)],
+                         self.spans(report, "the decoy", "the plain copy", "the untested"))
+        self.assertEqual("FAIL", report["summary"]["gate"])
+
     def test_nothing_is_mixed_and_a_third_cell_cannot_unmix_it(self):
         """Two confirmed claims at one line: a CRITICAL on one line (125) and a HIGH over
         50 lines (1,250). The group weighs 1,250, one finding's own weight, and not the
