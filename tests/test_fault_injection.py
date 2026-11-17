@@ -860,6 +860,106 @@ def test_the_fake_backup_answers_what_it_was_handed_and_no_more(lab):
     assert control.report["meta"]["coverage"]["verdicts"]["out_of_scope"] == 0
 
 
+# --- a reviewer that copies another cell's claim (#3707) -----------------------------------
+
+#: name -> (what the copying cell's advisors say of the copy, what the owner's say of the
+#: claim, the claim's severity). A claim id holds no group, so the copy has the owner's id
+#: and the copying cell's advisors are handed it as their own. On main the first two
+#: discarded a claim the owner's advisors had confirmed, with no shortfall: through the
+#: copier's primary (whose verdict file sorts first; HIGH, so no backup stands over it) and
+#: through the copier's backup (a backup won over every primary).
+COPIED_ROWS = {
+    "primary-rejects-its-copy-of-a-confirmed-claim": ({"primary": "REJECTED"}, "CONFIRMED", "HIGH"),
+    "backup-rejects-its-copy-of-a-confirmed-claim": ({"backup": "REJECTED"}, "CONFIRMED",
+                                                     "CRITICAL"),
+    "primary-confirms-its-copy-of-a-rejected-claim": ({"primary": "CONFIRMED"}, "REJECTED", "HIGH"),
+    "backup-confirms-its-copy-of-a-rejected-claim": ({"backup": "CONFIRMED"}, "REJECTED",
+                                                     "CRITICAL"),
+    "both-cells-confirm": ({}, "CONFIRMED", "CRITICAL"),
+    "both-cells-reject": ({"primary": "REJECTED"}, "REJECTED", "CRITICAL"),
+}
+
+
+@pytest.fixture(scope="module")
+def copied(lab):
+    """({(owner's verdict, severity): the run with no copy}, {row: the run with one}), each
+    driven once."""
+    silent = {(said, severity): fh.drive(lab, replies=fh.CopiedClaim(
+                  copy=False, owner_says=said, severity=severity))
+              for said in ("CONFIRMED", "REJECTED") for severity in ("CRITICAL", "HIGH")}
+    return silent, {name: fh.drive(lab, replies=fh.CopiedClaim(says=says, owner_says=owner,
+                                                               severity=severity))
+                    for name, (says, owner, severity) in COPIED_ROWS.items()}
+
+
+def _the_claim(outcome):
+    """Where the copied claim ended up: (in the report or discarded, status, severity)."""
+    report = outcome.report
+    return [(where, _status(f), f["severity"])
+            for where, claims in (("report", report["findings"]),
+                                  ("discarded", report["discarded_claims"]))
+            for f in claims if f.get("title") == fh.CopiedClaim.CLAIM]
+
+
+def _verdict_of(outcome):
+    summary = outcome.report["summary"]
+    return {key: summary[key] for key in ("gate", "coverage_certified", "overall_grade",
+                                          "provisional_grade", "grade_shortfalls")}
+
+
+@pytest.mark.parametrize("row", sorted(COPIED_ROWS))
+def test_a_copied_claim_is_decided_by_every_cell_that_holds_it(copied, row):
+    says, owner, severity = COPIED_ROWS[row]
+    silent, speaking = copied[0][owner, severity], copied[1][row]
+    assert (silent.status, speaking.status) == ("complete", "complete")
+    assert problems(silent, silent) == []
+    counted = [o.report["meta"]["coverage"]["verdicts"] for o in (silent, speaking)]
+    assert [v["ids_in_several_cells"] for v in counted] == [0, 1]
+    assert [v["out_of_scope"] for v in counted] == [0, 0]       # every verdict was in scope
+    copier_says = list(says.values()) or ["CONFIRMED"]
+    if owner == "CONFIRMED" or copier_says == ["REJECTED"]:
+        # The copy changes nothing: the claim is where the run with no copy left it, with
+        # the same gate, certification and letter. That is the owner's confirmation
+        # standing against the copier's rejection, and two cells agreeing.
+        assert problems(silent, speaking) == []
+        assert _the_claim(speaking) == _the_claim(silent)
+        assert _dispositions(speaking) == _dispositions(silent)
+        assert _verdict_of(speaking) == _verdict_of(silent)
+    else:
+        # The copier confirms what the owner rejected: no better than the run with no
+        # copy. The claim is reported, where that run discarded it, so it is one more
+        # gate-eligible finding (which invariant 4 would call a fault's doing).
+        for invariant in (no_silent_loss, counts_reconcile):
+            assert invariant(silent, speaking) == []
+        assert _the_claim(silent) == [("discarded", "rejected", severity)]
+        assert _the_claim(speaking) == [("report", "advisor_confirmed", severity)]
+        assert speaking.report["summary"]["gate"] == "FAIL"
+
+
+def test_the_copied_rows_cover_both_stages_and_both_directions():
+    kinds = {(stage, said, owner) for says, owner, _severity in COPIED_ROWS.values()
+             for stage, said in says.items()}
+    assert kinds >= {("primary", "REJECTED", "CONFIRMED"), ("backup", "REJECTED", "CONFIRMED"),
+                     ("primary", "CONFIRMED", "REJECTED"), ("backup", "CONFIRMED", "REJECTED")}
+
+
+def test_the_copy_reaches_the_copying_cells_advisors_as_their_own_claim(copied):
+    """What makes the rows mean something: the controller really did hand the copier's
+    advisors the owner's id, at both stages, and they really did answer for it."""
+    speaking = copied[1]["backup-rejects-its-copy-of-a-confirmed-claim"]
+    with open(runio._pano(speaking.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        record = json.load(fh_)
+    (claim_id,) = {f["id"] for f in speaking.report["findings"]
+                   if f.get("title") == fh.CopiedClaim.CLAIM}
+    for cell in (fh.CopiedClaim.COPIER, fh.CopiedClaim.OWNER):
+        for stage in ("primary", "backup"):
+            assert claim_id in record[verify._verify_key(*cell, stage) + "/claims"], (cell, stage)
+    with open(runio._pano(speaking.root, "verdicts", "verdicts-app-COD-backup.json"),
+              encoding="utf-8") as fh_:
+        said = {v["finding_id"]: v["verdict"] for v in json.load(fh_)["verdicts"]}
+    assert said[claim_id] == "REJECTED"
+
+
 SPLIT_BYTES = 9000
 
 

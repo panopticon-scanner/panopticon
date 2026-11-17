@@ -612,6 +612,10 @@
                   "type": "integer",
                   "description": "#3702: verdicts in a verdict bundle that were not counted because the dispatch record holds no scope for that bundle's cell and stage: there is no record, it is unreadable, or it was written before the scope was recorded. They are in none of the other counts here. A non-zero count is a `grade_shortfalls` reason."
                 },
+                "ids_in_several_cells": {
+                  "type": "integer",
+                  "description": "#3707: claim ids held by more than one review cell. An id is derived from the claim's domain, category, file, title and line, and no group, so two cells can report one id. Each cell's advisors answer for their own instance only: any CONFIRMED keeps the claim reported, a holding cell that gave no verdict leaves it unverified, and only every holding cell rejecting it discards it. Disclosure only."
+                },
                 "misrouted": {
               "type": "integer",
               "description": "#1475: verdict files that EXISTED for the cell they were written for but could not be bound to it -- the finding_id echo named a different finding, or none. Also counted in `unanswered` (the finding has no valid verdict either way), but the cause is the OPPOSITE of a missing dispatch: an advisor ran, adjudicated, and mislabelled its answer. Reported separately so the two are distinguishable without reading agent transcripts."

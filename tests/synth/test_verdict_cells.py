@@ -1,0 +1,410 @@
+"""#3707: a verdict speaks only for its own cell's instance of a claim.
+
+A claim id is derived from what a reviewer wrote: domain, category, file, title
+and line, with no group. So one cell's reviewer can emit a copy of another cell's
+claim, and the controller hands that id to the copying cell's advisor as one of
+its own. #3704 counted a verdict for any claim its advisor was handed, and
+"handed" was decided by id: the copying cell's advisor REJECTED the copy, in
+scope, and the other cell's CONFIRMED CRITICAL was discarded. Gate PASS,
+certified, no shortfall.
+
+A bundle verdict now counts for a finding only when the bundle is stamped for the
+cell that finding came from. Where several cells hold one id, each answers for its
+own instance: any CONFIRMED keeps the claim reported, a holding cell that did not
+answer leaves it unverified, and only every holding cell dismissing it dismisses
+it.
+"""
+
+import json
+import os
+import types
+import unittest
+
+import jsonschema
+
+import scripts.evidence as evidence_mod
+import scripts.synth.findings as findings_mod
+import scripts.synth.plan as plan_mod
+import scripts.synth.report as report_mod
+import scripts.synth.verdicts as verdicts_mod
+from tests.synth.helpers import _target_with_files
+from tests.synth.test_verdict_scope import SCHEMA_PATH, _Verdicts, record, verdict
+
+GROUPS = [{"name": "g1", "files": ["a.py"]}, {"name": "g2", "files": ["b.py"]}]
+G1, G2 = ("g1", "SEC"), ("g2", "SEC")
+
+
+def claim(file, title=None, severity="CRITICAL", line=1):
+    return {"domain": "SEC", "code": "SEC-A1A", "severity": severity,
+            "title": title or "claim in %s" % file, "description": "x", "category": "authz",
+            "location": {"file": file, "line_start": line}}
+
+
+class _TwoCells(_Verdicts):
+    """`g2` holds the CRITICAL claim `B`. `g1` holds its own claim `A` and, when it
+    copies, a claim with `B`'s identity: the same domain, category, file, title and
+    line, so the same id."""
+
+    def cells(self, copy=True, copy_severity="CRITICAL", own_severity="LOW"):
+        """`A` is LOW unless a test says otherwise, so the gate is `B`'s to decide."""
+        mine = [claim("a.py", severity=own_severity)] + (
+            [claim("b.py", severity=copy_severity)] if copy else [])
+        self.paths = []
+        for group, findings in (("g1", mine), ("g2", [claim("b.py")])):
+            self.paths.append(os.path.join(self.run_dir, "findings-%s-SEC.json" % group))
+            with open(self.paths[-1], "w", encoding="utf-8") as fh:
+                json.dump({"findings": findings}, fh)
+        loaded = findings_mod.load_findings(self.paths)
+        self.a, self.b = loaded[0]["id"], loaded[-1]["id"]
+        self.assertEqual(copy, loaded[1]["id"] == self.b and len(loaded) == 3)
+        self.record(record(claims=[f["id"] for f in loaded[:-1]], size=25),
+                    record(group="g2", claims=(self.b,), size=25))
+        return loaded
+
+    def report(self, fail_on="critical"):
+        fs = findings_mod.FindingSet.load(
+            types.SimpleNamespace(verdicts_dir=self.verdicts), [], "standard", None,
+            prepared=(findings_mod.load_findings(self.paths), None, None),
+            run_dir=self.run_dir)
+        with _target_with_files(GROUPS, lines=5000) as target:
+            return report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=target, fail_on=fail_on,
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=fs, plan=plan_mod.PlanInputs(groups_meta=GROUPS)))
+
+    def facts(self, report):
+        """What the acceptance compares: where each claim is and on what evidence, the
+        gate, certification, the letter and the shortfalls."""
+        summary = report["summary"]
+        claims = sorted((f["id"], where, f["evidence"]["status"], f["severity"])
+                        for where, found in (("report", report["findings"]),
+                                             ("discarded", report["discarded_claims"]))
+                        for f in found)
+        return {"claims": claims, "gate": summary["gate"],
+                "certified": summary["coverage_certified"],
+                "letter": (summary["overall_grade"], summary["provisional_grade"]),
+                "shortfalls": summary["grade_shortfalls"]}
+
+    def where(self, report, finding_id):
+        return [(where, f["evidence"]["status"])
+                for where, found in (("report", report["findings"]),
+                                     ("discarded", report["discarded_claims"]))
+                for f in found if f["id"] == finding_id]
+
+
+class TestACopiedClaimIsNotTheCopyingCellsToDismiss(_TwoCells):
+    """The issue's rows. `silent` is the run where `g1` emits no copy."""
+
+    def silent(self, own):
+        self.cells(copy=False)
+        self.bundle([verdict(self.a)])
+        self.bundle([verdict(self.b, own)], group="g2")
+        return self.report()
+
+    def test_the_copying_cells_primary_rejects_what_the_owner_confirmed(self):
+        silent = self.facts(self.silent("CONFIRMED"))
+        self.cells()
+        self.bundle([verdict(self.a), verdict(self.b, "REJECTED")])
+        self.bundle([verdict(self.b, "CONFIRMED")], group="g2")
+        report = self.report()
+        self.assertEqual([("report", "advisor_confirmed")], self.where(report, self.b))
+        self.assertEqual(silent, self.facts(report))
+        # It was: discarded, gate PASS, certified, the top letter, no shortfall.
+        self.assertEqual(("FAIL", True, []), (silent["gate"], silent["certified"],
+                                              silent["shortfalls"]))
+
+    def test_the_copying_cells_backup_rejects_what_the_owner_confirmed(self):
+        """The backup wins over a primary, but only over its own cell's."""
+        silent = self.facts(self.silent("CONFIRMED"))
+        self.cells()
+        self.record(record(claims=(self.a, self.b), size=25),
+                    record(group="g2", claims=(self.b,), size=25),
+                    record(stage="backup", claims=(self.b,), size=25))
+        self.bundle([verdict(self.a), verdict(self.b, "CONFIRMED")])
+        self.bundle([verdict(self.b, "REJECTED")], stage="backup")
+        self.bundle([verdict(self.b, "CONFIRMED")], group="g2")
+        report = self.report()
+        self.assertEqual([("report", "advisor_confirmed")], self.where(report, self.b))
+        self.assertEqual(silent, self.facts(report))
+        self.assertEqual("FAIL", silent["gate"])
+
+    def test_the_copying_cell_confirms_what_the_owner_rejected(self):
+        """The other direction is no better than the silent run: the claim is reported."""
+        silent = self.silent("REJECTED")
+        self.assertEqual([("discarded", "rejected")], self.where(silent, self.b))
+        self.assertEqual("PASS", silent["summary"]["gate"])
+        self.cells()
+        self.bundle([verdict(self.a), verdict(self.b, "CONFIRMED")])
+        self.bundle([verdict(self.b, "REJECTED")], group="g2")
+        report = self.report()
+        self.assertEqual([("report", "advisor_confirmed")], self.where(report, self.b))
+        self.assertEqual("FAIL", report["summary"]["gate"])
+
+    def test_the_copying_cells_backup_confirms_what_the_owner_rejected(self):
+        self.cells()
+        self.record(record(claims=(self.a, self.b), size=25),
+                    record(group="g2", claims=(self.b,), size=25),
+                    record(stage="backup", claims=(self.b,), size=25))
+        self.bundle([verdict(self.a), verdict(self.b, "CONFIRMED")])
+        self.bundle([verdict(self.b, "CONFIRMED")], stage="backup")
+        self.bundle([verdict(self.b, "REJECTED")], group="g2")
+        report = self.report()
+        self.assertEqual([("report", "advisor_confirmed")], self.where(report, self.b))
+
+    def test_a_copy_of_lower_severity_dismisses_nothing_either(self):
+        """The id does not hold the severity, so the copy need not match it."""
+        self.cells(copy_severity="LOW")
+        self.bundle([verdict(self.a), verdict(self.b, "REJECTED")])
+        self.bundle([verdict(self.b, "CONFIRMED")], group="g2")
+        report = self.report()
+        self.assertEqual([("report", "advisor_confirmed")], self.where(report, self.b))
+        self.assertEqual(["CRITICAL"], [f["severity"] for f in report["findings"]
+                                        if f["id"] == self.b])
+
+    def test_the_owner_not_answering_leaves_it_unverified_whatever_the_copier_says(self):
+        self.cells()
+        self.bundle([verdict(self.a), verdict(self.b, "REJECTED")])
+        report = self.report()
+        self.assertEqual([("report", "unverified")], self.where(report, self.b))
+        self.assertEqual(["1 finding unanswered by its verify advisor"],
+                         report["summary"]["grade_shortfalls"])
+        self.assertFalse(report["summary"]["coverage_certified"])
+
+    def test_the_copier_not_answering_leaves_a_rejection_unverified(self):
+        """A dismissal needs every holding cell: one that said nothing has not dismissed."""
+        self.cells()
+        self.bundle([verdict(self.a)])
+        self.bundle([verdict(self.b, "REJECTED")], group="g2")
+        report = self.report()
+        self.assertEqual([("report", "unverified")], self.where(report, self.b))
+        self.assertFalse(report["summary"]["coverage_certified"])
+
+
+class TestACopyBehindADecoy(_TwoCells):
+    """The same hole through #2991's restore. `g1` emits a second claim at `B`'s locus
+    (the decoy, another title, so another id) beside its copy of `B`. Dedupe keeps the
+    first of the three, which is the decoy, and drops both instances of `B`. With the
+    decoy and the copy REJECTED, `B` was not restored: it left the report altogether."""
+
+    def scene(self, copy, copy_severity="CRITICAL", owner_severity="CRITICAL"):
+        mine = [claim("a.py", severity="LOW"), claim("b.py", title="another reading of b.py")]
+        mine += [dict(claim("b.py", severity=copy_severity), description="the copy")] if copy else []
+        theirs = [dict(claim("b.py", severity=owner_severity), description="the owner's")]
+        self.paths = []
+        for group, findings in (("g1", mine), ("g2", theirs)):
+            self.paths.append(os.path.join(self.run_dir, "findings-%s-SEC.json" % group))
+            with open(self.paths[-1], "w", encoding="utf-8") as fh:
+                json.dump({"findings": findings}, fh)
+        ids = [f["id"] for f in findings_mod.load_findings(self.paths)]
+        self.a, self.b = ids[0], ids[-1]
+        self.record(record(claims=ids[:-1], size=25), record(group="g2", claims=(self.b,), size=25))
+        self.bundle([verdict(i, "CONFIRMED" if i == self.a else "REJECTED") for i in ids[:-1]])
+        self.bundle([verdict(self.b)], group="g2")
+        return self.report()
+
+    def test_the_confirmed_claim_is_restored_once(self):
+        silent = self.facts(self.scene(copy=False))
+        report = self.scene(copy=True)
+        self.assertEqual([("report", "advisor_confirmed")], self.where(report, self.b))
+        self.assertEqual(silent, self.facts(report))
+        self.assertEqual("FAIL", silent["gate"])
+
+    def test_the_instance_restored_is_the_one_dedupe_would_keep(self):
+        """The copy is LOW and was loaded first; the owner's CRITICAL is the claim."""
+        report = self.scene(copy=True, copy_severity="LOW")
+        self.assertEqual([("CRITICAL", "advisor_confirmed")],
+                         [(f["severity"], f["evidence"]["status"]) for f in report["findings"]
+                          if f["id"] == self.b])
+        self.assertEqual("FAIL", report["summary"]["gate"])
+        # ...whichever was loaded first: here the more severe instance is the earlier one.
+        report = self.scene(copy=True, owner_severity="LOW")
+        self.assertEqual([("CRITICAL", "the copy")],
+                         [(f["severity"], f["description"]) for f in report["findings"]
+                          if f["id"] == self.b])
+        # Among equals, the first loaded, as in dedupe.
+        report = self.scene(copy=True)
+        self.assertEqual(["the copy"], [f["description"] for f in report["findings"]
+                                        if f["id"] == self.b])
+
+
+class TestAnHonestDuplicateBehavesAsBefore(_TwoCells):
+    """Two cells really report one claim. Agreeing, they decide it as one cell would."""
+
+    def test_both_confirm(self):
+        self.cells()
+        self.bundle([verdict(self.a), verdict(self.b)])
+        self.bundle([verdict(self.b)], group="g2")
+        report = self.report()
+        self.assertEqual([("report", "advisor_confirmed")], self.where(report, self.b))
+        self.assertEqual(([], True), (report["summary"]["grade_shortfalls"],
+                                      report["summary"]["coverage_certified"]))
+        self.assertEqual(2, len(report["findings"]))
+
+    def test_both_reject(self):
+        self.cells()
+        self.bundle([verdict(self.a), verdict(self.b, "REJECTED")])
+        self.bundle([verdict(self.b, "REJECTED")], group="g2")
+        report = self.report()
+        self.assertEqual([("discarded", "rejected")], self.where(report, self.b))
+        self.assertEqual(([], True), (report["summary"]["grade_shortfalls"],
+                                      report["summary"]["coverage_certified"]))
+
+    def test_one_unsure_and_one_rejecting_is_not_a_dismissal(self):
+        self.cells()
+        self.bundle([verdict(self.a), verdict(self.b, "REJECTED")])
+        self.bundle([verdict(self.b, "NEEDS_MORE_INFO")], group="g2")
+        report = self.report()
+        self.assertEqual([("report", "needs_more_info")], self.where(report, self.b))
+
+    def test_the_ids_held_by_several_cells_are_counted(self):
+        self.cells(copy=False)
+        self.bundle([verdict(self.a)])
+        self.bundle([verdict(self.b)], group="g2")
+        self.assertEqual(0, self.report()["meta"]["coverage"]["verdicts"]["ids_in_several_cells"])
+        self.cells()
+        report = self.report()
+        self.assertEqual(1, report["meta"]["coverage"]["verdicts"]["ids_in_several_cells"])
+        with open(SCHEMA_PATH, encoding="utf-8") as fh:
+            validator = jsonschema.Draft7Validator(json.load(fh))
+        self.assertEqual([], [e.message for e in validator.iter_errors(report)])
+        report["meta"]["coverage"]["verdicts"]["ids_in_several_cells"] = "1"
+        self.assertNotEqual([], list(validator.iter_errors(report)))
+
+    def test_no_carrier_of_the_cell_reaches_the_report(self):
+        self.cells()
+        self.bundle([verdict(self.a), verdict(self.b)])
+        self.bundle([verdict(self.b)], group="g2")
+        report = self.report()
+        for finding in report["findings"] + report["discarded_claims"]:
+            self.assertEqual([], [key for key in finding if key.startswith("_")])
+
+
+class TestTheRule(unittest.TestCase):
+    """`evidence.across_cells`: one verdict from what each holding cell said of its own
+    instance. None is a cell that gave no verdict."""
+
+    @staticmethod
+    def said(word, cell="?", **more):
+        return dict({"verdict": word, "from": cell}, **more)
+
+    def decide(self, own, **others):
+        by_cell = {G1: self.said(own, "g1") if own else None}
+        by_cell.update({(name, "SEC"): self.said(word, name) if word else None
+                        for name, word in others.items()})
+        found = evidence_mod.across_cells(by_cell, G1)
+        return (found["verdict"], found["from"]) if found else None
+
+    def test_one_cell_is_its_own_verdict(self):
+        for word in ("CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"):
+            self.assertEqual((word, "g1"), self.decide(word))
+        self.assertIsNone(self.decide(None))
+        self.assertIsNone(evidence_mod.across_cells({}, G1))
+
+    def test_any_confirmation_keeps_the_claim(self):
+        self.assertEqual(("CONFIRMED", "g2"), self.decide("REJECTED", g2="CONFIRMED"))
+        self.assertEqual(("CONFIRMED", "g1"), self.decide("CONFIRMED", g2="REJECTED"))
+        self.assertEqual(("CONFIRMED", "g2"), self.decide(None, g2="CONFIRMED"))
+        self.assertEqual(("CONFIRMED", "g3"), self.decide("REJECTED", g2=None, g3="CONFIRMED"))
+        self.assertEqual(("CONFIRMED", "g1"), self.decide("CONFIRMED", g2="CONFIRMED"))
+
+    def test_a_cell_that_did_not_answer_leaves_it_unverified(self):
+        self.assertIsNone(self.decide("REJECTED", g2=None))
+        self.assertIsNone(self.decide(None, g2="REJECTED"))
+        self.assertIsNone(self.decide("NEEDS_MORE_INFO", g2=None))
+        self.assertIsNone(self.decide("REJECTED", g2="REJECTED", g3=None))
+
+    def test_only_every_cell_dismissing_it_dismisses_it(self):
+        self.assertEqual(("REJECTED", "g1"), self.decide("REJECTED", g2="REJECTED"))
+        self.assertEqual(("NEEDS_MORE_INFO", "g2"),
+                         self.decide("REJECTED", g2="NEEDS_MORE_INFO"))
+        self.assertEqual(("NEEDS_MORE_INFO", "g1"),
+                         self.decide("NEEDS_MORE_INFO", g2="REJECTED"))
+        self.assertEqual(("NEEDS_MORE_INFO", "g3"),
+                         self.decide("REJECTED", g2="REJECTED", g3="NEEDS_MORE_INFO"))
+
+    def test_among_equals_the_findings_own_cell_speaks_then_the_first_by_name(self):
+        by_cell = {("g3", "SEC"): self.said("REJECTED", "g3"),
+                   ("g2", "SEC"): self.said("REJECTED", "g2")}
+        self.assertEqual("g2", evidence_mod.across_cells(by_cell, G1)["from"])
+        by_cell[G1] = self.said("REJECTED", "g1")
+        self.assertEqual("g1", evidence_mod.across_cells(by_cell, G1)["from"])
+        # The own cell, wherever its name sorts: among rejections and confirmations.
+        for word in ("REJECTED", "CONFIRMED", "NEEDS_MORE_INFO"):
+            by_cell = {(name, "SEC"): self.said(word, name) for name in ("g1", "g2", "g3")}
+            for own in ("g1", "g2", "g3"):
+                self.assertEqual(own, evidence_mod.across_cells(by_cell, (own, "SEC"))["from"])
+
+    def test_a_scope_limited_unsure_is_more_favourable_than_a_bare_one(self):
+        limited = self.said("NEEDS_MORE_INFO", "g2", missing_evidence=["x.py"])
+        by_cell = {G1: self.said("NEEDS_MORE_INFO", "g1"), G2: limited}
+        self.assertEqual("g2", evidence_mod.across_cells(by_cell, G1)["from"])
+
+
+class TestWhichCellsHoldAnId(unittest.TestCase):
+    def test_the_cells_come_from_the_findings_files(self):
+        findings = [{"id": "X", "_group": "g1", evidence_mod.CELL_DOMAIN_FIELD: "SEC"},
+                    {"id": "X", "_group": "g2", evidence_mod.CELL_DOMAIN_FIELD: "SEC"},
+                    {"id": "X", "_group": "g2", evidence_mod.CELL_DOMAIN_FIELD: "SEC"},
+                    {"id": "Y", "_group": "g1", evidence_mod.CELL_DOMAIN_FIELD: "COD"},
+                    {"id": "T", "_group": "g1"},                 # a tool finding: no cell
+                    {"id": "Z"}, {"_group": "g1"}, "text"]
+        self.assertEqual({"X": {G1, G2}, "Y": {("g1", "COD")}},
+                         verdicts_mod.holding_cells(findings))
+
+    def test_a_findings_cell_is_its_file_and_not_what_the_reviewer_wrote(self):
+        """A reviewer may file under another domain's code; the cell is the file's."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "findings-g1-SEC.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [dict(claim("a.py"), domain="TST", code="TST-X0X",
+                                             _group="g9", _cell_domain="COD")]}, fh)
+            (loaded,) = findings_mod.load_findings([path])
+        self.assertEqual("TST", loaded["domain"])
+        self.assertEqual(G1, evidence_mod.finding_cell(loaded))
+
+
+class TestAVerdictCarriesItsBundlesCell(_Verdicts):
+    def test_the_stamp_and_not_the_advisor_says_which_cell(self):
+        self.record(record(claims=("SEC-001",), size=25))
+        self.bundle([dict(verdict("SEC-001"), _cell=["g2", "SEC"], group="g2")])
+        by_fid, _accepted, _unloadable = self.load()
+        self.assertEqual([G1], [v[evidence_mod.CELL_FIELD] for v in by_fid["SEC-001"]])
+
+    def test_a_verdict_binds_only_to_a_finding_of_its_own_cell(self):
+        self.record(record(claims=("SEC-001",), size=25),
+                    record(group="g2", claims=("SEC-001",), size=25))
+        self.bundle([verdict("SEC-001", "REJECTED")])
+        self.bundle([verdict("SEC-001", "CONFIRMED")], group="g2")
+        by_fid, _accepted, _unloadable = self.load()
+
+        def own(group):
+            finding = {"id": "SEC-001", "_group": group, evidence_mod.CELL_DOMAIN_FIELD: "SEC"}
+            found = verdicts_mod.claim_verdict(finding, by_fid, None, {})
+            return found and found["verdict"]
+
+        self.assertEqual(("REJECTED", "CONFIRMED", None), (own("g1"), own("g2"), own("g3")))
+        # A finding that came from no cell (a tool finding) is no cell's claim, whoever
+        # else holds its id and whatever they said of it.
+        for holders in ({}, {"SEC-001": {G1, G2}}):
+            self.assertIsNone(verdicts_mod.claim_verdict({"id": "SEC-001", "_group": "g1"},
+                                                         by_fid, None, holders))
+        # ...and a finding of a cell is decided with the other cells that hold its id.
+        held = {"id": "SEC-001", "_group": "g1", evidence_mod.CELL_DOMAIN_FIELD: "SEC"}
+        self.assertEqual("CONFIRMED", verdicts_mod.claim_verdict(
+            held, by_fid, None, {"SEC-001": {G1, G2}})["verdict"])
+        # Without the cell that confirmed it, g1's own rejection stands alone; with a
+        # third holder that said nothing, and nobody confirming, it is unverified.
+        self.assertEqual("REJECTED", verdicts_mod.claim_verdict(
+            held, by_fid, None, {"SEC-001": {G1}})["verdict"])
+        self.assertIsNone(verdicts_mod.claim_verdict(
+            held, by_fid, None, {"SEC-001": {G1, ("g3", "SEC")}}))
+        # A finding's own cell always speaks for it, even where the map of holders
+        # does not name it.
+        theirs = {"id": "SEC-001", "_group": "g2", evidence_mod.CELL_DOMAIN_FIELD: "SEC"}
+        self.assertEqual("CONFIRMED", verdicts_mod.claim_verdict(
+            theirs, by_fid, None, {"SEC-001": {G1}})["verdict"])
+
+
+if __name__ == "__main__":
+    unittest.main()

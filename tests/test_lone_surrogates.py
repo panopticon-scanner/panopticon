@@ -375,7 +375,8 @@ class TestTheTwoDoors(unittest.TestCase):
                     path = runio._pano(root, "findings-app-COD.json")
                     ours = findings_mod.load_findings_detailed([path])
                     theirs = review._load_cell_findings(root, manifest, "app", "COD")
-                    self.assertEqual(([{**found, "_group": "app"} for found in theirs], []), ours)
+                    self.assertEqual(([{**found, "_group": "app", "_cell_domain": "COD"}
+                                       for found in theirs], []), ours)
                     self.assertEqual(1, len(theirs))
                     read.append(theirs)
                 self.assertEqual(read[0], read[1])

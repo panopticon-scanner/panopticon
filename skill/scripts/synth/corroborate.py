@@ -47,6 +47,15 @@ def _is_tool_sourced(finding):
 ABSORBED_FIELD = "_absorbed"
 
 
+def outranks(finding, other):
+    """Would `dedupe` keep `finding` over `other`: more severe, then more confident;
+    the first seen among equals, so False on a tie. True when there is no `other`."""
+    if other is None:
+        return True
+    return ((findings_mod._sev_rank(finding), _conf_rank(finding))
+            < (findings_mod._sev_rank(other), _conf_rank(other)))
+
+
 def _absorb(best, other):
     """Keep `other` on the survivor that dropped it, transitively (a cluster
     can collapse in stages: what an earlier survivor absorbed travels on)."""

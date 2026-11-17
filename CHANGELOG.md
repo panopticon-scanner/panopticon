@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **A verdict speaks only for its own cell's instance of a claim (#3707, high).** A claim id is
+  derived from what a reviewer wrote (domain, category, file, title and line) and holds no group.
+  So one cell's reviewer could emit a copy of another cell's claim, and the controller handed that
+  id to the copying cell's advisors as one of the cell's own. Their REJECTED was in scope, and it
+  discarded a CRITICAL claim the other cell's own advisor had CONFIRMED: gate PASS, certified, no
+  shortfall. It worked through the copying cell's primary (its verdict file sorts first) and
+  through its backup (a backup won over every primary).
+  - A bundle verdict now counts for a finding only when the bundle is stamped for the cell that
+    finding was loaded from. The cell is the findings file's, never the `domain` a reviewer wrote.
+  - Where several cells hold one id, each cell's advisors answer for their own instance, and a
+    backup stands over its own cell's primary only. Any CONFIRMED keeps the claim reported. A
+    holding cell that gave no verdict leaves it unverified. Only every holding cell rejecting it
+    discards it.
+  - `meta.coverage.verdicts.ids_in_several_cells` counts the ids held by more than one cell. It is
+    a disclosure and not a shortfall: two cells that really report one claim, and agree, decide it
+    as before.
+  - The id itself is unchanged, so baselines and delta review are not affected.
+  - A verdict bundle now binds only to findings loaded from a cell's own file
+    (`findings-<group>-<domain>.json`). Findings collected by hand into a file of another name
+    get no bundle verdict.
+
 - **An advisor's verdict counts only for a claim that advisor was handed (#3702, high).** Verify
   verdicts are matched to findings by finding id across the whole run, and a backup advisor's
   verdict wins over a primary's. Nothing asked whether the advisor that wrote a verdict had been

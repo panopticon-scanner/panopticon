@@ -425,6 +425,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
                 "misrouted": 0,
                 "out_of_scope": 0,
                 "scope_not_recorded": 0,
+                "ids_in_several_cells": 0,
                 "unloadable": 0,
             },
         )
@@ -506,6 +507,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
                 "misrouted": 1,
                 "out_of_scope": 0,
                 "scope_not_recorded": 0,
+                "ids_in_several_cells": 0,
                 "unloadable": 0,
             },
         )
@@ -572,6 +574,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
                 "misrouted": 0,
                 "out_of_scope": 0,
                 "scope_not_recorded": 0,
+                "ids_in_several_cells": 0,
                 "unloadable": 0,
             },
         )

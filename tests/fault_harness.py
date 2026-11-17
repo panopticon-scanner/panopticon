@@ -256,6 +256,39 @@ class OutOfScope(FixtureReplies):
         return sorted(self.answers)
 
 
+class CopiedClaim(FixtureReplies):
+    """#3707: a reviewer that copies another cell's claim. With `copy`, the reviewer of the
+    cell `copier` emits, beside its own claim, one with the identity of the cell `owner`'s:
+    the same domain, category, file, title and line, so the same id. The controller then
+    hands that id to the copier's advisors as one of the cell's own.
+
+    `says` is what the copier's advisors say of the copy, by stage ({"primary": ...,
+    "backup": ...}); a stage not named confirms it. `owner_says` is what the owner's own
+    advisors say of the claim. Without `copy` nobody copies anything: the silent run.
+    `severity` is the claim's, and its copy's: a HIGH claim summons no backup, so the
+    owner's backup does not stand over the two primaries."""
+    COPIER, OWNER = ("app", "COD"), ("lib", "COD")
+    CLAIM = "%s/%s defect" % OWNER
+
+    def __init__(self, copy=True, says=None, owner_says="CONFIRMED", severity="CRITICAL"):
+        self.copy, self.says, self.owner_says = copy, says or {}, owner_says
+        self.severity = severity
+
+    def findings(self, entry):
+        claims = super().findings(entry)
+        if self.copy and (entry["group"], entry["domain"]) == self.COPIER:
+            claims += super().findings(dict(entry, group=self.OWNER[0], domain=self.OWNER[1]))
+        return [dict(claim, severity=self.severity) if claim["title"] == self.CLAIM else claim
+                for claim in claims]
+
+    def verdict(self, entry, finding):
+        if finding is None or finding.get("title") != self.CLAIM:
+            return super().verdict(entry, finding)
+        if (entry["group"], entry["domain"]) == self.COPIER:
+            return self.says.get(entry.get("stage", "primary"), "CONFIRMED"), "of its copy"
+        return self.owner_says, "of its own claim"
+
+
 def build_target(test_case):
     root = os.path.realpath(tempfile.mkdtemp())
     test_case.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))

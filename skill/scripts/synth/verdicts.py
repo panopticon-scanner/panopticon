@@ -119,7 +119,43 @@ class _Matches:
     unanswered_tools: int = 0
 
 
-def _own_verdict(fs, finding, queue_id):
+def holding_cells(findings):
+    """{claim id: the cells that hold a finding with that id} over the findings as
+    loaded, before dedupe collapses them (#3707). An id is derived from what a
+    reviewer wrote and holds no group, so two cells can hold one id: honestly, or
+    because one reviewer copied the other's claim."""
+    holders: dict[str, set] = {}
+    for finding in findings:
+        if not isinstance(finding, dict) or not finding.get("id"):
+            continue
+        cell = evidence_mod.finding_cell(finding)
+        if cell is not None:
+            holders.setdefault(str(finding["id"]), set()).add(cell)
+    return holders
+
+
+def claim_verdict(finding, by_fid, run_id, holders):
+    """The bundle verdict for `finding`, or None (#3707). A bundle verdict counts for a
+    finding only when the bundle is stamped for the cell that finding came from; the
+    candidates of each holding cell are resolved by themselves (a backup wins over
+    its OWN cell's primary, `match_verdict_by_id`), and `evidence.across_cells`
+    decides between the cells."""
+    fid = finding.get("id")
+    if not fid:
+        return None
+    own = evidence_mod.finding_cell(finding)
+    candidates = by_fid.get(str(fid)) or []
+    by_cell = {}
+    # A finding that came from no cell (a tool finding) is no cell's instance of
+    # anything: the cells that hold its id do not speak for it.
+    for cell in (set(holders.get(str(fid)) or ()) | {own}) if own is not None else {None}:
+        theirs = [c for c in candidates if c.get(evidence_mod.CELL_FIELD) == cell]
+        by_cell[cell] = evidence_mod.match_verdict_by_id({"id": fid}, {str(fid): theirs},
+                                                         run_id=run_id)
+    return evidence_mod.across_cells(by_cell, own)
+
+
+def _own_verdict(fs, finding, queue_id, holders):
     """`finding`'s verdict on its OWN identity -- its queue id, then its own id --
     never through a dedupe alias, and with no side effects (#2991)."""
     v = (fs.verdicts or {}).get(queue_id) if queue_id else None
@@ -127,8 +163,7 @@ def _own_verdict(fs, finding, queue_id):
             and (fs.verdict_run_id is None or v.get("run_id") == fs.verdict_run_id)):
         return v
     if fs.verdict_bundles:
-        return evidence_mod.match_verdict_by_id({"id": finding.get("id")}, fs.verdict_bundles,
-                                                run_id=fs.verdict_run_id)
+        return claim_verdict(finding, fs.verdict_bundles, fs.verdict_run_id, holders)
     return None
 
 
@@ -136,7 +171,7 @@ def _confirmed(verdict):
     return isinstance(verdict, dict) and verdict.get("verdict") == "CONFIRMED"
 
 
-def restore_confirmed(fs, findings, queue):
+def restore_confirmed(fs, findings, queue, holders=None):
     """#2991: dedupe picks a survivor by severity before any verdict binds, so a
     REJECTED (or NEEDS_MORE_INFO, or unverified) CRITICAL at one locus swallowed
     a CONFIRMED HIGH there: the HIGH left the report and a FAIL became a PASS.
@@ -144,16 +179,32 @@ def restore_confirmed(fs, findings, queue):
     finding and queued, unless the survivor's OWN verdict is CONFIRMED too
     (a claim's verdict is its own; #3202 withdrew the aliases that let one lend
     it). Anything else collapses exactly as before. Strips the carrier either
-    way."""
+    way.
+
+    #3707: a member's own verdict is its claim's, decided across the cells that
+    hold its id (`claim_verdict`). Pooled by id, a second cell's copy of the
+    member answered for it: with the copy REJECTED the confirmed member was
+    never restored and left the report altogether. And where several dropped
+    members are instances of ONE id, one of them is restored, the one dedupe
+    itself would have kept: an id is published once."""
+    holders = holders if holders is not None else holding_cells(fs.findings)
     queue_ids = {id(e["finding"]): e["queue_id"] for e in queue}
     taken = {e["queue_id"] for e in queue}
     for survivor in list(findings):
         absorbed = survivor.pop(corroborate_mod.ABSORBED_FIELD, [])
-        if not absorbed or _confirmed(_own_verdict(fs, survivor, queue_ids.get(id(survivor)))):
+        if not absorbed or _confirmed(_own_verdict(fs, survivor, queue_ids.get(id(survivor)),
+                                                   holders)):
             continue
+        kept: dict[str, dict[str, Any]] = {}
         for member in absorbed:
+            if member.get("id") and corroborate_mod.outranks(
+                    member, kept.get(str(member["id"]))):
+                kept[str(member["id"])] = member
+        for member in absorbed:
+            if member.get("id") and kept[str(member["id"])] is not member:
+                continue        # another instance of this id is the one restored
             fp = evidence_mod.finding_fingerprint(member)
-            if not _confirmed(_own_verdict(fs, member, fp)):
+            if not _confirmed(_own_verdict(fs, member, fp, holders)):
                 continue
             qid, n = fp, 0
             while qid in taken:
@@ -165,7 +216,7 @@ def restore_confirmed(fs, findings, queue):
                           "finding": member})
 
 
-def _bind_verdicts(fs, findings, queue):
+def _bind_verdicts(fs, findings, queue, holders):
     """Bind and apply answers, measuring engagement before any verdict mutates it."""
     verdicts = fs.verdicts or {}
     matched = {}
@@ -187,8 +238,7 @@ def _bind_verdicts(fs, findings, queue):
         v = evidence_mod.match_verdict(entry, verdicts, run_id=fs.verdict_run_id,
                                        misrouted=verdict_misrouted)
         if v is None and by_fid:
-            v = evidence_mod.match_verdict_by_id(entry["finding"], by_fid,
-                                                 run_id=fs.verdict_run_id)
+            v = claim_verdict(entry["finding"], by_fid, fs.verdict_run_id, holders)
         if v is not None:
             evidence_mod.apply_verdict(entry["finding"], v)
             matched_n += 1
@@ -218,7 +268,7 @@ def _verify_matrix(findings, matches):
                                      if k not in verified_cells)}
 
 
-def _verdict_stats(fs, findings, queue, cut, matches):
+def _verdict_stats(fs, findings, queue, cut, matches, holders):
     """Disclose lost, unknown and unmatched answers in stderr and the artifact."""
     verdicts, by_fid = fs.verdicts or {}, fs.verdict_bundles or {}
     unanswered, verdict_misrouted = matches.unanswered, matches.misrouted
@@ -297,6 +347,10 @@ def _verdict_stats(fs, findings, queue, cut, matches):
         # back (`verdict_scope.reasons`).
         "out_of_scope": out_of_scope,
         "scope_not_recorded": scope_not_recorded,
+        # #3707: claim ids held by more than one cell. Each cell's advisors answer
+        # for their own instance; a count here is why a claim one cell rejected can
+        # still be reported. Disclosure only: an honest duplicate is no shortfall.
+        "ids_in_several_cells": sum(1 for cells in holders.values() if len(cells) > 1),
         # Measured only when --verdicts-dir was passed at all. Emitting 0 for a
         # run with no verify phase would read as "nothing went unanswered",
         # which is the opposite of the truth; null means "not measured", the
@@ -547,7 +601,10 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     ocrdb_bundle = ocrdb.load_bundle()
     ocrdb_coverage = codes_mod.validate_finding_codes(findings, ocrdb_bundle)
     queue, cut = evidence_mod.build_verify_queue(findings, run.max_verify)
-    restore_confirmed(fs, findings, queue)   # #2991, before any identity is read
+    # #3707: which cells hold each claim id, from the findings as loaded: dedupe
+    # is about to collapse the instances, and a verdict speaks for its own cell's.
+    holders = holding_cells(fs.findings)
+    restore_confirmed(fs, findings, queue, holders)   # #2991, before any identity is read
     # Identity must be read BEFORE any verdict is applied. For a SARIF-sourced
     # tool finding the adapters park the rule id in
     # provenance.confirmation_reasoning (tools/sarif_utils.tool_provenance sets
@@ -560,11 +617,11 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     # (including those cut by --max-verify): nothing between here and the
     # assignment site mutates an identity field on them.
     pre_verdict_fps = {id(f): evidence_mod.finding_fingerprint(f) for f in findings}
-    matches = _bind_verdicts(fs, findings, queue)
+    matches = _bind_verdicts(fs, findings, queue, holders)
     verify_matrix_cov = _verify_matrix(findings, matches)
     if ocrdb_coverage is not None:
         ocrdb_coverage.update(codes_mod.apply_verdict_quality(findings, matches.matched, ocrdb_bundle))
-    verdict_stats = _verdict_stats(fs, findings, queue, cut, matches)
+    verdict_stats = _verdict_stats(fs, findings, queue, cut, matches, holders)
     _derive_evidence(findings, catalog, matches.matched, pre_verdict_fps)
     # #3231: after the verdict-quality step and the evidence it reads, before anything counts.
     severity_cap_mod.apply(findings, run, groups_meta)

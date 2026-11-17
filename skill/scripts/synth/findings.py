@@ -429,6 +429,9 @@ def load_findings_detailed(paths):
             nf["id"] = evidence_mod.matrix_finding_id(nf)
             if group is not None:
                 nf["_group"] = group
+                # #3707: the cell is the FILE's. `nf["domain"]` is what the reviewer
+                # wrote, and a verdict binds to the cell its advisor was dispatched for.
+                nf[evidence_mod.CELL_DOMAIN_FIELD] = cell[1]
             out.append(nf)
     return out, diagnostics
 

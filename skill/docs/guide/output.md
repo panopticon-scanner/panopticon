@@ -120,6 +120,16 @@ version reads as, and a hand `synthesize.py --verdicts-dir` call over bundles wi
 affected too: the verify cells it had already finished are never dispatched again, so their scope
 is never recorded and their verdicts are not counted. The remedy is a full re-run, not a re-verify:
 `--reset` discards the whole run folder, the review included, and the run starts from discovery.
+A verdict speaks only for its own cell's instance of a claim (#3707). A claim id is derived from the
+claim's domain, category, file, title and line, and no group, so two cells can hold one id: two
+reviewers reporting the same thing, or one copying the other's claim. A bundle verdict counts for a
+finding only when the bundle is stamped for the cell that finding was loaded from. Where several
+cells hold one id, each cell's advisors answer for their own instance (a backup stands over its own
+cell's primary and no other), and the claim is decided across them: any CONFIRMED keeps it reported;
+otherwise a holding cell that gave no verdict leaves it unverified; and only every holding cell
+rejecting it discards it. `meta.coverage.verdicts.ids_in_several_cells` counts such ids. It is a
+disclosure, not a shortfall: an honest duplicate that both cells confirm, or both reject, is decided
+as it always was.
 `meta.coverage.dependency_audit` is the dependency-audit receipt: the ecosystems the tree has a
 dependency manifest for (`applicable`), and the dedicated auditors that were `selected` and
 `produced` output. Its `unaudited` map (#3648) names each applicable ecosystem that no selected
