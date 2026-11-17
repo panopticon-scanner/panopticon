@@ -936,6 +936,26 @@ def test_a_copied_claim_is_decided_by_every_cell_that_holds_it(copied, row):
         assert speaking.report["summary"]["gate"] == "FAIL"
 
 
+def test_a_cell_below_the_verify_gate_that_holds_the_claim_is_not_asked_and_does_not_hold_it(lab):
+    """Ruling 1. The copying cell rates everything INFO, so it is never dispatched for
+    verification. It was never asked about the claim, so it is not one of its holders:
+    the owner's rejection stands, and the run certifies as it does with no copy."""
+    silent = fh.drive(lab, replies=fh.CopiedClaim(copy=False, owner_says="REJECTED",
+                                                  below_gate=True))
+    held = fh.drive(lab, replies=fh.CopiedClaim(owner_says="REJECTED", below_gate=True))
+    copier = "verify-%s-%s-primary" % fh.CopiedClaim.COPIER
+    assert copier not in silent.launched and copier not in held.launched
+    with open(runio._pano(held.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        assert not [key for key in json.load(fh_)
+                    if key.startswith("%s/%s/" % fh.CopiedClaim.COPIER)]
+    assert problems(silent, silent) == [] and problems(silent, held) == []
+    assert _the_claim(held) == _the_claim(silent) == [("discarded", "rejected", "CRITICAL")]
+    assert _verdict_of(held) == _verdict_of(silent)
+    assert held.report["summary"]["coverage_certified"] is True
+    counted = [o.report["meta"]["coverage"]["verdicts"] for o in (silent, held)]
+    assert [v["ids_in_several_cells"] for v in counted] == [0, 1]
+
+
 def test_the_copied_rows_cover_both_stages_and_both_directions():
     kinds = {(stage, said, owner) for says, owner, _severity in COPIED_ROWS.values()
              for stage, said in says.items()}

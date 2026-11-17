@@ -26,6 +26,7 @@ import scripts.evidence as evidence_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
+import scripts.synth.verdict_scope as scope_mod
 import scripts.synth.verdicts as verdicts_mod
 from tests.synth.helpers import _target_with_files
 from tests.synth.test_verdict_scope import SCHEMA_PATH, _Verdicts, record, verdict
@@ -227,6 +228,110 @@ class TestACopyBehindADecoy(_TwoCells):
                                         if f["id"] == self.b])
 
 
+class TestACellThatWasNeverAsked(_TwoCells):
+    """Ruling 1. A cell below the verify gate holds its claims and is asked about none of
+    them. It is not a holder: the cells that were asked decide the claim. "Asked" is read
+    from the dispatch record, never from a missing bundle."""
+
+    def scene(self, g1_record, owner="REJECTED", copy_severity="LOW"):
+        """`g1` holds a LOW copy of `B` (so `g1` is below the gate) and `g1_record` is
+        what the record holds for it; `g2`'s own advisor says `owner` of `B`."""
+        self.cells(copy_severity=copy_severity)
+        self.record(record(group="g2", claims=(self.b,), size=25), g1_record(self))
+        self.bundle([verdict(self.b, owner)], group="g2")
+        return self.report()
+
+    NEVER_DISPATCHED = staticmethod(lambda self: {})
+    WITHOUT_THE_CLAIM = staticmethod(lambda self: record(claims=(self.a,), size=25))
+    WITH_THE_CLAIM = staticmethod(lambda self: record(claims=(self.a, self.b), size=25))
+    AT_THE_BACKUP_ONLY = staticmethod(lambda self: {
+        **record(claims=(self.a,), size=25),
+        **record(stage="backup", claims=(self.b,), size=25)})
+    CHARGED_WITH_NO_SCOPE = staticmethod(lambda self: {"g1/SEC/primary": 1})
+
+    def test_the_other_cells_rejection_stands_and_the_run_can_certify(self):
+        """The honest case the ruling is for: one cell rates a shared claim below the
+        gate, the other cell's advisor rejects it."""
+        self.cells(copy=False)
+        self.record(record(group="g2", claims=(self.b,), size=25))
+        self.bundle([verdict(self.b, "REJECTED")], group="g2")
+        silent = self.facts(self.report())
+        for label, g1_record in (("never dispatched", self.NEVER_DISPATCHED),
+                                 ("dispatched without the claim", self.WITHOUT_THE_CLAIM)):
+            with self.subTest(label):
+                report = self.scene(g1_record)
+                self.assertEqual([("discarded", "rejected")], self.where(report, self.b))
+                self.assertEqual((silent["gate"], silent["certified"], silent["letter"]),
+                                 (self.facts(report)["gate"], self.facts(report)["certified"],
+                                  self.facts(report)["letter"]))
+        report = self.scene(self.NEVER_DISPATCHED)
+        self.assertEqual(([], True, "PASS"), (report["summary"]["grade_shortfalls"],
+                                              report["summary"]["coverage_certified"],
+                                              report["summary"]["gate"]))
+
+    def test_a_cell_that_was_asked_and_said_nothing_still_holds_the_claim(self):
+        for label, g1_record in (("at the primary", self.WITH_THE_CLAIM),
+                                 ("at the backup only", self.AT_THE_BACKUP_ONLY)):
+            with self.subTest(label):
+                report = self.scene(g1_record)
+                self.assertEqual([("report", "unverified")], self.where(report, self.b))
+                self.assertFalse(report["summary"]["coverage_certified"])
+                self.assertIn("1 finding unanswered by its verify advisor",
+                              report["summary"]["grade_shortfalls"])
+
+    def test_a_cell_the_record_cannot_speak_for_still_holds_the_claim(self):
+        """Charged with no scope recorded: nothing shows what it was asked. Fail closed."""
+        report = self.scene(self.CHARGED_WITH_NO_SCOPE)
+        self.assertEqual([("report", "unverified")], self.where(report, self.b))
+        self.assertFalse(report["summary"]["coverage_certified"])
+
+    def test_a_claim_whose_own_cell_was_never_asked_takes_the_asked_cells_verdict(self):
+        """The published instance is `g1`'s (loaded first, as severe), and `g1` was never
+        dispatched: the cell that was asked decides the claim, either way."""
+        for owner, where in (("CONFIRMED", ("report", "advisor_confirmed")),
+                             ("REJECTED", ("discarded", "rejected"))):
+            with self.subTest(owner=owner):
+                report = self.scene(self.NEVER_DISPATCHED, owner=owner,
+                                    copy_severity="CRITICAL")
+                self.assertEqual([where], self.where(report, self.b))
+
+    def test_the_id_is_still_counted_as_held_by_several_cells(self):
+        report = self.scene(self.NEVER_DISPATCHED)
+        self.assertEqual(1, report["meta"]["coverage"]["verdicts"]["ids_in_several_cells"])
+
+
+class TestWasACellAsked(unittest.TestCase):
+    """`Scope.asked`: read from the dispatch record."""
+
+    def asked(self, body, cell=G1, finding_id="SEC-002"):
+        return scope_mod.Scope(body).asked(cell, finding_id)
+
+    def test_a_recorded_scope_that_holds_the_id_at_either_stage(self):
+        self.assertIs(True, self.asked(record()))
+        self.assertIs(True, self.asked({**record(claims=("SEC-001",)),
+                                        **record(stage="backup", claims=("SEC-002",))}))
+        self.assertIs(True, self.asked(record(stage="backup")))
+
+    def test_a_cell_the_record_shows_was_not_asked(self):
+        self.assertIs(False, self.asked({}))                              # never dispatched
+        self.assertIs(False, self.asked(record(group="g2")))              # another cell was
+        self.assertIs(False, self.asked(record(claims=("SEC-001",))))     # without this id
+        self.assertIs(False, self.asked(record(), finding_id="SEC-0022"))
+        self.assertIs(False, self.asked({"g1/SECX/primary": 1, "g10/SEC/primary": 1}))
+
+    def test_a_record_that_cannot_say(self):
+        self.assertIsNone(scope_mod.Scope(None).asked(G1, "SEC-002"))     # no record at all
+        self.assertIsNone(self.asked({"g1/SEC/primary": 2}))              # charged, no scope
+        self.assertIsNone(self.asked({"g1/SEC/backup/parts": 1}))
+        broken = dict(record(), **{"g1/SEC/primary/part_size": "25"})
+        self.assertIsNone(self.asked(broken))
+        self.assertIsNone(self.asked(record(), cell=None))
+        # A stage that holds the id answers, whatever the other stage's state.
+        self.assertIs(True, self.asked({"g1/SEC/primary": 1, **record(stage="backup")}))
+        self.assertIsNone(self.asked({"g1/SEC/primary": 1,
+                                      **record(stage="backup", claims=("SEC-001",))}))
+
+
 class TestAnHonestDuplicateBehavesAsBefore(_TwoCells):
     """Two cells really report one claim. Agreeing, they decide it as one cell would."""
 
@@ -399,11 +504,15 @@ class TestAVerdictCarriesItsBundlesCell(_Verdicts):
             held, by_fid, None, {"SEC-001": {G1}})["verdict"])
         self.assertIsNone(verdicts_mod.claim_verdict(
             held, by_fid, None, {"SEC-001": {G1, ("g3", "SEC")}}))
-        # A finding's own cell always speaks for it, even where the map of holders
-        # does not name it.
+        # Where the map names the id, the cells it names decide the claim: a finding
+        # whose own cell is not among them (it was never asked) takes their verdict.
         theirs = {"id": "SEC-001", "_group": "g2", evidence_mod.CELL_DOMAIN_FIELD: "SEC"}
-        self.assertEqual("CONFIRMED", verdicts_mod.claim_verdict(
+        self.assertEqual("REJECTED", verdicts_mod.claim_verdict(
             theirs, by_fid, None, {"SEC-001": {G1}})["verdict"])
+        self.assertIsNone(verdicts_mod.claim_verdict(theirs, by_fid, None, {"SEC-001": set()}))
+        # Where it does not name the id at all, the finding's own cell speaks.
+        self.assertEqual("CONFIRMED", verdicts_mod.claim_verdict(
+            theirs, by_fid, None, {"OTHER": {G1}})["verdict"])
 
 
 if __name__ == "__main__":

@@ -266,20 +266,26 @@ class CopiedClaim(FixtureReplies):
     "backup": ...}); a stage not named confirms it. `owner_says` is what the owner's own
     advisors say of the claim. Without `copy` nobody copies anything: the silent run.
     `severity` is the claim's, and its copy's: a HIGH claim summons no backup, so the
-    owner's backup does not stand over the two primaries."""
+    owner's backup does not stand over the two primaries. With `below_gate`, everything the
+    copier's cell reports is INFO, its copy too: the cell does not reach the verify gate,
+    so no advisor is ever dispatched for it."""
     COPIER, OWNER = ("app", "COD"), ("lib", "COD")
     CLAIM = "%s/%s defect" % OWNER
 
-    def __init__(self, copy=True, says=None, owner_says="CONFIRMED", severity="CRITICAL"):
+    def __init__(self, copy=True, says=None, owner_says="CONFIRMED", severity="CRITICAL",
+                 below_gate=False):
         self.copy, self.says, self.owner_says = copy, says or {}, owner_says
-        self.severity = severity
+        self.severity, self.below_gate = severity, below_gate
 
     def findings(self, entry):
         claims = super().findings(entry)
-        if self.copy and (entry["group"], entry["domain"]) == self.COPIER:
+        copier = (entry["group"], entry["domain"]) == self.COPIER
+        if self.copy and copier:
             claims += super().findings(dict(entry, group=self.OWNER[0], domain=self.OWNER[1]))
-        return [dict(claim, severity=self.severity) if claim["title"] == self.CLAIM else claim
-                for claim in claims]
+        claims = [dict(claim, severity=self.severity) if claim["title"] == self.CLAIM else claim
+                  for claim in claims]
+        return [dict(claim, severity="INFO") for claim in claims] if (
+            copier and self.below_gate) else claims
 
     def verdict(self, entry, finding):
         if finding is None or finding.get("title") != self.CLAIM:

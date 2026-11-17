@@ -127,7 +127,9 @@ finding only when the bundle is stamped for the cell that finding was loaded fro
 cells hold one id, each cell's advisors answer for their own instance (a backup stands over its own
 cell's primary and no other), and the claim is decided across them: any CONFIRMED keeps it reported;
 otherwise a holding cell that gave no verdict leaves it unverified; and only every holding cell
-rejecting it discards it. `meta.coverage.verdicts.ids_in_several_cells` counts such ids. It is a
+rejecting it discards it. A cell that was never asked about the claim is not one of its holders:
+the dispatch record shows the id in none of its scopes, as for a cell below the verify gate. A cell
+that was asked and did not answer is. `meta.coverage.verdicts.ids_in_several_cells` counts such ids. It is a
 disclosure, not a shortfall: an honest duplicate that both cells confirm, or both reject, is decided
 as it always was.
 `meta.coverage.dependency_audit` is the dependency-audit receipt: the ecosystems the tree has a

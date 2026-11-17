@@ -15,6 +15,9 @@
     backup stands over its own cell's primary only. Any CONFIRMED keeps the claim reported. A
     holding cell that gave no verdict leaves it unverified. Only every holding cell rejecting it
     discards it.
+  - A cell that was never asked about the claim is not one of its holders: the dispatch record
+    shows the id in none of that cell's scopes, as for a cell below the verify gate. A cell that
+    was asked and did not answer still is, and so is one the record cannot speak for.
   - `meta.coverage.verdicts.ids_in_several_cells` counts the ids held by more than one cell. It is
     a disclosure and not a shortfall: two cells that really report one claim, and agree, decide it
     as before.

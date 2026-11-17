@@ -134,6 +134,20 @@ def holding_cells(findings):
     return holders
 
 
+def asked_cells(holders, scope):
+    """`holders` less the cells that were never asked about the id (#3707, ruling 1):
+    {claim id: the holding cells whose advisors the controller handed that claim, or
+    may have}. A cell below the verify gate holds its claims and is asked about none
+    of them. It cannot dismiss anything, so leaving it out opens nothing; counted, it
+    left a claim the other cell's advisor rejected unverified, and an honest run
+    uncertified. `scope.asked` reads the dispatch record: a cell that was asked and
+    did not answer stays, and so does one the record cannot speak for."""
+    if scope is None:
+        return holders
+    return {fid: {cell for cell in cells if scope.asked(cell, fid) is not False}
+            for fid, cells in holders.items()}
+
+
 def claim_verdict(finding, by_fid, run_id, holders):
     """The bundle verdict for `finding`, or None (#3707). A bundle verdict counts for a
     finding only when the bundle is stamped for the cell that finding came from; the
@@ -147,8 +161,11 @@ def claim_verdict(finding, by_fid, run_id, holders):
     candidates = by_fid.get(str(fid)) or []
     by_cell = {}
     # A finding that came from no cell (a tool finding) is no cell's instance of
-    # anything: the cells that hold its id do not speak for it.
-    for cell in (set(holders.get(str(fid)) or ()) | {own}) if own is not None else {None}:
+    # anything: the cells that hold its id do not speak for it. For a cell's finding,
+    # `holders` names the cells that speak: its own is among them unless it was never
+    # asked, and then the cells that were asked decide the claim.
+    cells = {None} if own is None else holders.get(str(fid), {own})
+    for cell in cells:
         theirs = [c for c in candidates if c.get(evidence_mod.CELL_FIELD) == cell]
         by_cell[cell] = evidence_mod.match_verdict_by_id({"id": fid}, {str(fid): theirs},
                                                          run_id=run_id)
@@ -187,7 +204,7 @@ def restore_confirmed(fs, findings, queue, holders=None):
     never restored and left the report altogether. And where several dropped
     members are instances of ONE id, one of them is restored, the one dedupe
     itself would have kept: an id is published once."""
-    holders = holders if holders is not None else holding_cells(fs.findings)
+    holders = {} if holders is None else holders    # none given: each by its own cell
     queue_ids = {id(e["finding"]): e["queue_id"] for e in queue}
     taken = {e["queue_id"] for e in queue}
     for survivor in list(findings):
@@ -603,7 +620,8 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     queue, cut = evidence_mod.build_verify_queue(findings, run.max_verify)
     # #3707: which cells hold each claim id, from the findings as loaded: dedupe
     # is about to collapse the instances, and a verdict speaks for its own cell's.
-    holders = holding_cells(fs.findings)
+    held = holding_cells(fs.findings)
+    holders = asked_cells(held, fs.scope)
     restore_confirmed(fs, findings, queue, holders)   # #2991, before any identity is read
     # Identity must be read BEFORE any verdict is applied. For a SARIF-sourced
     # tool finding the adapters park the rule id in
@@ -621,7 +639,7 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     verify_matrix_cov = _verify_matrix(findings, matches)
     if ocrdb_coverage is not None:
         ocrdb_coverage.update(codes_mod.apply_verdict_quality(findings, matches.matched, ocrdb_bundle))
-    verdict_stats = _verdict_stats(fs, findings, queue, cut, matches, holders)
+    verdict_stats = _verdict_stats(fs, findings, queue, cut, matches, held)
     _derive_evidence(findings, catalog, matches.matched, pre_verdict_fps)
     # #3231: after the verdict-quality step and the evidence it reads, before anything counts.
     severity_cap_mod.apply(findings, run, groups_meta)
