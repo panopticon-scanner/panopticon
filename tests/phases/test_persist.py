@@ -687,6 +687,41 @@ class TestDoneIsAboutThisEntrysOwnPart(unittest.TestCase):
         self.assertEqual([True, True], self._done())
         self.assertFalse(persist.is_done(extra))
 
+    def test_the_first_part_past_the_last_is_not_done_and_does_not_raise(self):
+        """#3703 review N1: the boundary. The cell has parts 0 and 1, so `-part2` is the
+        first it does not have; read as a part, it would index past the chunks and
+        take `loop_batch._pending` down with it."""
+        ids = [f["id"] for f in self.env["cell"]]
+        for part, chunk in enumerate(self.chunks):
+            self._on_disk(part, [f["id"] for f in chunk])
+        first_past = dict(self.entries[1], out_file=self.entries[1]["out_file"].replace(
+            "-part1.json", "-part%d.json" % len(self.chunks)))
+        runio._write_json(first_past["out_file"],
+                          {"verdicts": self.env["verdicts"](ids),
+                           "_panopticon": {"run_id": "RID", "group": "app",
+                                           "domain": "SEC", "stage": "primary"}})
+        self.assertFalse(persist.is_done(first_past))
+        self.assertEqual([True, True], self._done())
+
+    def test_an_entry_that_cannot_be_placed_is_never_done(self):
+        """#3703 review N2: fail closed. A verify entry with no cell to its name, or one
+        whose file is under no review root, has a whole bundle on disk and is not done."""
+        for part, chunk in enumerate(self.chunks):
+            self._on_disk(part, [f["id"] for f in chunk])
+        whole = self.entries[1]
+        self.assertTrue(persist.is_done(whole))
+        elsewhere = os.path.join(self.d, "verdicts", os.path.basename(whole["out_file"]))
+        os.makedirs(os.path.dirname(elsewhere))
+        shutil.copy(whole["out_file"], elsewhere)
+        for label, entry in (("no group", {k: v for k, v in whole.items() if k != "group"}),
+                             ("no domain", {k: v for k, v in whole.items() if k != "domain"}),
+                             ("an empty group", dict(whole, group="")),
+                             ("a file under no review root", dict(whole, out_file=elsewhere))):
+            with self.subTest(label):
+                self.assertEqual("verify-cell", persist.role_of(entry))
+                self.assertIsNone(persist._verify_cell_of(entry))
+                self.assertFalse(persist.is_done(entry))
+
 
 class TestABackupReplyMustAnswerEveryScopedClaim(TestBackupCellFixture):
     """#3695: the same rule for a backup reply. It used to be accepted once it was
