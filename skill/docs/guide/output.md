@@ -144,7 +144,10 @@ default, and a `TST-A1*` claim at CRITICAL or HIGH counts as MEDIUM, its cap. An
 is not REJECTED stays merged under a row whose final severity is below its own; it comes back as
 its own finding. One row is not held to that: a scanner finding nobody has confirmed, capped at
 MEDIUM, keeps the claim merged into it (a lone claim and a lone scanner finding at one line are
-merged whatever their categories). An uncapped `TST-A1*` claim is the exception to the exception:
+merged whatever their categories). A claim written above its code's default with an empty
+override ranks at the default, so beside a scanner finding that outranks the default it is under
+the scanner's row, as a claim written at the default is. An uncapped `TST-A1*` claim is the
+exception to the exception:
 it ranked below where it ends, so it comes back beside the scanner's row. So one id can be in the
 report at two severities: one claim filed twice under different codes, by two cells or by one,
 where the instance that is not capped comes back over the other; the two rows can differ in
