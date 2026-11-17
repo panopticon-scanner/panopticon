@@ -42,7 +42,6 @@ Usage:
     python3 skill/scripts/collect_usage.py --run-dir <dir> --dry-run
 """
 import argparse
-import glob
 import hashlib
 import json
 import os
@@ -52,7 +51,7 @@ import sys
 if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
     import runpy
     runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
-from scripts import claim_scope, plan_contract, safe_write
+from scripts import claim_scope, plan_contract, safe_glob, safe_write
 
 USAGE_FIELDS = ("input_tokens", "output_tokens",
                 "cache_creation_input_tokens", "cache_read_input_tokens")
@@ -113,7 +112,7 @@ def find_controller_transcript(project_dir, home=None, since=None):
     """
     home = home or os.path.expanduser("~")
     d = os.path.join(home, ".claude", "projects", project_slug(project_dir))
-    files = [p for p in glob.glob(os.path.join(d, "*.jsonl")) if os.path.isfile(p)]
+    files = [p for p in safe_glob.under(d, "*.jsonl") if os.path.isfile(p)]
     if not files:
         return None
     if not since:
@@ -177,7 +176,7 @@ def find_task_transcripts(controller_transcript, tasks_dir=None, info=None):
     """
     if tasks_dir:
         return _cap_transcripts(
-            sorted(p for p in glob.glob(os.path.join(tasks_dir, "*"))
+            sorted(p for p in safe_glob.under(tasks_dir, "*")
                    if os.path.isfile(p)), info)
     if not controller_transcript:
         return _cap_transcripts([], info)
@@ -185,11 +184,11 @@ def find_task_transcripts(controller_transcript, tasks_dir=None, info=None):
     proj = os.path.dirname(controller_transcript)
     slug = os.path.basename(proj)
     candidates = []
-    for base in glob.glob("/private/tmp/claude-*") + glob.glob("/tmp/claude-*"):
-        candidates.extend(glob.glob(os.path.join(base, slug, session, "tasks", "*")))
-    candidates.extend(glob.glob(os.path.join(
-        proj, session, "subagents", "workflows", "*", "agent-*.jsonl")))
-    candidates.extend(glob.glob(os.path.join(proj, session, "subagents", "*.jsonl")))
+    for base in safe_glob.under("/private/tmp", "claude-*") + safe_glob.under("/tmp", "claude-*"):
+        candidates.extend(safe_glob.under(os.path.join(base, slug, session, "tasks"), "*"))
+    subagents = os.path.join(proj, session, "subagents")
+    candidates.extend(safe_glob.under(subagents, "workflows", "*", "agent-*.jsonl"))
+    candidates.extend(safe_glob.under(subagents, "*.jsonl"))
     seen, out = set(), []
     for cand in candidates:
         if not os.path.isfile(cand) or cand.endswith(".meta.json"):

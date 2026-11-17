@@ -1,12 +1,12 @@
 """The run's dispatch/usage ledger (meta.cost)."""
 from dataclasses import dataclass
-import glob
 import json
 import os
 import re
 import sys
 
 import scripts.runners.base as runners_base
+import scripts.safe_glob as safe_glob
 import scripts.safe_write as safe_write
 import scripts.tolerant_json as tolerant_json
 import scripts.tools.base as tool_base
@@ -286,10 +286,10 @@ def driver_cost_counts(pano_dir, verdicts_dir, tools_produced):
     # subdir where the artifacts actually land.
     vdir = verdicts_dir or os.path.join(pano_dir, "verdicts")
     have_vdir = os.path.isdir(vdir)
-    bundles = (glob.glob(os.path.join(vdir, "verdicts-*.json"))
+    bundles = (safe_glob.under(vdir, "verdicts-*.json")
                if have_vdir else [])
     backup = sum(1 for p in bundles if p.endswith("-backup.json"))
-    tool_adv = (sum(1 for p in glob.glob(os.path.join(vdir, "*.json"))
+    tool_adv = (sum(1 for p in safe_glob.under(vdir, "*.json")
                     if not os.path.basename(p).startswith("verdicts-"))
                 if have_vdir else 0)
     return {"review_cells": review_cells,

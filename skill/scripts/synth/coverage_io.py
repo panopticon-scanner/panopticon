@@ -18,13 +18,13 @@ THE PRINCIPLE (see `validate_schema`): the schema pins the CONTROLLER's output,
 so target-written content is normalized to the pinned types at the boundary --
 here, at the read, with every change announced.
 """
-import glob
 import os
 import sys
 
 import scripts.coverage_model as coverage_model
 import scripts.findings_contract as findings_contract
 import scripts.plan_contract as plan_contract
+import scripts.safe_glob as safe_glob
 from . import artifacts as artifacts_mod
 from . import validate_schema as schema_mod
 
@@ -124,7 +124,7 @@ def load_coverage_files(panopticon_dir=plan_contract.ARTIFACT_DIR, *, skipped=No
     certify a run whose coverage evidence was dropped (#2080).
     """
     out = []
-    for path in sorted(glob.glob(os.path.join(panopticon_dir, "coverage-*.json"))):
+    for path in sorted(safe_glob.under(panopticon_dir, "coverage-*.json")):
         name = os.path.basename(path)
         try:
             data = artifacts_mod.read_json(path, limit=_MAX_COVERAGE_BYTES)

@@ -135,6 +135,12 @@
 #   - 2026-10-31 (#3272): `probe_cache.py` is claimed by `Orchestration:Runners`
 #     beside the external-CLI launch seam whose measurements it caches. `Hosts`
 #     was already at its 48-file cap; the cache's focused test moves with it.
+#   - 2026-11-17 (#3701): `safe_glob.py` (the one place `skill/scripts` calls
+#     `glob`, with the directory escaped) is claimed by `RepoProfiling:Discovery`,
+#     not `Orchestration:Core`, where the other shared stdlib-only leaves are
+#     (`claim_scope.py`, `safe_write.py`): that leaf is AT the 48 cap. It is
+#     parked beside `plan_contract.py`, the other leaf every layer reads, with
+#     its ratchet test beside it.
 #   - 2026-09-28 (#2306): a FOURTH part of that split, ruled after #2289, claims
 #     `venv_scope.py` (finding the virtualenvs under the target, deciding which
 #     of them a scanner's exclusion knob may be handed, and rendering that onto
@@ -611,6 +617,7 @@ groups:
       - skill/scripts/tests_axis.py
       - skill/scripts/diff_map.py
       - skill/scripts/plan_contract.py
+      - skill/scripts/safe_glob.py
       tests:
       - tests/discovery_test_helpers.py
       - tests/test_discovery_artifact_guard.py
@@ -627,6 +634,7 @@ groups:
       - tests/test_diff_map_fail_closed.py
       - tests/test_pr_worktree_integration.py
       - tests/test_plan_contract.py
+      - tests/test_safe_glob.py
       - tests/test_panopticon_literal_ratchet.py
       - tests/test_tracked_paths.py
       - tests/test_matrix_coverage.py

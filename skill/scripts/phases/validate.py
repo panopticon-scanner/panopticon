@@ -1,5 +1,4 @@
 """Phase 7 -- validate: the working-tree baseline, delta and worktree finalization."""
-import glob as _glob
 import hashlib
 import io
 import json
@@ -13,6 +12,7 @@ import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
 import scripts.safe_git as safe_git
 import scripts.redact as redact
+import scripts.safe_glob as safe_glob
 import scripts.safe_write as safe_write
 from . import engine
 from . import runio
@@ -493,7 +493,7 @@ def _finalize_worktree(review_root, manifest):
     # part3+ on worktree release.
     if tag:
         names = sorted(os.path.basename(p) for p in
-                       _glob.glob(os.path.join(src_dir, f"{tag}-report*.json")))
+                       safe_glob.under(src_dir, tag + "-report*.json"))
         names.append(f"{tag}-report.json.html")
     else:
         names = ["report.json"]

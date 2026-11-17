@@ -28,7 +28,6 @@ treats as allow. The shells' tool allowlists stay the primary control. And
 ledger's token figures are the honest cost signal.
 """
 import atexit
-import glob
 import json
 import os
 import re
@@ -48,6 +47,7 @@ import scripts.runners.base as base
 # `kimi_home_mod`, not `kimi_home`: `wire_path`'s first parameter and
 # `Runner.kimi_home` already own that name in this file.
 import scripts.runners.kimi_home as kimi_home_mod
+import scripts.safe_glob as safe_glob
 
 
 class _SignalStripper(Protocol):
@@ -137,9 +137,8 @@ def wire_path(kimi_home, session_id):
     """The child session's wire file under the per-run home, or None."""
     if not isinstance(session_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", session_id):
         return None
-    pattern = os.path.join(glob.escape(kimi_home), "sessions", "*",
-                           session_id, "agents", "main", "wire.jsonl")
-    found = sorted(glob.glob(pattern))
+    found = sorted(safe_glob.under(kimi_home, "sessions", "*", session_id,
+                                   "agents", "main", "wire.jsonl"))
     return found[0] if found else None
 
 

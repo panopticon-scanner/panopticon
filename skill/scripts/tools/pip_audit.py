@@ -2,7 +2,6 @@
 from __future__ import annotations
 import contextvars
 import errno
-import glob
 import os
 import re
 import stat
@@ -12,6 +11,7 @@ import tomllib
 
 from scripts.claim_scope import confined_to_root
 import scripts.redact as redact
+import scripts.safe_glob as safe_glob
 from .base import (cve_ids, make_finding, normalize_severity, omit_none, parse_json_bytes, scratch_cwd, target_root_cv)
 from .exec import run_tool
 
@@ -391,8 +391,7 @@ def _requirement_candidate(target):
     # #3701: the directory is escaped. `glob` reads `[x]` in ANY part of the pattern as a
     # character class, so under `/work/repo[x]` this matched nothing of the target's, and
     # could match a sibling `/work/repox/requirements-dev.txt` instead.
-    candidates = [exact] + sorted(glob.glob(os.path.join(glob.escape(target),
-                                                         "requirements*.txt")))
+    candidates = [exact] + sorted(safe_glob.under(target, "requirements*.txt"))
     # `lexists`, not `isfile`: a DANGLING symlink is a path entry that exists and has to be judged,
     # and `isfile` is false for one (F8). Filtering on `isfile` here ran the F5 check ahead of
     # confinement, so `requirements.txt -> /nonexistent/outside/creds` reported as "no manifest" --
@@ -507,7 +506,7 @@ class PipAuditAdapter:
         if "*" in name:
             # #3701: only `name` is a pattern. The target's own path is escaped, or a
             # `[` in it is read as a character class and the file there is never seen.
-            return bool(glob.glob(os.path.join(glob.escape(target), name)))
+            return bool(safe_glob.under(target, name))
         return os.path.exists(os.path.join(target, name))
 
     def is_applicable(self, target: str) -> bool:

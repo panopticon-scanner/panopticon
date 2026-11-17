@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **A target whose path holds `[`, `*` or `?` is reviewed like any other (#3701).** The run looked
+  for its own files with `glob`, and passed the run folder's path as part of the pattern. Under a
+  review root such as `repo[x]/`, `[x]` was read as a character class, so nothing matched: the
+  report held no agent finding and no reviewed cell, every verdict was counted as "unknown", and
+  it said only "NOT CERTIFIED — incomplete". `--reset` cleared nothing there, and said nothing.
+  - Every such lookup now takes the directory as it is spelled: the findings files, dispatch
+    plans, scout replies and coverage files of a run, the dispatch counts in `meta.cost`, the
+    `--reset` sweep, the report parts surfaced from a `--pr` worktree, and the host transcripts
+    read for token usage.
+  - pip-audit had the same fault in the other direction: an empty `repo[x]/` beside
+    `repox/requirements-dev.txt` read as a Python tree, and the sibling's file was reported as a
+    rejected requirements path. It now matches `requirements*.txt` under the target itself.
+  - One helper does the matching (`scripts/safe_glob.py`), and a test fails if any other module
+    in `skill/scripts` calls `glob` directly.
+
 - **The report says why a dependency ecosystem was not audited (#3648).** A JavaScript tree with
   `package.json` and no lockfile is counted as having dependencies, and no auditor reads it:
   npm-audit needs `package-lock.json` or `npm-shrinkwrap.json`, and osv-scanner needs one of those

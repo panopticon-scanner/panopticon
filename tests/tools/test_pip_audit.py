@@ -339,28 +339,28 @@ class TestPipAuditAdapter(unittest.TestCase):
             self.assertTrue(pa.PipAuditAdapter().is_applicable("/tmp/fake"))
 
     def test_is_applicable_when_requirements_dev_present(self):
-        with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=["/tmp/fake/requirements-dev.txt"]):
+        with mock.patch("scripts.tools.pip_audit.safe_glob.under", return_value=["/tmp/fake/requirements-dev.txt"]):
             with mock.patch("os.path.exists", return_value=False):
                 self.assertTrue(pa.PipAuditAdapter().is_applicable("/tmp/fake"))
 
     def test_is_applicable_when_pyproject_present(self):
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("pyproject.toml")):
-            with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=[]):
+            with mock.patch("scripts.tools.pip_audit.safe_glob.under", return_value=[]):
                 self.assertTrue(pa.PipAuditAdapter().is_applicable("/tmp/fake"))
 
     def test_is_applicable_false_for_setup_py(self):
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("setup.py")):
-            with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=[]):
+            with mock.patch("scripts.tools.pip_audit.safe_glob.under", return_value=[]):
                 self.assertFalse(pa.PipAuditAdapter().is_applicable("/tmp/fake"))
 
     def test_is_applicable_false_for_setup_cfg(self):
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("setup.cfg")):
-            with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=[]):
+            with mock.patch("scripts.tools.pip_audit.safe_glob.under", return_value=[]):
                 self.assertFalse(pa.PipAuditAdapter().is_applicable("/tmp/fake"))
 
     def test_is_applicable_false_when_no_manifest(self):
         with mock.patch("os.path.exists", return_value=False):
-            with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=[]):
+            with mock.patch("scripts.tools.pip_audit.safe_glob.under", return_value=[]):
                 self.assertFalse(pa.PipAuditAdapter().is_applicable("/tmp/fake"))
 
     def test_find_requirement_prefers_canonical_over_dev_sibling(self):
@@ -450,7 +450,7 @@ class TestPipAuditAdapter(unittest.TestCase):
         fake_run = FakePopen(stdout=b"[]", stderr=b"", returncode=0)
         with mock.patch("scripts.tools.exec.subprocess.Popen",
                         return_value=fake_run) as popen_mock:
-            with mock.patch("scripts.tools.pip_audit.glob.glob", return_value=[]):
+            with mock.patch("scripts.tools.pip_audit.safe_glob.under", return_value=[]):
                 with mock.patch("scripts.tools.pip_audit._deps_from_pyproject",
                                return_value=["requests==2.25.1"]):
                     stdout, rc = adapter.invoke("/tmp/fake")

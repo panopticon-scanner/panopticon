@@ -39,7 +39,6 @@ invocation, so `setup_preflight._check_host_shells` -- which starts a host CLI -
 deliberately not among the checks reused below; the artifact it writes is
 recorded here as one INFORMATIONAL row and nothing more.
 """
-import glob as _glob
 import json
 import os
 import sys
@@ -51,6 +50,7 @@ import scripts.hosts as hosts
 import scripts.plan_contract as plan_contract
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
+import scripts.safe_glob as safe_glob
 import scripts.setup_preflight as setup_preflight
 from . import engine
 from . import readiness_checks
@@ -309,8 +309,7 @@ def _find_sub_skill(leaf):
         if not os.path.isdir(base):
             continue
         for pattern in _SUB_SKILL_GLOBS:
-            hits = sorted(_glob.glob(
-                os.path.join(base, pattern % leaf, "SKILL.md")))
+            hits = sorted(safe_glob.under(base, pattern % leaf, "SKILL.md"))
             if hits:
                 return hits[0]
     return None
