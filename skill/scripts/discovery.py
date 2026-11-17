@@ -1102,7 +1102,8 @@ def _repo_scan(argv=None):
         if root_config:
             result.setdefault("excluded", {})["scanner_config"] = root_config
             print("scanner config: not reviewed: %s -- panopticon's own matrix config "
-                  "(#3642); name it with --scope-files to review it"
+                  "(#3642); name it with --files (the driver) or --scope-files "
+                  "(discovery.py) to review it"
                   % ", ".join(root_config), file=sys.stderr)
     _say_pruned(result["discovery"]["pruned"], result["discovery"]["surface"])
     writes = [w for w in (args.out, _delta and _hunks_path_for(args.out, repo)) if w]
