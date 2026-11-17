@@ -25,6 +25,82 @@
   - The delta code is still in the tree, unreachable, and is deleted in 5.5 (#3736). Delta review
     returns when it has been rebuilt and measured.
 
+- **A scanner rule's hits are read at their worst, and a merge cannot lighten a confirmed
+  finding (#3731, #3732, high).** Two things an honest run got wrong, with no hostile agent:
+  - A scanner rule that fires several times in a file is one finding, shown at its lowest line,
+    and it kept that hit's severity. A rule that fired LOW at line 10 and CRITICAL at line 300
+    was one LOW finding: PASS, letter A. It now carries the highest severity among its hits,
+    and `severity_from` names the hit when it is not the shown one.
+  - The health score is a sum over rows of severity times lines spanned, and the merge kept the
+    winning row whole. A one-line finding that won the merge over a confirmed finding spanning
+    50 lines cut its weight to a fiftieth.
+  - What a hostile reviewer cell could do with them:
+    - File a one-line copy of another cell's confirmed HIGH over 50 lines. The letter went from
+      F to B with the finding still in the report, certified.
+    - File a claim at a rule's LOW hit. The scanner finding was shown there, at LOW, and its
+      CRITICAL hit was only another line.
+    - File a claim at a lower hit of a rule. The scanner finding moved to that line, away from
+      a line where it had been the third finding, and the two left there collapsed into one
+      row: the run weighed less for a claim that touched neither.
+  - What changed:
+    - **A merge group is counted once in the health score, at its heaviest counted finding.**
+      The group is what the merge put together at one line. Its weight is the largest own
+      weight (the severity a finding is published at, times its own lines) among its findings
+      that count for the gate on their own. Nothing is mixed: it is one finding's weight. No
+      row's range, severity or evidence changes. A row says `weight_from` when the weight it
+      carries is not its own, and the group's other counted rows say `weight_with`.
+    - **The shown hit of an aggregated scanner finding is always the lowest line.** A line an
+      agent had flagged used to win. Nothing a reviewer writes moves a scanner finding now, so
+      no cell changes how many findings sit on a line it never touched, and the shown line is
+      the same on every run.
+    - An aggregated scanner finding weighs as its widest hit. `additional_loci` keeps a hit's
+      `line_end`.
+    - A scanner finding that a CONFIRMED claim absorbed counts as confirmed with it. No advisor
+      is asked about an absorbed scanner finding, so on its own missing verdict it weighed
+      nothing, and a one-line claim hid a scanner finding's 40-line hit.
+    - A range that ends before it starts is read as one line, the start, at load.
+    - `additional_loci` on a reviewer's claim is not weighed. It is the scanner aggregation's
+      field.
+  - What an honest run can see change:
+    - A scanner finding whose hits differ in severity reads higher: the worst hit's.
+    - A claim on a later hit of a rule no longer pairs with the scanner finding. They are two
+      rows. The claim is not `reinforced` and is not at the head of the verify queue. A claim
+      on the first hit still pairs. Which of the two is the row can change where the hits
+      differ in severity: the scanner finding ranks at its worst hit now, and can win a pair
+      it used to lose. (Corroboration without the move is #3734.)
+    - More scanner findings are asked about. A scanner finding that a claim on a later hit
+      used to absorb is its own row now, so its advisor is asked, and its place in the verify
+      queue follows its worst hit. A run that read INCONCLUSIVE because nobody had been asked
+      can read PASS where that advisor rejects the finding, and FAIL where it confirms it.
+    - A confirmed scanner-and-claim pair weighs as the heavier of the two. Where the scanner's
+      hit spans more lines than the claim, health is lower than before. A one-line HIGH claim
+      over a scanner HIGH spanning 40 lines weighs 1,000, where it weighed 25.
+    - A merge group whose heaviest counted finding is merged under a lighter row weighs more.
+    - **Health can rise** where one merge group has two counted rows: they were added and are
+      now counted once, at the heavier. An uncapped `TST-A1*` HIGH that comes back beside the
+      confirmed MEDIUM that won their tie (#3727) weighed 25 + 5 and weighs 25.
+    - An aggregated scanner finding with a wide hit that is not its shown hit weighs more.
+  - The group-weight rule itself changes no row: which findings are in the report, their
+    ranges, severities and evidence, the gate and the certification are as they were. The
+    scanner changes above do change rows, as listed.
+  - The property that removing any one cell never makes the run stricter now also compares
+    the letter and the health score, and a second property pins that adding a cell's findings
+    never joins two other findings into one merge group.
+  - Known and not fixed here: no advisor is asked about a scanner finding that a claim
+    absorbed. The runs with and without a cell are the same once that finding's own answer is
+    supplied in both; what differs is whether anybody asked. Three faces of it:
+    - A cell files a claim at a scanner finding's line and does not confirm it. A certified
+      FAIL becomes INCONCLUSIVE, not certified, with the scanner finding named as unanswered.
+      This one cannot make a PASS.
+    - A cell's claim breaks the pair that had absorbed a scanner finding, so its advisor is
+      asked. The run is then judged on that answer: where the advisor rejects the finding,
+      INCONCLUSIVE becomes PASS, certified. Under `--gate-unverified` the run without the cell
+      is FAIL (the unanswered finding counts) and the run with it is PASS, certified.
+    - A scanner finding that counted as confirmed with the claim over it is asked about once a
+      cell's claim breaks the pair, and weighs nothing where its advisor does not confirm it.
+    In each the cell gains only the tool advisor's own answer. Asking about every scanner
+    finding, absorbed or not, is #3734.
+
 - **The merge ranks a finding by the severity it will be published at (#3727, high).** Findings
   of one category at one line are merged into the most severe. "Most severe" was the severity a
   reviewer claimed, and the controller lowers a severity only afterwards: an override with no

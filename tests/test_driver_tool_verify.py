@@ -167,13 +167,12 @@ class TestToolQueueParity(_ToolVerifyBase):
         self.assertEqual(driver_pairs, self._report_tool_pairs(d, m))
 
     def test_parity_survives_agent_overlap_on_aggregate_group(self):
-        # Two hits of ONE rule in ONE file form an aggregate group; an agent
-        # finding at the SECOND hit's line makes aggregate_tool_findings keep the
-        # SECOND hit as the survivor (agent-corroborated locus). A tool-only
-        # pipeline (no agent findings) would keep the FIRST -> a different finding
-        # id than synthesize -> its verdict would fail synthesize's finding_id
-        # echo. The driver runs synthesize's full combined pipeline precisely so
-        # this stays byte-identical.
+        # Two hits of ONE rule in ONE file form an aggregate group, and an agent
+        # finding sits at the SECOND hit's line. The survivor is the FIRST hit, the
+        # lowest line, with or without the agent finding (#3731: an agent's line used
+        # to choose it, so a tool-only pipeline kept a different finding id than
+        # synthesize did). The driver runs synthesize's full combined pipeline all the
+        # same, and the two stay byte-identical.
         d = self._repo(
             [_result("r1", "src/app.py", 1), _result("r1", "src/app.py", 5)],
             agent_findings=[
@@ -190,9 +189,7 @@ class TestToolQueueParity(_ToolVerifyBase):
         m = self._manifest()
         queue = verify_tools._tool_verify_queue(d, m)
         driver_pairs = {(qid, f["id"]) for qid, f in queue}
-        # survivor is the SECOND hit (SG-002), NOT the first -- proves the
-        # full-pipeline survivor selection.
-        self.assertEqual({f["id"] for _q, f in queue}, {"SG-002"})
+        self.assertEqual({f["id"] for _q, f in queue}, {"SG-001"})
         self.assertEqual(driver_pairs, self._report_tool_pairs(d, m))
 
     def test_the_committed_exclude_policy_empties_the_queue_too(self):
