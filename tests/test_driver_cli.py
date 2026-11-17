@@ -472,8 +472,11 @@ class TestDriverPersistCLI(unittest.TestCase):
         # `persist_cli` below it, with the namespace the parser itself builds.
         d = self._repo()
         self._request(d, [])
+        # (The target before the options: argparse before 3.12 binds the optional
+        # `target` as soon as it has `entry_id`, and it is `parse_cli` that folds a
+        # trailing one in. This goes below `parse_cli`.)
         parser_args = driver.build_parser().parse_args(
-            ["persist", "scout-app", "--pr", "42", "--base", "origin/main", d])
+            ["persist", "scout-app", d, "--pr", "42", "--base", "origin/main"])
         self.assertEqual((parser_args.pr, parser_args.base), (42, "origin/main"))
         import scripts.orchestrate as orchestrate
         with mock.patch("scripts.phases.runio.resolve_review_root",

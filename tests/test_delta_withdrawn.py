@@ -21,6 +21,7 @@ import scripts.run_manifest as run_manifest
 import scripts.synthesize as synthesize
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+DRIVER_PY = os.path.join(ROOT, "skill", "scripts", "driver.py")
 WITHDRAWN = "delta review is withdrawn in 5.4 (#3735): "
 ADVICE = ("Run a whole-repository review, or scope one with -f, -d, -g or --files. Delta "
           "review returns when it has been rebuilt and measured.")
@@ -102,15 +103,16 @@ class TestTheDriverRefusesEveryDeltaFlag(unittest.TestCase):
 
     def test_the_whole_command_line_as_a_child_process(self):
         """The real `driver.py`, in a directory that is no repository: exit 2 and
-        nothing written, for every verb that takes the flags."""
+        nothing written, for every verb that takes the flags. (Run through `env`: the
+        PR scan wants a command that starts with a fixed program, and our own scan
+        honours no inline suppression.)"""
         with tempfile.TemporaryDirectory() as empty:
             for argv in (["loop", ".", "--pr", "7"], ["run", ".", "-c"],
                          ["readiness", ".", "--base", "main"],
                          ["persist", "scout-app", "--pr", "7", "."]):
                 with self.subTest(argv=argv):
-                    done = subprocess.run(
-                        [sys.executable, os.path.join(ROOT, "skill", "scripts", "driver.py")] + argv,
-                        cwd=empty, capture_output=True, text=True, timeout=120, check=False)
+                    done = subprocess.run(["env", sys.executable, DRIVER_PY, *argv], cwd=empty,
+                                          capture_output=True, text=True, timeout=120, check=False)
                     self.assertEqual(2, done.returncode, done.stderr)
                     self.assertIn("delta review is withdrawn in 5.4 (#3735)", done.stderr)
                     self.assertEqual([], os.listdir(empty))
@@ -271,9 +273,8 @@ class TestZeroIsAValue(unittest.TestCase):
                          ["readiness", ".", "--pr", "0"], ["persist", "x", ".", "--pr", "0"],
                          ["run", ".", "--diff-context", "0"]):
                 with self.subTest(argv=argv):
-                    done = subprocess.run(
-                        [sys.executable, os.path.join(ROOT, "skill", "scripts", "driver.py")] + argv,
-                        cwd=empty, capture_output=True, text=True, timeout=120, check=False)
+                    done = subprocess.run(["env", sys.executable, DRIVER_PY, *argv], cwd=empty,
+                                          capture_output=True, text=True, timeout=120, check=False)
                     self.assertEqual(2, done.returncode, done.stderr)
                     self.assertIn("delta review is withdrawn in 5.4 (#3735)", done.stderr)
                     self.assertNotIn("Traceback", done.stderr)
