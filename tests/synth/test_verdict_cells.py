@@ -19,6 +19,7 @@ instance is dismissed by no other cell.
 import contextlib
 import copy
 import io
+import itertools
 import json
 import os
 import random
@@ -1275,8 +1276,534 @@ class TestOwedFollowsWhatTheControllerAsked(_Verdicts):
 
 
 GATE_RANK = {"PASS": 0, "INCONCLUSIVE": 1, "FAIL": 2}
+GRADES = ["S", "A", "B", "C", "D", "F", "X"]       # best first
 WORDS = (None, "CONFIRMED", "REJECTED", "NEEDS_MORE_INFO")
 CONFIRMED_AS = ("advisor_confirmed", "tool_confirmed")
+
+
+class _Lines(_Verdicts):
+    """Runs built from cells and scanner hits at chosen lines of `b.py`."""
+
+    def report_of(self, cells, hits=(), hits_say="CONFIRMED", gate_unverified=False):
+        """The report for `cells` ({group: [(claim, verdict word or None)]}) and the
+        scanner `hits`, which share one verdict (they are one rule: one finding)."""
+        for name in os.listdir(self.verdicts):
+            os.unlink(os.path.join(self.verdicts, name))
+        for name in os.listdir(self.run_dir):
+            if name.startswith("findings-"):
+                os.unlink(os.path.join(self.run_dir, name))
+        paths, bodies = [], []
+        for group in sorted(cells):
+            paths.append(os.path.join(self.run_dir, "findings-%s-SEC.json" % group))
+            with open(paths[-1], "w", encoding="utf-8") as fh:
+                json.dump({"findings": [c for c, _said in cells[group]]}, fh)
+        loaded = findings_mod.load_findings(paths)
+        self.ids = {f["description"]: f["id"] for f in loaded}
+        for group in sorted(cells):
+            mine = [f for f in loaded if f["_group"] == group]
+            bodies.append(record(group=group, claims=[f["id"] for f in mine], size=25))
+            self.bundle([verdict(f["id"], said) for f, (_c, said) in zip(mine, cells[group])
+                         if said], group=group)
+        self.record(*bodies)
+        loaded += copy.deepcopy(list(hits))
+        if hits and hits_say:
+            for fingerprint, finding_id in {(evidence_mod.finding_fingerprint(hit), hit["id"])
+                                            for hit in hits}:
+                with open(os.path.join(self.verdicts, "%s.json" % fingerprint), "w",
+                          encoding="utf-8") as fh:
+                    json.dump({"finding_id": finding_id, "verdict": hits_say,
+                               "reasoning": "r"}, fh)
+        fs = findings_mod.FindingSet.load(
+            types.SimpleNamespace(verdicts_dir=self.verdicts), [], "standard", None,
+            prepared=(loaded, None, None), run_dir=self.run_dir)
+        with _target_with_files(GROUPS, lines=5000) as target, \
+                contextlib.redirect_stderr(io.StringIO()):
+            return report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=target, fail_on="high",
+                                         gate_unverified=gate_unverified,
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=fs, plan=plan_mod.PlanInputs(groups_meta=GROUPS)))
+
+    @staticmethod
+    def at(group_file, description, line, end=None, severity="HIGH", title=None, **more):
+        location = {"file": group_file, "line_start": line}
+        if end is not None:
+            location["line_end"] = end
+        return dict(claim(group_file, title=title, severity=severity), location=location,
+                    description=description, **more)
+
+    @staticmethod
+    def hit(line, severity="HIGH", end=None, category="other", rule="r.tool", panel="security"):
+        location = {"file": "b.py", "line_start": line}
+        if end is not None:
+            location["line_end"] = end
+        named = "the scanner's" if rule == "r.tool" else "the scanner's %s" % rule
+        return {"id": "TL-1" if rule == "r.tool" else "TL-%s" % rule.upper().replace(".", ""),
+                "title": "tool", "description": named,
+                "severity": severity, "confidence": "POSSIBLE", "panel": panel,
+                "domain": "SEC", "category": category, "source": "tool:semgrep",
+                "tool_evidence": {"tool": "semgrep", "rule_id": rule}, "location": location,
+                "provenance": {"discovered_by": "tool:semgrep",
+                               "confirmation_status": "UNVERIFIED"}}
+
+    @staticmethod
+    def judged(report):
+        """What a cell must not be able to make more lenient: the gate, the
+        certification, the letter and the health score."""
+        summary = report["summary"]
+        return (summary["gate"], summary["coverage_certified"], summary["overall_grade"],
+                summary["health"]["score"], summary["health"]["weighted_defect"])
+
+    @staticmethod
+    def spans(report, *descriptions):
+        return sorted((f["description"], f["severity"], f["evidence"]["status"],
+                       f["location"]["line_start"], f["location"].get("line_end"))
+                      for f in report["findings"] if f["description"] in descriptions)
+
+
+class TestAMergeGroupIsCountedOnceAtItsHeaviestFinding(_Lines):
+    """#3731. Health is a sum over rows of severity times the lines a row spans, and the
+    merge kept the winning row whole. `g2` holds the victim: a HIGH over lines 10 to
+    60, CONFIRMED by its own advisor. `g1`, the hostile cell, filed a one-line claim at
+    line 10 that won the merge, and the victim's weight fell from 1,250 to 25: the
+    letter rose with a confirmed finding still in the report.
+
+    A merge group is counted once, at the heaviest of its findings that count on their
+    own. No row's range or severity changes."""
+
+    def victim(self, **more):
+        return self.at("b.py", "the victim", 10, end=60, **more)
+
+    def silent(self):
+        report = self.report_of({"g2": [(self.victim(), "CONFIRMED")]})
+        self.assertEqual([("the victim", "HIGH", "advisor_confirmed", 10, 60)],
+                         self.spans(report, "the victim"))
+        self.assertEqual(1250, report["summary"]["health"]["weighted_defect"])
+        return report
+
+    def test_a_one_line_copy_does_not_lighten_the_claim(self):
+        """The copy has the victim's id (a line range is not part of one) and is
+        CERTAIN, so it is the instance shown, on the victim's CONFIRMED."""
+        silent = self.silent()
+        for hostile_says in ("CONFIRMED", None, "NEEDS_MORE_INFO", "REJECTED"):
+            with self.subTest(hostile_says=hostile_says):
+                copy_ = self.at("b.py", "the copy", 10, confidence="CERTAIN")
+                report = self.report_of({"g1": [(copy_, hostile_says)],
+                                         "g2": [(self.victim(), "CONFIRMED")]})
+                self.assertEqual(self.ids["the copy"], self.ids["the victim"])
+                rows = self.spans(report, "the victim", "the copy")
+                self.assertEqual([("the copy", "HIGH", "advisor_confirmed", 10, 10)], rows)
+                if hostile_says is None:    # its own cell owes an answer: not certified
+                    self.assertEqual((False, None), self.judged(report)[1:3])
+                    self.assertEqual(self.judged(silent)[3:], self.judged(report)[3:])
+                else:
+                    self.assertEqual(self.judged(silent), self.judged(report))
+
+    def test_the_row_says_whose_weight_it_carries(self):
+        report = self.report_of({"g1": [(self.at("b.py", "the copy", 10, confidence="CERTAIN"),
+                                         "CONFIRMED")],
+                                 "g2": [(self.victim(), "CONFIRMED")]})
+        row, = report["findings"]
+        self.assertEqual({"id": self.ids["the victim"], "weight": 1250}, row["weight_from"])
+        self.assertEqual([], [key for key in row if key.startswith("_")])
+        # ...and a row that weighs what it says weighs it says nothing.
+        for key in ("weight_from", "weight_with"):
+            self.assertNotIn(key, self.silent()["findings"][0])
+
+    def test_a_confirmed_one_line_decoy_does_not_lighten_it_either(self):
+        """Another claim at the line, CONFIRMED by its own advisor and CERTAIN: it is
+        the row, and the victim is merged under a confirmed finding as any claim is."""
+        silent = self.silent()
+        decoy = self.at("b.py", "the decoy", 10, title="another reading", confidence="CERTAIN")
+        report = self.report_of({"g1": [(decoy, "CONFIRMED")],
+                                 "g2": [(self.victim(), "CONFIRMED")]})
+        self.assertEqual([("the decoy", "HIGH", "advisor_confirmed", 10, 10)],
+                         self.spans(report, "the victim", "the decoy"))
+        self.assertEqual(self.judged(silent), self.judged(report))
+
+    def test_the_instance_that_comes_back_weighs_as_the_one_it_stands_for(self):
+        """Under a decoy that is not confirmed, the claim comes back, and of its two
+        instances the one the merge would keep: the CERTAIN one-line copy."""
+        silent = self.silent()
+        decoy = self.at("b.py", "the decoy", 10, title="another reading", severity="CRITICAL",
+                        confidence="CERTAIN")
+        copy_ = self.at("b.py", "the copy", 10, confidence="CERTAIN")
+        report = self.report_of({"g1": [(decoy, "NEEDS_MORE_INFO"), (copy_, None)],
+                                 "g2": [(self.victim(), "CONFIRMED")]})
+        self.assertEqual([("the copy", "HIGH", "advisor_confirmed", 10, 10),
+                          ("the decoy", "CRITICAL", "needs_more_info", 10, 10)],
+                         self.spans(report, "the victim", "the copy", "the decoy"))
+        self.assertEqual(silent["summary"]["health"], report["summary"]["health"])
+
+    def test_nothing_is_mixed_and_a_third_cell_cannot_unmix_it(self):
+        """Two confirmed claims at one line: a CRITICAL on one line (125) and a HIGH over
+        50 lines (1,250). The group weighs 1,250, one finding's own weight, and not the
+        CRITICAL's severity on the HIGH's span (6,250). A hostile CRITICAL that its own
+        advisor rejects wins the merge and is discarded, so both come back as rows:
+        the group is still counted once. As two rows' sum it read 1,375."""
+        narrow = self.at("b.py", "the critical", 10, severity="CRITICAL", title="other")
+        cells = {"g2": [(self.victim(), "CONFIRMED"), (narrow, "CONFIRMED")]}
+        silent = self.report_of(cells)
+        self.assertEqual([("the critical", "CRITICAL", "advisor_confirmed", 10, 10)],
+                         self.spans(silent, "the victim", "the critical"))
+        self.assertEqual(1250, silent["summary"]["health"]["weighted_defect"])
+        spoiler = self.at("b.py", "the spoiler", 10, severity="CRITICAL", title="third",
+                          confidence="CERTAIN")
+        report = self.report_of(dict(cells, g1=[(spoiler, "REJECTED")]))
+        self.assertEqual([("the critical", "CRITICAL", "advisor_confirmed", 10, 10),
+                          ("the victim", "HIGH", "advisor_confirmed", 10, 60)],
+                         self.spans(report, "the victim", "the critical"))
+        self.assertEqual(self.judged(silent), self.judged(report))
+        light = next(f for f in report["findings"] if f["description"] == "the critical")
+        self.assertEqual(self.ids["the victim"], light["weight_with"])
+
+    def test_a_claim_that_covers_two_counted_rows_does_not_lower_their_weight(self):
+        """On main today: an uncapped `TST-A1*` HIGH comes back beside the confirmed
+        MEDIUM that won their tie (#3728), and health added the two rows, 25 + 5. A
+        hostile plain HIGH at the line, CONFIRMED by its own advisor, covers both, and
+        the group weighed 25: the run scored better with the hostile cell in it."""
+        medium = self.at("b.py", "the medium", 10, severity="MEDIUM", confidence="CERTAIN")
+        untested = dict(self.at("b.py", "the untested", 10, title="untested"), code="TST-A1A")
+        cells = {"g2": [(medium, "CONFIRMED"), (untested, "CONFIRMED")]}
+        silent = self.report_of(cells)
+        self.assertEqual([("the medium", "MEDIUM", "advisor_confirmed", 10, 10),
+                          ("the untested", "HIGH", "advisor_confirmed", 10, 10)],
+                         self.spans(silent, "the medium", "the untested"))
+        cover = self.at("b.py", "the cover", 10, title="third", confidence="CERTAIN")
+        report = self.report_of(dict(cells, g1=[(cover, "CONFIRMED")]))
+        self.assertEqual([("the cover", "HIGH", "advisor_confirmed", 10, 10)],
+                         self.spans(report, "the medium", "the untested", "the cover"))
+        self.assertGreaterEqual(report["summary"]["health"]["weighted_defect"],
+                                silent["summary"]["health"]["weighted_defect"])
+        self.assertEqual(25, silent["summary"]["health"]["weighted_defect"])    # once, the heavier
+
+    def test_a_range_that_ends_before_it_starts_is_one_line(self):
+        """`line_end: 1` on a claim at line 52. The delta classifier read the end line and
+        the health weight did not; the loader now leaves no such range."""
+        path = os.path.join(self.run_dir, "findings-g1-SEC.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"findings": [self.at("b.py", "inverted", 52, end=1),
+                                    self.at("b.py", "a range", 52, end=60, title="other"),
+                                    self.at("b.py", "one line", 7, title="third")]}, fh)
+        self.assertEqual([(52, 52), (52, 60), (7, 7)],
+                         [(f["location"]["line_start"], f["location"]["line_end"])
+                          for f in findings_mod.load_findings([path])])
+
+    def test_a_member_that_does_not_count_on_its_own_adds_nothing(self):
+        """As ruled (a): the group weighs as its heaviest finding that would count for
+        the gate as its own row. A confirmed scanner finding on one line, and a claim
+        over 50 lines that nobody was asked about, are the pair they always were."""
+        wide = self.at("b.py", "the claim", 10, end=60, severity="LOW")
+        report = self.report_of({"g2": [(wide, None)]}, hits=[self.hit(10)])
+        self.assertEqual([("the scanner's", "HIGH", "tool_confirmed", 10, None)],
+                         self.spans(report, "the scanner's", "the claim"))
+        self.assertEqual(25, report["summary"]["health"]["weighted_defect"])
+        self.assertNotIn("weight_from", report["findings"][0])
+        # Where an unconfirmed finding counts (`--gate-unverified`), the claim's own
+        # weight does: a LOW over 50 lines, which is more than a HIGH on one.
+        report = self.report_of({"g2": [(wide, None)]}, hits=[self.hit(10)], gate_unverified=True)
+        self.assertEqual([("the scanner's", "HIGH", "tool_confirmed", 10, None)],
+                         self.spans(report, "the scanner's", "the claim"))
+        self.assertEqual(50, report["summary"]["health"]["weighted_defect"])
+        self.assertEqual({"id": self.ids["the claim"], "weight": 50},
+                         report["findings"][0]["weight_from"])
+
+    def test_an_absorbed_scanner_finding_weighs_with_the_confirmed_claim_over_it(self):
+        """No advisor is asked about a scanner finding that a claim absorbed: the verify
+        queue is built on the merged list. Alone, asked and CONFIRMED, a HIGH with a
+        40-line hit weighs 1,000. Under a one-line CONFIRMED claim the pair was
+        confirmed as one (the row is `tool_confirmed`), and weighs the same. Weighed
+        on its own missing verdict it weighed nothing, and the group 25."""
+        hits = [self.hit(10, end=49)]
+        alone = self.report_of({}, hits=hits)
+        self.assertEqual(1000, alone["summary"]["health"]["weighted_defect"])
+        claim_ = self.at("b.py", "the claim", 10, confidence="CERTAIN")
+        report = self.report_of({"g1": [(claim_, "CONFIRMED")]}, hits=hits, hits_say=None)
+        row, = report["findings"]
+        self.assertEqual(("the claim", "tool_confirmed", {"id": "TL-1", "weight": 1000}),
+                         (row["description"], row["evidence"]["status"], row["weight_from"]))
+        self.assertEqual(alone["summary"]["health"], report["summary"]["health"])
+
+    def test_under_a_claim_that_is_not_confirmed_it_does_not_count_as_confirmed(self):
+        """The other direction: an unsure, silent or dismissed claim confirms nothing.
+        The scanner finding has no answer, weighs nothing, and the run says it is owed
+        one."""
+        hits = [self.hit(10, end=49)]
+        for said in ("NEEDS_MORE_INFO", None, "REJECTED"):
+            with self.subTest(claim_says=said):
+                claim_ = self.at("b.py", "the claim", 10, confidence="CERTAIN")
+                report = self.report_of({"g1": [(claim_, said)]}, hits=hits, hits_say=None)
+                self.assertEqual(0, report["summary"]["health"]["weighted_defect"])
+                self.assertEqual(("INCONCLUSIVE", False), (
+                    report["summary"]["gate"], report["summary"]["coverage_certified"]))
+                self.assertEqual([], [f["description"] for f in report["findings"]
+                                      if f["evidence"]["status"] in CONFIRMED_AS])
+
+    def test_a_third_claim_that_wins_the_merge_and_says_nothing_does_not_uncover_it(self):
+        """A scanner finding that names no rule shares the claims' bucket. Beside one
+        CONFIRMED claim it weighs as confirmed. A hostile CRITICAL at the line, with no
+        verdict, wins the merge: the confirmed claim comes back, the scanner finding
+        stays under the silent one, and any CONFIRMED finding of the group still covers
+        it. Covered by the survivor alone, the group fell from 1,000 to 25."""
+        ruleless = self.hit(10, end=49, category="authz")
+        ruleless["tool_evidence"] = {"tool": "semgrep"}
+        mine = (self.at("b.py", "the claim", 10), "CONFIRMED")
+        silent = self.report_of({"g2": [mine]}, hits=[ruleless], hits_say=None)
+        self.assertEqual(1000, silent["summary"]["health"]["weighted_defect"])
+        spoiler = self.at("b.py", "the spoiler", 10, severity="CRITICAL", title="third",
+                          confidence="CERTAIN")
+        report = self.report_of({"g2": [mine], "g1": [(spoiler, None)]}, hits=[ruleless],
+                                hits_say=None)
+        self.assertEqual(["the claim", "the spoiler"],
+                         sorted(f["description"] for f in report["findings"]))
+        self.assertEqual(1000, report["summary"]["health"]["weighted_defect"])
+
+    def test_what_a_reviewer_writes_as_other_lines_is_not_weighed(self):
+        """`additional_loci` is the scanner aggregation's field. On a claim it is carried
+        for the reader, and a reviewer's own is not read: the claim weighs as its range."""
+        padded = dict(self.at("b.py", "the claim", 10), additional_loci=[
+            {"file": "b.py", "line_start": 300, "line_end": 349}])
+        report = self.report_of({"g2": [(padded, "CONFIRMED")]})
+        self.assertEqual(25, report["summary"]["health"]["weighted_defect"])
+
+    def test_the_gate_and_the_merge_ask_one_question(self):
+        """`counts_on_its_own` is what `_partition_gate` filters by: every status,
+        under each gate policy."""
+        statuses = ("advisor_confirmed", "tool_confirmed", evidence_mod.BACKUP_SCOPE_LIMITED,
+                    "tool_reported", "unverified", "needs_more_info", "rejected")
+        for gate_unverified in (False, True):
+            run = types.SimpleNamespace(gate_unverified=gate_unverified, gate_scope="all")
+            for status in statuses:
+                finding = {"evidence": {"status": status}}
+                parts = verdicts_mod._partition_gate(
+                    [finding], types.SimpleNamespace(active=False), run)
+                self.assertEqual(bool(parts.gate_eligible),
+                                 verdicts_mod.counts_on_its_own(status, run), status)
+        self.assertEqual(
+            {"advisor_confirmed", "tool_confirmed", evidence_mod.BACKUP_SCOPE_LIMITED},
+            {s for s in statuses
+             if verdicts_mod.counts_on_its_own(s, types.SimpleNamespace(gate_unverified=False))})
+        self.assertEqual(
+            set(statuses) - {"rejected"},
+            {s for s in statuses
+             if verdicts_mod.counts_on_its_own(s, types.SimpleNamespace(gate_unverified=True))})
+
+
+class TestAnAggregatedFindingCarriesItsWorstHit(_Lines):
+    """#3732. A scanner rule's hits in one file are one finding. The hit shown is the
+    lowest line, or a line an agent flagged, and the finding kept that hit's severity
+    and span: a rule that fired LOW at line 10 and CRITICAL at line 300 was one LOW
+    finding, PASS and letter A, with no hostile cell at all."""
+
+    def test_the_worst_hit_gives_the_severity_whichever_line_it_is_on(self):
+        for low, critical in ((10, 300), (300, 10)):
+            with self.subTest(low_at=low):
+                hits = [self.hit(low, "LOW"), self.hit(critical, "CRITICAL")]
+                for order in (hits, hits[::-1]):
+                    report = self.report_of({}, hits=order)
+                    row, = report["findings"]
+                    self.assertEqual(("CRITICAL", "tool_confirmed", 10, 2),
+                                     (row["severity"], row["evidence"]["status"],
+                                      row["location"]["line_start"], row["occurrences"]))
+                    self.assertEqual("FAIL", report["summary"]["gate"])
+                    if critical == 10:      # the shown hit is the worst: nothing to say
+                        self.assertNotIn("severity_from", row)
+                    else:
+                        self.assertEqual({"file": "b.py", "line_start": 300,
+                                          "shown_hit_severity": "LOW"}, row["severity_from"])
+
+    def test_the_finding_weighs_as_its_widest_hit(self):
+        """...whichever hit is shown. The other hits keep their end line."""
+        for wide in (10, 300):
+            with self.subTest(wide_at=wide):
+                hits = [self.hit(line, end=line + 39 if line == wide else None)
+                        for line in (10, 300)]
+                report = self.report_of({}, hits=hits)
+                row, = report["findings"]
+                self.assertEqual(25 * 40, report["summary"]["health"]["weighted_defect"])
+                self.assertEqual([{"file": "b.py", "line_start": 300}
+                                  if wide == 10 else
+                                  {"file": "b.py", "line_start": 300, "line_end": 339}],
+                                 row["additional_loci"])
+
+    def test_no_claim_at_any_hit_moves_the_finding_or_changes_what_it_weighs(self):
+        """A claim at the line of a hit used to move the finding there (#3731: that let
+        one cell change how many findings sat on a line it never touched). The shown
+        line, the severity and the weight are the same with no claim, and with a claim
+        at either hit that its own advisor rejects, for both orders of the hits."""
+        for low, critical in ((10, 300), (300, 10)):
+            hits = [self.hit(low, "LOW", end=low + 9), self.hit(critical, "CRITICAL")]
+            silent = self.report_of({}, hits=hits)
+            shown = [(f["description"], f["location"]["line_start"], f["severity"],
+                      f["evidence"]["status"], f["occurrences"]) for f in silent["findings"]]
+            self.assertEqual([("the scanner's", 10, "CRITICAL", "tool_confirmed", 2)], shown)
+            self.assertEqual(125 * 10, silent["summary"]["health"]["weighted_defect"])
+            for line in (10, 300):
+                for category in ("other", "authz"):     # the hits' own category, and another
+                    with self.subTest(low_at=low, claim_at=line, claim_in=category):
+                        steer = self.at("b.py", "the claim", line, severity="LOW",
+                                        category=category)
+                        report = self.report_of({"g1": [(steer, "REJECTED")]}, hits=hits)
+                        self.assertEqual(shown, [
+                            (f["description"], f["location"]["line_start"], f["severity"],
+                             f["evidence"]["status"], f["occurrences"])
+                            for f in report["findings"]])
+                        self.assertEqual(self.judged(silent), self.judged(report))
+
+    def test_a_claim_at_the_low_hit_does_not_choose_the_severity(self):
+        """The issue's case: CRITICAL at 10 and LOW at 300, and a LOW claim at 300 that
+        its own advisor confirms. The scanner finding was shown at LOW, at line 300.
+        It is the CRITICAL at line 10, and the claim is its own row."""
+        hits = [self.hit(10, "CRITICAL"), self.hit(300, "LOW")]
+        silent = self.report_of({}, hits=hits)
+        claim_ = self.at("b.py", "the claim", 300, severity="LOW", category="other")
+        report = self.report_of({"g1": [(claim_, "CONFIRMED")]}, hits=hits)
+        self.assertEqual([("the claim", "LOW", "advisor_confirmed", 300, 300),
+                          ("the scanner's", "CRITICAL", "tool_confirmed", 10, None)],
+                         self.spans(report, "the scanner's", "the claim"))
+        self.assertEqual(self.judged(silent)[:3], self.judged(report)[:3])
+        self.assertEqual(126, report["summary"]["health"]["weighted_defect"])
+
+    def test_a_counted_scanner_finding_under_a_claim_still_weighs_as_its_widest_hit(self):
+        """A claim at the first hit's line absorbs the scanner finding, and both are
+        CONFIRMED, so it stays merged. The group weighs as its heaviest finding: the
+        scanner finding's HIGH over its 40-line hit (1,000), not the claim's one line
+        (125)."""
+        hits = [self.hit(52), self.hit(300, end=339)]
+        for category in ("authz", "other"):     # another category, and the hits' own
+            with self.subTest(claim_in=category):
+                claim_ = self.at("b.py", "the claim", 52, severity="CRITICAL",
+                                 category=category, confidence="CERTAIN")
+                report = self.report_of({"g1": [(claim_, "CONFIRMED")]}, hits=hits)
+                row, = report["findings"]
+                self.assertEqual(("the claim", "CRITICAL", 52), (
+                    row["description"], row["severity"], row["location"]["line_start"]))
+                self.assertEqual({"id": "TL-1", "weight": 1000}, row["weight_from"])
+                self.assertEqual(1000, report["summary"]["health"]["weighted_defect"])
+
+
+class TestACellCanOnlySplitAMergeGroup(_Lines):
+    """#3731, the fact the group weight rests on: adding any one cell's findings never
+    puts two other findings into one merge group that were apart without it. Then a
+    group's weight, a maximum, can only become a sum of maxima.
+
+    It was false. An agent's line chose which hit of an aggregated scanner finding was
+    shown, so a claim moved a scanner finding from one line to another, and changed
+    how many findings sat on a line its cell never touched."""
+
+    @staticmethod
+    def groups(findings):
+        """The merge groups, as the merge itself records them: each survivor with what
+        it absorbed, by description."""
+        merged, _integration = corroborate_mod.prepare_for_queue(copy.deepcopy(findings))
+        return {frozenset([row["description"]] + [member["description"] for member in
+                                                   row.get(corroborate_mod.ABSORBED_FIELD) or ()])
+                for row in merged}
+
+    def joined(self, findings, cell):
+        """The pairs of other cells' findings that are in one group with `cell`'s
+        findings there, and apart without them."""
+        less = [f for f in findings if f.get("_group") != cell]
+        there = {f["description"] for f in less}
+        without = self.groups(less)
+        return sorted((x, y) for group in self.groups(findings)
+                      for x, y in itertools.combinations(sorted(group & there), 2)
+                      if not any(x in apart and y in apart for apart in without))
+
+    def claim_of(self, cell, description, line, category):
+        return dict(self.at("b.py", description, line, category=category, title=description),
+                    _group=cell, source="agent:panel", panel="security", id=description)
+
+    def test_a_claim_at_a_lower_hit_does_not_leave_a_pair_behind(self):
+        """Rule `r2` fires at 10 and 300, rule `r1` at 300, and `g1` has a claim at 300.
+        `r2` was shown at 300, the line an agent had flagged: three findings there, and
+        no pair. `g3` filed a claim at line 10, `r2` was shown there instead, and `r1`
+        and `g1`'s claim were exactly two: one pair, made by a cell that touched
+        neither. `r2` is shown at 10 either way now, so they are the same pair with and
+        without `g3`, in every order the five findings can arrive in."""
+        findings = [self.hit(10, rule="r2", category="authz"),
+                    self.hit(300, rule="r2", category="authz"),
+                    self.hit(300, rule="r1"),
+                    self.claim_of("g1", "g1's claim", 300, "other"),
+                    self.claim_of("g3", "g3's claim", 10, "authz")]
+        pair = frozenset(["the scanner's r1", "g1's claim"])
+        for order in itertools.permutations(findings):
+            self.assertEqual([], self.joined(list(order), "g3"))
+            self.assertEqual({pair, frozenset(["the scanner's r2"])},
+                             self.groups([f for f in order if f.get("_group") != "g3"]))
+            # ...and `g3`'s claim is a pair with the scanner finding on its first hit.
+            self.assertEqual({pair, frozenset(["the scanner's r2", "g3's claim"])},
+                             self.groups(list(order)))
+
+    def test_the_run_does_not_score_better_for_it(self):
+        """The same case through the report, everything CONFIRMED. `r1` (HIGH, 25) and
+        `g1`'s claim (HIGH, 25) were two rows without `g3`'s claim at line 10, and one
+        with it: the run weighed 25 less for a claim that touched neither."""
+        hits = [self.hit(10, rule="r2", category="authz"),
+                self.hit(300, rule="r2", category="authz"), self.hit(300, rule="r1")]
+        mine = (self.at("b.py", "g1's claim", 300, category="other"), "CONFIRMED")
+        theirs = (self.at("a.py", "g3's claim", 10, severity="LOW"), "CONFIRMED")
+        pull = (self.at("b.py", "g3's pull", 10, severity="LOW", title="pull"), "CONFIRMED")
+        without = self.report_of({"g2": [mine], "g1": [theirs]}, hits=hits)
+        with_it = self.report_of({"g2": [mine], "g1": [theirs, pull]}, hits=hits)
+        self.assertGreaterEqual(with_it["summary"]["health"]["weighted_defect"],
+                                without["summary"]["health"]["weighted_defect"])
+        self.assertLessEqual(with_it["summary"]["health"]["score"],
+                             without["summary"]["health"]["score"])
+
+    def test_a_claim_does_not_bring_one_rule_under_two_panels_together(self):
+        """One rule filed under two panels merges at one line (#2361). `security` fires
+        at 300 only and `redteam` at 10 and 300, so they are apart: the second is
+        shown at 10. A claim at 300 used to move it there, beside the first."""
+        findings = [dict(self.hit(300, panel="security"), description="under security"),
+                    dict(self.hit(10, panel="redteam"), description="under redteam"),
+                    dict(self.hit(300, panel="redteam"), description="under redteam"),
+                    self.claim_of("g3", "g3's claim", 300, "authz")]
+        for order in itertools.permutations(findings):
+            self.assertEqual([], self.joined(list(order), "g3"))
+
+    CASES, SEED = 4000, 3731
+
+    def cluster(self, rng, panels):
+        findings = []
+        for number in range(rng.randint(2, 6)):
+            line = rng.choice((10, 300))
+            if rng.random() < 0.4:
+                rule = rng.choice(("r1", "r2", None))
+                category, panel = rng.choice(("authz", "other")), rng.choice(panels)
+                found = self.hit(line, rng.choice(("CRITICAL", "HIGH", "LOW")), category=category,
+                                 rule=rule or "none", panel=panel)
+                if rule is None:        # names no rule: never aggregated
+                    found["tool_evidence"] = {"tool": "semgrep"}
+                found["description"] = ("tool %s %s %s" % (rule, category, panel) if rule
+                                        else "tool %d" % number)
+                findings.append(found)
+            else:
+                cell = rng.choice(("g1", "g2", "g3"))
+                findings.append(dict(
+                    self.claim_of(cell, "%s claim %d" % (cell, number), line,
+                                  rng.choice(("authz", "other"))),
+                    severity=rng.choice(("CRITICAL", "HIGH", "LOW")),
+                    confidence=rng.choice(("CERTAIN", "POSSIBLE"))))
+        return findings
+
+    def test_the_property(self):
+        """Random clusters at two lines: claims of three cells in two categories, and
+        scanner findings of two rules (and of none) in two categories, under one panel
+        or two. For every cell in every case, no two other findings are joined by it."""
+        for panels in (("security",), ("security", "redteam")):
+            rng, removed = random.Random(self.SEED), 0
+            for number in range(self.CASES):
+                findings = self.cluster(rng, panels)
+                for cell in sorted({f["_group"] for f in findings if f.get("_group")}):
+                    removed += 1
+                    joined = self.joined(findings, cell)
+                    if joined:
+                        self.fail("case %d under %s: %s joins %r in %r" % (
+                            number, panels, cell, joined,
+                            [(f["description"], f["location"]["line_start"], f["category"])
+                             for f in findings]))
+            self.assertGreater(removed, self.CASES)
 
 
 class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
@@ -1320,7 +1847,32 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
     row only if it was without it (`TestNoCellCanMakeAScannerRow`).
 
     The first exemption needs the confirmed claim to be shown no lower than the scanner
-    said of its finding, as the merge itself requires."""
+    said of its finding, as the merge itself requires.
+
+    #3731 and #3732, weight. Claims and the scanner finding have ranges of their own,
+    some ending before they start; one claim in five is at a second line; and half the
+    scanner findings that name a rule fire twice, the second hit at that line with a
+    severity and a span of its own. With the cell present the run weighs no less
+    (`summary.health.weighted_defect`), scores no better, and has no better letter. No
+    exemption is made for the weight of a merge group.
+
+    The scanner finding has a verdict only where an advisor was asked: the tool advisor
+    is asked about the scanner findings in the verify queue, which is built on the
+    merged list, so one that a claim absorbed has none in that run.
+
+    A THIRD EXEMPTION, as ruled, for a scanner finding that was asked about in one of
+    the two runs only. The runs then know different things about it, and what no
+    advisor was asked cannot be compared with an answer:
+    - with the cell it was absorbed and has no answer, and without the cell the run
+      FAILS. The run with the cell is INCONCLUSIVE, not certified, has no letter, owes
+      an answer, and shows the finding (itself or as the claim it is under). A PASS, a
+      certification or a letter is never covered;
+    - seen from the other side, it was asked about only with the cell there. The run
+      without the cell owes it an answer: not certified, no letter, INCONCLUSIVE or
+      FAIL. The run with the cell has the tool advisor's own answer and is judged on it;
+    - where it has no answer with the cell, or had none without and its own advisor
+      did not confirm it with, its weight is not compared.
+    Asking about every scanner finding, absorbed or not, is #3734."""
 
     CASES, SEED = 900, 3711    # 900: the first case of review F1's shape is the 826th
     LINE_FILE = "b.py"
@@ -1372,24 +1924,36 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
                      if n.startswith("findings-")]:
             if path not in paths:
                 os.unlink(path)
+        self.tool_asked = False
         if tool is not None:
             finding, said = tool
-            loaded.append(dict(finding))
-            if said:
+            loaded.append(copy.deepcopy(finding))
+            if self.second_hit is not None:
+                loaded.append(copy.deepcopy(self.second_hit))
+            # The tool advisor is asked about the scanner findings in the verify queue,
+            # which is built on the merged list before any verdict exists
+            # (`verify_tools._tool_verify_queue`). A scanner finding that a claim
+            # absorbed is not in it, so in that run it has no verdict at all.
+            merged, _integration = corroborate_mod.prepare_for_queue(copy.deepcopy(loaded))
+            queue, _cut = evidence_mod.build_verify_queue(merged, None)
+            self.tool_asked = any(evidence_mod.is_tool_sourced(entry["finding"]) for entry in queue)
+            if said and self.tool_asked:
                 with open(os.path.join(self.verdicts, "%s.json" % evidence_mod.finding_fingerprint(
                         finding)), "w", encoding="utf-8") as fh:
                     json.dump({"finding_id": finding["id"], "verdict": said, "reasoning": "r"}, fh)
         return loaded
 
     @staticmethod
-    def said_of(cells, skip, group, declared, title):
-        """The verdict the claim (`declared`, `title`) has for `group`'s instance, by the
+    def said_of(cells, skip, group, declared, title, line):
+        """The verdict the claim (`declared`, `title`, at `line`) has for `group`'s instance, by the
         rule and not by the code under test: a CONFIRMED from any cell that was asked
         reports it confirmed; a cell that was never asked takes nothing else from the
         others; the cells that were asked decide between them, and one that said
         nothing leaves it unverified; only every one of them rejecting it dismisses it."""
         words = [said for g, (asked, claims) in cells.items() if g != skip and asked
-                 for c, said in claims if (c["domain"], c["title"]) == (declared, title)]
+                 for c, said in claims
+                 if (c["domain"], c["title"], str(c["location"]["line_start"]))
+                 == (declared, title, line)]
         if "CONFIRMED" in words:
             return "CONFIRMED"
         if not cells[group][0] or None in words:
@@ -1426,12 +1990,30 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
         fresh = copy.deepcopy(loaded)   # not what the report run was handed, and changed
         engaged = self.engaged(fresh)
         under = {m["description"]: survivor["description"]
-                 for survivor in corroborate_mod.dedupe(copy.deepcopy(fresh))
+                 for survivor in corroborate_mod.prepare_for_queue(copy.deepcopy(fresh))[0]
                  for m in survivor.get(corroborate_mod.ABSORBED_FIELD) or ()}
+        # #3732: a rule's hits are one finding, at its first hit and its worst severity.
+        hits = [f for f in fresh if f["description"] == "tool"]
+        if len(hits) > 1:
+            worst = max(hits, key=lambda f: self.RANK[f["severity"]])
+            fresh = [f for f in fresh if f["description"] != "tool"] + [
+                dict(min(hits, key=lambda f: f["location"]["line_start"]),
+                     severity=worst["severity"])]
+            tool = (dict(tool[0], severity=worst["severity"]), tool[1])
         stands, words, ids, final = {}, {}, {}, {}
-        for f in fresh:
+        self.tool_waiting = False
+        for f in sorted(fresh, key=lambda f: f["description"] == "tool"):   # the claims first
             tag = f["description"]
-            said = tool[1] if tag == "tool" else self.said_of(cells, skip, *tag.split(":"))
+            if tag != "tool":
+                said = self.said_of(cells, skip, *tag.split(":"))
+            elif self.tool_asked:
+                said = tool[1]
+            else:
+                # Nobody was asked about it: a claim absorbed it before the queue was
+                # built. Under a CONFIRMED claim the pair is confirmed as one. Under
+                # any other it has no answer, and the run still owes one.
+                said = "CONFIRMED" if words.get(under.get("tool")) == "CONFIRMED" else None
+                self.tool_waiting = said is None
             owed = tag == "tool" or f["_group"] in engaged     # a tool finding always is
             stands[tag] = {"CONFIRMED": 3, "NEEDS_MORE_INFO": 1, "REJECTED": 0,
                            None: 2 if owed else 1}[said]
@@ -1500,8 +2082,17 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
                 others.append(reason)
         return unanswered, others
 
+    OTHER_LINE = 300
+
+    def place(self, rng, line):
+        """A location at `line`: one line, a range of up to 80, or an inverted range."""
+        end = rng.choice((None, None, line, line + rng.randint(1, 80), line - 1 if line > 1 else 0))
+        return dict({"file": self.LINE_FILE, "line_start": line},
+                    **({} if end is None else {"line_end": end}))
+
     def case(self, rng):
         cells, tool, used = {}, None, set()
+        self.second_hit = None
         # Half the cases sit on a file that is not Python: there a `TST-A1*` claim cannot
         # be witnessed and is capped. On a Python file with no test, it is not.
         self.LINE_FILE = rng.choice(("b.py", "b.sh"))
@@ -1515,10 +2106,16 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
                          # shares their bucket in the merge.
                          "tool_evidence": dict({"tool": "semgrep"}, **rng.choice(
                              ({"rule_id": "r.tool"}, {"rule_id": "r.tool"}, {}))),
-                         "location": {"file": self.LINE_FILE, "line_start": 1},
+                         "location": self.place(rng, 1),
                          "provenance": {"discovered_by": "tool:semgrep",
                                         "confirmation_status": "UNVERIFIED"}},
                         rng.choice(WORDS))
+                # #3732: half the ruled ones fire twice, the second hit on the other
+                # line with a severity and a span of its own. One rule: one finding.
+                if tool[0]["tool_evidence"].get("rule_id") and rng.random() < 0.5:
+                    self.second_hit = dict(
+                        copy.deepcopy(tool[0]), location=self.place(rng, self.OTHER_LINE),
+                        severity=rng.choice(("CRITICAL", "HIGH", "MEDIUM", "LOW")))
                 continue
             group, title = rng.choice(("g1", "g2", "g3")), rng.choice(("t0", "t1", "t2"))
             # A reviewer may file a claim under another domain's code. The claim is
@@ -1532,10 +2129,15 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
             lever = rng.choice(({}, {}, {}, {"code": self.LOW_DEFAULT, "severity_override": {}},
                                 {"code": "TST-A1A"}))
             asked, claims = cells.setdefault(group, (rng.random() < 0.7, []))
+            # #3731: a range of its own, sometimes one that ends before it starts; and
+            # one claim in five is at the other line, where a second hit can be.
+            where = self.place(rng, self.OTHER_LINE if rng.random() < 0.2 else 1)
             claims.append(({**claim(self.LINE_FILE, title=title, severity=severity),
+                            "location": where,
                             "domain": declared, "code": "%s-A1A" % declared,
                             "confidence": rng.choice(("CERTAIN", "LIKELY", "POSSIBLE")),
-                            "description": "%s:%s:%s" % (group, declared, title), **lever},
+                            "description": "%s:%s:%s:%d" % (group, declared, title,
+                                                            where["line_start"]), **lever},
                            rng.choice(WORDS) if asked else None))
         # The driver dispatches a cell's advisors only when the cell's claims reach the
         # verify gate. A cell below it is never asked; one above it was asked, or has
@@ -1556,47 +2158,104 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
 
     def test_the_property(self):
         rng = random.Random(self.SEED)
-        removed = exempted = 0
+        removed = exempted = compared = unasked = 0
         for number in range(self.CASES):
             cells, tool = self.case(rng)
             with self.subTest(case=number):
                 with_report, with_shown, with_stands, under = self.run_of(cells, tool)
+                asked, waiting = self.tool_asked, self.tool_waiting
             for cell in sorted(cells):
                 with self.subTest(case=number, removed=cell):
                     less_report, less_shown, less_stands, _under = self.run_of(cells, tool, cell)
                     removed += 1
                     summary, without = with_report["summary"], less_report["summary"]
+                    # The scanner finding was asked about in one of the two runs only:
+                    # they know different things about it (the third exemption).
+                    differs = tool is not None and asked != self.tool_asked
+                    unasked += differs
                     for tag, stood in less_stands.items():
-                        self.assertGreaterEqual(with_stands[tag], stood, tag)
+                        # (Where nobody was asked about the scanner finding, it stands
+                        # as the claim it is under does, and that claim is held here.)
+                        if tag != "tool" or (asked and self.tool_asked):
+                            self.assertGreaterEqual(with_stands[tag], stood, tag)
                     # The first exemption: the tool finding that is merged with the cell
                     # there, and alone and unanswered without it.
                     cover = under.get("tool", "")
                     shown_at = {f["description"]: f["severity"] for f in with_report["findings"]}
-                    merged = (tool is not None and tool[1] is None and "tool" not in with_shown
+                    merged = (tool is not None and "tool" not in with_shown
                               and less_shown.get("tool") == ("findings", "tool_reported"))
                     status = with_shown.get(cover, ("", ""))[1]
                     # Under a CONFIRMED claim, shown no lower than the scanner said of its
                     # finding; or under a claim that is itself owed and unanswered.
                     exempt = int(merged and status in CONFIRMED_AS
                                  and self.RANK[shown_at[cover]] >= self.RANK[tool[0]["severity"]])
-                    waiting = int(merged and status in ("unverified", "tool_reported")
-                                  and with_stands[cover] == 2)
+                    held = int(merged and status in ("unverified", "tool_reported")
+                               and with_stands[cover] == 2)
                     exempted += exempt
                     (owed, others), (less_owed, less_others) = (
                         self.owed_count(with_report), self.owed_count(less_report))
-                    self.assertGreaterEqual(owed, less_owed - max(exempt, waiting))
+                    # (...or it was asked about with the cell, and absorbed without it.)
+                    self.assertGreaterEqual(owed, less_owed - max(exempt, held, int(differs)))
                     self.assertLessEqual(set(less_others), set(others))
-                    if not (exempt and less_owed == 1):     # ...the one thing owed without it
+                    first = bool(exempt and less_owed == 1)     # ...the one thing owed without it
+                    grade, less_grade = summary["overall_grade"], without["overall_grade"]
+                    # The third exemption, its second half, the first seen from the other
+                    # side: the scanner finding was asked about only with the cell there.
+                    # Without the cell it has no answer, and that run still owes one.
+                    second_half = differs and asked and self.tool_waiting
+                    # ...or without the cell it counted as confirmed with the claim over
+                    # it, and with the cell its own advisor did not confirm it.
+                    lighter = differs and asked and tool[1] != "CONFIRMED"
+                    # The third exemption, its first half, as ruled and no wider: with the
+                    # cell the scanner finding has no answer, and without it the run FAILS.
+                    third = (waiting and differs and without["gate"] == "FAIL"
+                             and summary["gate"] != "FAIL")
+                    if third:
+                        self.assertEqual(("INCONCLUSIVE", False, None), (
+                            summary["gate"], summary["coverage_certified"], grade))
+                        self.assertGreater(owed, 0)
+                        # ...and it is in the report, itself or as the claim it is under.
+                        self.assertIn(with_shown.get("tool", with_shown.get(cover))[1],
+                                      ("tool_reported", "unverified"))
+                    elif second_half:
+                        # The run with the cell has the tool advisor's own answer and is
+                        # judged on it. The run without is not a pass of any kind.
+                        self.assertFalse(without["coverage_certified"])
+                        self.assertIsNone(less_grade)
+                        self.assertGreater(less_owed, 0)
+                        self.assertIn(without["gate"], ("INCONCLUSIVE", "FAIL"))
+                    elif not first:
                         self.assertGreaterEqual(GATE_RANK[summary["gate"]],
                                                 GATE_RANK[without["gate"]])
                         self.assertFalse(summary["coverage_certified"]
                                          and not without["coverage_certified"])
                     else:
-                        self.assertEqual("INCONCLUSIVE", without["gate"])
-        # The run means something: cells were removed, and the exemption is rare.
+                        # (FAIL, where a confirmed finding on another line fails it both ways.)
+                        self.assertIn(without["gate"], ("INCONCLUSIVE", "FAIL"))
+                        self.assertGreaterEqual(GATE_RANK[summary["gate"]],
+                                                GATE_RANK[without["gate"]] - 1)
+                        self.assertFalse(without["coverage_certified"])
+                    # #3731: the letter and the health score. The run with the cell weighs
+                    # no less and scores no better. The third exemption is all that is
+                    # set aside: its first half (no answer with the cell), and its second
+                    # (an answer only with the cell, and it is not CONFIRMED).
+                    health, less_health = summary["health"], without["health"]
+                    if not (differs and waiting) and not lighter:
+                        self.assertGreaterEqual(health["weighted_defect"],
+                                                less_health["weighted_defect"])
+                        self.assertLessEqual(health["score"], less_health["score"])
+                        if grade is not None and less_grade is not None:
+                            self.assertGreaterEqual(GRADES.index(grade), GRADES.index(less_grade))
+                            compared += 1
+                        elif grade is not None:     # a letter only with the cell
+                            self.assertTrue(first or second_half,
+                                            "a letter (%s) only with the cell" % grade)
+        # The run means something: cells were removed, letters were compared, and the
+        # exemptions are rare.
         self.assertGreater(removed, self.CASES)
         self.assertLess(exempted, removed // 20)
-
+        self.assertLess(unasked, removed // 5)
+        self.assertGreater(compared, self.CASES // 4)
 
 class TestTheRule(unittest.TestCase):
     """`evidence.across_cells`: one verdict from what each holding cell said of its own

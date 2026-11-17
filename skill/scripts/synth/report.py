@@ -344,6 +344,7 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=(), model_subs
     order is part of the artifact (write_report dumps insertion order)."""
     for f in resolved.findings:
         f.pop("_group", None)
+        f.pop(grading_mod.GROUP_WEIGHT, None)
         f.pop(evidence_mod.CELL_DOMAIN_FIELD, None)
         f.pop("_repo_root", None)
         if "cvss" in f and f["cvss"] in (None, "", {}):

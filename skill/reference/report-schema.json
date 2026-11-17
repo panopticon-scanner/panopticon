@@ -2015,7 +2015,7 @@
           },
           "additional_loci": {
             "type": "array",
-            "description": "The other loci of the tool findings sharing this finding's panel, category, file, rule id and artifact (`tool_evidence.package_name`) that synth/findings.aggregate_tool_findings collapsed into this one (see `occurrences`): the survivor keeps the primary locus in `location` and lists the rest here, lowest line first (a locus with no line first of all), an agent-corroborated locus winning the primary slot -- or carried onto the surviving finding in `synth/corroborate.dedupe` when that aggregated tool finding is the member DROPPED in favour of a same-category survivor (#2361). Absent on a finding that neither aggregated nor absorbed one.",
+            "description": "The other loci of the tool findings sharing this finding's panel, category, file, rule id and artifact (`tool_evidence.package_name`) that synth/findings.aggregate_tool_findings collapsed into this one (see `occurrences`): the survivor keeps the primary locus in `location` and lists the rest here, lowest line first (a locus with no line first of all); the primary is always the lowest line (#3731: a locus an agent had also flagged used to win it) -- or carried onto the surviving finding in `synth/corroborate.dedupe` when that aggregated tool finding is the member DROPPED in favour of a same-category survivor (#2361). Absent on a finding that neither aggregated nor absorbed one.",
             "items": {
               "type": "object",
               "required": [
@@ -2033,9 +2033,69 @@
                     "integer",
                     "null"
                   ]
+                },
+                "line_end": {
+                  "type": "integer",
+                  "description": "The hit's last line, present when the hit spans more than its first line (#3732). An aggregated tool finding weighs in `summary.health` as its widest hit."
                 }
               }
             }
+          },
+          "severity_from": {
+            "type": "object",
+            "description": "On an aggregated tool finding whose `severity` is not its shown hit's (#3732): the finding carries the highest severity among its hits, and this names the hit that gave it. Absent when the shown hit is the most severe.",
+            "required": [
+              "file",
+              "line_start",
+              "shown_hit_severity"
+            ],
+            "properties": {
+              "file": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "line_start": {
+                "type": [
+                  "integer",
+                  "null"
+                ]
+              },
+              "shown_hit_severity": {
+                "type": [
+                  "string",
+                  "null"
+                ],
+                "description": "The severity the shown hit (the lowest line) was reported at."
+              }
+            }
+          },
+          "weight_from": {
+            "type": "object",
+            "description": "#3731: the findings merged at one line are one merge group, counted once in `summary.health.weighted_defect`, at the heaviest of its findings that count for the gate on their own (severity weight times lines spanned). Present on the row that carries the group's weight when that weight is not the row's own: `id` is the finding it is, which is merged under this row, and `weight` what it weighs.",
+            "required": [
+              "id",
+              "weight"
+            ],
+            "properties": {
+              "id": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "weight": {
+                "type": "integer"
+              }
+            }
+          },
+          "weight_with": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "#3731: on a row of a merge group whose own weight is not added to `summary.health.weighted_defect`, because the group is counted once: the `id` of the row that carries the group's weight (see `weight_from`)."
           },
           "corroborated": {
             "type": "boolean"

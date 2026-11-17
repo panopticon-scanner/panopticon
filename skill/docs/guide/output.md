@@ -167,6 +167,23 @@ everything not itself REJECTED; a finding that is owed an answer and has none, u
 is merged under is CONFIRMED or is itself owed and unanswered; and any finding not itself REJECTED
 whose row ends at a lower severity than its own (#3727, above). Anything else stays merged under a
 finding that is in the report.
+**What a merge weighs (#3731).** `summary.health.weighted_defect` adds each counted finding's
+severity weight times the lines it spans. The findings merged at one line are one merge group, and
+a group is counted once, at the heaviest of its findings that count for the gate on their own:
+confirmed by its own cell's verdict (any finding not REJECTED under `--gate-unverified`), or a
+scanner finding that a CONFIRMED claim absorbed, which no advisor is asked about and which is
+confirmed with the pair. The weight is one finding's own, the severity it is published at times
+its own lines; nothing is mixed, and no row's range or severity changes. A row carries
+`weight_from` (the finding's id and weight) when the group's weight is not its own, and the
+group's other counted rows carry `weight_with`, the id of the row that does. So a one-line claim
+that wins the merge over a confirmed finding spanning 50 lines does not lighten it, and two counted
+rows that came out of one merge are not added.
+**A scanner rule's hits (#3732).** A rule that fires several times in one file is one finding. It
+is shown at its lowest line, whatever a reviewer flagged (a claim on a later hit is its own row),
+with the other hits in `additional_loci`, each with its `line_end` where it spans more than one
+line. It carries the highest severity among its hits, and `severity_from` names the hit and the
+shown hit's own severity when they differ. It weighs as its widest hit. A range that ends before
+it starts is read as one line at load.
 `meta.coverage.dependency_audit` is the dependency-audit receipt: the ecosystems the tree has a
 dependency manifest for (`applicable`), and the dedicated auditors that were `selected` and
 `produced` output. Its `unaudited` map (#3648) names each applicable ecosystem that no selected

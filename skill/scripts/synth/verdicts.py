@@ -16,6 +16,7 @@ from . import codes as codes_mod
 from . import corroborate as corroborate_mod
 from . import delta as delta_mod
 from . import findings as findings_mod
+from . import grading as grading_mod
 from . import plan as plan_mod
 from . import severity_cap as severity_cap_mod
 from . import verdict_scope as verdict_scope_mod
@@ -286,6 +287,16 @@ class Published:
     def __init__(self, run, groups_meta, bundle):
         self.caps, self.bundle = severity_cap_mod.Caps(run, groups_meta), bundle
 
+    def weight(self, finding, verdict):
+        """What `finding` would weigh in the health score as its own row, on the
+        verdict it is about to be given: nothing unless it counts on its own
+        (`counts_on_its_own`, the gate's own test), else the severity it is published
+        at times the lines it spans (`grading.own_weight`)."""
+        status = evidence_mod.derive_evidence(finding, verdict)["status"]
+        if not counts_on_its_own(status, self.caps.run):
+            return 0
+        return grading_mod.own_weight(finding, self.caps.published(finding, status, self.bundle))
+
     def __call__(self, finding, verdict, capped=False):
         """`capped`: with the unverified-scanner cap too, the rank the row is really
         published at (`severity_cap.Caps.published`)."""
@@ -353,11 +364,27 @@ def restore_confirmed(fs, findings, queue, holders=None, owed=None, published=No
         waiting = theirs is None and owed(survivor)
         returning = []  # (member, its queue id-to-be, the claim it is, under a lower row?)
         levels: dict[int, int] = {}     # id(member) -> the rank it is published at
-        for member in absorbed:
-            fp = evidence_mod.finding_fingerprint(member)
-            own = _own_verdict(fs, member, fp, holders)
+        weights: dict[int, int] = {}    # id(finding) -> what it weighs as its own row
+        prints = [(member, evidence_mod.finding_fingerprint(member)) for member in absorbed]
+        owns = [(member, fp, _own_verdict(fs, member, fp, holders)) for member, fp in prints]
+        # The CONFIRMED verdict of a finding in this group, if one has one.
+        confirmed = next((verdict for verdict in [theirs] + [own for _m, _fp, own in owns]
+                          if _confirmed(verdict)), None)
+        if published is not None:
+            weights[id(survivor)] = published.weight(survivor, theirs)
+        for member, fp, own in owns:
             if published is not None:
                 levels[id(member)] = published(member, own)
+                # A scanner finding a claim absorbed was never asked about: the verify
+                # queue is built on the merged list. Beside a CONFIRMED claim the pair
+                # was confirmed as one (the row is `tool_confirmed`), so it weighs as
+                # confirmed too. Weighed on its own missing verdict it weighed nothing,
+                # and a one-line claim hid a scanner finding's 40-line hit. Any
+                # CONFIRMED finding of the group covers it: a third claim that wins the
+                # merge and says nothing must not uncover it.
+                covered = (own is None and evidence_mod.is_tool_sourced(member)
+                           and confirmed is not None)
+                weights[id(member)] = published.weight(member, confirmed if covered else own)
             under = (published is not None and not _dismissed(own)
                      and published.under(member, own, survivor, theirs))
             if under or _comes_back(theirs, waiting, own, owed(member)):
@@ -388,6 +415,44 @@ def restore_confirmed(fs, findings, queue, holders=None, owed=None, published=No
             queue.append({"queue_id": qid, "priority": evidence_mod.triage_priority(member),
                           "finding": member})
         _part_the_pair(survivor, absorbed, back)
+        if published is not None:
+            _weigh_the_group(survivor, absorbed, back, weights)
+
+
+def _weigh_the_group(survivor, absorbed, back, weights):
+    """Count a merge group once in the health score, at its heaviest counted finding
+    (#3731). The group is what the merge itself put together: the survivor and all it
+    absorbed, whatever has since come back. `weights` gives each finding's own weight
+    as its own row, 0 for one that does not count on its own (`Published.weight`).
+
+    Health is a sum over rows, and the merge kept the winning row whole. So a one-line
+    claim that won the merge over a confirmed finding spanning 50 lines cut that
+    finding's weight to a fiftieth: the letter went from F to B with the finding
+    still in the report. And a hostile claim that covered two counted rows of one
+    group turned their sum into one row's weight.
+
+    Neither can happen to a maximum taken over the group. A cell cannot lower it by
+    adding a finding, and a cell can only split a group, never join two: one maximum
+    becomes a sum of maxima, which is never smaller. No row's own range or severity
+    changes, and nothing is mixed: the weight is one finding's own.
+
+    Stamped only where it differs from the sum of the rows' own weights. `weight_from`
+    on a row says whose weight it carries when that is not its own, and `weight_with`
+    on the group's other counted rows names that row."""
+    rows = [survivor] + list(back)
+    group = rows + [member for member in absorbed if not any(member is row for row in rows)]
+    heaviest = max(group, key=lambda finding: weights.get(id(finding), 0))  # the first of them
+    weight = weights.get(id(heaviest), 0)
+    if weight == sum(weights.get(id(row), 0) for row in rows):
+        return
+    carrier = heaviest if any(heaviest is row for row in rows) else survivor
+    for row in rows:
+        row[grading_mod.GROUP_WEIGHT] = (id(survivor), weight)
+        if row is carrier:
+            if heaviest is not row:
+                row["weight_from"] = {"id": heaviest.get("id"), "weight": weight}
+        elif weights.get(id(row), 0):
+            row["weight_with"] = carrier.get("id")
 
 
 def _claim_key(finding, verdict):
@@ -689,6 +754,15 @@ class _Partitions:
     pre_existing_active: list
 
 
+def counts_on_its_own(status, run):
+    """Does a finding of this evidence status count for the gate, health and the
+    letter? THE definition: `_partition_gate` filters the rows by it, and the merge
+    asks it of each member before a row may stand for that member (`Published`), so
+    the two cannot drift (#3731)."""
+    return status != "rejected" and bool(
+        run.gate_unverified or status in evidence_mod.GATE_ELIGIBLE_DEFAULT)
+
+
 def _partition_gate(findings, delta, run):
     """Apply the run's delta scope and evidence policy to active findings."""
     rejected = [f for f in findings if f["evidence"]["status"] == "rejected"]
@@ -702,9 +776,7 @@ def _partition_gate(findings, delta, run):
     gate_source = active
     if delta_mode and run.gate_scope == "on-diff":
         gate_source = on_diff_active
-    gate_eligible = (gate_source if run.gate_unverified else
-                     [f for f in gate_source
-                      if f["evidence"]["status"] in evidence_mod.GATE_ELIGIBLE_DEFAULT])
+    gate_eligible = [f for f in gate_source if counts_on_its_own(f["evidence"]["status"], run)]
     return _Partitions(active, rejected, gate_eligible, on_diff_active, pre_existing_active)
 
 
