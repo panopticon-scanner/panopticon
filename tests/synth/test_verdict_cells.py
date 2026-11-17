@@ -1539,6 +1539,17 @@ class TestAMergeGroupIsCountedOnceAtItsHeaviestFinding(_Lines):
                 self.assertEqual([], [f["description"] for f in report["findings"]
                                       if f["evidence"]["status"] in CONFIRMED_AS])
 
+    def test_a_scanner_finding_with_an_answer_of_its_own_is_weighed_on_that(self):
+        """Only a finding nobody was asked about is covered. Where its own advisor's
+        verdict is on file (a verify round before the claim was filed), that verdict
+        stands: REJECTED, it weighs nothing under a CONFIRMED claim."""
+        hits = [self.hit(10, end=49)]
+        claim_ = self.at("b.py", "the claim", 10, confidence="CERTAIN")
+        for said, weight in (("REJECTED", 25), ("NEEDS_MORE_INFO", 25), ("CONFIRMED", 1000)):
+            with self.subTest(scanner_says=said):
+                report = self.report_of({"g1": [(claim_, "CONFIRMED")]}, hits=hits, hits_say=said)
+                self.assertEqual(weight, report["summary"]["health"]["weighted_defect"])
+
     def test_a_third_claim_that_wins_the_merge_and_says_nothing_does_not_uncover_it(self):
         """A scanner finding that names no rule shares the claims' bucket. Beside one
         CONFIRMED claim it weighs as confirmed. A hostile CRITICAL at the line, with no
