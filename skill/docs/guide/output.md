@@ -142,8 +142,13 @@ Findings of one category at one line are merged into the most severe before any 
 not the one its reviewer claimed (#3727): a `severity_override` with no reason counts as its code's
 default, and a `TST-A1*` claim at CRITICAL or HIGH counts as MEDIUM, its cap. And no finding that
 is not REJECTED stays merged under a row whose final severity is below its own; it comes back as
-its own finding. (One row is not held to that: a scanner finding nobody has confirmed, capped at
-MEDIUM, keeps the agent claim that agrees with it.)
+its own finding. One row is not held to that: a scanner finding nobody has confirmed, capped at
+MEDIUM, keeps the claim merged into it (a lone claim and a lone scanner finding at one line are
+merged whatever their categories). An uncapped `TST-A1*` claim is the exception to the exception:
+it ranked below where it ends, so it comes back beside the scanner's row. So one id can be in the
+report at two severities: one claim filed twice under different codes, by two cells or by one,
+where the instance that is not capped comes back over the other; the two rows can differ in
+evidence status too.
 What is owed is counted first, over every loaded finding. A claim is owed an advisor's answer when
 its review cell reaches the verify gate, or the dispatch record says the cell was asked about it;
 the cell is the findings file the claim was loaded from, whatever domain its reviewer declared. A
@@ -155,9 +160,10 @@ finding merged into an agent claim is the exception: no advisor is asked about i
 merged, so it owes nothing until it is reported by itself.
 What comes back out of a merge as its own finding: a CONFIRMED finding, unless the one it is
 merged under is CONFIRMED too; under a REJECTED finding, which goes to `discarded_claims`,
-everything not itself REJECTED; and a finding that is owed an answer and has none, unless the one
-it is merged under is CONFIRMED or is itself owed and unanswered. Anything else stays merged under
-a finding that is in the report.
+everything not itself REJECTED; a finding that is owed an answer and has none, unless the one it
+is merged under is CONFIRMED or is itself owed and unanswered; and any finding not itself REJECTED
+whose row ends at a lower severity than its own (#3727, above). Anything else stays merged under a
+finding that is in the report.
 `meta.coverage.dependency_audit` is the dependency-audit receipt: the ecosystems the tree has a
 dependency manifest for (`applicable`), and the dedicated auditors that were `selected` and
 `produced` output. Its `unaudited` map (#3648) names each applicable ecosystem that no selected

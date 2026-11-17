@@ -153,12 +153,19 @@ class Caps:
 
         The unverified-scanner cap is left out on purpose. A scanner finding nobody
         has confirmed is capped at MEDIUM, and that cap is not a demotion of its row:
-        the agent claim merged into it is the same issue, shown as the scanner's until
-        an advisor confirms it, as it always was. No cell can bring it about: a cell
-        cannot write a scanner finding, and a third claim at the line ends the merge
-        across the two kinds."""
+        the claim merged into it as a pair is shown as the scanner's until an advisor
+        confirms it, as it always was. No cell can bring that pair about: a cell
+        cannot write a scanner finding, and it cannot push another cell's claim under
+        one (with a third claim at the line, a claim is under the scanner's row only
+        if it already was without it). `published` is the severity with that cap."""
         severity = codes_mod.severity_after_discipline(finding, bundle)
         return CAP_TO if self.coverage_absence(finding, severity, status) is not None else severity
+
+    def published(self, finding, status, bundle):
+        """The severity `finding` is finally published at: `settled`, and for a
+        scanner finding nobody has confirmed, the unverified cap."""
+        severity = self.settled(finding, status, bundle)
+        return CAP_TO if unverified_tool_capped(finding, severity, status, self.run) else severity
 
 
 def apply(findings, run, groups_meta):

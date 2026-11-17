@@ -286,10 +286,26 @@ class Published:
     def __init__(self, run, groups_meta, bundle):
         self.caps, self.bundle = severity_cap_mod.Caps(run, groups_meta), bundle
 
-    def __call__(self, finding, verdict):
+    def __call__(self, finding, verdict, capped=False):
+        """`capped`: with the unverified-scanner cap too, the rank the row is really
+        published at (`severity_cap.Caps.published`)."""
         status = evidence_mod.derive_evidence(finding, verdict)["status"]
-        return evidence_mod.sev_rank(
-            {"severity": self.caps.settled(finding, status, self.bundle)})
+        decide = self.caps.published if capped else self.caps.settled
+        return evidence_mod.sev_rank({"severity": decide(finding, status, self.bundle)})
+
+    def under(self, member, own, survivor, theirs):
+        """Is `member` left under a row of lower severity than its own?
+
+        The row's level is where it settles, before the unverified-scanner cap: a
+        pair of a scanner finding and the claim merged into it is one row, the
+        scanner's, as it always was. That holds for a claim the merge ranked where it
+        settles. A `TST-A1*` claim ranks at its cap, and when it turns out uncapped
+        the scanner finding won a pair it used to lose: main shows such a claim at
+        HIGH, so it is held against the row as published, cap and all, and comes
+        back beside the scanner's MEDIUM (#3728 review F1)."""
+        level = self(member, own)
+        ranked = corroborate_mod.merge_rank(member, self.bundle)[0]
+        return level < self(survivor, theirs, capped=level < ranked)
 
 
 def restore_confirmed(fs, findings, queue, holders=None, owed=None, published=None):
@@ -335,16 +351,15 @@ def restore_confirmed(fs, findings, queue, holders=None, owed=None, published=No
             continue
         theirs = _own_verdict(fs, survivor, queue_ids.get(id(survivor)), holders)
         waiting = theirs is None and owed(survivor)
-        level = published(survivor, theirs) if published is not None else None
         returning = []  # (member, its queue id-to-be, the claim it is, under a lower row?)
         levels: dict[int, int] = {}     # id(member) -> the rank it is published at
         for member in absorbed:
             fp = evidence_mod.finding_fingerprint(member)
             own = _own_verdict(fs, member, fp, holders)
-            if level is not None:
+            if published is not None:
                 levels[id(member)] = published(member, own)
-            under = (level is not None and not _dismissed(own)
-                     and levels[id(member)] < level)
+            under = (published is not None and not _dismissed(own)
+                     and published.under(member, own, survivor, theirs))
             if under or _comes_back(theirs, waiting, own, owed(member)):
                 returning.append((member, fp, _claim_key(member, own), under))
         shown = _claim_key(survivor, theirs)

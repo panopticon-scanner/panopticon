@@ -786,12 +786,12 @@ class TestTheMergeRanksByThePublishedSeverity(_Verdicts):
                                  self.rows(report, "the victim", "the decoy"))
                 self.assertEqual("FAIL", report["summary"]["gate"])
 
-    def scanner_finding(self, severity="HIGH"):
+    def scanner_finding(self, severity="HIGH", file=None):
         return {"id": "TL-1", "title": "tool", "description": "the scanner's", "severity": severity,
                 "confidence": "POSSIBLE", "panel": "security", "domain": "SEC",
                 "category": "other", "source": "tool:semgrep",
                 "tool_evidence": {"tool": "semgrep", "rule_id": "r.tool"},
-                "location": {"file": self.FILE, "line_start": 1},
+                "location": {"file": file or self.FILE, "line_start": 1},
                 "provenance": {"discovered_by": "tool:semgrep",
                                "confirmation_status": "UNVERIFIED"}}
 
@@ -820,6 +820,89 @@ class TestTheMergeRanksByThePublishedSeverity(_Verdicts):
                     axis = report["meta"]["coverage"]["tool_axis"]
                     self.assertEqual((1, int(said is None)), (axis["queued"], axis["unanswered"]))
 
+    def uncapped_claim(self, severity, claim_says=None, tool_says=None, verify=True, scanner=True):
+        """The rows for a `TST-A1A` claim at `severity` on a Python module no test names
+        (so it is not capped), with a scanner finding at the same severity on its line.
+        No hostile cell. With `verify` off there is no verify phase at all."""
+        for name in os.listdir(self.verdicts):
+            os.unlink(os.path.join(self.verdicts, name))
+        path = os.path.join(self.run_dir, "findings-g2-SEC.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"findings": [dict(claim("b.py", severity=severity), code="TST-A1A",
+                                         description="the claim")]}, fh)
+        loaded = findings_mod.load_findings([path])
+        self.record(record(group="g2", claims=[loaded[0]["id"]], size=25))
+        if claim_says:
+            self.bundle([verdict(loaded[0]["id"], claim_says)], group="g2")
+        if scanner:
+            tool = self.scanner_finding(severity, file="b.py")
+            loaded.append(tool)
+            if tool_says:
+                with open(os.path.join(self.verdicts, "%s.json" % evidence_mod.finding_fingerprint(
+                        tool)), "w", encoding="utf-8") as fh:
+                    json.dump({"finding_id": tool["id"], "verdict": tool_says, "reasoning": "r"}, fh)
+        fs = findings_mod.FindingSet.load(
+            types.SimpleNamespace(verdicts_dir=self.verdicts if verify else None), [], "standard",
+            None, prepared=(loaded, None, None), run_dir=self.run_dir if verify else None)
+        with _target_with_files(GROUPS, lines=5000) as target, \
+                contextlib.redirect_stderr(io.StringIO()):
+            report = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=target, fail_on="high",
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=fs, plan=plan_mod.PlanInputs(groups_meta=GROUPS)))
+        return self.rows(report, "the claim", "the scanner's")
+
+    def test_an_uncapped_tst_a1_claim_is_not_shown_as_the_scanners_medium(self):
+        """#3728 review, F1: an honest run. The claim ranks at its cap for the merge, so
+        the scanner finding wins the pair it used to lose, and is then capped at MEDIUM
+        for want of a verdict. The pair as one row is the 5.3 behaviour only where the
+        scanner finding would have won anyway. Here main shows the claim at its own
+        severity, so it comes back beside the scanner's row."""
+        for severity in ("HIGH", "CRITICAL"):
+            scanner = ("the scanner's", "findings", "MEDIUM")
+            for label, how, status, tool_status in (
+                    ("no verify phase", dict(verify=False), "unverified", "tool_reported"),
+                    ("the claim owed and unanswered, the scanner unanswered", {}, "unverified",
+                     "tool_reported"),
+                    ("the claim unsure, the scanner unanswered",
+                     dict(claim_says="NEEDS_MORE_INFO"), "needs_more_info", "tool_reported"),
+                    ("both unsure", dict(claim_says="NEEDS_MORE_INFO",
+                                         tool_says="NEEDS_MORE_INFO"),
+                     "needs_more_info", "needs_more_info")):
+                with self.subTest(label, severity=severity):
+                    self.assertEqual([("the claim", "findings", severity, status),
+                                      scanner + (tool_status,)], self.uncapped_claim(severity, **how))
+            with self.subTest("the claim alone", severity=severity):
+                self.assertEqual([("the claim", "findings", severity, "unverified")],
+                                 self.uncapped_claim(severity, scanner=False))
+            # A scanner finding an advisor CONFIRMED keeps its severity: a tie, one row.
+            with self.subTest("the scanner confirmed", severity=severity):
+                self.assertEqual([("the scanner's", "findings", severity, "tool_confirmed")],
+                                 self.uncapped_claim(severity, tool_says="CONFIRMED"))
+
+    def test_a_claim_ranked_where_it_settles_stays_one_row_with_the_scanners(self):
+        """The other side of F1, and the exemption as ruled: an ordinary claim at HIGH and
+        a scanner finding at CRITICAL nobody confirmed. The scanner finding wins the
+        pair on its own severity, as it always did, and the pair is its one MEDIUM row."""
+        for name in os.listdir(self.verdicts):
+            os.unlink(os.path.join(self.verdicts, name))
+        path = os.path.join(self.run_dir, "findings-g2-SEC.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"findings": [dict(claim("b.py", severity="HIGH"),
+                                         description="the claim")]}, fh)
+        loaded = findings_mod.load_findings([path]) + [self.scanner_finding("CRITICAL", "b.py")]
+        fs = findings_mod.FindingSet.load(
+            types.SimpleNamespace(verdicts_dir=None), [], "standard", None,
+            prepared=(loaded, None, None), run_dir=None)
+        with _target_with_files(GROUPS, lines=5000) as target, \
+                contextlib.redirect_stderr(io.StringIO()):
+            report = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=target, fail_on="high",
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=fs, plan=plan_mod.PlanInputs(groups_meta=GROUPS)))
+        self.assertEqual([("the scanner's", "findings", "MEDIUM", "tool_reported")],
+                         self.rows(report, "the claim", "the scanner's"))
+
     def test_a_tie_in_final_severity_stays_one_row(self):
         """Two claims that end at one severity are merged as before: the first loaded,
         or the more confident, is the row."""
@@ -839,13 +922,14 @@ class TestTheMergeRanksByThePublishedSeverity(_Verdicts):
         applies needs the run. On a Python module no test names or imports, it is not
         capped. Left under the MEDIUM row that won the tie, a HIGH claim would be shown
         as MEDIUM, so it comes back, unless its own advisor REJECTED it."""
-        def scene(said, same_claim=False):
+        def scene(said, same_claim=False, plain="MEDIUM", certain=False):
             theirs = dict(claim("b.py", title="untested", severity="HIGH"), code="TST-A1A",
-                          description="the TST claim")
+                          description="the TST claim", **({"confidence": "CERTAIN"} if certain else {}))
             for name in os.listdir(self.verdicts):
                 os.unlink(os.path.join(self.verdicts, name))
             paths = []
-            mine = claim("b.py", title="untested" if same_claim else None, severity="MEDIUM")
+            mine = dict(claim("b.py", title="untested" if same_claim else None, severity=plain),
+                        **({"confidence": "POSSIBLE"} if certain else {}))
             for group, findings in (("g1", [dict(mine, description="the MEDIUM")]),
                                     ("g2", [theirs])):
                 paths.append(os.path.join(self.run_dir, "findings-%s-SEC.json" % group))
@@ -873,6 +957,12 @@ class TestTheMergeRanksByThePublishedSeverity(_Verdicts):
                 self.assertEqual([medium, ("the TST claim", "findings", "HIGH", status)],
                                  self.rows(scene(said), "the MEDIUM", "the TST claim"))
         self.assertEqual([medium], self.rows(scene("REJECTED"), "the MEDIUM", "the TST claim"))
+        # An honest change with nothing demoted: beside a plain claim at its own HIGH, the
+        # TST claim used to win on confidence. Ranked at its cap it loses, and the two end
+        # at one severity, so it stays merged: the row is the plain claim.
+        tie = scene("CONFIRMED", plain="HIGH", certain=True)
+        self.assertEqual([("the MEDIUM", "findings", "HIGH", "advisor_confirmed")],
+                         self.rows(tie, "the MEDIUM", "the TST claim"))
         # The same where the two are instances of ONE claim, filed under different codes:
         # the claim is already in the report on that verdict, at MEDIUM, and the instance
         # that is published higher still comes back. One id, at two severities.
@@ -1034,7 +1124,7 @@ class TestTheSeverityIsDecidedOnceAndApplied(unittest.TestCase):
 class TestNoCellCanMakeAScannerRow(_Verdicts):
     """The two facts the second exemption rests on (#3727): a scanner row's unverified
     cap is not a demotion of the row, and that is safe only because no cell can produce
-    such a row or push another cell's claim under one."""
+    such a row, or put under one a claim of another cell that was not under it already."""
 
     def test_a_cell_cannot_write_a_scanner_finding(self):
         path = os.path.join(self.run_dir, "findings-g1-SEC.json")
@@ -1048,23 +1138,36 @@ class TestNoCellCanMakeAScannerRow(_Verdicts):
         self.assertFalse(evidence_mod.is_tool_sourced(loaded))
         self.assertIn("source", findings_mod.AGENT_FORBIDDEN_FIELDS)
 
-    def test_a_third_claim_at_the_line_ends_the_merge_across_the_two_kinds(self):
-        """One agent claim and one scanner finding at a line collapse into one row. With
-        a second claim there, the scanner finding and the claims are merged apart: no
-        claim is under the scanner's row, so nothing of a cell's is shown at its cap."""
-        tool = {"id": "TL-1", "title": "tool", "severity": "HIGH", "confidence": "CERTAIN",
-                "category": "authz", "source": "tool:semgrep",
-                "tool_evidence": {"tool": "semgrep", "rule_id": "r"},
-                "location": {"file": "b.py", "line_start": 1}}
+    def test_a_third_claim_puts_no_claim_under_the_scanners_row_that_was_not_there(self):
+        """One agent claim and one scanner finding at a line collapse into one row. A
+        cell that adds a claim there does not put the first claim under the scanner's
+        row: where the scanner finding names a rule, the two kinds are then merged
+        apart; where it names none and shares the claims' category, they share a
+        bucket, and the claim is under the scanner's row exactly as it was without
+        the third claim (#3728 review N1)."""
         victim = dict(claim("b.py", severity="HIGH"), id="V", confidence="POSSIBLE")
         third = dict(claim("b.py", title="a third claim", severity="LOW"), id="H")
-        (pair,) = corroborate_mod.dedupe([dict(victim), dict(tool)])
-        self.assertEqual(("TL-1", ["V"]), (pair["id"], [m["id"] for m in pair[
-            corroborate_mod.ABSORBED_FIELD]]))
-        for order in ([victim, third, tool], [third, victim, tool], [tool, third, victim]):
-            rows = {f["id"]: [m["id"] for m in f.get(corroborate_mod.ABSORBED_FIELD) or ()]
-                    for f in corroborate_mod.dedupe([dict(f) for f in order])}
-            self.assertEqual({"TL-1": [], "V": ["H"]}, rows)
+
+        def rows(findings):
+            return {f["id"]: sorted(m["id"] for m in f.get(corroborate_mod.ABSORBED_FIELD) or ())
+                    for f in corroborate_mod.dedupe([dict(f) for f in findings])}
+
+        ruled = {"id": "TL-1", "title": "tool", "severity": "HIGH", "confidence": "CERTAIN",
+                 "category": "authz", "source": "tool:semgrep",
+                 "tool_evidence": {"tool": "semgrep", "rule_id": "r"},
+                 "location": {"file": "b.py", "line_start": 1}}
+        self.assertEqual({"TL-1": ["V"]}, rows([victim, ruled]))
+        for order in ([victim, third, ruled], [third, victim, ruled], [ruled, third, victim]):
+            self.assertEqual({"TL-1": [], "V": ["H"]}, rows(order))
+        ruleless = dict(ruled, tool_evidence={"tool": "semgrep"})
+        self.assertIsNone(evidence_mod.tool_rule_id(ruleless))
+        self.assertEqual({"TL-1": ["V"]}, rows([victim, ruleless]))
+        for order in ([victim, third, ruleless], [third, victim, ruleless],
+                      [ruleless, third, victim]):
+            self.assertEqual({"TL-1": ["H", "V"]}, rows(order))
+        # In another category the rule-less scanner finding is apart, as a ruled one is.
+        self.assertEqual({"TL-1": [], "V": ["H"]},
+                         rows([victim, third, dict(ruleless, category="other")]))
 
 
 class TestOwedFollowsWhatTheControllerAsked(_Verdicts):
@@ -1184,11 +1287,15 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
     or no verdict and none owed); dismissed. A merged finding takes the place of the
     finding it is merged under.
 
-    ONE EXEMPTION, as ruled: a tool finding merged into the removed cell's CONFIRMED
-    claim was never asked about (the queue is built on the merged list) and owes
-    nothing while it is merged. Without the cell it is alone and unanswered. That one
-    unanswered tool finding, and the INCONCLUSIVE gate and the certification it
-    costs, are not held against the cell.
+    ONE EXEMPTION, as ruled: a tool finding that stays merged under a claim was never
+    asked about (the queue is built on the merged list) and owes nothing while it is
+    merged: under a CONFIRMED claim, or under one that is itself owed and unanswered.
+    Without the cell it can be alone and unanswered. That one unanswered tool finding
+    is not held against the cell. Where the claim was CONFIRMED, and shown no lower
+    than the scanner said of its finding, and the tool finding is all that is owed
+    without the cell, the INCONCLUSIVE gate and the certification it costs are not
+    held against it either. Under an unanswered claim the gate and the certification
+    are held as ever: the run is INCONCLUSIVE and uncertified both ways.
 
     #3727, severity. A claim may carry a lever the controller applies only after the
     merge: an empty `severity_override` on a code whose default is LOW, or a `TST-A1*`
@@ -1197,13 +1304,18 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
     finding that is not REJECTED is merged under a row of lower severity than its own.
 
     A SECOND EXEMPTION, as ruled: a scanner finding nobody has confirmed is capped at
-    MEDIUM, and an agent claim merged into it may be shown at that. The pair is one
-    issue, the scanner's row until an advisor confirms it, as #3231 chose. So the row's
-    level is the scanner's severity before that cap. No cell can bring it about: a cell
-    cannot write a scanner finding, and a third claim at the line ends the merge
-    across the two kinds (`TestNoCellCanMakeAScannerRow`)."""
+    MEDIUM, and a claim merged into it may be shown at that. The pair is the scanner's
+    row until an advisor confirms it, as #3231 chose. So the row's level is the
+    scanner's severity before that cap. It holds only for a claim the merge ranked
+    where it settles: an uncapped `TST-A1*` claim ranked at its cap, and is held against
+    the row as shown (review F1). No cell can bring the pair about: a cell cannot write
+    a scanner finding, and with a third claim at the line a claim is under the scanner's
+    row only if it was without it (`TestNoCellCanMakeAScannerRow`).
 
-    CASES, SEED = 300, 3711
+    The first exemption needs the confirmed claim to be shown no lower than the scanner
+    said of its finding, as the merge itself requires."""
+
+    CASES, SEED = 900, 3711    # 900: the first case of review F1's shape is the 826th
     LINE_FILE = "b.py"
     LOW_DEFAULT = "ARC-A2D"         # an OCRDb code whose default severity is LOW
     CAPPED_TO = {"CRITICAL": "MEDIUM", "HIGH": "MEDIUM"}
@@ -1283,7 +1395,7 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
         loaded = self.write(cells, tool, skip)
         fs = findings_mod.FindingSet.load(
             types.SimpleNamespace(verdicts_dir=self.verdicts), [], "standard", None,
-            prepared=([dict(f) for f in loaded], None, None), run_dir=self.run_dir)
+            prepared=(copy.deepcopy(loaded), None, None), run_dir=self.run_dir)
         with _target_with_files(GROUPS3, lines=5000) as target, \
                 contextlib.redirect_stderr(io.StringIO()):
             report = report_mod.build_report(report_mod.ReportInputs(
@@ -1296,17 +1408,18 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
                 self.assertNotIn(f["description"], shown, "one finding is in the report twice")
                 shown[f["description"]] = (where, f["evidence"]["status"])
                 severity[f["description"]] = f["severity"]
-                # (At two severities it can be: two cells file one claim under different
-                # codes, and the instance that is not capped comes back over the other.)
+                # (At two severities it can be: one claim is filed twice under different
+                # codes, by two cells or by one, and the instance that is not capped comes
+                # back over the other. The two rows can differ in status as well.)
                 row = (f["id"], f["evidence"]["status"], f["severity"])
                 self.assertNotIn(row, claims, "one claim is in the report twice on one verdict")
                 claims.add(row)
         # The oracle's own view of the merge and of what was owed: dedupe on a fresh
         # copy, and the engagement score over each cell's file.
-        fresh = [dict(f) for f in loaded]
+        fresh = copy.deepcopy(loaded)   # not what the report run was handed, and changed
         engaged = self.engaged(fresh)
         under = {m["description"]: survivor["description"]
-                 for survivor in corroborate_mod.dedupe([dict(f) for f in fresh])
+                 for survivor in corroborate_mod.dedupe(copy.deepcopy(fresh))
                  for m in survivor.get(corroborate_mod.ABSORBED_FIELD) or ()}
         stands, words, ids, final = {}, {}, {}, {}
         for f in fresh:
@@ -1319,10 +1432,19 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
             final[tag] = self.final_of(f, said)
             ids.setdefault(f["id"], []).append(tag)
 
-        def row_level(tag):
-            """The level of the row `tag`, for what is merged under it: its published
-            severity, or for a scanner row its severity before the unverified cap."""
-            if tag != "tool":
+        def ranked_below(finding):
+            """Did the merge rank this claim below where it settles? A `TST-A1*` claim
+            ranks at its cap, and on a Python file no test names it is not capped."""
+            return (finding["description"] != "tool" and finding["code"] == "TST-A1A"
+                    and final[finding["description"]] in self.CAPPED_TO
+                    and self.LINE_FILE.endswith(".py"))
+
+        def row_level(tag, for_finding):
+            """The level of the row `tag`, for `for_finding` merged under it: its
+            published severity. The second exemption: for a scanner row, its severity
+            before the unverified cap, and only for a claim the merge ranked where it
+            settles (review F1: one it ranked below is held against the row as shown)."""
+            if tag != "tool" or ranked_below(for_finding):
                 return self.RANK[severity[tag]]
             return self.RANK[self.final_of(tool[0], tool[1], capped=False)]
 
@@ -1355,7 +1477,7 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
             if words[tag] != "REJECTED":
                 rows = stand_ins or [under[tag]]
                 self.assertGreaterEqual(
-                    max(row_level(row) for row in rows), self.RANK[final[tag]],
+                    max(row_level(row, f) for row in rows), self.RANK[final[tag]],
                     "%s (%s) is under %r" % (tag, final[tag], [(r, severity[r]) for r in rows]))
         return report, shown, stands, under
 
@@ -1382,7 +1504,10 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
                 tool = ({"id": "TL-1", "title": "tool", "description": "tool", "severity": severity,
                          "confidence": "POSSIBLE", "panel": "security", "domain": "SEC",
                          "category": rng.choice(("authz", "other")), "source": "tool:semgrep",
-                         "tool_evidence": {"tool": "semgrep", "rule_id": "r.tool"},
+                         # One in three names no rule: in the claims' category it then
+                         # shares their bucket in the merge.
+                         "tool_evidence": dict({"tool": "semgrep"}, **rng.choice(
+                             ({"rule_id": "r.tool"}, {"rule_id": "r.tool"}, {}))),
                          "location": {"file": self.LINE_FILE, "line_start": 1},
                          "provenance": {"discovered_by": "tool:semgrep",
                                         "confirmation_status": "UNVERIFIED"}},
@@ -1436,18 +1561,23 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
                     summary, without = with_report["summary"], less_report["summary"]
                     for tag, stood in less_stands.items():
                         self.assertGreaterEqual(with_stands[tag], stood, tag)
-                    # The one exemption: the tool finding merged into this cell's
-                    # CONFIRMED claim, alone and unanswered without the cell.
+                    # The first exemption: the tool finding that is merged with the cell
+                    # there, and alone and unanswered without it.
                     cover = under.get("tool", "")
-                    exempt = int(
-                        tool is not None and tool[1] is None and "tool" not in with_shown
-                        and cover.startswith(cell + ":")
-                        and with_shown.get(cover, ("", ""))[1] in CONFIRMED_AS
-                        and less_shown.get("tool") == ("findings", "tool_reported"))
+                    shown_at = {f["description"]: f["severity"] for f in with_report["findings"]}
+                    merged = (tool is not None and tool[1] is None and "tool" not in with_shown
+                              and less_shown.get("tool") == ("findings", "tool_reported"))
+                    status = with_shown.get(cover, ("", ""))[1]
+                    # Under a CONFIRMED claim, shown no lower than the scanner said of its
+                    # finding; or under a claim that is itself owed and unanswered.
+                    exempt = int(merged and status in CONFIRMED_AS
+                                 and self.RANK[shown_at[cover]] >= self.RANK[tool[0]["severity"]])
+                    waiting = int(merged and status in ("unverified", "tool_reported")
+                                  and with_stands[cover] == 2)
                     exempted += exempt
                     (owed, others), (less_owed, less_others) = (
                         self.owed_count(with_report), self.owed_count(less_report))
-                    self.assertGreaterEqual(owed, less_owed - exempt)
+                    self.assertGreaterEqual(owed, less_owed - max(exempt, waiting))
                     self.assertLessEqual(set(less_others), set(others))
                     if not (exempt and less_owed == 1):     # ...the one thing owed without it
                         self.assertGreaterEqual(GATE_RANK[summary["gate"]],

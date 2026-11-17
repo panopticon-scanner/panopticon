@@ -16,15 +16,28 @@
   - After the merge, no finding that is not REJECTED stays under a row of lower final severity
     than its own. It comes back as its own finding, whatever the verdict of the row it was
     under.
-  - A scanner finding nobody has confirmed is still capped at MEDIUM with the agent claim that
-    agrees with it merged into it, as one row (#3231). No review cell can bring that about.
+  - A scanner finding nobody has confirmed is still capped at MEDIUM with the claim merged
+    into it, as one row (#3231): a lone claim and a lone scanner finding at one line are
+    merged whatever their categories. No review cell can bring that about. It holds for a
+    claim the merge ranked where it ends. A `TST-A1*` claim that turns out uncapped ranked
+    below where it ends, so it is not left under the scanner's MEDIUM row: it comes back.
   - What an honest run can see change:
     - A different row where the old one was demoted after winning: of two claims at one line,
       the one that ends at the higher severity is the row.
-    - Two rows where there was one: a `TST-A1*` claim at HIGH that is not capped comes back
-      from under a MEDIUM or HIGH row that won the tie.
-    - A demoted claim no longer absorbs a scanner finding in the verify queue, so that scanner
-      finding gets its own advisor.
+    - A different row where nothing is demoted: a `TST-A1*` claim at HIGH that is not capped
+      (a Python module no test names or imports) ranks at MEDIUM for the merge. It now loses
+      to a plain HIGH claim at its line that it used to beat on confidence. They end at one
+      severity, so it stays merged under that claim.
+    - Two rows where there was one: such an uncapped `TST-A1*` claim comes back from under a
+      MEDIUM row that won the tie, and from under a scanner finding of its own claimed
+      severity that nobody confirmed (the claim at HIGH beside the scanner's MEDIUM row,
+      where there was one row at HIGH).
+    - One id can be in the report at two severities: one claim filed twice under different
+      codes, by two cells or by one, where the instance that is not capped comes back over
+      the other. The two rows can differ in evidence status too.
+    - In the verify queue, a claim that ranks below a scanner finding at its line no longer
+      absorbs it, so the scanner finding gets its own advisor. That is a claim that will be
+      demoted, and also any `TST-A1*` claim at HIGH or CRITICAL, capped in the end or not.
   - No finding is published at a severity it would not have had before.
 
 - **Merging findings at one line no longer changes what the run owes (#3716).** Findings of one
