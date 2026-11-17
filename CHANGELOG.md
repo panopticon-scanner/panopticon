@@ -2,6 +2,61 @@
 
 ## Unreleased
 
+- **The merge ranks a finding by the severity it will be published at (#3727, high).** Findings
+  of one category at one line are merged into the most severe. "Most severe" was the severity a
+  reviewer claimed, and the controller lowers a severity only afterwards: an override with no
+  reason resets it to its code's default (127 of the 398 codes default to LOW or INFO), and a
+  `TST-A1*` claim is capped at MEDIUM where no test can witness it. So a review cell could
+  claim CRITICAL and CERTAIN at another cell's confirmed CRITICAL, or at a scanner finding, win
+  the merge, and then be demoted. The real finding was in neither list: PASS, certified,
+  letter A. It was as old as 5.3.0.
+  - The merge now ranks by the severity a finding can finally have, as far as its own content
+    says: after the override rule, and with a `TST-A1*` claim at CRITICAL or HIGH ranked at
+    its cap. The same holds in the verify queue, which is built on the merged list.
+  - After the merge, no finding that is not REJECTED stays under a row of lower final severity
+    than its own. It comes back as its own finding, whatever the verdict of the row it was
+    under.
+  - A scanner finding nobody has confirmed is still capped at MEDIUM with the claim merged
+    into it, as one row (#3231): a lone claim and a lone scanner finding at one line are
+    merged whatever their categories. No review cell can bring that about. It holds for a
+    claim the merge ranked where it ends. A `TST-A1*` claim that turns out uncapped ranked
+    below where it ends, so it is not left under the scanner's MEDIUM row: it comes back.
+  - What an honest run can see change:
+    - A different row where the old one was demoted after winning: of two claims at one line,
+      the row is the one the merge ranks higher, which is the severity each ends at as far as
+      its own content says. (Beside a scanner finding that is not always the higher row in the
+      end: see the claim an empty override lowers, below.)
+    - A different row where nothing is demoted: a `TST-A1*` claim at HIGH that is not capped
+      (a Python module no test names or imports) ranks at MEDIUM for the merge. It now loses
+      to a plain HIGH claim at its line that it used to beat on confidence. They end at one
+      severity, so it stays merged under that claim.
+    - Two rows where there was one: such an uncapped `TST-A1*` claim comes back from under a
+      MEDIUM row that won the tie, and from under a scanner finding of its own claimed
+      severity or higher that nobody confirmed (the claim at HIGH beside the scanner's MEDIUM
+      row, where there was one row at HIGH).
+    - A claim that an empty `severity_override` raises now wins its pair. A lone claim written
+      LOW or MEDIUM, on a code whose default is higher, ranks at that default. Beside a lone
+      scanner finding at or below it on its line, the claim is the row, and when it is
+      CONFIRMED it covers the scanner finding: one confirmed row and no tool shortfall, where
+      there were two rows and one tool finding unanswered. That is what a claim written at
+      the default already got.
+    - A claim that an empty `severity_override` lowers can be shown as the scanner's row. A
+      lone claim written CRITICAL, on a code whose default is HIGH, that nobody confirmed,
+      ranks at HIGH. Beside an unconfirmed scanner finding on its line that outranks that
+      (CRITICAL, or HIGH and the more confident of the two), it is merged under the scanner's
+      row, which reads MEDIUM while it is unverified. The claim used to be shown at HIGH.
+      That is the row a claim written at HIGH already got. With a catalog whose codes carry
+      severity ranges, the same holds for such a claim with no override at all.
+    - One id can be in the report at two severities: one claim filed twice under different
+      codes, by two cells or by one, where the instance that is not capped comes back over
+      the other. The two rows can differ in evidence status too.
+    - In the verify queue a scanner finding gains or loses its own advisor the same way. A
+      claim that ranks below a scanner finding at its line no longer absorbs it, so the
+      scanner finding gains one: that is a claim that will be demoted, and also any `TST-A1*`
+      claim at HIGH or CRITICAL, capped in the end or not. A claim an empty override raises
+      now absorbs the scanner finding it outranks, so that scanner finding loses its own.
+  - No finding is published at a severity it would not have had before.
+
 - **Docs: repeatable results are claimed for a committed matrix (#3729).** The same version,
   the same pinned repository and the same committed `panopticon.yml`. A freshly proposed matrix
   can differ between two setups on one commit, in how files are grouped and in group names, so
