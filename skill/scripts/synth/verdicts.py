@@ -274,7 +274,25 @@ def _comes_back(theirs, waiting, own, owed):
     return own is None and owed and not waiting
 
 
-def restore_confirmed(fs, findings, queue, holders=None, owed=None):
+class Published:
+    """The severity each finding's row settles at, as a rank (lower is more severe),
+    before any verdict is applied (#3727).
+
+    The controller lowers a claim's severity only after the merge: the code
+    discipline and the `TST-A1*` cap. Each is decided here by the function that later
+    applies it (`severity_cap.Caps.settled`), from the finding as loaded and the
+    verdict it is about to be given."""
+
+    def __init__(self, run, groups_meta, bundle):
+        self.caps, self.bundle = severity_cap_mod.Caps(run, groups_meta), bundle
+
+    def __call__(self, finding, verdict):
+        status = evidence_mod.derive_evidence(finding, verdict)["status"]
+        return evidence_mod.sev_rank(
+            {"severity": self.caps.settled(finding, status, self.bundle)})
+
+
+def restore_confirmed(fs, findings, queue, holders=None, owed=None, published=None):
     """Give back the members dedupe dropped that the report must still show
     (`_comes_back`): each is appended to `findings` as its own finding and queued.
     Strips the carrier either way.
@@ -294,11 +312,21 @@ def restore_confirmed(fs, findings, queue, holders=None, owed=None):
     instances of an id do differ where a cell was never asked: its instance has no
     verdict, and an unsure or dismissed copy does not stand in for it.
 
+    #3727: no member that is not itself REJECTED stays under a row that settles at a
+    lower severity than its own. The merge ranks by the severity a finding can be
+    published at as far as its content says (`corroborate.merge_rank`); the cap that
+    depends on the run is known only here. So a survivor can still end below a
+    member: a `TST-A1*` claim that ranked at its cap turns out uncapped, under the
+    MEDIUM row that won the tie. Such a member comes back, whatever the survivor's
+    verdict.
+
     `owed` says whether a finding was owed an answer (`Owed`, over every loaded
-    finding); built here when not given."""
+    finding); built here when not given. `published` gives the rank a finding is
+    finally published at (`Published`); with none given, severity returns nothing."""
     holders = {} if holders is None else holders    # none given: each by its own cell
     if owed is None:
         owed = Owed(loaded_findings(findings), fs.scope)
+    bundle = published.bundle if published is not None else corroborate_mod.LOAD
     queue_ids = {id(e["finding"]): e["queue_id"] for e in queue}
     taken = {e["queue_id"] for e in queue}
     for survivor in list(findings):
@@ -307,20 +335,33 @@ def restore_confirmed(fs, findings, queue, holders=None, owed=None):
             continue
         theirs = _own_verdict(fs, survivor, queue_ids.get(id(survivor)), holders)
         waiting = theirs is None and owed(survivor)
-        returning = []  # (member, its queue id-to-be, the claim it is) for each that comes back
+        level = published(survivor, theirs) if published is not None else None
+        returning = []  # (member, its queue id-to-be, the claim it is, under a lower row?)
+        levels: dict[int, int] = {}     # id(member) -> the rank it is published at
         for member in absorbed:
             fp = evidence_mod.finding_fingerprint(member)
             own = _own_verdict(fs, member, fp, holders)
-            if _comes_back(theirs, waiting, own, owed(member)):
-                returning.append((member, fp, _claim_key(member, own)))
+            if level is not None:
+                levels[id(member)] = published(member, own)
+            under = (level is not None and not _dismissed(own)
+                     and levels[id(member)] < level)
+            if under or _comes_back(theirs, waiting, own, owed(member)):
+                returning.append((member, fp, _claim_key(member, own), under))
         shown = _claim_key(survivor, theirs)
         kept: dict[tuple, dict[str, Any]] = {}
-        for member, _fp, claim in returning:
-            if claim is not None and corroborate_mod.outranks(member, kept.get(claim)):
+        for member, _fp, claim, _under in returning:
+            # Of the instances of one claim, the one published at the highest severity;
+            # among equals, the one the merge itself would keep.
+            held = kept.get(claim)
+            if claim is not None and (
+                    held is None or levels.get(id(member), 0) < levels.get(id(held), 0)
+                    or (levels.get(id(member), 0) == levels.get(id(held), 0)
+                        and corroborate_mod.outranks(member, held, bundle))):
                 kept[claim] = member
         back = []
-        for member, fp, claim in returning:
-            if claim is not None and (claim == shown or kept[claim] is not member):
+        for member, fp, claim, under in returning:
+            if claim is not None and ((claim == shown and not under)
+                                      or kept[claim] is not member):
                 continue        # this claim is in the report on this verdict already
             qid, n = fp, 0
             while qid in taken:
@@ -774,10 +815,10 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
                  ", ".join(unknown_severity)), file=sys.stderr)
     ingested_tools = [f for f in fs.findings
                       if isinstance(f, dict) and evidence_mod.is_tool_sourced(f)]
-    findings, integration_findings = corroborate_mod.prepare_for_queue(fs.findings)
+    ocrdb_bundle = ocrdb.load_bundle()
+    findings, integration_findings = corroborate_mod.prepare_for_queue(fs.findings, ocrdb_bundle)
     absorbed_into = _absorbed_into(findings)
     catalog = fs.catalog if fs.catalog is not None else load_cwe_catalog()
-    ocrdb_bundle = ocrdb.load_bundle()
     ocrdb_coverage = codes_mod.validate_finding_codes(findings, ocrdb_bundle)
     queue, cut = evidence_mod.build_verify_queue(findings, run.max_verify)
     # #3707: which cells hold each claim id, from the findings as loaded: dedupe
@@ -790,7 +831,9 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     # (A member that comes back is queued as well. It is one claim either way.)
     merged = [(member, survivor) for survivor in findings
               for member in survivor.get(corroborate_mod.ABSORBED_FIELD) or ()]
-    restore_confirmed(fs, findings, queue, holders, owed)   # before any identity is read
+    # (before any identity is read)
+    restore_confirmed(fs, findings, queue, holders, owed,
+                      Published(run, groups_meta, ocrdb_bundle))
     # Identity must be read BEFORE any verdict is applied. For a SARIF-sourced
     # tool finding the adapters park the rule id in
     # provenance.confirmation_reasoning (tools/sarif_utils.tool_provenance sets

@@ -276,22 +276,28 @@ class CopiedClaim(FixtureReplies):
     #3716: with `decoy`, what the copier emits is not a copy. It is another claim at the
     owner's line, in its category, under another title (so another id): dedupe keeps it,
     the first loaded, over the owner's claim. With `owner_says=None` the owner's advisors
-    are asked about the claim and say nothing of it."""
+    are asked about the claim and say nothing of it.
+
+    #3727: with `demoted`, what the copier emits (the copy, or the decoy) claims
+    `confidence: CERTAIN` and carries `DEMOTED`: a code whose default is LOW and an empty
+    `severity_override`, which the controller resets to that default after the merge."""
     COPIER, OWNER = ("app", "COD"), ("lib", "COD")
     CLAIM = "%s/%s defect" % OWNER
     DECOY = "another reading of the %s/%s defect" % OWNER
+    DEMOTED = {"confidence": "CERTAIN", "code": "ARC-A2D", "severity_override": {}}
 
     def __init__(self, copy=True, says=None, owner_says="CONFIRMED", severity="CRITICAL",
-                 below_gate=False, bad_owner=False, decoy=False):
+                 below_gate=False, bad_owner=False, decoy=False, demoted=False):
         self.copy, self.says, self.owner_says = copy, says or {}, owner_says
         self.severity, self.below_gate, self.bad_owner = severity, below_gate, bad_owner
-        self.decoy = decoy
+        self.decoy, self.demoted = decoy, demoted
 
     def findings(self, entry):
         claims = super().findings(entry)
         copier = (entry["group"], entry["domain"]) == self.COPIER
         if self.copy and copier:
-            claims += [dict(claim, title=self.DECOY) if self.decoy else claim
+            claims += [dict(claim, **({"title": self.DECOY} if self.decoy else {}),
+                            **(self.DEMOTED if self.demoted else {}))
                        for claim in super().findings(dict(entry, group=self.OWNER[0],
                                                           domain=self.OWNER[1]))]
         claims = [dict(claim, severity=self.severity)

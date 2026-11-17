@@ -1125,6 +1125,30 @@ def test_a_confirmation_of_the_copy_does_not_answer_for_the_cell_that_was_refuse
     assert "1 finding unanswered by its verify advisor" in summary["grade_shortfalls"]
 
 
+@pytest.mark.parametrize("decoy", [False, True], ids=["a-copy", "a-decoy"])
+def test_a_claim_that_will_be_demoted_does_not_take_the_merge_from_a_confirmed_one(
+        lab, copied, decoy):
+    """#3727, routes A and B. The copier claims CRITICAL and CERTAIN at the owner's
+    confirmed CRITICAL: a copy of it (the same id), or a decoy at its line. Either
+    carries a code whose default is LOW and an empty `severity_override`, and the
+    copier's advisors CONFIRM it. Ranked as claimed it won the merge, took the claim's
+    row, and was then reset to LOW: the owner's CRITICAL was shown at LOW, or was in
+    neither list. The owner's claim is the row, CONFIRMED at CRITICAL, as in the run
+    with no copy."""
+    silent = copied[0]["CONFIRMED", "CRITICAL"]
+    demoted = fh.drive(lab, replies=fh.CopiedClaim(decoy=decoy, demoted=True))
+    assert demoted.status == "complete"
+    assert _the_claim(demoted) == _the_claim(silent) == [
+        ("report", "advisor_confirmed", "CRITICAL")]
+    assert _verdict_of(demoted) == _verdict_of(silent)
+    # The decoy itself is merged under the confirmed claim, as any second claim of one
+    # category at one line is. Invariant 1 asks for every persisted title in a list (the
+    # fixture's own claims never share a line), so it names the decoy and nothing else.
+    lost = [sentence for check, _phase, sentence in problems(silent, demoted) if check == LOSS]
+    assert [check for check, _phase, _sentence in problems(silent, demoted) if check != LOSS] == []
+    assert len(lost) == int(decoy) and all(fh.CopiedClaim.DECOY in sentence for sentence in lost)
+
+
 def test_the_copied_rows_cover_both_stages_and_both_directions():
     kinds = {(stage, said, owner) for says, owner, _severity in COPIED_ROWS.values()
              for stage, said in says.items()}

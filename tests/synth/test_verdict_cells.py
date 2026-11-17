@@ -17,6 +17,7 @@ instance is dismissed by no other cell.
 """
 
 import contextlib
+import copy
 import io
 import json
 import os
@@ -30,10 +31,13 @@ import jsonschema
 import scripts.evidence as evidence_mod
 import scripts.reconcile as reconcile_mod
 import scripts.score_gate as score_gate
+import scripts.ocrdb as ocrdb
+import scripts.synth.codes as codes_mod
 import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
+import scripts.synth.severity_cap as severity_cap_mod
 import scripts.synth.verdict_scope as scope_mod
 import scripts.synth.verdicts as verdicts_mod
 from tests.synth.helpers import _target_with_files
@@ -642,6 +646,427 @@ class TestAnHonestDuplicateBehavesAsBefore(_TwoCells):
 GROUPS3 = GROUPS + [{"name": "g3", "files": ["c.py"]}]
 
 
+class TestTheMergeRanksByThePublishedSeverity(_Verdicts):
+    """#3727. Dedupe ranked by the severity a reviewer claimed, and the controller lowers
+    a severity only afterwards: an override with no reason resets it to its code's
+    default (`ARC-A2D` is LOW), and a `TST-A1*` claim is capped at MEDIUM where no test
+    can witness it. So a hostile cell claimed CRITICAL and CERTAIN at another cell's
+    confirmed CRITICAL, won the merge, and was then demoted: the real finding was in
+    neither list, and the run was PASS, certified, letter A.
+
+    The victim is `g2`'s CRITICAL, CONFIRMED by its own advisor. `g1` is the hostile cell."""
+
+    LEVERS = {"an override with no reason": dict(code="ARC-A2D", severity_override={}),
+              "a TST-A1 code": dict(code="TST-A1A")}
+    CONTROLS = {"an ordinary code": {},
+                "an override with a reason": dict(code="ARC-A2D", severity_override={
+                    "from": "LOW", "to": "CRITICAL", "reason": "reachable: from the login form"})}
+    FILE = "b.sh"           # not Python, so nothing can witness a TST-A1 claim: it is capped
+
+    def run_of(self, hostile, victim_says="CONFIRMED", hostile_says="CONFIRMED", tool=None,
+               victim=True, fail_on="critical"):
+        """The report for `g1` holding `hostile` (claims) beside `g2`'s victim, and the
+        scanner finding `tool` ((finding, verdict word) or None)."""
+        for name in os.listdir(self.verdicts):
+            os.unlink(os.path.join(self.verdicts, name))
+        files = {"g1": [claim("a.py", severity="LOW")] + list(hostile)}
+        if victim:
+            files["g2"] = [dict(claim(self.FILE), description="the victim")]
+        paths = []
+        for group, findings in files.items():
+            paths.append(os.path.join(self.run_dir, "findings-%s-SEC.json" % group))
+            with open(paths[-1], "w", encoding="utf-8") as fh:
+                json.dump({"findings": findings}, fh)
+        loaded = findings_mod.load_findings(paths)
+        mine = [f for f in loaded if f["_group"] == "g1"]
+        bodies = [record(claims=[f["id"] for f in mine], size=25)]
+        self.bundle([verdict(mine[0]["id"])] + [verdict(f["id"], hostile_says)
+                                                for f in mine[1:] if hostile_says])
+        if victim:
+            self.victim = loaded[-1]["id"]
+            bodies.append(record(group="g2", claims=[self.victim], size=25))
+            if victim_says:
+                self.bundle([verdict(self.victim, victim_says)], group="g2")
+        self.record(*bodies)
+        if tool is not None:
+            finding, said = tool
+            loaded.append(dict(finding))
+            if said:
+                with open(os.path.join(self.verdicts, "%s.json" % evidence_mod.finding_fingerprint(
+                        finding)), "w", encoding="utf-8") as fh:
+                    json.dump({"finding_id": finding["id"], "verdict": said, "reasoning": "r"}, fh)
+        fs = findings_mod.FindingSet.load(
+            types.SimpleNamespace(verdicts_dir=self.verdicts), [], "standard", None,
+            prepared=(loaded, None, None), run_dir=self.run_dir)
+        with _target_with_files(GROUPS, lines=5000) as target, \
+                contextlib.redirect_stderr(io.StringIO()):
+            return report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=target, fail_on=fail_on,
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=fs, plan=plan_mod.PlanInputs(groups_meta=GROUPS)))
+
+    @staticmethod
+    def rows(report, *descriptions):
+        return sorted((f["description"], where, f["severity"], f["evidence"]["status"])
+                      for where in ("findings", "discarded_claims") for f in report[where]
+                      if f["description"] in descriptions)
+
+    @staticmethod
+    def verdict_of(report):
+        summary = report["summary"]
+        return (summary["gate"], summary["coverage_certified"], summary["overall_grade"],
+                summary["provisional_grade"], summary["grade_shortfalls"])
+
+    def hostile(self, title, description, **lever):
+        return dict(claim(self.FILE, title=title), confidence="CERTAIN",
+                    description=description, **lever)
+
+    VICTIM_ROW = ("the victim", "findings", "CRITICAL", "advisor_confirmed")
+
+    def test_route_a_a_copy_that_will_be_demoted_does_not_win_the_merge(self):
+        """The copy has the victim's id (`code` is not part of an id). It was the row
+        published for the claim, on the victim's own CONFIRMED, at LOW or MEDIUM."""
+        silent = self.run_of([])
+        self.assertEqual([self.VICTIM_ROW], self.rows(silent, "the victim"))
+        self.assertEqual("FAIL", silent["summary"]["gate"])
+        for label, lever in self.LEVERS.items():
+            for hostile_says in ("CONFIRMED", "REJECTED", "NEEDS_MORE_INFO"):
+                with self.subTest(label, hostile_says=hostile_says):
+                    report = self.run_of([self.hostile(None, "the copy", **lever)],
+                                         hostile_says=hostile_says)
+                    self.assertEqual([self.VICTIM_ROW], self.rows(report, "the victim", "the copy"))
+                    self.assertEqual(self.verdict_of(silent), self.verdict_of(report))
+
+    def test_route_a_with_a_silent_hostile_advisor_the_claim_is_still_shown_at_its_severity(self):
+        for label, lever in self.LEVERS.items():
+            with self.subTest(label):
+                report = self.run_of([self.hostile(None, "the copy", **lever)], hostile_says=None)
+                self.assertEqual([self.VICTIM_ROW], self.rows(report, "the victim", "the copy"))
+                self.assertEqual("FAIL", report["summary"]["gate"])
+
+    def test_route_b_a_confirmed_decoy_that_will_be_demoted_does_not_hide_the_victim(self):
+        """Another claim at the victim's line and category, CRITICAL and CERTAIN, and
+        CONFIRMED by its own advisor. The victim was in neither list, under a LOW or
+        MEDIUM row. The victim is the row: the decoy ranks where it will be published,
+        loses the merge, and is merged under a confirmed finding like any other claim."""
+        silent = self.run_of([])
+        for label, lever in self.LEVERS.items():
+            with self.subTest(label):
+                report = self.run_of([self.hostile("another reading", "the decoy", **lever)])
+                self.assertEqual([self.VICTIM_ROW], self.rows(report, "the victim", "the decoy"))
+                self.assertEqual(self.verdict_of(silent), self.verdict_of(report))
+
+    def test_the_widening_a_member_that_is_unsure_or_unanswered_is_not_hidden_either(self):
+        """Every finding of another cell that is not REJECTED. The victim's advisor is
+        unsure, or says nothing: the report showed a confirmed LOW and nothing else."""
+        for victim_says, status in (("NEEDS_MORE_INFO", "needs_more_info"), (None, "unverified")):
+            with self.subTest(victim_says=victim_says):
+                silent = self.run_of([], victim_says=victim_says)
+                report = self.run_of([self.hostile("another reading", "the decoy",
+                                                   **self.LEVERS["an override with no reason"])],
+                                     victim_says=victim_says)
+                self.assertEqual([("the decoy", "findings", "LOW", "advisor_confirmed"),
+                                  ("the victim", "findings", "CRITICAL", status)],
+                                 self.rows(report, "the victim", "the decoy"))
+                self.assertEqual(self.verdict_of(silent), self.verdict_of(report))
+
+    def test_the_controls_a_claim_that_keeps_its_severity_still_wins_the_merge(self):
+        """An ordinary code, or an override that carries a reason, is not demoted: the
+        copy or the decoy is CRITICAL and CERTAIN, wins as before, and the gate fails
+        with a CRITICAL shown."""
+        for label, lever in self.CONTROLS.items():
+            with self.subTest(label, hostile="a copy"):
+                report = self.run_of([self.hostile(None, "the copy", **lever)])
+                self.assertEqual([("the copy", "findings", "CRITICAL", "advisor_confirmed")],
+                                 self.rows(report, "the victim", "the copy"))
+                self.assertEqual("FAIL", report["summary"]["gate"])
+            with self.subTest(label, hostile="a decoy"):
+                report = self.run_of([self.hostile("another reading", "the decoy", **lever)])
+                self.assertEqual([("the decoy", "findings", "CRITICAL", "advisor_confirmed")],
+                                 self.rows(report, "the victim", "the decoy"))
+                self.assertEqual("FAIL", report["summary"]["gate"])
+
+    def scanner_finding(self, severity="HIGH"):
+        return {"id": "TL-1", "title": "tool", "description": "the scanner's", "severity": severity,
+                "confidence": "POSSIBLE", "panel": "security", "domain": "SEC",
+                "category": "other", "source": "tool:semgrep",
+                "tool_evidence": {"tool": "semgrep", "rule_id": "r.tool"},
+                "location": {"file": self.FILE, "line_start": 1},
+                "provenance": {"discovered_by": "tool:semgrep",
+                               "confirmation_status": "UNVERIFIED"}}
+
+    def test_route_c_a_demoted_decoy_does_not_hide_a_scanner_finding(self):
+        """The decoy sits on a scanner finding's line, in any category, CONFIRMED. The
+        HIGH scanner finding became one LOW `tool_confirmed` row: PASS, certified, no
+        shortfall. It is the scanner's row, as with no decoy: unanswered and owed
+        (INCONCLUSIVE), or CONFIRMED at HIGH (FAIL)."""
+        for said, row, gate in ((None, ("the scanner's", "findings", "MEDIUM", "tool_reported"),
+                                 "INCONCLUSIVE"),
+                                ("CONFIRMED", ("the scanner's", "findings", "HIGH", "tool_confirmed"),
+                                 "FAIL")):
+            tool = (self.scanner_finding(), said)
+            silent = self.run_of([], tool=tool, victim=False, fail_on="high")
+            self.assertEqual([row], self.rows(silent, "the scanner's"))
+            self.assertEqual(gate, silent["summary"]["gate"])
+            for (label, lever), demoted in zip(self.LEVERS.items(), ("LOW", "MEDIUM")):
+                with self.subTest(label, tool_says=said):
+                    report = self.run_of([self.hostile("a decoy", "the decoy", **lever)],
+                                         tool=tool, victim=False, fail_on="high")
+                    # Under a CONFIRMED scanner row the decoy is merged, as any claim is.
+                    # Under one nobody answered for, the confirmed decoy is its own row.
+                    decoy = [] if said else [("the decoy", "findings", demoted, "advisor_confirmed")]
+                    self.assertEqual(decoy + [row], self.rows(report, "the scanner's", "the decoy"))
+                    self.assertEqual(self.verdict_of(silent), self.verdict_of(report))
+                    axis = report["meta"]["coverage"]["tool_axis"]
+                    self.assertEqual((1, int(said is None)), (axis["queued"], axis["unanswered"]))
+
+    def test_a_tie_in_final_severity_stays_one_row(self):
+        """Two claims that end at one severity are merged as before: the first loaded,
+        or the more confident, is the row."""
+        report = self.run_of([dict(claim(self.FILE, title="another reading"),
+                                   description="the other")])
+        self.assertEqual([("the other", "findings", "CRITICAL", "advisor_confirmed")],
+                         self.rows(report, "the victim", "the other"))
+        # ...and a demoted claim that ends where another claim is, too.
+        report = self.run_of([self.hostile("another reading", "the decoy",
+                                           **self.LEVERS["a TST-A1 code"])], victim=False,
+                             tool=None)
+        self.assertEqual([("the decoy", "findings", "MEDIUM", "advisor_confirmed")],
+                         self.rows(report, "the decoy"))
+
+    def test_an_uncapped_tst_a1_claim_comes_back_from_under_a_lower_row(self):
+        """A `TST-A1*` claim ranks at its cap for the merge, because whether the cap
+        applies needs the run. On a Python module no test names or imports, it is not
+        capped. Left under the MEDIUM row that won the tie, a HIGH claim would be shown
+        as MEDIUM, so it comes back, unless its own advisor REJECTED it."""
+        def scene(said, same_claim=False):
+            theirs = dict(claim("b.py", title="untested", severity="HIGH"), code="TST-A1A",
+                          description="the TST claim")
+            for name in os.listdir(self.verdicts):
+                os.unlink(os.path.join(self.verdicts, name))
+            paths = []
+            mine = claim("b.py", title="untested" if same_claim else None, severity="MEDIUM")
+            for group, findings in (("g1", [dict(mine, description="the MEDIUM")]),
+                                    ("g2", [theirs])):
+                paths.append(os.path.join(self.run_dir, "findings-%s-SEC.json" % group))
+                with open(paths[-1], "w", encoding="utf-8") as fh:
+                    json.dump({"findings": findings}, fh)
+            loaded = findings_mod.load_findings(paths)
+            self.record(record(claims=[loaded[0]["id"]], size=25),
+                        record(group="g2", claims=[loaded[1]["id"]], size=25))
+            self.bundle([verdict(loaded[0]["id"])])
+            if said:
+                self.bundle([verdict(loaded[1]["id"], said)], group="g2")
+            fs = findings_mod.FindingSet.load(
+                types.SimpleNamespace(verdicts_dir=self.verdicts), [], "standard", None,
+                prepared=(loaded, None, None), run_dir=self.run_dir)
+            with _target_with_files(GROUPS, lines=5000) as target, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                return report_mod.build_report(report_mod.ReportInputs(
+                    run=report_mod.RunConfig(target=target, fail_on="critical",
+                                             timestamp="2026-01-01T00:00:00Z"),
+                    findings=fs, plan=plan_mod.PlanInputs(groups_meta=GROUPS)))
+        medium = ("the MEDIUM", "findings", "MEDIUM", "advisor_confirmed")
+        for said, status in (("CONFIRMED", "advisor_confirmed"),
+                             ("NEEDS_MORE_INFO", "needs_more_info"), (None, "unverified")):
+            with self.subTest(said=said):
+                self.assertEqual([medium, ("the TST claim", "findings", "HIGH", status)],
+                                 self.rows(scene(said), "the MEDIUM", "the TST claim"))
+        self.assertEqual([medium], self.rows(scene("REJECTED"), "the MEDIUM", "the TST claim"))
+        # The same where the two are instances of ONE claim, filed under different codes:
+        # the claim is already in the report on that verdict, at MEDIUM, and the instance
+        # that is published higher still comes back. One id, at two severities.
+        report = scene("CONFIRMED", same_claim=True)
+        self.assertEqual(1, len({f["id"] for f in report["findings"]}))
+        self.assertEqual([medium, ("the TST claim", "findings", "HIGH", "advisor_confirmed")],
+                         self.rows(report, "the MEDIUM", "the TST claim"))
+
+
+class TestTheSeverityIsDecidedOnceAndApplied(unittest.TestCase):
+    """#3727. The merge and the restore read the severity a finding will be published
+    at before anything is applied. They read it from the function that applies it, so
+    what is predicted and what is published cannot drift apart."""
+
+    BUNDLE = ocrdb.load_bundle()
+
+    @classmethod
+    def ranged(cls):
+        """The catalog as OCRDb 0.7 will ship it for one code: `ARC-A2D` (default LOW)
+        with a `severity_range`. No shipped code has one today, and with one an agent
+        severity that differs from the default needs no override at all to be reset."""
+        bundle = copy.deepcopy(cls.BUNDLE)
+        bundle["domains"]["ARC"]["entries"]["ARC-A2D"]["severity_range"] = {
+            "floor": "INFO", "ceiling": "MEDIUM"}
+        return bundle
+
+    def findings(self):
+        """Agent claims and scanner findings under every lever: no override, an empty
+        one, one with a reason, a low-default code, a `TST-A1*` code, on two files."""
+        out = []
+        for severity in ("CRITICAL", "HIGH", "MEDIUM", "LOW"):
+            for code in ("SEC-A1A", "ARC-A2D", "TST-A1A", "NOT-A-CODE"):
+                for override in (None, {}, {"reason": ""}, "not an object",
+                                 {"from": "LOW", "to": severity, "reason": "reachable: yes"}):
+                    for file in ("b.py", "b.sh"):
+                        for tool in (False, True):
+                            finding = dict(claim(file, severity=severity), code=code,
+                                           id="X-%d" % len(out))
+                            if override is not None:
+                                finding["severity_override"] = override
+                            if tool:
+                                finding.update(source="tool:semgrep", tool_evidence={
+                                    "tool": "semgrep", "rule_id": "r"})
+                            out.append(finding)
+        return out
+
+    def test_the_discipline_applies_what_it_predicts(self):
+        for bundle in (self.BUNDLE, self.ranged(), None):
+            for finding in self.findings():
+                predicted = codes_mod.severity_after_discipline(finding, bundle)
+                applied = copy.deepcopy(finding)
+                with contextlib.redirect_stderr(io.StringIO()):
+                    codes_mod.apply_verdict_quality([applied], {}, bundle)
+                self.assertEqual(predicted, applied["severity"], finding)
+        # It changes nothing itself.
+        finding = dict(claim("b.py"), code="ARC-A2D", severity_override={})
+        before = copy.deepcopy(finding)
+        self.assertEqual("LOW", codes_mod.severity_after_discipline(finding, self.BUNDLE))
+        self.assertEqual(before, finding)
+
+    def test_the_levers_the_issue_names(self):
+        after = codes_mod.severity_after_discipline
+        low = dict(claim("b.py"), code="ARC-A2D")
+        self.assertEqual("CRITICAL", after(low, self.BUNDLE))                       # no override
+        self.assertEqual("LOW", after(dict(low, severity_override={}), self.BUNDLE))
+        self.assertEqual("LOW", after(dict(low, severity_override={"reason": ""}), self.BUNDLE))
+        self.assertEqual("CRITICAL", after(dict(low, severity_override={
+            "reason": "reachable: from the login form"}), self.BUNDLE))
+        # A code the catalog does not know has no default to fall to; nor has no catalog.
+        self.assertEqual("CRITICAL", after(dict(low, code="NOT-A-CODE", severity_override={}),
+                                           self.BUNDLE))
+        self.assertEqual("CRITICAL", after(dict(low, severity_override={}), None))
+
+    def test_the_latent_lever_is_covered_when_a_code_carries_a_range(self):
+        """`codes.py`'s third lever: with a `severity_range` on the code, an agent
+        severity with no override at all reverts to the default. The merge ranks by it
+        the day a catalog carries one."""
+        ranged, low = self.ranged(), dict(claim("b.py"), code="ARC-A2D", confidence="CERTAIN")
+        self.assertEqual("CRITICAL", codes_mod.severity_after_discipline(low, self.BUNDLE))
+        self.assertEqual("LOW", codes_mod.severity_after_discipline(low, ranged))
+        self.assertEqual(3, corroborate_mod.merge_rank(low, ranged)[0])
+        # A scanner's severity is its own axis: never reset.
+        self.assertEqual("CRITICAL", codes_mod.severity_after_discipline(
+            dict(low, source="tool:semgrep"), ranged))
+        # An override with a reason is clamped into the range.
+        self.assertEqual("LOW", codes_mod.severity_after_discipline(
+            dict(low, severity_override={"reason": "reachable: yes"}), ranged))
+        victim = dict(claim("b.py"), id="V", confidence="POSSIBLE")
+        decoy = dict(low, id="D", title="decoy")
+        self.assertEqual("D", corroborate_mod.dedupe([dict(victim), dict(decoy)], self.BUNDLE)[0]["id"])
+        self.assertEqual("V", corroborate_mod.dedupe([dict(victim), dict(decoy)], ranged)[0]["id"])
+
+    def test_the_caps_apply_what_they_predict(self):
+        """A claim's row settles where it is published. A scanner finding's settles at
+        its severity before the unverified cap, which is all that differs."""
+        run = types.SimpleNamespace(gate_unverified=False, root=None, target="/nonexistent")
+        strict = types.SimpleNamespace(gate_unverified=True, root=None, target="/nonexistent")
+        capped = 0
+        for policy in (run, strict):
+            caps = severity_cap_mod.Caps(policy, [])
+            for finding in self.findings():
+                for status in ("unverified", "tool_reported", "needs_more_info",
+                               "advisor_confirmed", "tool_confirmed", "rejected"):
+                    settled = caps.settled(finding, status, self.BUNDLE)
+                    applied = copy.deepcopy(finding)
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        codes_mod.apply_verdict_quality([applied], {}, self.BUNDLE)
+                    disciplined = applied["severity"]
+                    applied["evidence"] = {"status": status}
+                    severity_cap_mod.apply([applied], policy, [])
+                    if (applied.get("severity_cap") or {}).get("reason") == "unverified_tool":
+                        capped += 1
+                        self.assertEqual((disciplined, "MEDIUM"), (settled, applied["severity"]))
+                    else:
+                        self.assertEqual(settled, applied["severity"], (finding, status))
+        self.assertGreater(capped, 0)
+
+    def test_the_merge_ranks_a_finding_where_it_can_be_published(self):
+        rank = corroborate_mod.merge_rank
+        plain = dict(claim("b.py"), confidence="LIKELY")
+        self.assertEqual((0, 1), rank(plain, self.BUNDLE))                # CRITICAL, LIKELY
+        # An override with no reason: at its code's default.
+        self.assertEqual((3, 0), rank(dict(plain, confidence="CERTAIN", code="ARC-A2D",
+                                           severity_override={}), self.BUNDLE))
+        # A `TST-A1*` claim at CRITICAL or HIGH: at its cap, on any file.
+        for severity in ("CRITICAL", "HIGH"):
+            for file in ("b.py", "b.sh"):
+                self.assertEqual(2, rank(dict(claim(file, severity=severity), code="TST-A1A"),
+                                         self.BUNDLE)[0])
+        self.assertEqual(3, rank(dict(claim("b.py", severity="LOW"), code="TST-A1A"),
+                                 self.BUNDLE)[0])
+        # A scanner finding ranks as the scanner said: its cap needs a verdict.
+        tool = dict(plain, code="TST-A1A", source="tool:semgrep")
+        self.assertEqual(0, rank(tool, self.BUNDLE)[0])
+        # `outranks` is the same order, and a tie is False.
+        demoted = dict(plain, confidence="CERTAIN", code="ARC-A2D", severity_override={})
+        self.assertTrue(corroborate_mod.outranks(plain, demoted, self.BUNDLE))
+        self.assertFalse(corroborate_mod.outranks(demoted, plain, self.BUNDLE))
+        self.assertFalse(corroborate_mod.outranks(plain, dict(plain), self.BUNDLE))
+        self.assertTrue(corroborate_mod.outranks(plain, None, self.BUNDLE))
+        self.assertTrue(corroborate_mod.outranks(plain, demoted))          # the vendored catalog
+        # With no catalog nothing is known to be demoted: the more confident claim wins.
+        self.assertFalse(corroborate_mod.outranks(plain, demoted, None))
+        self.assertTrue(corroborate_mod.outranks(demoted, plain, None))
+
+    def test_dedupe_keeps_the_claim_that_will_be_published_higher(self):
+        victim = dict(claim("b.py"), id="V", confidence="POSSIBLE")
+        decoy = dict(claim("b.py", title="decoy"), id="D", confidence="CERTAIN",
+                     code="ARC-A2D", severity_override={})
+        for order in ([victim, decoy], [decoy, victim]):
+            (kept,) = corroborate_mod.dedupe([dict(f) for f in order])
+            self.assertEqual("V", kept["id"])
+            self.assertEqual(["D"], [m["id"] for m in kept[corroborate_mod.ABSORBED_FIELD]])
+        # Without a catalog nothing is known to be demoted: as claimed, as before.
+        (kept,) = corroborate_mod.dedupe([dict(victim), dict(decoy)], None)
+        self.assertEqual("D", kept["id"])
+
+
+class TestNoCellCanMakeAScannerRow(_Verdicts):
+    """The two facts the second exemption rests on (#3727): a scanner row's unverified
+    cap is not a demotion of the row, and that is safe only because no cell can produce
+    such a row or push another cell's claim under one."""
+
+    def test_a_cell_cannot_write_a_scanner_finding(self):
+        path = os.path.join(self.run_dir, "findings-g1-SEC.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"findings": [dict(claim("b.py"), source="tool:semgrep", reinforced=True,
+                                         tool_evidence={"tool": "semgrep", "rule_id": "r"})]}, fh)
+        with contextlib.redirect_stderr(io.StringIO()):
+            (loaded,) = findings_mod.load_findings([path])
+        self.assertNotIn("source", loaded)
+        self.assertNotIn("reinforced", loaded)
+        self.assertFalse(evidence_mod.is_tool_sourced(loaded))
+        self.assertIn("source", findings_mod.AGENT_FORBIDDEN_FIELDS)
+
+    def test_a_third_claim_at_the_line_ends_the_merge_across_the_two_kinds(self):
+        """One agent claim and one scanner finding at a line collapse into one row. With
+        a second claim there, the scanner finding and the claims are merged apart: no
+        claim is under the scanner's row, so nothing of a cell's is shown at its cap."""
+        tool = {"id": "TL-1", "title": "tool", "severity": "HIGH", "confidence": "CERTAIN",
+                "category": "authz", "source": "tool:semgrep",
+                "tool_evidence": {"tool": "semgrep", "rule_id": "r"},
+                "location": {"file": "b.py", "line_start": 1}}
+        victim = dict(claim("b.py", severity="HIGH"), id="V", confidence="POSSIBLE")
+        third = dict(claim("b.py", title="a third claim", severity="LOW"), id="H")
+        (pair,) = corroborate_mod.dedupe([dict(victim), dict(tool)])
+        self.assertEqual(("TL-1", ["V"]), (pair["id"], [m["id"] for m in pair[
+            corroborate_mod.ABSORBED_FIELD]]))
+        for order in ([victim, third, tool], [third, victim, tool], [tool, third, victim]):
+            rows = {f["id"]: [m["id"] for m in f.get(corroborate_mod.ABSORBED_FIELD) or ()]
+                    for f in corroborate_mod.dedupe([dict(f) for f in order])}
+            self.assertEqual({"TL-1": [], "V": ["H"]}, rows)
+
+
 class TestOwedFollowsWhatTheControllerAsked(_Verdicts):
     """Round 3, R1. The driver dispatches by cell FILE and hands the advisors every
     claim in it. So a claim is owed an answer when its cell, the file it was loaded
@@ -763,10 +1188,42 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
     claim was never asked about (the queue is built on the merged list) and owes
     nothing while it is merged. Without the cell it is alone and unanswered. That one
     unanswered tool finding, and the INCONCLUSIVE gate and the certification it
-    costs, are not held against the cell."""
+    costs, are not held against the cell.
+
+    #3727, severity. A claim may carry a lever the controller applies only after the
+    merge: an empty `severity_override` on a code whose default is LOW, or a `TST-A1*`
+    code on a file no test can witness (capped at MEDIUM). In each run, every finding in
+    the report is at its own final severity, worked out here by the rule, and no
+    finding that is not REJECTED is merged under a row of lower severity than its own.
+
+    A SECOND EXEMPTION, as ruled: a scanner finding nobody has confirmed is capped at
+    MEDIUM, and an agent claim merged into it may be shown at that. The pair is one
+    issue, the scanner's row until an advisor confirms it, as #3231 chose. So the row's
+    level is the scanner's severity before that cap. No cell can bring it about: a cell
+    cannot write a scanner finding, and a third claim at the line ends the merge
+    across the two kinds (`TestNoCellCanMakeAScannerRow`)."""
 
     CASES, SEED = 300, 3711
     LINE_FILE = "b.py"
+    LOW_DEFAULT = "ARC-A2D"         # an OCRDb code whose default severity is LOW
+    CAPPED_TO = {"CRITICAL": "MEDIUM", "HIGH": "MEDIUM"}
+    RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1, "INFO": 0}
+
+    def final_of(self, finding, said, capped=True):
+        """The severity this finding is published at, by the rule: an override with no
+        reason resets it to its code's default; then a `TST-A1*` claim on a file that is
+        not Python, or a scanner finding nobody confirmed, is capped at MEDIUM."""
+        severity = finding["severity"]
+        override = finding.get("severity_override")
+        if isinstance(override, dict) and not override.get("reason"):
+            self.assertEqual(self.LOW_DEFAULT, finding["code"])
+            severity = "LOW"
+        if finding["description"] == "tool":
+            unconfirmed = capped and said in (None, "NEEDS_MORE_INFO")
+            return self.CAPPED_TO.get(severity, severity) if unconfirmed else severity
+        if finding["code"] == "TST-A1A" and not self.LINE_FILE.endswith(".py"):
+            return self.CAPPED_TO.get(severity, severity)
+        return severity
 
     def write(self, cells, tool, skip=None):
         """The run folder for `cells` ({group: (asked, [(claim, said)])}) and the tool
@@ -833,14 +1290,17 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
                 run=report_mod.RunConfig(target=target, fail_on="high",
                                          timestamp="2026-01-01T00:00:00Z"),
                 findings=fs, plan=plan_mod.PlanInputs(groups_meta=GROUPS3)))
-        shown, claims = {}, set()
+        shown, claims, severity = {}, set(), {}
         for where in ("findings", "discarded_claims"):
             for f in report[where]:
                 self.assertNotIn(f["description"], shown, "one finding is in the report twice")
                 shown[f["description"]] = (where, f["evidence"]["status"])
-                self.assertNotIn((f["id"], f["evidence"]["status"]), claims,
-                                 "one claim is in the report twice on one verdict")
-                claims.add((f["id"], f["evidence"]["status"]))
+                severity[f["description"]] = f["severity"]
+                # (At two severities it can be: two cells file one claim under different
+                # codes, and the instance that is not capped comes back over the other.)
+                row = (f["id"], f["evidence"]["status"], f["severity"])
+                self.assertNotIn(row, claims, "one claim is in the report twice on one verdict")
+                claims.add(row)
         # The oracle's own view of the merge and of what was owed: dedupe on a fresh
         # copy, and the engagement score over each cell's file.
         fresh = [dict(f) for f in loaded]
@@ -848,7 +1308,7 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
         under = {m["description"]: survivor["description"]
                  for survivor in corroborate_mod.dedupe([dict(f) for f in fresh])
                  for m in survivor.get(corroborate_mod.ABSORBED_FIELD) or ()}
-        stands, words, ids = {}, {}, {}
+        stands, words, ids, final = {}, {}, {}, {}
         for f in fresh:
             tag = f["description"]
             said = tool[1] if tag == "tool" else self.said_of(cells, skip, *tag.split(":"))
@@ -856,7 +1316,15 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
             stands[tag] = {"CONFIRMED": 3, "NEEDS_MORE_INFO": 1, "REJECTED": 0,
                            None: 2 if owed else 1}[said]
             words[tag] = said
+            final[tag] = self.final_of(f, said)
             ids.setdefault(f["id"], []).append(tag)
+
+        def row_level(tag):
+            """The level of the row `tag`, for what is merged under it: its published
+            severity, or for a scanner row its severity before the unverified cap."""
+            if tag != "tool":
+                return self.RANK[severity[tag]]
+            return self.RANK[self.final_of(tool[0], tool[1], capped=False)]
 
         def as_shown(tag):
             where, status = shown[tag]
@@ -869,18 +1337,26 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
         # What the report shows (P2, P3): every finding is there on its own standing;
         # or an instance of its id is there on the same verdict (or confirmed); or it
         # is merged under a finding that is there and stands no lower.
+        # ...and (#3727) each row is at its own final severity, and no finding that is
+        # not REJECTED is under a row of lower severity than its own.
         for f in fresh:
             tag = f["description"]
             if tag in shown:
                 self.assertEqual(stands[tag], as_shown(tag), "%s is shown as %r" % (tag, shown[tag]))
+                self.assertEqual(final[tag], severity[tag], "%s is shown at %s" % (tag, severity[tag]))
                 continue
-            if any(other in shown and words[other] in (words[tag], "CONFIRMED")
-                   for other in ids[f["id"]]):
-                continue
-            self.assertIn(under.get(tag), shown, "%s is in neither list, and under nothing "
-                                                 "that is" % tag)
-            self.assertGreaterEqual(as_shown(under[tag]), stands[tag],
-                                    "%s is merged under %s" % (tag, under[tag]))
+            stand_ins = [other for other in ids[f["id"]]
+                         if other in shown and words[other] in (words[tag], "CONFIRMED")]
+            if not stand_ins:
+                self.assertIn(under.get(tag), shown, "%s is in neither list, and under "
+                                                     "nothing that is" % tag)
+                self.assertGreaterEqual(as_shown(under[tag]), stands[tag],
+                                        "%s is merged under %s" % (tag, under[tag]))
+            if words[tag] != "REJECTED":
+                rows = stand_ins or [under[tag]]
+                self.assertGreaterEqual(
+                    max(row_level(row) for row in rows), self.RANK[final[tag]],
+                    "%s (%s) is under %r" % (tag, final[tag], [(r, severity[r]) for r in rows]))
         return report, shown, stands, under
 
     @staticmethod
@@ -897,6 +1373,9 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
 
     def case(self, rng):
         cells, tool, used = {}, None, set()
+        # Half the cases sit on a file that is not Python: there a `TST-A1*` claim cannot
+        # be witnessed and is capped. On a Python file with no test, it is not.
+        self.LINE_FILE = rng.choice(("b.py", "b.sh"))
         for _ in range(rng.randint(2, 5)):
             severity = rng.choice(("CRITICAL", "HIGH", "MEDIUM", "LOW"))
             if tool is None and rng.random() < 0.2:
@@ -916,10 +1395,15 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
             if (group, declared, title) in used:
                 continue
             used.add((group, declared, title))
+            # #3727: a lever the controller applies after the merge. `code` is not part
+            # of an id, so a copy can carry one where the claim it copies has none.
+            lever = rng.choice(({}, {}, {}, {"code": self.LOW_DEFAULT, "severity_override": {}},
+                                {"code": "TST-A1A"}))
             asked, claims = cells.setdefault(group, (rng.random() < 0.7, []))
-            claims.append((dict(claim(self.LINE_FILE, title=title, severity=severity),
-                                domain=declared, code="%s-A1A" % declared,
-                                description="%s:%s:%s" % (group, declared, title)),
+            claims.append(({**claim(self.LINE_FILE, title=title, severity=severity),
+                            "domain": declared, "code": "%s-A1A" % declared,
+                            "confidence": rng.choice(("CERTAIN", "LIKELY", "POSSIBLE")),
+                            "description": "%s:%s:%s" % (group, declared, title), **lever},
                            rng.choice(WORDS) if asked else None))
         # The driver dispatches a cell's advisors only when the cell's claims reach the
         # verify gate. A cell below it is never asked; one above it was asked, or has

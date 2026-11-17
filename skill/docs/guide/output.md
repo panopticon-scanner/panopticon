@@ -138,6 +138,12 @@ ids. It is a disclosure, not a shortfall: an honest duplicate that both cells co
 reject, is decided as it always was.
 Merging findings at one line changes what the report shows and never what the run owes (#3716).
 Findings of one category at one line are merged into the most severe before any verdict is read.
+"Most severe" is the severity a finding will be published at, as far as its own content says, and
+not the one its reviewer claimed (#3727): a `severity_override` with no reason counts as its code's
+default, and a `TST-A1*` claim at CRITICAL or HIGH counts as MEDIUM, its cap. And no finding that
+is not REJECTED stays merged under a row whose final severity is below its own; it comes back as
+its own finding. (One row is not held to that: a scanner finding nobody has confirmed, capped at
+MEDIUM, keeps the agent claim that agrees with it.)
 What is owed is counted first, over every loaded finding. A claim is owed an advisor's answer when
 its review cell reaches the verify gate, or the dispatch record says the cell was asked about it;
 the cell is the findings file the claim was loaded from, whatever domain its reviewer declared. A

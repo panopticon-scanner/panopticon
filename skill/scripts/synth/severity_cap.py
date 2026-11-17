@@ -39,6 +39,7 @@ import scripts.evidence as evidence_mod
 import scripts.ingest_tools as ingest_tools
 import scripts.py_imports as py_imports
 import scripts.tools as tools
+from . import codes as codes_mod
 
 CAP_TO = "MEDIUM"
 CAPPED = ("CRITICAL", "HIGH")
@@ -105,36 +106,73 @@ class _Witness:
                        if f in importing or _named_after(f, stem)}, key=lambda r: r[1])
 
 
+def unverified_tool_capped(finding, severity, status, run):
+    """Is this scanner finding, at `severity` and evidence `status`, capped as unverified?"""
+    return (not run.gate_unverified and severity in CAPPED
+            and evidence_mod.is_tool_sourced(finding) and status in UNVERIFIED_STATUSES
+            and exempt_class(finding) is None)
+
+
+def may_be_coverage_absence_capped(finding, severity):
+    """Is this a `TST-A1*` claim the coverage-absence cap can reach at `severity`? Whether
+    it does needs the run's root and groups (`Caps`); this much the finding itself says."""
+    return (finding.get("code") in COVERAGE_ABSENCE_CODES and severity in CAPPED
+            and not evidence_mod.is_tool_sourced(finding))
+
+
+class Caps:
+    """Decides each cap without changing a finding, for `apply` and for `published`.
+    One witness, built when a Python `TST-A1*` claim first needs it."""
+
+    def __init__(self, run, groups_meta):
+        self.run, self.groups_meta, self._witness = run, groups_meta, None
+
+    def coverage_absence(self, finding, severity, status):
+        """The cap's detail for this claim at `severity`, or None when it is not capped."""
+        if not may_be_coverage_absence_capped(finding, severity):
+            return None
+        module = py_imports.norm((finding.get("location") or {}).get("file")) or ""
+        if not module.endswith(py_imports.PY):
+            return {"measured": False, "referenced_by": [],
+                    "note": (NOTE_UNMEASURED_CONFIRMED if status in CONFIRMED_STATUSES
+                             else NOTE_UNMEASURED)}
+        if self._witness is None:
+            root = self.run.root if self.run.root is not None else self.run.target
+            self._witness = _Witness(root, self.groups_meta)
+        refs = self._witness.references(module)
+        if not refs:
+            return None
+        return {"measured": True, "references": len(refs),
+                "referenced_by": [{"group": g, "file": t} for g, t in refs[:REFERENCES_SHOWN]],
+                "note": NOTE_REFERENCED % len(refs)}
+
+    def settled(self, finding, status, bundle):
+        """The severity a row for `finding` settles at (#3727): after the code
+        discipline (`codes.severity_after_discipline`) and the coverage-absence cap,
+        by the functions that apply them. Nothing is changed.
+
+        The unverified-scanner cap is left out on purpose. A scanner finding nobody
+        has confirmed is capped at MEDIUM, and that cap is not a demotion of its row:
+        the agent claim merged into it is the same issue, shown as the scanner's until
+        an advisor confirms it, as it always was. No cell can bring it about: a cell
+        cannot write a scanner finding, and a third claim at the line ends the merge
+        across the two kinds."""
+        severity = codes_mod.severity_after_discipline(finding, bundle)
+        return CAP_TO if self.coverage_absence(finding, severity, status) is not None else severity
+
+
 def apply(findings, run, groups_meta):
     """Cap every unconfirmed claim in `findings`, in place; returns the capped count."""
-    capped = 0
-    if not run.gate_unverified:
-        for f in findings:
-            if (f.get("severity") in CAPPED and evidence_mod.is_tool_sourced(f)
-                    and (f.get("evidence") or {}).get("status") in UNVERIFIED_STATUSES
-                    and exempt_class(f) is None):
-                _cap(f, UNVERIFIED_TOOL, note=NOTE_UNVERIFIED)
-                capped += 1
-    witness = None
+    capped, caps = 0, Caps(run, groups_meta)
     for f in findings:
-        if (f.get("code") not in COVERAGE_ABSENCE_CODES or f.get("severity") not in CAPPED
-                or evidence_mod.is_tool_sourced(f)):
-            continue
-        module = py_imports.norm((f.get("location") or {}).get("file")) or ""
-        if not module.endswith(py_imports.PY):
-            confirmed = (f.get("evidence") or {}).get("status") in CONFIRMED_STATUSES
-            _cap(f, UNCONFIRMED_ABSENCE, measured=False, referenced_by=[],
-                 note=NOTE_UNMEASURED_CONFIRMED if confirmed else NOTE_UNMEASURED)
+        if unverified_tool_capped(f, f.get("severity"), (f.get("evidence") or {}).get("status"),
+                                  run):
+            _cap(f, UNVERIFIED_TOOL, note=NOTE_UNVERIFIED)
             capped += 1
-            continue
-        if witness is None:
-            root = run.root if run.root is not None else run.target
-            witness = _Witness(root, groups_meta)
-        refs = witness.references(module)
-        if refs:
-            _cap(f, UNCONFIRMED_ABSENCE, measured=True, references=len(refs),
-                 referenced_by=[{"group": g, "file": t} for g, t in refs[:REFERENCES_SHOWN]],
-                 note=NOTE_REFERENCED % len(refs))
+    for f in findings:
+        detail = caps.coverage_absence(f, f.get("severity"), (f.get("evidence") or {}).get("status"))
+        if detail is not None:
+            _cap(f, UNCONFIRMED_ABSENCE, **detail)
             capped += 1
     return capped
 

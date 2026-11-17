@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **The merge ranks a finding by the severity it will be published at (#3727, high).** Findings
+  of one category at one line are merged into the most severe. "Most severe" was the severity a
+  reviewer claimed, and the controller lowers a severity only afterwards: an override with no
+  reason resets it to its code's default (127 of the 398 codes default to LOW or INFO), and a
+  `TST-A1*` claim is capped at MEDIUM where no test can witness it. So a review cell could
+  claim CRITICAL and CERTAIN at another cell's confirmed CRITICAL, or at a scanner finding, win
+  the merge, and then be demoted. The real finding was in neither list: PASS, certified,
+  letter A. It was as old as 5.3.0.
+  - The merge now ranks by the severity a finding can finally have, as far as its own content
+    says: after the override rule, and with a `TST-A1*` claim at CRITICAL or HIGH ranked at
+    its cap. The same holds in the verify queue, which is built on the merged list.
+  - After the merge, no finding that is not REJECTED stays under a row of lower final severity
+    than its own. It comes back as its own finding, whatever the verdict of the row it was
+    under.
+  - A scanner finding nobody has confirmed is still capped at MEDIUM with the agent claim that
+    agrees with it merged into it, as one row (#3231). No review cell can bring that about.
+  - What an honest run can see change:
+    - A different row where the old one was demoted after winning: of two claims at one line,
+      the one that ends at the higher severity is the row.
+    - Two rows where there was one: a `TST-A1*` claim at HIGH that is not capped comes back
+      from under a MEDIUM or HIGH row that won the tie.
+    - A demoted claim no longer absorbs a scanner finding in the verify queue, so that scanner
+      finding gets its own advisor.
+  - No finding is published at a severity it would not have had before.
+
 - **Merging findings at one line no longer changes what the run owes (#3716).** Findings of one
   category at one line are merged into the most severe before any verdict is read, and only the
   CONFIRMED findings under it came back (#2991). So a claim at another finding's line could take
