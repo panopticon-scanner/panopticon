@@ -256,6 +256,17 @@ class OutOfScope(FixtureReplies):
         return sorted(self.answers)
 
 
+class NoEcho(FixtureReplies):
+    """#3709: a reviewer that returns its findings and never echoes the `targeted_review`
+    list its entry handed it. With `echo`, it echoes that instead (a wrong list)."""
+
+    def __init__(self, echo=None):
+        self.echo = echo
+
+    def attested(self, entry):
+        return self.echo if entry.get("targeted_review") else None
+
+
 def build_target(test_case):
     root = os.path.realpath(tempfile.mkdtemp())
     test_case.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
@@ -272,7 +283,9 @@ def build_target(test_case):
     return root
 
 
-def _semgrep_document():
+def _semgrep_document(unparsed=()):
+    """Semgrep's capture. `unparsed` are files it reports a syntax error for: the review
+    then hands them to their group's SEC cell as `targeted_review` (#3614)."""
     results = [{"ruleId": rule, "level": "error", "message": {"text": rule},
                 "locations": [{"physicalLocation": {
                     "artifactLocation": {"uri": uri}, "region": {"startLine": line}}}]}
@@ -282,8 +295,13 @@ def _semgrep_document():
                                           "files": []},
               semgrep_targets.DOCKERFILE_STAMP_KEY: {"count": 0, "analyzed": 0, "unanalyzed": 0,
                                                      "complete": True, "files": []}}
+    notes = [{"descriptor": {"id": "Syntax error"}, "level": "warning",
+              "message": {"text": "Syntax error at line /src/%s:1:\n parser failed" % path}}
+             for path in unparsed]
+    invocations = ({"invocations": [{"executionSuccessful": True,
+                                     "toolExecutionNotifications": notes}]} if notes else {})
     return {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": []}},
-                      "results": results, "properties": stamps}]}
+                      "results": results, "properties": stamps, **invocations}]}
 
 
 def _osv_document():
@@ -296,12 +314,12 @@ def _osv_document():
     return {"results": [{"source": {"path": "/src/Cargo.lock"}, "packages": packages}]}
 
 
-def _scan(cmd):
+def _scan(cmd, unparsed=()):
     """The `tools` child, without Docker: the captures two scanners would have left, and the
     manifest the runner writes about them."""
     out = cmd[cmd.index("--out") + 1]
     os.makedirs(out, exist_ok=True)
-    for name, document in (("semgrep.sarif", _semgrep_document()),
+    for name, document in (("semgrep.sarif", _semgrep_document(unparsed)),
                            ("osv-scanner.json", _osv_document())):
         with open(os.path.join(out, name), "w", encoding="utf-8") as fh:
             json.dump(document, fh)
@@ -331,12 +349,12 @@ def _synthesize_split(cmd, review_root, max_bytes):
     return subprocess.CompletedProcess(cmd, code or 0, out.getvalue(), err.getvalue())
 
 
-def _children(split_bytes):
+def _children(split_bytes, unparsed=()):
     real = child._run_child
 
     def run_child(cmd, review_root, phase, timeout=None):
         if phase == "tools":
-            return _scan(cmd)
+            return _scan(cmd, unparsed)
         if phase == "synthesize" and split_bytes:
             return _synthesize_split(cmd, review_root, split_bytes)
         return real(cmd, review_root, phase, timeout=timeout)
@@ -424,11 +442,12 @@ def read_report_at(path):
     return dict(report, findings=findings, discarded_claims=discarded), parts + siblings
 
 
-def _loop_once(root, runner, split_bytes):
+def _loop_once(root, runner, split_bytes, unparsed=()):
     # No `--fail-on`: every case runs under the default gate (#3673), which is CRITICAL.
     args = driver.build_parser().parse_args(["loop", root])
     err = io.StringIO()
-    with mock.patch("scripts.phases.child._run_child", side_effect=_children(split_bytes)), \
+    with mock.patch("scripts.phases.child._run_child",
+                    side_effect=_children(split_bytes, unparsed)), \
             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
         # Under the wrapper `driver loop` runs under, so the terminal reads as an operator's
@@ -437,11 +456,12 @@ def _loop_once(root, runner, split_bytes):
     return status, err.getvalue()
 
 
-def drive(test_case, plan=None, recover=False, split_bytes=None, replies=None):
+def drive(test_case, plan=None, recover=False, split_bytes=None, replies=None, unparsed=()):
     """One case: a fresh target, reviewed under `plan` until the loop stops for a reason other
     than a pause (or `MAX_INVOCATIONS` pauses). With `recover`, the host then heals and the
     loop is run again, as an operator would after an outage. `replies` is what the agents
-    say, when it is not the fixture's usual answers."""
+    say, when it is not the fixture's usual answers. `unparsed` are the files Semgrep
+    reports it could not parse."""
     root = build_target(test_case)
     replies = replies or FixtureReplies()
     runner = FakeRunner(faults=plan, replies=replies)
@@ -449,7 +469,7 @@ def drive(test_case, plan=None, recover=False, split_bytes=None, replies=None):
 
     def invoke():
         for _ in range(MAX_INVOCATIONS):
-            status, said = _loop_once(root, runner, split_bytes)
+            status, said = _loop_once(root, runner, split_bytes, unparsed)
             statuses.append(status)
             terminal.append(said)
             if status["status"] != "paused":
