@@ -220,10 +220,14 @@ To drop a path from SEC too, the exclusion has to stop being yours to make: remo
 the repository, or run with `--security standard`, which prunes a recognised
 deliberately-vulnerable fixture corpus at discovery — before `exclude_paths` is consulted at all.
 
-**The scanner's own config is not reviewed (#3642).** A full-repo scan leaves the root
-`panopticon.yml` / `.panopticon.yml` (`repo_config.CONFIG_NAMES`, the names a `--pr` review already
-drops) out of every group, and discloses it under `excluded.scanner_config` in `groups.json` and on
-the scan's stderr. A nested `sub/panopticon.yml` is not the scanner's config and is reviewed as
+**The scanner's own config is not reviewed (#3642).** A full-repo scan leaves the root config it
+loaded out of every group, and discloses it under `excluded.scanner_config` in `groups.json` and on
+the scan's stderr. That is one file (#3708): `panopticon.yml`, or `.panopticon.yml` when it is the
+only one there. Where the root holds both names, `panopticon.yml` is the config and
+`.panopticon.yml` is an ordinary file that is reviewed. Where neither was loaded (a symlink at
+either name is refused), nothing is left out. The report names the file too, in
+`meta.coverage.scanner_config_excluded` and in the coverage note; it does not change the letter or
+the certification. A nested `sub/panopticon.yml` is not the scanner's config and is reviewed as
 usual. An explicit `--scope-files panopticon.yml`, and a plain `-c`/`--base` delta that changes it,
 still review it. Tool scans are unchanged.
 

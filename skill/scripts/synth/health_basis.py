@@ -129,6 +129,9 @@ EXCLUDE_REASON = ("this scan skipped review areas the target's %s excludes (%s).
 SCOUT_EXCLUDE_NOTE = "the scout asked for review areas the target's %s excludes (%s)"
 EXCLUDE_PATHS_NOTE = ("exclude_paths in the target's %s removed %s file(s) from review "
                       "(%s more code file(s) kept for security review only)")
+# #3708: the scanner's own root config, which a full scan does not hand to review. Named
+# in the report so the exclusion is not silent; the name is one of `repo_config.CONFIG_NAMES`.
+SCANNER_CONFIG_NOTE = "the scanner's own config file (%s) was not reviewed"
 UNRECORDED = "an unrecorded number of"
 MAX_LEVER_CELLS = 256      # basis.config_levers lists keep the first this many, sorted
 _NAMED_CELLS = 10          # a reason or note names this many and counts the rest
@@ -175,6 +178,21 @@ def exclude_paths_record(groups_json):
             "sec_carved": _count(carve.get("count")) if isinstance(carve, dict) else None}
 
 
+def scanner_config_record(groups_json):
+    """The root config file(s) discovery left out of review (#3642, #3708), off its
+    groups.json record: a sorted list, or None when it recorded none. Only a name the
+    scanner itself reads as its config survives the read: groups.json is in the reviewed
+    tree, and this reaches the report as text."""
+    inventory = groups_json if isinstance(groups_json, dict) else {}
+    excluded = inventory.get("excluded")
+    names = excluded.get("scanner_config") if isinstance(excluded, dict) else None
+    if not isinstance(names, list):
+        return None
+    kept = sorted({name for name in names
+                   if isinstance(name, str) and name in repo_config.CONFIG_NAMES})
+    return kept or None
+
+
 def exclude_reason(run, coverages):
     """Why a full review whose committed `exclude:` removed a fixed-floor domain carries a
     provisional letter, else None. Same review-type rule as `custom_profile_reason`."""
@@ -203,6 +221,9 @@ def config_notes(run, coverages):
         notes.append(EXCLUDE_PATHS_NOTE % (
             repo_config.CONFIG_NAMES[0], UNRECORDED if pruned is None else pruned,
             UNRECORDED if carved is None else carved))
+    scanner_config = getattr(run, "scanner_config_excluded", None)
+    if scanner_config:
+        notes.append(SCANNER_CONFIG_NOTE % ", ".join(scanner_config))
     return notes
 
 

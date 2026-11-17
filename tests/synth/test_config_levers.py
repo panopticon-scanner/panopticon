@@ -265,3 +265,95 @@ def test_both_human_outputs_say_why_an_exclude_made_the_letter_provisional():
 def _run(review_type="repo"):
     return report_mod.RunConfig(target="t", fail_on="high", timestamp=DEFAULT_TIMESTAMP,
                                 review_type=review_type, max_per_group=DEFAULT_CAP)
+
+
+# --- #3708: the scanner's own config that a full scan left out of review -----------------
+
+SCANNER_CONFIG_NOTE = "the scanner's own config file (%s) was not reviewed"
+
+
+def _scanner_config_report(names, review_type="repo", exclude_paths=None):
+    with _target_with_files(GROUPS) as root:
+        return report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(
+                target=root, fail_on="high", timestamp=DEFAULT_TIMESTAMP,
+                review_type=review_type, max_per_group=DEFAULT_CAP,
+                exclude_paths=exclude_paths, scanner_config_excluded=names),
+            findings=findings_mod.FindingSet(findings=[]),
+            plan=plan_mod.PlanInputs(groups_meta=GROUPS, coverages=[_cov()])))
+
+
+@pytest.mark.parametrize("name", repo_config.CONFIG_NAMES)
+def test_the_config_left_out_of_review_is_named_in_meta_and_the_coverage_note(name):
+    report = _scanner_config_report([name])
+    assert report["meta"]["coverage"]["scanner_config_excluded"] == [name]
+    summary = report["summary"]
+    assert summary["coverage_note"] == SCANNER_CONFIG_NOTE % name
+    # A disclosure: the letter and the certification are what they are without it.
+    bare = _scanner_config_report(None)["summary"]
+    assert _outcome(summary) == _outcome(bare)
+    assert (summary["coverage_certified"], summary["gate"]) == (
+        bare["coverage_certified"], bare["gate"])
+    assert validate_schema_mod.schema_errors(report) == []
+
+
+def test_a_run_that_left_no_config_out_says_nothing_of_one():
+    for names in (None, []):
+        report = _scanner_config_report(names)
+        assert "scanner_config_excluded" not in report["meta"]["coverage"]
+        assert report["summary"]["coverage_note"] is None
+
+
+def test_the_config_note_follows_the_other_config_disclosures():
+    summary = _scanner_config_report(
+        ["panopticon.yml"], exclude_paths={"globs": 1, "pruned": 2, "sec_carved": 0})["summary"]
+    assert summary["coverage_note"] == "; ".join((
+        "exclude_paths in the target's %s removed 2 file(s) from review (0 more code file(s) "
+        "kept for security review only)" % CONFIG, SCANNER_CONFIG_NOTE % "panopticon.yml"))
+
+
+def test_discoverys_record_of_the_config_reaches_the_run_config():
+    for name in repo_config.CONFIG_NAMES:
+        groups_json = {"mode": "repo", "excluded": {"scanner_config": [name],
+                                                    "fixture_dirs": ["tests/fixtures"]}}
+        run = report_mod.RunConfig.from_args(_cli_args(repo=True), groups_json, DEFAULT_TIMESTAMP)
+        assert run.scanner_config_excluded == [name]
+    for groups_json in ({"mode": "repo"}, {"mode": "repo", "excluded": {"fixture_dirs": ["t"]}}):
+        run = report_mod.RunConfig.from_args(_cli_args(repo=True), groups_json, DEFAULT_TIMESTAMP)
+        assert run.scanner_config_excluded is None
+
+
+@pytest.mark.parametrize("planted, read", [
+    (["../../etc/passwd"], None),
+    (["panopticon.yml", "<script>alert(1)</script>", "sub/panopticon.yml"], ["panopticon.yml"]),
+    ([".panopticon.yml", "panopticon.yml", "panopticon.yml"],
+     [".panopticon.yml", "panopticon.yml"]),
+    ("panopticon.yml", None),
+    ([7, None, ["panopticon.yml"]], None),
+    ({"panopticon.yml": True}, None),
+    ([], None),
+])
+def test_only_a_config_name_survives_the_read_of_discoverys_record(planted, read):
+    """groups.json is in the reviewed tree, and what is read here reaches the report as
+    text: nothing but the names the scanner itself reads as its config."""
+    assert health_basis.scanner_config_record({"excluded": {"scanner_config": planted}}) == read
+
+
+@pytest.mark.parametrize("inventory", [None, [], {"excluded": None}, {"excluded": ["panopticon.yml"]},
+                                       {"excluded": "panopticon.yml"}])
+def test_a_record_with_no_exclusion_block_reads_as_none(inventory):
+    assert health_basis.scanner_config_record(inventory) is None
+
+
+def test_the_schema_takes_only_the_config_names():
+    report = _scanner_config_report(["panopticon.yml"])
+    for bad in ([], ["evil.yml"], "panopticon.yml", ["panopticon.yml", 7]):
+        planted = copy.deepcopy(report)
+        planted["meta"]["coverage"]["scanner_config_excluded"] = bad
+        assert validate_schema_mod.schema_errors(planted), bad
+
+
+def test_a_delta_or_file_scoped_review_carries_no_config_note():
+    for review_type in ("changes", "files"):
+        summary = _scanner_config_report(["panopticon.yml"], review_type=review_type)["summary"]
+        assert summary["coverage_note"] is None

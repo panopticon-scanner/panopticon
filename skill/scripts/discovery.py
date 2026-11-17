@@ -1041,12 +1041,16 @@ def _repo_scan(argv=None):
 
     allf, excluded_files, carved_files = _apply_exclude(allf)
     # #3642 (owner ruling 2026-11-14): a full-repo scan does not review the scanner's
-    # own ROOT config -- the one setup-scan just wrote -- the same names pr-worktree
-    # mode drops (`repo_config.CONFIG_NAMES`, #1681). Only the whole-repo surface:
+    # own ROOT config -- the one setup-scan just wrote. Only the whole-repo surface:
     # `allf` stays whole for an explicit --scope-* request, and a nested
     # config of the same name in a subdirectory is not the scanner's and is still reviewed.
-    root_config = sorted(f for f in allf if f in repo_config.CONFIG_NAMES)
-    whole_repo = [f for f in allf if f not in repo_config.CONFIG_NAMES]
+    # #3708: and only the file that was LOADED (`repo_config.resolve`, through the one
+    # document seam above). Both names used to be dropped whichever was in use, so a
+    # repo configured by `panopticon.yml` could carry anything in a file named
+    # `.panopticon.yml` and no review agent read it. The other name is an ordinary file.
+    loaded_config = os.path.basename(committed_doc.path) if committed_doc.path else None
+    root_config = sorted(f for f in allf if f == loaded_config)
+    whole_repo = [f for f in allf if f != loaded_config]
     impl, tests = partition_test_files(whole_repo)
     # Group impl AND real test sources so tests aren't silently dropped (only
     # their __pycache__ artifacts used to reach a group); counts stay impl-only.

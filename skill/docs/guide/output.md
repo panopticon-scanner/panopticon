@@ -133,6 +133,11 @@ SCA tool produced output on an applicable tree". When another ecosystem's audito
 tree certifies as before and the sentence is the only sign that one ecosystem went unaudited: read
 `coverage_note` in the JSON, since the terminal and the HTML show it only beside NOT CERTIFIED or a
 provisional letter. It is disclosure only and moves neither the gate nor `coverage_certified`.
+`meta.coverage.scanner_config_excluded` (#3708) names the scanner's own root config file, which a
+full scan does not hand to any review group: the one file it loaded as its config
+(`panopticon.yml`, or `.panopticon.yml` when that is the only one). `coverage_note` says "the
+scanner's own config file (panopticon.yml) was not reviewed". It is disclosure only too, and the
+key is absent when no config was left out (a scoped run, or a tree with none).
 A legitimate catalog-gap finding without `location.file` cannot satisfy X0X's required occurrence
 shape. It remains in the main JSON and HTML, while `synthesize` excludes it from the X0X candidate
 set and writes `<report-stem>-x0x-failures.json` beside the X0X, where `<report-stem>` means the

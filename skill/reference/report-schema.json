@@ -836,6 +836,12 @@
               },
               "description": "Scanner containers whose best-effort timeout cleanup could not prove them stopped, keyed by scanner. This is an operator-visible resource and coverage condition carried from the same capture event as the stderr diagnostic. It does not replace the scanner's ordinary timeout or missing-output result and does not change that result's existing gate behavior. The block is omitted when no cleanup failure occurred and read as written (#3273): the capture path bounds and redacts each detail when it records it."
             },
+            "scanner_config_excluded": {
+              "type": "array",
+              "minItems": 1,
+              "items": {"enum": ["panopticon.yml", ".panopticon.yml"]},
+              "description": "#3708: the scanner's own root config file that this full scan did not hand to any review group (#3642): the one file `repo_config.resolve` loaded as the config. The other config name, if the tree also holds a file of that name, is an ordinary file and is reviewed. Named in `coverage_note` too. Absent when none was left out: a scoped run, or a tree with no config. Disclosure only."
+            },
             "exclude_paths_sec_carve_out": {
               "type": "object",
               "properties": {

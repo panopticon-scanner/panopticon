@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **A full scan leaves out of review only the config file it loaded, and the report names it
+  (#3708).** Discovery dropped both root config names, `panopticon.yml` and `.panopticon.yml`,
+  from every review group (#3642), whichever one was in use. A repo configured by
+  `panopticon.yml` could carry anything in a file named `.panopticon.yml`, and no review agent
+  read it. The only disclosure was in `groups.json` and one stderr line.
+  - Only the file the scanner loaded as its config is left out. With both names at the root that
+    is `panopticon.yml`, and `.panopticon.yml` goes to review like any other file. When neither
+    was loaded (a symlink at either name is refused), neither is left out.
+  - The report names the file: `meta.coverage.scanner_config_excluded`, and "the scanner's own
+    config file (panopticon.yml) was not reviewed" in `coverage_note`. It is a disclosure: the
+    letter, the gate and the certification do not move.
+  - A full review of a repo with a committed config now always carries that sentence in
+    `coverage_note`. A consumer that read a non-empty note as a problem should read
+    `coverage_certified`.
+  - Each name alone is left out as before. `--pr` reviews, `--scope-*` runs and tool scans are
+    unchanged.
+
 - **An advisor's verdict counts only for a claim that advisor was handed (#3702, high).** Verify
   verdicts are matched to findings by finding id across the whole run, and a backup advisor's
   verdict wins over a primary's. Nothing asked whether the advisor that wrote a verdict had been
