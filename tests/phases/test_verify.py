@@ -725,6 +725,31 @@ class TestABackupPartIsDoneWhenEveryScopedClaimIsAnswered(BackupDispatch):
         self.assertEqual((False, True, True), self._done())
         self.assertEqual(3, self._attempts()["G/SEC/backup"])
 
+    def test_a_spent_cell_is_never_dispatched_or_charged_again(self):
+        # #3698, the termination pin. The loop no longer treats a spent budget as a
+        # good bundle (`persist.is_done` asks about the part alone), so this is what
+        # ends the run: after the third dispatch the phase writes no request, charges
+        # nothing, and says the round is done, however often it is asked.
+        self._cell()
+        ids = self._scope_ids()
+        for _ in range(verify._MAX_VERIFY_ATTEMPTS):
+            self.assertIsNotNone(self._dispatch())
+            (entry,) = requests.load_dispatch_request(self.root)["entries"]
+            self._answer(0, ids[:1])
+            self.assertFalse(persist.is_done(entry))             # short, whatever was spent
+        spent = self._attempts()
+        self.assertEqual(3, spent["G/SEC/backup"])
+        request = runio._pano(self.root, "dispatch-request.json")
+        with open(request, "rb") as fh:
+            before = fh.read()
+        for _ in range(4):
+            self.assertIsNone(self._dispatch())
+            self.assertTrue(verify._verify_backup_done(self.root, self.manifest))
+        self.assertEqual(spent, self._attempts())
+        with open(request, "rb") as fh:
+            self.assertEqual(before, fh.read())
+        self.assertFalse(persist.is_done(entry))
+
     def test_every_scoped_claim_answered_is_done_after_one_dispatch(self):
         self._cell()
         ids = self._scope_ids()
