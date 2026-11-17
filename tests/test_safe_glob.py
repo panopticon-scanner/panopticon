@@ -265,10 +265,17 @@ class TestEveryReaderOfADirectoryTakesItAsSpelled(unittest.TestCase):
         parts = ("report.json", "report_part2.json", "report-discarded.json")
         for part in parts:
             self.write(self.here, os.path.join(".panopticon", "%s-%s" % (tag, part)), {"p": part})
+        # The sibling holds one part of the three, and one this run never wrote: read as
+        # the list of names, it would leave two of ours behind and ask for one we lack.
+        for part in ("report.json", "report_part9.json"):
             self.write(self.decoy, os.path.join(".panopticon", "%s-%s" % (tag, part)), {"p": "x"})
         os.makedirs(target)
-        with mock.patch.object(diff_map, "release_worktree"):
+        with mock.patch.object(diff_map, "release_worktree") as release:
             validate_phase._finalize_worktree(self.here, manifest)
+        release.assert_called_once()
+        surfaced = sorted(name for name in os.listdir(os.path.join(target, ".panopticon"))
+                          if name.startswith(tag) and name.endswith(".json"))
+        self.assertEqual(sorted("%s-%s" % (tag, part) for part in parts), surfaced)
         for part in parts:
             with open(os.path.join(target, ".panopticon", "%s-%s" % (tag, part)),
                       encoding="utf-8") as fh:
