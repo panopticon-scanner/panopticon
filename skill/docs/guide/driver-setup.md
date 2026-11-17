@@ -116,10 +116,14 @@ line is added — `driver migrate-config` adds it for you.
 
 Setup writes a **draft**: read `.panopticon/setup-report.md`, review `panopticon.yml.draft`, move it
 to `panopticon.yml`, and commit it (setup never overwrites a committed file). **Commit it before you
-compare runs.** A proposal differs from one setup run to the next, and a run over a config that is
-not in the reviewed commit reports its matrix as FRESH (`meta.matrix.origin: working_tree`), with
-whether it is still setup's last draft; once committed it reads `committed`, and every later run on
-that commit shares one `matrix_fingerprint` (#3651, see Output).
+compare runs.** Repeatable results are claimed for a committed matrix: the same panopticon version,
+the same pinned repository and the same committed `panopticon.yml`. A freshly proposed matrix is
+not repeatable (#3729): two setups on one commit can differ in how the files are grouped, in how
+many groups there are and in the groups' names, not only in their order or spelling. A run over a
+config that is not in the reviewed commit reports its matrix as FRESH (`meta.matrix.origin:
+working_tree`, and `origin=working_tree (FRESH: ...)` on the report's `Matrix:` line), with whether
+it is still setup's last draft. Once committed it reads `committed` (`origin=committed (reused:
+...)`), and every later run on that commit shares one `matrix_fingerprint` (#3651, see Output).
 
 **Upgrading from a `.panopticon/groups.yml` tree.** Nothing reads that file any more.
 `python3 skill/scripts/driver.py migrate-config .` writes `panopticon.yml` from it (group order

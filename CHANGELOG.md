@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Docs: repeatable results are claimed for a committed matrix (#3729).** The same version,
+  the same pinned repository and the same committed `panopticon.yml`. A freshly proposed matrix
+  can differ between two setups on one commit, in how files are grouped and in group names, so
+  commit the draft before comparing runs. The README and the setup guide now say so, and point
+  at where each report says which it ran under: `meta.matrix.origin` (`committed` or
+  `working_tree`) and the `Matrix:` line (`origin=committed (reused: ...)` or
+  `origin=working_tree (FRESH: ...)`). No behaviour change.
+
 - **Merging findings at one line no longer changes what the run owes (#3716).** Findings of one
   category at one line are merged into the most severe before any verdict is read, and only the
   CONFIRMED findings under it came back (#2991). So a claim at another finding's line could take
