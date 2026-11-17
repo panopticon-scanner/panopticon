@@ -642,11 +642,12 @@ def test_a_backup_that_answers_one_of_its_three_claims_holds_every_invariant(lab
     assert problems(whole, whole) == []
     assert problems(whole, short) == []
     # Asked again, on the budget a short primary advisor has: every dispatch is charged
-    # until the cell has spent its three.
-    assert _backup_charges(whole) == 1
+    # until the cell has spent its three. #3698: and every charge is a launch. The third
+    # used to buy none, because the short bundle on disk read as done once the budget
+    # was spent.
+    assert _backup_charges(whole) == 1 == whole.launched.count(fh.PartialBackup.SHORT)
     assert _backup_charges(short) == verify._MAX_VERIFY_ATTEMPTS == 3
-    assert whole.launched.count(fh.PartialBackup.SHORT) == 1
-    assert short.launched.count(fh.PartialBackup.SHORT) > 1
+    assert short.launched.count(fh.PartialBackup.SHORT) == 3
 
 
 def test_the_two_claims_a_partial_backup_left_are_counted_and_named(partial):
@@ -672,6 +673,62 @@ def test_the_two_claims_a_partial_backup_left_are_counted_and_named(partial):
     for surface in (summary["coverage_note"], terminal, page):
         for reason in reasons:
             assert reason in surface, (reason, surface)
+
+
+# --- every charged dispatch is a launch (#3698) ---------------------------------------------
+
+def _charges(outcome):
+    """{`<group>/<domain>/<stage>`: dispatches charged} off the run's verify record."""
+    with open(runio._pano(outcome.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        return {key: count for key, count in json.load(fh_).items()
+                if key.endswith(("/primary", "/backup"))}
+
+
+def _launches(outcome):
+    """The same keys, counted off what the runner was asked to launch."""
+    counts: dict[str, int] = {}
+    for entry in outcome.launched:
+        if fh.phase_of(entry) in (fh.ADVISOR, fh.BACKUP):
+            _verify, group, domain, stage = entry.split("-")[:4]
+            counts["%s/%s/%s" % (group, domain, stage)] = counts.get(
+                "%s/%s/%s" % (group, domain, stage), 0) + 1
+    return counts
+
+
+def test_a_short_primary_advisor_is_launched_for_each_dispatch_it_is_charged(lab, partial):
+    """The short-primary row: the advisor for one cell answers one of its three claims,
+    every time. Charged three dispatches and launched three times, and the run ends."""
+    short = "verify-%s-%s-primary" % fh.PartialBackup.CELL
+    outcome = fh.drive(lab, replies=fh.PartialBackup(short=short))
+    assert outcome.status == "complete" and len(outcome.statuses) == 1
+    assert outcome.unanswered == [short]
+    assert problems(partial[0], outcome) == []
+    key = verify._verify_key(*fh.PartialBackup.CELL, "primary")
+    assert _charges(outcome)[key] == _launches(outcome)[key] == verify._MAX_VERIFY_ATTEMPTS == 3
+    assert _charges(outcome) == _launches(outcome)
+    # The two claims with no verdict are the verify advisor's shortfall, named as such.
+    assert outcome.report["summary"]["grade_shortfalls"] == [
+        "2 findings unanswered by their verify advisors"]
+    assert outcome.report["summary"]["coverage_certified"] is False
+
+
+def test_an_unloadable_bundle_on_disk_is_launched_for_each_dispatch_it_is_charged(lab):
+    """The unloadable row: every primary advisor is cut off and leaves the cut-off file,
+    every time. With a file on disk the third dispatch launched nothing; with none (an
+    exit) it always launched. Both are three and three now."""
+    for mode in (FAULT_MALFORMED, FAULT_EXIT):
+        outcome = lab.outcome(fh.Plan(mode, (fh.ADVISOR,), 100))
+        assert outcome.status == "complete", mode
+        charged = {key: count for key, count in _charges(outcome).items()
+                   if key.endswith("/primary")}
+        assert charged and set(charged.values()) == {verify._MAX_VERIFY_ATTEMPTS}, mode
+        assert {key: _launches(outcome)[key] for key in charged} == charged, mode
+
+
+def test_in_a_run_with_nothing_wrong_every_charge_is_one_launch(lab, partial):
+    for outcome in (lab.control, partial[0]):
+        assert _charges(outcome) == _launches(outcome)
+        assert set(_charges(outcome).values()) == {1}
 
 
 # --- a target whose path holds pattern characters (#3701) ----------------------------------

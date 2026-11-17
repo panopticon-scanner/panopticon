@@ -17,6 +17,20 @@
   - One helper does the matching (`scripts/safe_glob.py`), and a test fails if any other module
     in `skill/scripts` calls `glob` directly.
 
+- **Every verify dispatch that is charged now launches its advisor (#3698).** A verify cell has a
+  budget of three dispatches. When an advisor kept leaving a bundle that was short (verdicts for
+  only some of its claims) or unloadable, the third dispatch was charged and launched nothing:
+  charged 3, launched 2. The loop decided what to launch by asking whether the part was done, and
+  that answer was also "yes" once the budget was spent, which the third charge had just made true.
+  The loop now asks only whether this part's bundle answers its claims; whether a cell may be
+  dispatched again stays the verify phase's decision, so a spent cell is still never dispatched.
+  - Cost: one more advisor launch for a part still short or unloadable after two tries. A part that
+    answers, or that leaves no file at all (it was already launched three times), is unchanged.
+  - The same answer is read in four other places, each of which now sees a short bundle of a spent
+    cell as not done: no settlement proof is recorded for it, its ledger row keeps the head of the
+    advisor's reply, a returned reply is judged on its content (not refused as "already done"),
+    and the progress line counts it as "to dispatch".
+
 - **The report says why a dependency ecosystem was not audited (#3648).** A JavaScript tree with
   `package.json` and no lockfile is counted as having dependencies, and no auditor reads it:
   npm-audit needs `package-lock.json` or `npm-shrinkwrap.json`, and osv-scanner needs one of those
