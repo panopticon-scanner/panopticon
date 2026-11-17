@@ -28,7 +28,7 @@ class TestReadmeQuickStart(unittest.TestCase):
 
     def test_quick_start_uses_documented_flags(self):
         qs = self._quick_start()
-        for flag in ("-f ", "-d ", "-c", "--pr ", "--base"):
+        for flag in ("-f ", "-d ", "--files "):
             self.assertIn(flag, qs, flag)
 
 
@@ -64,26 +64,40 @@ class TestReadmeHostAccounts(unittest.TestCase):
 
 
 class TestDeltaDocs(unittest.TestCase):
-    """#449: SKILL.md and README must describe the shipped delta-review
-    behavior (base resolution, the diff-hunks.json artifact, and the
-    disposable PR worktree) — not the pre-redirect HEAD~1/--files framing."""
+    """#3735: delta review is withdrawn in 5.4. SKILL.md, the guide and the README say
+    so, name the refused flags, and no longer show a delta command to copy. (#449 pinned
+    the shipped delta flow here; the code is still in the tree and unreachable.)"""
+
+    FLAGS = ("--pr", "--changes", "--base", "--gate-scope")
 
     def setUp(self):
         self.skill = _read_doc()
         with open(os.path.join(ROOT, os.pardir, "README.md"), encoding="utf-8") as fh:
             self.readme = fh.read()
 
-    def test_skill_documents_delta_flow(self):
-        for token in ["--base", "--diff-context", "--gate-scope", "diff-hunks.json", "worktree"]:
-            self.assertIn(token, self.skill, token)
+    def test_the_docs_say_delta_review_is_withdrawn(self):
+        for text in (self.skill, self.readme):
+            self.assertIn("#3735", text)
+            self.assertRegex(text, r"(?i)delta review is withdrawn")
+            for flag in self.FLAGS:
+                self.assertIn(flag, text, flag)
+        self.assertIn("`--reset` starts a whole-repository run", self.readme)
+        self.assertIn("folder that was started as a delta review is not resumed",
+                      " ".join(self.skill.split()))
 
-    def test_pr_worktree_is_native_review_root(self):
-        # #955's separate "stage groups.json+diff-hunks.json into the
-        # worktree" step doesn't exist under the driver: the driver resolves
-        # the worktree as review_root before any phase runs, so every phase
-        # writes there natively from the start -- nothing to stage.
-        self.assertIn("runs every phase natively inside it", self.skill)
-        self.assertIn("no separate staging step", self.skill)
+    def test_no_command_to_copy_carries_a_delta_flag(self):
+        """Every `driver.py` line in a fenced block of the README and the getting-started
+        page runs as written in 5.4."""
+        with open(os.path.join(ROOT, os.pardir, "docs", "GETTING-STARTED.md"),
+                  encoding="utf-8") as fh:
+            started = fh.read()
+        commands = [line for text in (self.readme, started) for line in text.splitlines()
+                    if line.startswith("python3 skill/scripts/driver.py ")]
+        self.assertGreater(len(commands), 5)
+        for line in commands:
+            words = line.split("#")[0].split()
+            for flag in self.FLAGS + ("-c", "--diff-context"):
+                self.assertNotIn(flag, words, line)
 
     def test_guard_install_is_session_rooted(self):
         # #956: hook registration is SESSION-rooted — a guard installed from a
@@ -92,18 +106,9 @@ class TestDeltaDocs(unittest.TestCase):
         self.assertIn("session root", self.skill)
         self.assertNotIn("install the write-guard from\n     that same cwd", self.skill)
 
-    def test_delta_docs_say_the_gate_is_armed_unless_switched_off(self):
-        # #957 pinned "pass --fail-on or the gate stays OFF" here. #3673 made the gate
-        # CRITICAL by default, so the delta pipeline notes say that, and name the one way
-        # to OFF (exact phrases — a loose regex matched the Global-flags line vacuously).
-        self.assertIn("The gate is armed at CRITICAL unless `--fail-on` says otherwise",
-                      self.skill)
-        self.assertIn("only `--fail-on off` leaves it OFF", self.skill)
-        self.assertNotIn("or the gate stays OFF", self.skill)
-
-    def test_readme_quick_start_shows_pr_and_base(self):
+    def test_readme_quick_start_scopes_without_a_diff(self):
         # Reuse TestReadmeQuickStart's Quick start boundary — the brief's
         # `.split("## ")[1]` split does not match this README's layout.
         qs = _section(self.readme, "## Quick start", "## Repository layout")
-        self.assertIn("--pr", qs)
-        self.assertIn("--base", qs)
+        self.assertIn("Panopticon 5.4 is a whole-repository audit. Delta review is withdrawn.", qs)
+        self.assertIn("loop . --files a.py b.py", qs)

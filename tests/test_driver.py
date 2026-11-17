@@ -876,7 +876,11 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         resolve.assert_called_once()
         _call_args, call_kwargs = resolve.call_args
         self.assertEqual(call_kwargs.get("pr"), 7)
-        self.assertNotEqual(status["status"], "error", status.get("message"))
+        # #3735: this is `driver.run` called below the command line, which refuses
+        # `--pr`. The delta code is still there and records its manifest as it did;
+        # the run then stops at its first child, which refuses the delta flags too.
+        self.assertEqual("error", status["status"])
+        self.assertIn("delta review is withdrawn in 5.4 (#3735)", status["message"])
         manifest = run_manifest.load_manifest(d)
         self.assertEqual(manifest["pr"], 7)
         self.assertEqual(manifest["worktree"], d)

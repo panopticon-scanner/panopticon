@@ -337,7 +337,8 @@ def _build_report(tmpdir):
     try:
         with contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):
-            syn.main(common + ["--emit-verify-queue", findings_path, cross_path])
+            syn.main(common + ["--emit-verify-queue", findings_path, cross_path],
+                     refuse_delta=False)
         with open(os.path.join(run_dir, "verify-queue.json"),
                   encoding="utf-8") as fh:
             queue = json.load(fh)
@@ -365,7 +366,7 @@ def _build_report(tmpdir):
         with contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):
             rc = syn.main(common + ["--out", out, "--verdicts-dir", vdir,
-                                    findings_path, cross_path])
+                                    findings_path, cross_path], refuse_delta=False)
     finally:
         render_mod.write_report = real_write
         os.chdir(prev)

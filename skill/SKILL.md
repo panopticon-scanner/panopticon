@@ -25,8 +25,7 @@ file stays focused on the host-facing contract.
 
 ## Required sub-skills
 
-- `superpowers:writing-plans` — before repo/PR/directory reviews with >15 files
-  or >10 changes.
+- `superpowers:writing-plans` — before repo/directory reviews with >15 files.
   Save the review plan to `.panopticon/runs/<tag>/plan.md` once a run has a tag, which
   `.panopticon/runs/latest` points at. Before then, keep it outside the target, in a
   file from `mktemp`, and put nothing under `.panopticon/`: first contact halts on a
@@ -156,10 +155,15 @@ a project, and the target's own `skill/` to test changes to panopticon itself.
   when `artifact_write_guard` is unproven; obtain the operator's explicit acceptance before
   using it. Codex reports tokens but not cost or effective model identity: dollar budgets
   cannot bound its spend, so also set `--max-iterations` and `--entry-timeout` and narrow scope.
-- `driver persist ENTRY_ID [--file PATH] [--setup] [--pr N] [--base REF] [target]` — persist one
-  return-persist reply (session mode). On a `--pr`/`--base` run pass the same `--pr`/`--base`:
-  persist has to resolve the same review root the loop did (a PR run's is the PR worktree), or it
-  reads a different tree's dispatch request and finds no such entry.
+- `driver persist ENTRY_ID [--file PATH] [--setup] [target]` — persist one
+  return-persist reply (session mode).
+- **Delta review is withdrawn in 5.4 (#3735). Never pass `--pr`, `--changes` (`-c`), `--base` or
+  `--gate-scope`**, to any verb: each is refused at the command line, exit 2, before anything
+  runs. Do not run `discovery.py` or `synthesize.py` by hand with a diff either; they refuse too.
+  A run folder started as a delta review is not resumed: `--reset` starts a whole-repository
+  run. To review less than the whole repository, scope with `-f`, `-d`, `-g` or `--files`. If
+  the user asks for a PR or diff review, say that 5.4 does not do one, and offer a
+  whole-repository review or a scoped one.
 - **Session mode on Claude Code is templated, never ad hoc.** Dispatch the printed batch with the
   shipped workflow: `Workflow({scriptPath: "skill/workflows/dispatch.js", args: {checkpoint,
   entries}})`, `entries` being the request's entries reduced to `id, agent, enforced, model,
@@ -178,8 +182,8 @@ a project, and the target's own `skill/` to test changes to panopticon itself.
 - Key flags: `--host NAME`, `--security {standard,redteam}`,
   `--fail-on {critical,high,medium,low,off}` (default `critical`; `off` disables the gate and
   the report says so), `--severity {all,medium,high,critical}`,
-  `--tools`, `--no-tools`, `--max-per-group N`, `--gate-scope`, `--base <ref>`,
-  `--pr <n>`, `--changes`, `--max-verify N`, `--allow-unenforced` (required to
+  `--tools`, `--no-tools`, `--max-per-group N`, `--max-verify N`,
+  `--allow-unenforced` (required to
   dispatch write-capable reviewers when the artifact-write boundary is unproven).
 - CI gate key: `summary.gate` (`PASS` / `FAIL` / `OFF` / `INCONCLUSIVE`).
 
