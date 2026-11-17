@@ -27,7 +27,10 @@
     asked about it; the claim's advisor answers for the one issue, as before. When it comes back
     it is `tool_reported` and unanswered, and the agent claim is no longer marked `reinforced`:
     `tool_axis.queued` counted that one scanner finding twice.
-  - "Owed" is scored on every loaded finding, where it was scored after merging.
+  - "Owed" follows what the controller asked. A claim's cell is the findings file it was loaded
+    from, whatever domain its reviewer declared, and the cell is scored over every loaded claim,
+    where it was scored after merging and by declared domain. A cell the dispatch record says
+    was asked about a claim owes its answer whatever its claims score.
 
 - **A verdict speaks only for its own cell's instance of a claim (#3707, high).** A claim id is
   derived from what a reviewer wrote (domain, category, file, title and line) and holds no group.

@@ -11,6 +11,7 @@ from scripts.citations import load_cwe_catalog
 import scripts.evidence as evidence_mod
 import scripts.ingest_tools as ingest_tools
 import scripts.ocrdb as ocrdb
+import scripts.score_gate as score_gate
 from . import codes as codes_mod
 from . import corroborate as corroborate_mod
 from . import delta as delta_mod
@@ -210,6 +211,44 @@ def loaded_findings(findings):
                              for member in survivor.get(corroborate_mod.ABSORBED_FIELD) or ()]
 
 
+class Owed:
+    """Which findings were owed an advisor's answer (#3711 review round 3, R1).
+
+    Owed follows what the controller asked. The driver dispatches by cell FILE and
+    hands the advisors every claim in it, so a finding's cell is the file it was
+    loaded from (`evidence.finding_cell`), never the `domain` its reviewer wrote: a
+    HIGH claim declared `COD` in `findings-g3-SEC.json` engages g3's SEC cell, and the
+    LOW claim beside it was asked about too. Scored by declared domain, that LOW
+    claim read as below the gate and owed nothing.
+
+    A finding is owed when its cell's claims reach the verify gate, scored over
+    every loaded finding of the cell, or when the dispatch record says its cell was
+    asked about its id (`Scope.asked` is True). A record that cannot say changes
+    nothing: the score stands. A finding loaded from no cell file keeps the older
+    rule (`plan._finding_owed_verification`, on its declared cell): a matrix finding
+    is owed when that cell is engaged, and any other finding always is."""
+
+    def __init__(self, loaded, scope=None):
+        by_cell: dict[tuple, list] = {}
+        for finding in loaded:
+            cell = evidence_mod.finding_cell(finding)
+            if cell is not None:
+                by_cell.setdefault(cell, []).append(finding)
+        self.cells = {cell for cell, claims in by_cell.items()
+                      if score_gate.should_engage_primary(claims)}
+        self.declared = plan_mod.engaged_matrix_cells(loaded)
+        self.scope = scope
+
+    def __call__(self, finding):
+        cell = evidence_mod.finding_cell(finding)
+        if cell is None:
+            return plan_mod._finding_owed_verification(finding, self.declared)
+        if cell in self.cells:
+            return True
+        return (self.scope is not None and bool(finding.get("id"))
+                and self.scope.asked(cell, finding["id"]) is True)
+
+
 def _comes_back(theirs, waiting, own, owed):
     """Does a member dedupe dropped come back into the report as its own finding?
     `theirs` is the survivor's own verdict and `waiting` says the survivor is itself
@@ -235,7 +274,7 @@ def _comes_back(theirs, waiting, own, owed):
     return own is None and owed and not waiting
 
 
-def restore_confirmed(fs, findings, queue, holders=None, owed_cells=None):
+def restore_confirmed(fs, findings, queue, holders=None, owed=None):
     """Give back the members dedupe dropped that the report must still show
     (`_comes_back`): each is appended to `findings` as its own finding and queued.
     Strips the carrier either way.
@@ -255,11 +294,11 @@ def restore_confirmed(fs, findings, queue, holders=None, owed_cells=None):
     instances of an id do differ where a cell was never asked: its instance has no
     verdict, and an unsure or dismissed copy does not stand in for it.
 
-    `owed_cells` are the review cells whose claims were owed an answer, scored on
-    every loaded finding (`resolve_findings`); scored here when not given."""
+    `owed` says whether a finding was owed an answer (`Owed`, over every loaded
+    finding); built here when not given."""
     holders = {} if holders is None else holders    # none given: each by its own cell
-    if owed_cells is None:
-        owed_cells = plan_mod.engaged_matrix_cells(loaded_findings(findings))
+    if owed is None:
+        owed = Owed(loaded_findings(findings), fs.scope)
     queue_ids = {id(e["finding"]): e["queue_id"] for e in queue}
     taken = {e["queue_id"] for e in queue}
     for survivor in list(findings):
@@ -267,21 +306,20 @@ def restore_confirmed(fs, findings, queue, holders=None, owed_cells=None):
         if not absorbed:
             continue
         theirs = _own_verdict(fs, survivor, queue_ids.get(id(survivor)), holders)
-        waiting = theirs is None and plan_mod._finding_owed_verification(survivor, owed_cells)
-        owed = []       # (member, its queue id-to-be, the claim it is) for each that comes back
+        waiting = theirs is None and owed(survivor)
+        returning = []  # (member, its queue id-to-be, the claim it is) for each that comes back
         for member in absorbed:
             fp = evidence_mod.finding_fingerprint(member)
             own = _own_verdict(fs, member, fp, holders)
-            if _comes_back(theirs, waiting, own,
-                           plan_mod._finding_owed_verification(member, owed_cells)):
-                owed.append((member, fp, _claim_key(member, own)))
+            if _comes_back(theirs, waiting, own, owed(member)):
+                returning.append((member, fp, _claim_key(member, own)))
         shown = _claim_key(survivor, theirs)
         kept: dict[tuple, dict[str, Any]] = {}
-        for member, _fp, claim in owed:
+        for member, _fp, claim in returning:
             if claim is not None and corroborate_mod.outranks(member, kept.get(claim)):
                 kept[claim] = member
         back = []
-        for member, fp, claim in owed:
+        for member, fp, claim in returning:
             if claim is not None and (claim == shown or kept[claim] is not member):
                 continue        # this claim is in the report on this verdict already
             qid, n = fp, 0
@@ -319,14 +357,15 @@ def _part_the_pair(survivor, absorbed, back):
         survivor.pop("reinforced", None)
 
 
-def _owed_unanswered(fs, queue, matched, merged, holders, owed_cells):
+def _owed_unanswered(fs, queue, matched, merged, holders, owed):
     """(findings owed an answer that have none, how many of them are tool findings).
 
     Accounting comes before merging (#3711 review round 2, P1). What the run owes
     is decided for every loaded finding, whatever it is merged under and whatever
     the report shows for it:
-    - A finding is owed an answer when its review cell is engaged, scored on every
-      loaded finding (`owed_cells`); a finding of no cell always is.
+    - A finding is owed an answer when the controller asked for one (`Owed`): its
+      cell, the file it was loaded from, reaches the verify gate over every loaded
+      finding, or the dispatch record says the cell was asked about it.
     - It is unanswered when the report shows no verdict for it, or when its OWN
       cell gave none. Another cell's CONFIRMED reports the claim as confirmed, and
       the advisor that was asked and said nothing is still a shortfall.
@@ -343,7 +382,7 @@ def _owed_unanswered(fs, queue, matched, merged, holders, owed_cells):
             asked.append((member, _own_verdict(fs, member, fp, holders), fp))
     claims: dict = {}       # the claim -> is it a tool finding
     for finding, shown, queue_id in asked:
-        if not plan_mod._finding_owed_verification(finding, owed_cells):
+        if not owed(finding):
             continue
         if shown is None or _own_verdict(fs, finding, queue_id, {}) is None:
             claims[str(finding["id"]) if finding.get("id") else id(finding)] = (
@@ -351,10 +390,10 @@ def _owed_unanswered(fs, queue, matched, merged, holders, owed_cells):
     return len(claims), sum(claims.values())
 
 
-def _bind_verdicts(fs, findings, queue, holders, merged=(), owed_cells=None):
+def _bind_verdicts(fs, findings, queue, holders, merged=(), owed=None):
     """Bind and apply answers, measuring engagement before any verdict mutates it.
-    `merged` is each (member, survivor) dedupe merged; `owed_cells` the cells whose
-    claims were owed an answer (`_owed_unanswered`)."""
+    `merged` is each (member, survivor) dedupe merged; `owed` says whether a finding
+    was owed an answer (`Owed`, `_owed_unanswered`)."""
     verdicts = fs.verdicts or {}
     matched = {}
     matched_n = 0
@@ -364,11 +403,10 @@ def _bind_verdicts(fs, findings, queue, holders, merged=(), owed_cells=None):
     # identical to) phases.verify.verify_execute's own engagement decision, which
     # scores the raw per-cell list -- see engaged_matrix_cells's docstring. It is
     # the verify-matrix disclosure's; what the run OWES is scored on every loaded
-    # finding (`owed_cells`).
+    # finding, by the cell it was loaded from (`Owed`).
     engaged_cells = plan_mod.engaged_matrix_cells(findings)
-    if owed_cells is None:
-        owed_cells = plan_mod.engaged_matrix_cells(
-            list(findings) + [member for member, _survivor in merged])
+    if owed is None:
+        owed = Owed(list(findings) + [member for member, _survivor in merged], fs.scope)
     # #1475: verdict files that EXIST for a cell but cannot be bound to it (the
     # finding_id echo names a different finding, or none at all). Collected
     # separately because they are the opposite failure from `unanswered`: an
@@ -382,7 +420,7 @@ def _bind_verdicts(fs, findings, queue, holders, merged=(), owed_cells=None):
         matched[id(entry["finding"])] = v
     # (Reported only when verdicts were supplied at all: `resolve_findings`.)
     unanswered, unanswered_tools = _owed_unanswered(
-        fs, queue, matched, merged, holders, owed_cells)
+        fs, queue, matched, merged, holders, owed)
     for entry in queue:
         v = matched[id(entry["finding"])]
         if v is not None:
@@ -748,11 +786,11 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     holders = asked_cells(held, fs.scope)
     # Round 2 of the #3711 review: what the run owes is scored on every loaded
     # finding, and each merge is remembered so the accounting can see through it.
-    owed_cells = plan_mod.engaged_matrix_cells(loaded_findings(findings))
+    owed = Owed(loaded_findings(findings), fs.scope)
     # (A member that comes back is queued as well. It is one claim either way.)
     merged = [(member, survivor) for survivor in findings
               for member in survivor.get(corroborate_mod.ABSORBED_FIELD) or ()]
-    restore_confirmed(fs, findings, queue, holders, owed_cells)   # before any identity is read
+    restore_confirmed(fs, findings, queue, holders, owed)   # before any identity is read
     # Identity must be read BEFORE any verdict is applied. For a SARIF-sourced
     # tool finding the adapters park the rule id in
     # provenance.confirmation_reasoning (tools/sarif_utils.tool_provenance sets
@@ -765,7 +803,7 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     # (including those cut by --max-verify): nothing between here and the
     # assignment site mutates an identity field on them.
     pre_verdict_fps = {id(f): evidence_mod.finding_fingerprint(f) for f in findings}
-    matches = _bind_verdicts(fs, findings, queue, holders, merged, owed_cells)
+    matches = _bind_verdicts(fs, findings, queue, holders, merged, owed)
     verify_matrix_cov = _verify_matrix(findings, matches)
     if ocrdb_coverage is not None:
         ocrdb_coverage.update(codes_mod.apply_verdict_quality(findings, matches.matched, ocrdb_bundle))

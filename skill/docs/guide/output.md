@@ -137,8 +137,11 @@ ids. It is a disclosure, not a shortfall: an honest duplicate that both cells co
 reject, is decided as it always was.
 Merging findings at one line changes what the report shows and never what the run owes (#3716).
 Findings of one category at one line are merged into the most severe before any verdict is read.
-What is owed is counted first, over every loaded finding: a claim that was owed an advisor's
-answer and has none is one unanswered finding whatever it is merged under, and so is a claim that
+What is owed is counted first, over every loaded finding. A claim is owed an advisor's answer when
+its review cell reaches the verify gate, or the dispatch record says the cell was asked about it;
+the cell is the findings file the claim was loaded from, whatever domain its reviewer declared. A
+claim that was owed an answer and has none is one unanswered finding whatever it is merged under,
+and so is a claim that
 another cell confirmed when its own cell was asked and said nothing (the claim is reported
 confirmed, and the run is not certified). One claim held by several cells counts once. A tool
 finding merged into an agent claim is the exception: no advisor is asked about it while it is

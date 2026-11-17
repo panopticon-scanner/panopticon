@@ -29,6 +29,7 @@ import jsonschema
 
 import scripts.evidence as evidence_mod
 import scripts.reconcile as reconcile_mod
+import scripts.score_gate as score_gate
 import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
@@ -247,13 +248,22 @@ class TestACellThatWasNeverAsked(_TwoCells):
         """`g1` holds a LOW copy of `B` (so `g1` is below the gate) and `g1_record` is
         what the record holds for it; `g2`'s own advisor says `owner` of `B`."""
         self.cells(copy_severity=copy_severity)
+        self.no_verdicts()
         self.record(record(group="g2", claims=(self.b,), size=25), g1_record(self))
         self.bundle([verdict(self.b, owner)], group="g2")
+        self.g1_answers_for_its_own_claim(g1_record)
         return self.report()
 
     def no_verdicts(self):
         for name in os.listdir(self.verdicts):
             os.unlink(os.path.join(self.verdicts, name))
+
+    def g1_answers_for_its_own_claim(self, g1_record):
+        """Where the record says `g1` was asked about its own claim `A`, it answered.
+        A cell that the record says was asked owes its answer, whatever its claims
+        score (round 3, R1), and these scenes are about `B`."""
+        if self.a in g1_record(self).get("g1/SEC/primary/claims", ()):
+            self.bundle([verdict(self.a)])
 
     def lone(self, g1_record):
         """The run in which `g2` holds nothing: `g1`'s LOW instance of `B` by itself."""
@@ -262,6 +272,7 @@ class TestACellThatWasNeverAsked(_TwoCells):
             json.dump({"findings": []}, fh)
         self.no_verdicts()
         self.record(g1_record(self))
+        self.g1_answers_for_its_own_claim(g1_record)
         return self.report()
 
     def refused(self, copy, says="REJECTED", copy_severity="CRITICAL", owner_severity="CRITICAL",
@@ -629,6 +640,105 @@ class TestAnHonestDuplicateBehavesAsBefore(_TwoCells):
 
 
 GROUPS3 = GROUPS + [{"name": "g3", "files": ["c.py"]}]
+
+
+class TestOwedFollowsWhatTheControllerAsked(_Verdicts):
+    """Round 3, R1. The driver dispatches by cell FILE and hands the advisors every
+    claim in it. So a claim is owed an answer when its cell, the file it was loaded
+    from, reaches the verify gate, whatever domain each claim in it declares; and
+    whenever the dispatch record says its cell was asked about it."""
+
+    def report(self, paths, fail_on="critical"):
+        fs = findings_mod.FindingSet.load(
+            types.SimpleNamespace(verdicts_dir=self.verdicts), [], "standard", None,
+            prepared=(findings_mod.load_findings(paths), None, None), run_dir=self.run_dir)
+        with _target_with_files(GROUPS3, lines=5000) as target, \
+                contextlib.redirect_stderr(io.StringIO()):
+            return report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=target, fail_on=fail_on,
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=fs, plan=plan_mod.PlanInputs(groups_meta=GROUPS3)))
+
+    def cell_files(self, files):
+        for name in os.listdir(self.verdicts):
+            os.unlink(os.path.join(self.verdicts, name))
+        paths = []
+        for group, findings in files.items():
+            paths.append(os.path.join(self.run_dir, "findings-%s-SEC.json" % group))
+            with open(paths[-1], "w", encoding="utf-8") as fh:
+                json.dump({"findings": findings}, fh)
+        return paths, findings_mod.load_findings(paths)
+
+    def seats_row(self, declared, with_g1):
+        """The seat's row. `findings-g3-SEC.json` holds a LOW copy of claim X and a HIGH
+        claim that declares `declared`. g3 was asked about both, answered the HIGH and
+        said nothing of X. With `with_g1`, g1 holds X at MEDIUM and CONFIRMS it."""
+        high = dict(claim("c.py", title="another", severity="HIGH"),
+                    domain=declared, code="%s-A1A" % declared, description="the high")
+        files = {"g3": [dict(claim("b.py", title="x", severity="LOW"), description="g3's"), high]}
+        if with_g1:
+            files["g1"] = [dict(claim("b.py", title="x", severity="MEDIUM"), description="g1's")]
+        paths, loaded = self.cell_files(files)
+        ids = {f["description"]: f["id"] for f in loaded}
+        self.assertEqual(declared, [f["domain"] for f in loaded if f["description"] == "the high"][0])
+        bodies = [record(group="g3", claims=[ids["g3's"], ids["the high"]], size=25)]
+        self.bundle([verdict(ids["the high"])], group="g3")
+        if with_g1:
+            self.assertEqual(ids["g1's"], ids["g3's"])
+            bodies.append(record(group="g1", claims=[ids["g1's"]], size=25))
+            self.bundle([verdict(ids["g1's"])], group="g1")
+        self.record(*bodies)
+        return self.report(paths)["summary"]
+
+    def test_a_claim_beside_a_high_one_filed_under_another_domain_is_owed_its_answer(self):
+        """Scored by declared domain, g3's SEC bucket held the LOW claim alone, below the
+        gate, and owed nothing. With g1 confirming its own copy the run was PASS,
+        certified, 0 unanswered. It is the run without g1: one finding unanswered. And
+        it is the run where the HIGH claim declares SEC, as the rule intends."""
+        for declared in ("COD", "SEC"):
+            for with_g1 in (True, False):
+                with self.subTest(declared=declared, with_g1=with_g1):
+                    summary = self.seats_row(declared, with_g1)
+                    self.assertEqual(
+                        ("INCONCLUSIVE", False, ["1 finding unanswered by its verify advisor"]),
+                        (summary["gate"], summary["coverage_certified"],
+                         summary["grade_shortfalls"]))
+
+    def one_low_claim(self, body):
+        paths, loaded = self.cell_files({"g1": [claim("a.py", severity="LOW")]})
+        self.record(body(loaded[0]["id"]))
+        return self.report(paths)["summary"]["grade_shortfalls"]
+
+    def test_a_cell_the_record_says_was_asked_owes_its_answer_whatever_it_scores(self):
+        owed = ["1 finding unanswered by its verify advisor"]
+        # Asked, at either stage, and silent: owed, though one LOW claim is below the gate.
+        self.assertEqual(owed, self.one_low_claim(lambda i: record(claims=[i], size=25)))
+        self.assertEqual(owed, self.one_low_claim(
+            lambda i: record(stage="backup", claims=[i], size=25)))
+        # Never dispatched, or dispatched without it: below the gate, owed nothing.
+        self.assertEqual([], self.one_low_claim(lambda i: {}))
+        self.assertEqual([], self.one_low_claim(lambda i: record(group="g2", claims=[i], size=25)))
+        # A record that cannot say (charged, with no scope) changes nothing: the score stands.
+        self.assertEqual([], self.one_low_claim(lambda i: {"g1/SEC/primary": 1}))
+
+    def test_the_cell_is_the_file_a_finding_was_loaded_from(self):
+        """`Owed` itself: by the file's cell, never by the declared domain; a finding
+        loaded from no cell file keeps the older rule."""
+        low = {"id": "SEC-1", "severity": "LOW", "domain": "SEC", "_group": "g3",
+               evidence_mod.CELL_DOMAIN_FIELD: "SEC"}
+        high = {"id": "COD-1", "severity": "HIGH", "domain": "COD", "_group": "g3",
+                evidence_mod.CELL_DOMAIN_FIELD: "SEC"}
+        owed = verdicts_mod.Owed([low, high])
+        self.assertEqual({("g3", "SEC")}, owed.cells)
+        self.assertEqual((True, True), (owed(low), owed(high)))
+        self.assertEqual(set(), verdicts_mod.Owed([low]).cells)
+        self.assertFalse(verdicts_mod.Owed([low])(low))
+        # No cell file: a matrix finding by its declared cell, any other finding always.
+        declared = {"id": "SEC-2", "severity": "LOW", "domain": "SEC", "_group": "g1"}
+        self.assertFalse(verdicts_mod.Owed([declared])(declared))
+        self.assertTrue(verdicts_mod.Owed([])({"id": "TL-1", "severity": "LOW"}))
+
+
 GATE_RANK = {"PASS": 0, "INCONCLUSIVE": 1, "FAIL": 2}
 WORDS = (None, "CONFIRMED", "REJECTED", "NEEDS_MORE_INFO")
 CONFIRMED_AS = ("advisor_confirmed", "tool_confirmed")
@@ -696,14 +806,14 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
         return loaded
 
     @staticmethod
-    def said_of(cells, skip, group, title):
-        """The verdict the claim `title` has for `group`'s instance, by the rule and not
-        by the code under test: a CONFIRMED from any cell that was asked reports it
-        confirmed; a cell that was never asked takes nothing else from the others; the
-        cells that were asked decide between them, and one that said nothing leaves it
-        unverified; only every one of them rejecting it dismisses it."""
+    def said_of(cells, skip, group, declared, title):
+        """The verdict the claim (`declared`, `title`) has for `group`'s instance, by the
+        rule and not by the code under test: a CONFIRMED from any cell that was asked
+        reports it confirmed; a cell that was never asked takes nothing else from the
+        others; the cells that were asked decide between them, and one that said
+        nothing leaves it unverified; only every one of them rejecting it dismisses it."""
         words = [said for g, (asked, claims) in cells.items() if g != skip and asked
-                 for c, said in claims if c["title"] == title]
+                 for c, said in claims if (c["domain"], c["title"]) == (declared, title)]
         if "CONFIRMED" in words:
             return "CONFIRMED"
         if not cells[group][0] or None in words:
@@ -732,9 +842,9 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
                                  "one claim is in the report twice on one verdict")
                 claims.add((f["id"], f["evidence"]["status"]))
         # The oracle's own view of the merge and of what was owed: dedupe on a fresh
-        # copy, and the engagement score on every loaded finding.
+        # copy, and the engagement score over each cell's file.
         fresh = [dict(f) for f in loaded]
-        owed_cells = plan_mod.engaged_matrix_cells(fresh)
+        engaged = self.engaged(fresh)
         under = {m["description"]: survivor["description"]
                  for survivor in corroborate_mod.dedupe([dict(f) for f in fresh])
                  for m in survivor.get(corroborate_mod.ABSORBED_FIELD) or ()}
@@ -742,7 +852,7 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
         for f in fresh:
             tag = f["description"]
             said = tool[1] if tag == "tool" else self.said_of(cells, skip, *tag.split(":"))
-            owed = plan_mod._finding_owed_verification(f, owed_cells)
+            owed = tag == "tool" or f["_group"] in engaged     # a tool finding always is
             stands[tag] = {"CONFIRMED": 3, "NEEDS_MORE_INFO": 1, "REJECTED": 0,
                            None: 2 if owed else 1}[said]
             words[tag] = said
@@ -800,21 +910,33 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
                         rng.choice(WORDS))
                 continue
             group, title = rng.choice(("g1", "g2", "g3")), rng.choice(("t0", "t1", "t2"))
-            if (group, title) in used:
+            # A reviewer may file a claim under another domain's code. The claim is
+            # still the cell's: it is in the cell's file, and its advisors are handed it.
+            declared = "COD" if rng.random() < 0.25 else "SEC"
+            if (group, declared, title) in used:
                 continue
-            used.add((group, title))
+            used.add((group, declared, title))
             asked, claims = cells.setdefault(group, (rng.random() < 0.7, []))
             claims.append((dict(claim(self.LINE_FILE, title=title, severity=severity),
-                                description="%s:%s" % (group, title)),
+                                domain=declared, code="%s-A1A" % declared,
+                                description="%s:%s:%s" % (group, declared, title)),
                            rng.choice(WORDS) if asked else None))
         # The driver dispatches a cell's advisors only when the cell's claims reach the
         # verify gate. A cell below it is never asked; one above it was asked, or has
         # no entry in the record all the same (its findings file was refused).
-        engaged = plan_mod.engaged_matrix_cells(self.write(cells, None))
+        engaged = self.engaged(self.write(cells, None))
         for group, (_asked, claims) in list(cells.items()):
-            if (group, "SEC") not in engaged:
+            if group not in engaged:
                 cells[group] = (False, [(c, None) for c, _said in claims])
         return cells, tool
+
+    @staticmethod
+    def engaged(loaded):
+        """The groups whose review cell reaches the verify gate, scored as the driver
+        scores it: over every claim in the cell's file, whatever domain each declares."""
+        return {group for group in ("g1", "g2", "g3")
+                if score_gate.should_engage_primary([f for f in loaded
+                                                     if f.get("_group") == group])}
 
     def test_the_property(self):
         rng = random.Random(self.SEED)
