@@ -101,7 +101,7 @@ Each finding MUST carry:
   reverted.
 - `title`, `description`, `location: {file, line_start, line_end}` — `file` MUST be
   **repository-relative** (e.g. `src/app.py`; never absolute or `./`-prefixed, so the
-  delta/`--pr` gate can match it against the diff). `line_start`/`line_end` are
+  report can match it against the repository's files). `line_start`/`line_end` are
   1-based, and belong on a finding that has a locus in the file; a whole-file
   finding (a missing header, a bad config) MUST omit `line_start`/`line_end`
   entirely (not `null`) rather than invent one; and a finding with no locus

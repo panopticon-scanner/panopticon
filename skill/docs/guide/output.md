@@ -5,7 +5,8 @@ panel ran partial, a scout-requested tool produced no output, or an integrity ch
 undeclared or content-substituted findings file, which on the driver path is caught by the driver's
 own `dispatch-plan-driver.json` (declares every review cell → `reconcile_findings_files`) and its
 `out-file-hashes.json` fan-out snapshot (per-cell sha256 → `verify_out_file_hashes`)) — treat it as
-NOT certified, distinct from a real `FAIL`. Another cause (#2178, narrowed by #2222): under the
+NOT certified, distinct from a real `FAIL`. (The delta causes that follow are unreachable in 5.4:
+delta review is withdrawn, #3735.) Another cause (#2178, narrowed by #2222): under the
 default `--gate-scope on-diff`, an ACTIVE delta review whose hunk map has no ranges while
 gate-eligible findings exist (active, admitted by the evidence policy and by `--fail-on`, which
 is `critical` unless set) reads `INCONCLUSIVE`, and `coverage_note` names the map and the remedy; an empty change

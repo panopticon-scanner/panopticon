@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- **BREAKING: delta review is withdrawn (#3735). Panopticon 5.4 is a whole-repository audit.**
+  `--pr`, `--changes` (`-c`), `--base` and `--gate-scope` are refused at the command line, with
+  `--diff-context`, on `driver run`, `loop`, `readiness` and `persist`: exit 2, one message,
+  before a root is resolved, a PR worktree acquired or a file written.
+  - Why: reviewing a diff was never calibrated or stress-tested. Every measurement behind 5.4 is
+    a whole-repository run. The five-gate review found a `--pr` run that passes, certified, with
+    a new finding on a changed line (#3731, #3732), in one case with no hostile agent involved.
+    A wrong PASS on a pull request is the worst failure this tool can have.
+  - What to do instead: run a whole-repository review, or scope one with `-f`, `-d`, `-g` or
+    `--files`. `--files` with no `--base` is unchanged.
+  - A run folder that was started as a delta review is not resumed: `driver run`, `loop` and
+    `persist` stop with the same reason, and `readiness` says so. `--reset` discards the folder
+    and starts a whole-repository run.
+  - `discovery.py` and `synthesize.py` refuse their delta flags when run by hand
+    (`--scope-changed`, `--base`, `--pr-base`, `--pr-worktree`, `--diff-hunks`,
+    `--diff-hunks-run-id`, `--changes`, `--gate-scope`, `--diff-context`).
+  - A `diff-hunks.json` left in a run folder no longer turns the on-diff gate on. The driver
+    handed it to `synthesize.py` whenever the file was there, whatever the run's manifest said.
+  - `gate_scope` in a committed `panopticon.yml` stays a valid key and has no effect. No config
+    key and no environment variable selected delta review, and none does now.
+  - The delta code is still in the tree, unreachable, and is deleted in 5.5 (#3736). Delta review
+    returns when it has been rebuilt and measured.
+
 - **A scanner rule's hits are read at their worst, and a merge cannot lighten a confirmed
   finding (#3731, #3732, high).** Two things an honest run got wrong, with no hostile agent:
   - A scanner rule that fires several times in a file is one finding, shown at its lowest line,

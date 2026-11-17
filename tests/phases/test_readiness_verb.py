@@ -893,9 +893,10 @@ class TestTheNoGroupsRemedyNamesTheWayOut(_VerbCase):
         _code, body = self._json(d, which=READY_CLI)
         detail = body["matrix"]["detail"]
         self.assertIn("run `driver setup`", detail)
-        for token in ("-f", "-d", "-g", "--pr"):
+        for token in ("-f", "-d", "-g"):
             with self.subTest(token=token):
                 self.assertIn(token, detail)
+        self.assertNotIn("--pr", detail)    # #3735: withdrawn in 5.4, so not a way out
 
 
 class TestTheAssumedHost(_VerbCase):

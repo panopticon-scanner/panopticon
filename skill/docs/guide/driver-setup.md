@@ -83,7 +83,9 @@ and `max_groups` to 4-64 — so a committed value cannot collapse the matrix int
 or starve it to a handful; an out-of-band value is clamped to the nearest bound and disclosed, and a
 value too large to be an integer setting at all (beyond 53 bits) is refused as out of range rather
 than clamped. **Gate (ratchet)** keys — `security`, `fail_on`, `severity`, `gate_scope`, `tools`,
-`max_verify` — change how the review judges, and are honoured only when the value is at least as
+`max_verify` — change how the review judges (`gate_scope` stays a valid key and has no effect in
+5.4: delta review is withdrawn, #3735, and with no diff it scopes nothing), and are honoured only
+when the value is at least as
 strict as panopticon's own default: a repository may tighten its own review and may never loosen it,
 so `security: redteam` is honoured and `tools: false` is refused. `fail_on` defaults to `critical`:
 `high`, `medium` and `low` tighten it and are honoured without a word, and `fail_on: off` is a
@@ -179,8 +181,9 @@ dot-directories, plus root dot-files such as `.env*`, `.npmrc`, `.travis.yml` an
 dot-directory nested below the root.
 A claimed dot-path a group does not match lands in `Ungrouped`, which is the signal that the matrix
 has a gap — not that the file was skipped.
-`--scope-changed` narrows that same surface through the same filter, so a changed tracked
-`.venv/lib/x.py` is pruned from a delta review exactly as it is from a whole-repo one (#2272).
+`--scope-changed` (withdrawn in 5.4 and refused, #3735) narrowed that same surface through the same
+filter, so a changed tracked `.venv/lib/x.py` was pruned from a delta review exactly as it is from
+a whole-repo one (#2272).
 
 **Two ways to narrow scope in `panopticon.yml` — pick the right one.** A per-group
 `exclude: [DOMAIN, …]` is a *domain* filter: it drops named review domains for that group, but **SEC
@@ -215,7 +218,7 @@ so that nobody's taste about scope can hide code from security review (the same 
 overridden), so this is deliberate, and it is **disclosed** rather than silent: the carved globs,
 paths and count appear in `groups.json`, on discovery's stderr line, and in the report's coverage
 section as
-`meta.coverage.exclude_paths_sec_carve_out`. `--pr` mode is the same in every respect, and a
+`meta.coverage.exclude_paths_sec_carve_out`. A
 narrowing scope flag narrows the carve-out with the rest of the run: `--scope-dir` keeps the carved
 files under that directory, `--scope-file` and `--scope-group` carve nothing, so a `count: 0` there
 means "nothing in this run's scope" rather than "nothing in the repository".
@@ -232,7 +235,7 @@ only one there. Where the root holds both names, `panopticon.yml` is the config 
 either name is refused), nothing is left out. The report names the file too, in
 `meta.coverage.scanner_config_excluded`; it does not change the letter, the certification or the
 coverage note. A nested `sub/panopticon.yml` is not the scanner's config and is reviewed as
-usual. Naming it explicitly, and a plain `-c`/`--base` delta that changes it, still review it. The
+usual. Naming it explicitly still reviews it. The
 driver's flag is `--files panopticon.yml`; `discovery.py`, run directly, takes `--scope-files`, and
 the driver refuses that spelling. Tool scans are unchanged.
 
