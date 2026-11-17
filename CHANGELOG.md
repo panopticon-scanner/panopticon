@@ -57,6 +57,43 @@
     (`findings-<group>-<domain>.json`). Findings collected by hand into a file of another name
     get no bundle verdict.
 
+- **A full scan leaves out of review only the config file it loaded, and the report names it
+  (#3708).** Discovery dropped both root config names, `panopticon.yml` and `.panopticon.yml`,
+  from every review group (#3642), whichever one was in use. A repo configured by
+  `panopticon.yml` could carry anything in a file named `.panopticon.yml`, and no review agent
+  read it. The only disclosure was in `groups.json` and one stderr line.
+  - Only the file the scanner loaded as its config is left out. With both names at the root that
+    is `panopticon.yml`, and `.panopticon.yml` goes to review like any other file. When neither
+    was loaded (a symlink at either name is refused), neither is left out.
+  - The report names the file in `meta.coverage.scanner_config_excluded`. It is a disclosure:
+    the letter, the gate, the certification and `coverage_note` do not move.
+  - Each name alone is left out as before. `--pr` reviews, `--scope-*` runs and tool scans are
+    unchanged.
+
+- **A malformed Semgrep result no longer stops the tool scan (#3713).** In a tree with a
+  Dockerfile variant Semgrep runs twice and the two captures are folded into one. A result
+  whose `message.text`, `ruleId` or `startLine` was a list or an object, or whose `region` was
+  not an object, raised out of that merge and then out of the whole tool run: the scanners
+  after Semgrep never launched, no manifest was written and every scanner's output was lost.
+  It failed closed (NOT CERTIFIED, with a reason), and only `--reset` retried it.
+  - The merge now declines such a result, in either pass, and nothing raises out of the
+    capture. The primary capture is kept as it is, with the Dockerfile variants stamped
+    unanalyzed, so the report reads "partial scanner file coverage: semgrep", names the
+    files and does not certify. The scanners after Semgrep run, and the manifest is written.
+  - The kept capture says why the second pass was not folded in, as one fixed word at
+    `runs[0].properties.panopticon_dockerfile_merge_declined`: `result_malformed`,
+    `second_pass_failed`, `second_pass_unreadable`, `not_mergeable`, `merged_over_limit` or
+    `merge_error`.
+  - A malformed result in the primary is treated as it already is in a tree with no
+    Dockerfile variant: the capture is ingested, and that one result is dropped or kept as
+    the ingest decides.
+  - The upgrade note under #3579 below now says what a 5.3.0 capture reads as on this
+    version, and that the remedy is `--reset`, which discards that run's review work too.
+  - A value Semgrep's own output carries at `panopticon_dockerfile_merge_declined` is dropped
+    from every capture. Only a merge this version declined sets it.
+  - A result whose `region` is `[]`, `""`, `0` or `false` is declined as malformed. It used to
+    be read as a result with no region.
+
 - **A review cell that owes the `targeted_review` echo is launched for every dispatch it is
   charged (#3709).** A SEC cell handed the files Semgrep could not parse is done only once its
   reviewer echoes that list exactly (#3614). Only the review phase asked. A reviewer that
@@ -683,7 +720,13 @@
   uncovered, missing, malformed, incomplete, oversized, argv-bounded, or failed
   second-pass remainder is partial file coverage and its count reaches
   `coverage_note`. Re-ingesting an older capture without this stamp intentionally
-  reads as partial. Template-named variants such as `Dockerfile.j2`, `.tmpl`, and
+  reads as partial. **Upgrading:** that includes a run whose tools phase ran on
+  5.3.0 and is resumed on this version. Its report reads "partial scanner file
+  coverage: semgrep" and is not certified. The remedy is to run it again with
+  `--reset`, so the scanners run on this version. `--reset` discards the whole
+  run folder, so the review and verify work of that run is done again too.
+  Template-named variants such
+  as `Dockerfile.j2`, `.tmpl`, and
   `.in` likewise disclose partial coverage if Semgrep cannot parse them as
   Dockerfiles. Tolerated fixture dependency-build failures use conditional forms
   so Dockerfile rules do not misclassify `||` as an unprotected pipeline. Trivy

@@ -389,30 +389,51 @@ def _capture_semgrep(target, cmd, docker_prefix, out_path, runner,
             dockerfile = tool_capture._capture_run(
                 "tool", "semgrep", docker_prefix + dockerfile_cmd,
                 dockerfile_path, runner, docker_context=docker_context)
-            if dockerfile is not None:
-                dockerfile_payload = read_capped_report(
-                    dockerfile, cap=tool_capture.capture_file_limit())
-                merged = (semgrep_targets.merge_sarif(
-                    primary_payload, dockerfile_payload)
-                    if dockerfile_payload is not None else None)
-                if merged is not None:
-                    stamped = semgrep_targets.stamper(
-                        "semgrep", target, dockerfile_cmd)(merged)
-                    if len(stamped) <= tool_capture.MAX_TOOL_OUTPUT_BYTES:
-                        final_payload = stamped
-                    else:
-                        print("semgrep Dockerfile-pass merge exceeded the output "
-                              "limit; retaining primary capture with partial "
-                              "coverage", file=sys.stderr)
-                else:
-                    print("semgrep Dockerfile-pass output could not be merged; "
-                          "retaining primary capture with partial coverage",
-                          file=sys.stderr)
+            declined, outcome = _fold_dockerfile_pass(
+                target, dockerfile_cmd, primary_payload, dockerfile)
+            if declined is None:
+                final_payload = outcome
             else:
-                print("semgrep Dockerfile-only pass failed; retaining primary "
-                      "capture with partial coverage", file=sys.stderr)
+                print("%s; retaining primary capture with partial coverage" % outcome,
+                      file=sys.stderr)
+                # #3713: say WHY on the capture that is kept, as a fixed word, so a
+                # malformed record can be told from a pass that failed.
+                noted = semgrep_targets.note_declined(primary_payload, declined)
+                if len(noted) <= tool_capture.MAX_TOOL_OUTPUT_BYTES:
+                    final_payload = noted
 
         return tool_capture.publish_capture("semgrep", out_path, final_payload)
+
+
+def _fold_dockerfile_pass(target, dockerfile_cmd, primary_payload, dockerfile):
+    """(None, the merged and stamped capture), or (a `semgrep_targets.DECLINED_*`
+    word, the line to print) when the Dockerfile-only pass is not folded in.
+
+    #3713: nothing raises out of here. `merge_sarif_detailed` declines what it knows
+    to be malformed; the `except` is for what it does not. An exception used to
+    leave `run_tools`: every later scanner was skipped and no manifest was written."""
+    if dockerfile is None:
+        return (semgrep_targets.DECLINED_PASS_FAILED,
+                "semgrep Dockerfile-only pass failed")
+    could_not = "semgrep Dockerfile-pass output could not be merged"
+    try:
+        dockerfile_payload = read_capped_report(
+            dockerfile, cap=tool_capture.capture_file_limit())
+        if dockerfile_payload is None:
+            return semgrep_targets.DECLINED_PASS_UNREADABLE, could_not
+        merged, declined = semgrep_targets.merge_sarif_detailed(
+            primary_payload, dockerfile_payload)
+        if merged is None:
+            return declined, could_not
+        stamped = semgrep_targets.stamper("semgrep", target, dockerfile_cmd)(merged)
+        too_large = len(stamped) > tool_capture.MAX_TOOL_OUTPUT_BYTES
+    except Exception as exc:  # noqa: BLE001 - #3713: nothing leaves the capture
+        return (semgrep_targets.DECLINED_MERGE_ERROR,
+                "semgrep Dockerfile-pass merge failed (%s)" % type(exc).__name__)
+    if too_large:
+        return (semgrep_targets.DECLINED_OVER_LIMIT,
+                "semgrep Dockerfile-pass merge exceeded the output limit")
+    return None, stamped
 
 
 class _DockerRunner:
