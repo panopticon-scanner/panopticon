@@ -226,8 +226,8 @@ the scan's stderr. That is one file (#3708): `panopticon.yml`, or `.panopticon.y
 only one there. Where the root holds both names, `panopticon.yml` is the config and
 `.panopticon.yml` is an ordinary file that is reviewed. Where neither was loaded (a symlink at
 either name is refused), nothing is left out. The report names the file too, in
-`meta.coverage.scanner_config_excluded` and in the coverage note; it does not change the letter or
-the certification. A nested `sub/panopticon.yml` is not the scanner's config and is reviewed as
+`meta.coverage.scanner_config_excluded`; it does not change the letter, the certification or the
+coverage note. A nested `sub/panopticon.yml` is not the scanner's config and is reviewed as
 usual. An explicit `--scope-files panopticon.yml`, and a plain `-c`/`--base` delta that changes it,
 still review it. Tool scans are unchanged.
 

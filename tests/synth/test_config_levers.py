@@ -269,8 +269,6 @@ def _run(review_type="repo"):
 
 # --- #3708: the scanner's own config that a full scan left out of review -----------------
 
-SCANNER_CONFIG_NOTE = "the scanner's own config file (%s) was not reviewed"
-
 
 def _scanner_config_report(names, review_type="repo", exclude_paths=None):
     with _target_with_files(GROUPS) as root:
@@ -284,16 +282,13 @@ def _scanner_config_report(names, review_type="repo", exclude_paths=None):
 
 
 @pytest.mark.parametrize("name", repo_config.CONFIG_NAMES)
-def test_the_config_left_out_of_review_is_named_in_meta_and_the_coverage_note(name):
+def test_the_config_left_out_of_review_is_named_in_meta_and_moves_nothing(name):
     report = _scanner_config_report([name])
     assert report["meta"]["coverage"]["scanner_config_excluded"] == [name]
-    summary = report["summary"]
-    assert summary["coverage_note"] == SCANNER_CONFIG_NOTE % name
-    # A disclosure: the letter and the certification are what they are without it.
-    bare = _scanner_config_report(None)["summary"]
-    assert _outcome(summary) == _outcome(bare)
-    assert (summary["coverage_certified"], summary["gate"]) == (
-        bare["coverage_certified"], bare["gate"])
+    # Named in `meta` only (#3719 review): the summary is the run's without it, and a
+    # clean run's coverage note stays empty.
+    assert report["summary"] == _scanner_config_report(None)["summary"]
+    assert report["summary"]["coverage_note"] is None
     assert validate_schema_mod.schema_errors(report) == []
 
 
@@ -304,12 +299,12 @@ def test_a_run_that_left_no_config_out_says_nothing_of_one():
         assert report["summary"]["coverage_note"] is None
 
 
-def test_the_config_note_follows_the_other_config_disclosures():
-    summary = _scanner_config_report(
-        ["panopticon.yml"], exclude_paths={"globs": 1, "pruned": 2, "sec_carved": 0})["summary"]
-    assert summary["coverage_note"] == "; ".join((
+def test_the_other_config_disclosures_are_not_joined_by_one_for_the_config():
+    exclude_paths = {"globs": 1, "pruned": 2, "sec_carved": 0}
+    summary = _scanner_config_report(["panopticon.yml"], exclude_paths=exclude_paths)["summary"]
+    assert summary["coverage_note"] == (
         "exclude_paths in the target's %s removed 2 file(s) from review (0 more code file(s) "
-        "kept for security review only)" % CONFIG, SCANNER_CONFIG_NOTE % "panopticon.yml"))
+        "kept for security review only)" % CONFIG)
 
 
 def test_discoverys_record_of_the_config_reaches_the_run_config():
@@ -351,9 +346,3 @@ def test_the_schema_takes_only_the_config_names():
         planted = copy.deepcopy(report)
         planted["meta"]["coverage"]["scanner_config_excluded"] = bad
         assert validate_schema_mod.schema_errors(planted), bad
-
-
-def test_a_delta_or_file_scoped_review_carries_no_config_note():
-    for review_type in ("changes", "files"):
-        summary = _scanner_config_report(["panopticon.yml"], review_type=review_type)["summary"]
-        assert summary["coverage_note"] is None

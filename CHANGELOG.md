@@ -10,12 +10,8 @@
   - Only the file the scanner loaded as its config is left out. With both names at the root that
     is `panopticon.yml`, and `.panopticon.yml` goes to review like any other file. When neither
     was loaded (a symlink at either name is refused), neither is left out.
-  - The report names the file: `meta.coverage.scanner_config_excluded`, and "the scanner's own
-    config file (panopticon.yml) was not reviewed" in `coverage_note`. It is a disclosure: the
-    letter, the gate and the certification do not move.
-  - A full review of a repo with a committed config now always carries that sentence in
-    `coverage_note`. A consumer that read a non-empty note as a problem should read
-    `coverage_certified`.
+  - The report names the file in `meta.coverage.scanner_config_excluded`. It is a disclosure:
+    the letter, the gate, the certification and `coverage_note` do not move.
   - Each name alone is left out as before. `--pr` reviews, `--scope-*` runs and tool scans are
     unchanged.
 

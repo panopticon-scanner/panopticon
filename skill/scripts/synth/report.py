@@ -122,6 +122,7 @@ class RunConfig:
     exclude_paths: dict | None = None
     # #3708: the scanner's own root config that discovery left out of review, off the
     # same record. None when it left none out (a scoped run, or a tree with no config).
+    # Published in `meta.coverage` only; it is no coverage note.
     scanner_config_excluded: list | None = None
     # #3560: the scanned tree's HEAD and dirtiness, off the driver's run manifest. None when no
     # manifest recorded them (a direct invocation): absent from the report, never clean.
