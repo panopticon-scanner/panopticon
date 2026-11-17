@@ -115,7 +115,11 @@ python3 skill/scripts/driver.py setup .         # one-time: proposes panopticon.
 python3 skill/scripts/driver.py loop .          # the whole review, resumable
 ```
 
-Read `.panopticon/setup-report.md`, rename the draft to `panopticon.yml`, commit it, and the loop runs the committed matrix. Scope a review instead of running the whole repository:
+Read `.panopticon/setup-report.md`, rename the draft to `panopticon.yml`, commit it, and the loop runs the committed matrix.
+
+**Commit the draft before you compare runs.** Repeatable results are claimed for a committed matrix: the same panopticon version, the same pinned repository and the same committed `panopticon.yml`. A freshly proposed matrix is not repeatable. Two `setup` runs on one commit can group the files differently and give the groups different names, and a review's results move with the matrix. Every report says which kind it ran under: `meta.matrix.origin` is `committed` or `working_tree`, and the `Matrix:` line of the terminal summary and the HTML header reads `origin=committed (reused: the config is in the reviewed commit, unmodified)` or `origin=working_tree (FRESH: the config is not in the reviewed commit; ...)`. A fresh matrix adds `comparable only with runs on the same fingerprint`.
+
+Scope a review instead of running the whole repository:
 
 ```bash
 python3 skill/scripts/driver.py loop . -f src/auth.py        # one file plus its tests and neighbours
