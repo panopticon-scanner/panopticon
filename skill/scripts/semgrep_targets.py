@@ -273,6 +273,10 @@ def stamp(payload, listing, dockerfile_listing=None):
     properties[STAMP_KEY] = listing
     if dockerfile_listing is not None:
         properties[DOCKERFILE_STAMP_KEY] = dockerfile_listing
+    # #3718 N1: every capture passes through here, and only `note_declined`, after it,
+    # says a merge was declined. A value Semgrep's own output carries at that key (in
+    # either pass: the merge folds the second pass's properties in) is not ours.
+    properties.pop(MERGE_DECLINED_KEY, None)
     return json.dumps(doc).encode("utf-8")
 
 

@@ -20,7 +20,11 @@
     Dockerfile variant: the capture is ingested, and that one result is dropped or kept as
     the ingest decides.
   - The upgrade note under #3579 below now says what a 5.3.0 capture reads as on this
-    version, and that the remedy is `--reset`.
+    version, and that the remedy is `--reset`, which discards that run's review work too.
+  - A value Semgrep's own output carries at `panopticon_dockerfile_merge_declined` is dropped
+    from every capture. Only a merge this version declined sets it.
+  - A result whose `region` is `[]`, `""`, `0` or `false` is declined as malformed. It used to
+    be read as a result with no region.
 
 - **A review cell that owes the `targeted_review` echo is launched for every dispatch it is
   charged (#3709).** A SEC cell handed the files Semgrep could not parse is done only once its
@@ -651,7 +655,9 @@
   reads as partial. **Upgrading:** that includes a run whose tools phase ran on
   5.3.0 and is resumed on this version. Its report reads "partial scanner file
   coverage: semgrep" and is not certified. The remedy is to run it again with
-  `--reset`, so the scanners run on this version. Template-named variants such
+  `--reset`, so the scanners run on this version. `--reset` discards the whole
+  run folder, so the review and verify work of that run is done again too.
+  Template-named variants such
   as `Dockerfile.j2`, `.tmpl`, and
   `.in` likewise disclose partial coverage if Semgrep cannot parse them as
   Dockerfiles. Tolerated fixture dependency-build failures use conditional forms

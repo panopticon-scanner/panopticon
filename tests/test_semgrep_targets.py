@@ -626,6 +626,7 @@ MALFORMED = {
     "startLine an object": _located(locations=_region({"startLine": {"a": 1}})),
     "endColumn a list": _located(locations=_region({"startLine": 3, "endColumn": [9]})),
     "region a list": _located(locations=_region([{"startLine": 3}])),
+    "region an empty list": _located(locations=_region([])),      # read as {} before #3713
     "region a string": _located(locations=_region("3")),
 }
 
@@ -698,7 +699,9 @@ class TestAMalformedResultNeverLeavesTheCapture(unittest.TestCase):
     FIXTURE = TestDockerfileVariantCoverage.FIXTURE
 
     def _run(self, primary_extra=None, docker_extra=None, patch=None, fail_docker=False,
-             docker_doc=None):
+             docker_doc=None, preset=None):
+        """`preset`: what Semgrep's own output carries, in both passes, at the key
+        that says a merge was declined."""
         seen = []
 
         def runner(cmd, **_kwargs):
@@ -713,6 +716,8 @@ class TestAMalformedResultNeverLeavesTheCapture(unittest.TestCase):
                 doc["runs"][0]["results"].insert(0, _located())
             elif docker_doc is not None:
                 doc = docker_doc
+            if preset is not None:
+                doc["runs"][0].setdefault("properties", {})[st.MERGE_DECLINED_KEY] = preset
             return _FakeResult(returncode=2 if (docker_only and fail_docker) else int(docker_only),
                                stdout=json.dumps(doc).encode(), stderr=b"")
 
@@ -850,6 +855,47 @@ class TestAMalformedResultNeverLeavesTheCapture(unittest.TestCase):
             calls.append(path)
             return None if os.path.basename(path) == "dockerfile.sarif" else real(path, **kwargs)
         return read
+
+    def test_only_a_declined_merge_carries_the_word_whatever_the_scanner_wrote_there(self):
+        """#3718 N1. Both passes come back with the key already set, to scanner text. A
+        merge that went through says nothing was declined, and a declined one says our
+        fixed word."""
+        said = "Syntax error at /src/app.py"
+        merged = self._run(preset=said)["capture"]["runs"][0]
+        self.assertEqual(2, len(merged["results"]))
+        self.assertNotIn(st.MERGE_DECLINED_KEY, merged["properties"])
+        self.assertNotIn(said, json.dumps(merged))
+        declined = self._run(preset=said, fail_docker=True)["capture"]["runs"][0]
+        self.assertEqual(st.DECLINED_PASS_FAILED, declined["properties"][st.MERGE_DECLINED_KEY])
+        self.assertNotIn(said, json.dumps(declined))
+        # The stamp every capture passes through is what drops it, one pass or two.
+        carried = json.dumps({"runs": [{"properties": {st.MERGE_DECLINED_KEY: said, "other": 1},
+                                        "results": []}]}).encode()
+        for dockerfile_listing in (None, {"count": 0}):
+            stamped = json.loads(st.stamp(carried, [], dockerfile_listing))
+            self.assertNotIn(st.MERGE_DECLINED_KEY, stamped["runs"][0]["properties"])
+            self.assertEqual(1, stamped["runs"][0]["properties"]["other"])
+
+    def test_a_note_that_would_take_the_capture_over_the_limit_is_left_off(self):
+        """#3718 N2. The kept primary is published bare, still partial, when the reason
+        word would put it over the output limit."""
+        noted = self._run(fail_docker=True)["capture"]
+        bare = json.loads(json.dumps(noted))
+        del bare["runs"][0]["properties"][st.MERGE_DECLINED_KEY]
+        limit = len(json.dumps(bare).encode("utf-8"))
+        self.assertLess(limit, len(json.dumps(noted).encode("utf-8")))
+        run = self._run(fail_docker=True, patch=unittest.mock.patch.object(
+            run_tools.tool_capture, "MAX_TOOL_OUTPUT_BYTES", limit))
+        self._assert_the_run_went_on(run)
+        self.assertEqual(bare, run["capture"])
+        self.assertEqual(1, run["capture"]["runs"][0]["properties"][
+            st.DOCKERFILE_STAMP_KEY]["unanalyzed"])
+        self.assertIn("; retaining primary capture with partial coverage", run["stderr"])
+        # One byte more room, and the word is there.
+        run = self._run(fail_docker=True, patch=unittest.mock.patch.object(
+            run_tools.tool_capture, "MAX_TOOL_OUTPUT_BYTES",
+            len(json.dumps(noted).encode("utf-8"))))
+        self.assertEqual(noted, run["capture"])
 
     def test_only_a_fixed_word_is_ever_stamped(self):
         primary = json.dumps(_dockerfile_capture(False)).encode()
