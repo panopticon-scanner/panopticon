@@ -1033,26 +1033,40 @@ def test_an_instance_in_a_cell_below_the_verify_gate_stays_where_it_would_be_alo
     assert [v["ids_in_several_cells"] for v in counted] == [0, 1]
 
 
-BOTH_STAGES_REJECT = {"primary": "REJECTED", "backup": "REJECTED"}
+def _both_stages(said):
+    return {"primary": said, "backup": said}
 
 
-def test_an_instance_whose_cell_was_never_asked_is_not_another_cells_to_dismiss(lab):
-    """Ruling 1, revised (the seat's F1, its `BadOwner` row). The owner's reviewer returns
-    its CRITICAL and a `null` beside it, every time. The driver refuses the file until the
-    review budget is spent, so the owner's cell has no entry in the dispatch record, and
-    synthesis still reads the CRITICAL out of the file. The copier was asked and REJECTS
-    its copy at both stages. The run was: the claim discarded and nothing owed. It is the
-    run with no copy: unverified, one finding unanswered, not certified."""
-    silent = fh.drive(lab, replies=fh.CopiedClaim(copy=False, bad_owner=True))
-    copied = fh.drive(lab, replies=fh.CopiedClaim(says=BOTH_STAGES_REJECT, bad_owner=True))
+@pytest.fixture(scope="module")
+def refused_owner(lab):
+    """The run with no copy: the owner's reviewer returns its CRITICAL and a `null`."""
+    return fh.drive(lab, replies=fh.CopiedClaim(copy=False, bad_owner=True))
+
+
+@pytest.mark.parametrize("said", ["REJECTED", "NEEDS_MORE_INFO"])
+def test_an_instance_whose_cell_was_never_asked_is_not_another_cells_to_decide(
+        lab, refused_owner, said):
+    """Ruling 1, revised (the seat's `BadOwner` rows: F1 with REJECTED, N1 with
+    NEEDS_MORE_INFO). The owner's reviewer returns its CRITICAL and a `null` beside it,
+    every time. The driver refuses the file until the review budget is spent, so the
+    owner's cell has no entry in the dispatch record, and synthesis still reads the
+    CRITICAL out of the file. The copier was asked, and says `said` of its copy at both
+    stages. The copy is loaded first and as severe, so dedupe keeps it.
+
+    The run was: the claim discarded (REJECTED), or reported as unsure with the owner's
+    instance merged under it (NEEDS_MORE_INFO), and nothing owed. It is the run with no
+    copy: the owner's instance unverified, one finding unanswered, not certified."""
+    silent = refused_owner
+    copied = fh.drive(lab, replies=fh.CopiedClaim(says=_both_stages(said), bad_owner=True))
     owner = "review-%s-%s" % fh.CopiedClaim.OWNER
     for outcome in (silent, copied):
         assert outcome.launched.count(owner) == review.MAX_CELL_ATTEMPTS
         assert _record_of(outcome, fh.CopiedClaim.OWNER) == []
     assert _record_of(copied, fh.CopiedClaim.COPIER)       # ...and the copier was asked
     assert _the_claim(silent) == [("report", "unverified", "CRITICAL")]
-    assert _the_claim(copied) == [("report", "unverified", "CRITICAL"),
-                                  ("discarded", "rejected", "CRITICAL")]
+    copy = (("discarded", "rejected", "CRITICAL") if said == "REJECTED"
+            else ("report", "needs_more_info", "CRITICAL"))
+    assert sorted(_the_claim(copied)) == sorted([("report", "unverified", "CRITICAL"), copy])
     assert _verdict_of(copied) == _verdict_of(silent)
     summary = copied.report["summary"]
     assert summary["coverage_certified"] is False
@@ -1061,24 +1075,51 @@ def test_an_instance_whose_cell_was_never_asked_is_not_another_cells_to_dismiss(
         assert invariant(silent, copied) == []
 
 
-def test_a_rejected_claim_at_another_cells_line_does_not_take_that_cells_claim_with_it(lab):
-    """#3716. The copier emits a decoy at the owner's line: its category, another title.
-    Dedupe keeps the decoy, the first loaded, and merges the owner's CRITICAL under it.
-    The copier's advisors REJECT the decoy. The owner's advisors were asked about the
-    CRITICAL and said nothing. It was in neither list, and nothing was owed for it. It is
-    in the report, unverified and unanswered, as in the run with no decoy."""
-    silent = fh.drive(lab, replies=fh.CopiedClaim(copy=False, owner_says=None))
-    decoyed = fh.drive(lab, replies=fh.CopiedClaim(says=BOTH_STAGES_REJECT, owner_says=None,
+@pytest.fixture(scope="module")
+def silent_owner(lab):
+    """The run with no decoy: the owner's advisors were asked about its CRITICAL and
+    said nothing."""
+    return fh.drive(lab, replies=fh.CopiedClaim(copy=False, owner_says=None))
+
+
+@pytest.mark.parametrize("said", ["REJECTED", "NEEDS_MORE_INFO"])
+def test_a_claim_at_another_cells_line_does_not_take_what_that_cell_is_owed(
+        lab, silent_owner, said):
+    """#3716, and the seat's N2. The copier emits a decoy at the owner's line: its
+    category, another title. Dedupe keeps the decoy, the first loaded, and merges the
+    owner's CRITICAL under it. The copier's advisors say `said` of the decoy. The
+    owner's advisors were asked about the CRITICAL and said nothing.
+
+    It was in neither list (REJECTED), or merged under an unsure claim
+    (NEEDS_MORE_INFO), and nothing was owed for it. It is in the report, unverified
+    and unanswered, as in the run with no decoy."""
+    silent = silent_owner
+    decoyed = fh.drive(lab, replies=fh.CopiedClaim(says=_both_stages(said), owner_says=None,
                                                    decoy=True))
     assert _the_claim(decoyed) == _the_claim(silent) == [("report", "unverified", "CRITICAL")]
-    assert [(f["title"], _status(f)) for f in decoyed.report["discarded_claims"]
-            if f["title"] == fh.CopiedClaim.DECOY] == [(fh.CopiedClaim.DECOY, "rejected")]
+    where = "discarded_claims" if said == "REJECTED" else "findings"
+    assert [_status(f) for f in decoyed.report[where]
+            if f["title"] == fh.CopiedClaim.DECOY] == [said.lower()]
     assert _verdict_of(decoyed) == _verdict_of(silent)
     summary = decoyed.report["summary"]
     assert summary["coverage_certified"] is False
     assert "1 finding unanswered by its verify advisor" in summary["grade_shortfalls"]
     for invariant in (no_silent_loss, counts_reconcile):
         assert invariant(silent, decoyed) == []
+
+
+def test_a_confirmation_of_the_copy_does_not_answer_for_the_cell_that_was_refused(
+        lab, refused_owner):
+    """What is shown and what is owed are separate. The copier CONFIRMS its copy, so the
+    claim is reported confirmed. The owner's cell was owed an answer and has none: one
+    finding is still unanswered and the run is still not certified, as with no copy."""
+    confirmed = fh.drive(lab, replies=fh.CopiedClaim(says=_both_stages("CONFIRMED"),
+                                                     bad_owner=True))
+    assert _the_claim(confirmed) == [("report", "advisor_confirmed", "CRITICAL")]
+    summary, silent = confirmed.report["summary"], refused_owner.report["summary"]
+    assert summary["coverage_certified"] is False
+    assert summary["grade_shortfalls"] == silent["grade_shortfalls"]
+    assert "1 finding unanswered by its verify advisor" in summary["grade_shortfalls"]
 
 
 def test_the_copied_rows_cover_both_stages_and_both_directions():

@@ -135,10 +135,19 @@ a cell that was asked still reports the claim as confirmed). A cell that was ask
 answer is one of the cells that decide. `meta.coverage.verdicts.ids_in_several_cells` counts such
 ids. It is a disclosure, not a shortfall: an honest duplicate that both cells confirm, or both
 reject, is decided as it always was.
-A finding leaves the report only on its own verdict (#3716). Findings of one category at one line
-are merged into the most severe before any verdict is read. When that one is REJECTED it goes to
-`discarded_claims`, and every finding merged under it that was not itself REJECTED is reported as
-its own finding: confirmed, unsure, unverified, or tool-reported.
+Merging findings at one line changes what the report shows and never what the run owes (#3716).
+Findings of one category at one line are merged into the most severe before any verdict is read.
+What is owed is counted first, over every loaded finding: a claim that was owed an advisor's
+answer and has none is one unanswered finding whatever it is merged under, and so is a claim that
+another cell confirmed when its own cell was asked and said nothing (the claim is reported
+confirmed, and the run is not certified). One claim held by several cells counts once. A tool
+finding merged into an agent claim is the exception: no advisor is asked about it while it is
+merged, so it owes nothing until it is reported by itself.
+What comes back out of a merge as its own finding: a CONFIRMED finding, unless the one it is
+merged under is CONFIRMED too; under a REJECTED finding, which goes to `discarded_claims`,
+everything not itself REJECTED; and a finding that is owed an answer and has none, unless the one
+it is merged under is CONFIRMED or is itself owed and unanswered. Anything else stays merged under
+a finding that is in the report.
 `meta.coverage.dependency_audit` is the dependency-audit receipt: the ecosystems the tree has a
 dependency manifest for (`applicable`), and the dedicated auditors that were `selected` and
 `produced` output. Its `unaudited` map (#3648) names each applicable ecosystem that no selected

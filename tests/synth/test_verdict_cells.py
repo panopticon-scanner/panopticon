@@ -16,14 +16,20 @@ it. A cell that was never asked about the claim dismisses nothing, and its own
 instance is dismissed by no other cell.
 """
 
+import contextlib
+import io
 import json
 import os
+import random
+import re
 import types
 import unittest
 
 import jsonschema
 
 import scripts.evidence as evidence_mod
+import scripts.reconcile as reconcile_mod
+import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.report as report_mod
@@ -375,6 +381,69 @@ class TestACellThatWasNeverAsked(_TwoCells):
         self.assertEqual(["the owner's"], [f["description"] for f in report["findings"]
                                            if f["id"] == self.b])
 
+    def test_an_unsure_copy_that_wins_the_merge_does_not_take_the_shortfall_with_it(self):
+        """The seat's N1. The copy wins dedupe (as severe and loaded first, or more
+        severe) and its advisor is unsure. It was: the copy published `needs_more_info`,
+        the owner's instance merged under it, nothing owed, PASS, certified. The owner's
+        instance is owed an answer and has none, so it comes back, and the run is the
+        one with no copy."""
+        for owner_severity in ("CRITICAL", "HIGH"):
+            with self.subTest(owner_severity=owner_severity):
+                silent = self.facts(self.refused(copy=False, owner_severity=owner_severity))
+                report = self.refused(copy=True, says="NEEDS_MORE_INFO",
+                                      owner_severity=owner_severity)
+                self.assertEqual(
+                    [("the copy", "CRITICAL", "needs_more_info"),
+                     ("the owner's", owner_severity, "unverified")],
+                    sorted((f["description"], f["severity"], f["evidence"]["status"])
+                           for f in report["findings"] if f["id"] == self.b))
+                copied = self.facts(report)
+                for key in ("gate", "certified", "shortfalls"):
+                    self.assertEqual(silent[key], copied[key], key)
+                self.assertEqual(("INCONCLUSIVE", False), (copied["gate"], copied["certified"]))
+                self.assertIn("1 finding unanswered by its verify advisor", copied["shortfalls"])
+
+    def test_a_claim_another_cell_confirmed_is_still_owed_its_own_answer(self):
+        """What is shown and what is owed are separate (round 2, P1). The copier CONFIRMS
+        its copy, so the claim is reported confirmed. The owner's cell was owed an
+        answer and never got one: that is still one unanswered finding, as it is with
+        no copy, and the run is not certified."""
+        silent = self.facts(self.refused(copy=False))
+        report = self.refused(copy=True, says="CONFIRMED")
+        self.assertEqual([("report", "advisor_confirmed")], self.where(report, self.b))
+        copied = self.facts(report)
+        self.assertEqual(("FAIL", False, silent["shortfalls"]),
+                         (copied["gate"], copied["certified"], copied["shortfalls"]))
+        self.assertIn("1 finding unanswered by its verify advisor", copied["shortfalls"])
+
+    def test_reconcile_reads_a_report_with_one_id_in_both_lists(self):
+        """The seat's N4. The never-asked instance is in `findings` and its rejected copy
+        is in `discarded_claims`, under one id and one fingerprint. `reconcile` does not
+        raise and refuses nothing: the claim recurs against itself, nothing is closed or
+        ambiguous, and the pair is named once per run under `degenerate_fingerprints`,
+        which is its disclosure that one fingerprint holds two records."""
+        report = self.refused(copy=True)
+        pair = [(where, f["fingerprint"]) for where in ("findings", "discarded_claims")
+                for f in report[where] if f["id"] == self.b]
+        self.assertEqual(["findings", "discarded_claims"], [where for where, _fp in pair])
+        (fingerprint,) = {fp for _where, fp in pair}
+        path, out = (os.path.join(self.run_dir, name) for name in ("report.json", "diff.json"))
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(report, fh)
+        with contextlib.redirect_stderr(io.StringIO()) as err, \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, reconcile_mod.main(["diff", path, path, "--out", out]))
+        self.assertEqual("", err.getvalue())
+        with open(out, encoding="utf-8") as fh:
+            diff = json.load(fh)
+        self.assertEqual({"recurring": 2, "closed": 0, "ambiguous": 0, "new": 0},
+                         diff["meta"]["counts"])
+        self.assertIsNone(diff["meta"]["close_guard"])
+        self.assertEqual([{"fingerprint": fingerprint, "ids": [self.b, self.b], "run": run}
+                          for run in ("run2", "run3")], diff["meta"]["degenerate_fingerprints"])
+        (claim,) = [entry for entry in diff["recurring"] if entry["fingerprint"] == fingerprint]
+        self.assertEqual(["finding", "rejected"], sorted(r["kind"] for r in claim["run3"]))
+
     def test_only_a_confirmation_reaches_it_from_another_cell(self):
         """An asked cell that is unsure of its copy, or says nothing of it, leaves the
         never-asked instance as it would be alone: unverified, never `needs_more_info`."""
@@ -458,6 +527,77 @@ class TestAnHonestDuplicateBehavesAsBefore(_TwoCells):
         self.assertEqual(([], True), (report["summary"]["grade_shortfalls"],
                                       report["summary"]["coverage_certified"]))
 
+    def test_an_advisor_that_was_asked_and_said_nothing_is_owed_whoever_else_confirmed(self):
+        """An honest duplicate with one silent advisor. The claim is reported confirmed,
+        on the cell that answered. The cell that was asked and said nothing is one
+        unanswered finding, so the run is not certified, whichever cell it was."""
+        for silent in ("g1", "g2"):
+            with self.subTest(silent=silent):
+                self.cells()
+                for name in os.listdir(self.verdicts):
+                    os.unlink(os.path.join(self.verdicts, name))
+                self.bundle([verdict(self.a)] + ([] if silent == "g1" else [verdict(self.b)]))
+                self.bundle([] if silent == "g2" else [verdict(self.b)], group="g2")
+                report = self.report()
+                self.assertEqual([("report", "advisor_confirmed")], self.where(report, self.b))
+                summary = report["summary"]
+                self.assertEqual(("FAIL", False, ["1 finding unanswered by its verify advisor"]),
+                                 (summary["gate"], summary["coverage_certified"],
+                                  summary["grade_shortfalls"]))
+
+    def test_one_claim_that_two_cells_left_unanswered_is_counted_once(self):
+        self.cells()
+        self.bundle([verdict(self.a)])
+        self.bundle([], group="g2")
+        report = self.report()
+        self.assertEqual([("report", "unverified")], self.where(report, self.b))
+        self.assertEqual(["1 finding unanswered by its verify advisor"],
+                         report["summary"]["grade_shortfalls"])
+
+    def _with_a_low_claim_in_a_cell_below_the_gate(self, same_id, owner):
+        """`g1` holds one LOW claim at `B`'s line and is below the verify gate: never
+        dispatched. `g2` holds `B` at `owner`'s severity and, with a HIGH claim of its
+        own elsewhere, was asked about both. Returns the report and the LOW claim's id."""
+        low = dict(claim("b.py", title=None if same_id else "a note on b.py", severity="LOW"),
+                   description="g1's")
+        theirs = [dict(claim("b.py", severity=owner[0]), description="g2's"),
+                  claim("a.py", severity="HIGH")]
+        self.paths = []
+        for group, findings in (("g1", [low]), ("g2", theirs)):
+            self.paths.append(os.path.join(self.run_dir, "findings-%s-SEC.json" % group))
+            with open(self.paths[-1], "w", encoding="utf-8") as fh:
+                json.dump({"findings": findings}, fh)
+        loaded = findings_mod.load_findings(self.paths)
+        self.b, other = loaded[1]["id"], loaded[2]["id"]
+        self.assertEqual(same_id, loaded[0]["id"] == self.b)
+        self.record(record(group="g2", claims=(self.b, other), size=25))
+        self.bundle([verdict(other)] + ([verdict(self.b, owner[1])] if owner[1] else []),
+                    group="g2")
+        return self.report(fail_on="high"), loaded[0]["id"]
+
+    def test_a_claim_that_was_owed_nothing_stays_merged_under_an_unsure_finding(self):
+        """Only what is owed comes back from under a finding that is in the report. A
+        LOW claim in a cell below the gate, under another cell's unsure CRITICAL, is
+        merged as it always was."""
+        report, low = self._with_a_low_claim_in_a_cell_below_the_gate(
+            same_id=False, owner=("CRITICAL", "NEEDS_MORE_INFO"))
+        self.assertEqual([("report", "needs_more_info")], self.where(report, self.b))
+        self.assertEqual([], self.where(report, low))
+        self.assertEqual([], report["summary"]["grade_shortfalls"])
+
+    def test_a_claim_is_not_published_twice_on_one_verdict(self):
+        """`g1`'s LOW instance was never asked about and is the one dedupe kept. `g2`'s
+        instance of the same id was asked about and got no answer: it is owed, and it
+        would come back, as the same unverified claim a second time. It stays merged,
+        and it is still one unanswered finding."""
+        report, _low = self._with_a_low_claim_in_a_cell_below_the_gate(
+            same_id=True, owner=("LOW", None))
+        self.assertEqual([("g1's", "unverified")],
+                         [(f["description"], f["evidence"]["status"])
+                          for f in report["findings"] if f["id"] == self.b])
+        self.assertEqual(["1 finding unanswered by its verify advisor"],
+                         report["summary"]["grade_shortfalls"])
+
     def test_one_unsure_and_one_rejecting_is_not_a_dismissal(self):
         self.cells()
         self.bundle([verdict(self.a), verdict(self.b, "REJECTED")])
@@ -486,6 +626,233 @@ class TestAnHonestDuplicateBehavesAsBefore(_TwoCells):
         report = self.report()
         for finding in report["findings"] + report["discarded_claims"]:
             self.assertEqual([], [key for key in finding if key.startswith("_")])
+
+
+GROUPS3 = GROUPS + [{"name": "g3", "files": ["c.py"]}]
+GATE_RANK = {"PASS": 0, "INCONCLUSIVE": 1, "FAIL": 2}
+WORDS = (None, "CONFIRMED", "REJECTED", "NEEDS_MORE_INFO")
+CONFIRMED_AS = ("advisor_confirmed", "tool_confirmed")
+
+
+class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
+    """Round 2 of the #3711 review, P4: the property that closes the class. Random
+    clusters of 2 to 5 findings at one line: review cells that were asked and cells
+    with no entry in the dispatch record (below the gate, or refused), copies of one
+    id across cells, every severity, a tool finding, every verdict state, bundle
+    verdicts for the cells and a queue-id verdict for the tool finding.
+
+    For every cell in a case: with the cell present, the gate is no better, the run is
+    no more certified, nothing owed has gone, and no other finding stands better than
+    it does with the cell's findings and verdicts removed.
+
+    Standing, strictest first: confirmed; owed an answer and without one; open (unsure,
+    or no verdict and none owed); dismissed. A merged finding takes the place of the
+    finding it is merged under.
+
+    ONE EXEMPTION, as ruled: a tool finding merged into the removed cell's CONFIRMED
+    claim was never asked about (the queue is built on the merged list) and owes
+    nothing while it is merged. Without the cell it is alone and unanswered. That one
+    unanswered tool finding, and the INCONCLUSIVE gate and the certification it
+    costs, are not held against the cell."""
+
+    CASES, SEED = 300, 3711
+    LINE_FILE = "b.py"
+
+    def write(self, cells, tool, skip=None):
+        """The run folder for `cells` ({group: (asked, [(claim, said)])}) and the tool
+        finding, less the cell `skip`. Returns every loaded finding."""
+        for name in os.listdir(self.verdicts):
+            os.unlink(os.path.join(self.verdicts, name))
+        paths, bodies = [], []
+        for group in sorted(cells):
+            if group == skip:
+                continue
+            asked, claims = cells[group]
+            paths.append(os.path.join(self.run_dir, "findings-%s-SEC.json" % group))
+            with open(paths[-1], "w", encoding="utf-8") as fh:
+                json.dump({"findings": [c for c, _said in claims]}, fh)
+        loaded = findings_mod.load_findings(paths)
+        for group in sorted(cells):
+            if group == skip or not cells[group][0]:
+                continue
+            mine = [f for f in loaded if f["_group"] == group]
+            said = dict(zip((f["description"] for f in mine),
+                            (word for _c, word in cells[group][1])))
+            bodies.append(record(group=group, claims=[f["id"] for f in mine], size=25))
+            self.bundle([verdict(f["id"], said[f["description"]]) for f in mine
+                         if said[f["description"]]], group=group)
+        self.record(*bodies)
+        for path in [os.path.join(self.run_dir, n) for n in os.listdir(self.run_dir)
+                     if n.startswith("findings-")]:
+            if path not in paths:
+                os.unlink(path)
+        if tool is not None:
+            finding, said = tool
+            loaded.append(dict(finding))
+            if said:
+                with open(os.path.join(self.verdicts, "%s.json" % evidence_mod.finding_fingerprint(
+                        finding)), "w", encoding="utf-8") as fh:
+                    json.dump({"finding_id": finding["id"], "verdict": said, "reasoning": "r"}, fh)
+        return loaded
+
+    @staticmethod
+    def said_of(cells, skip, group, title):
+        """The verdict the claim `title` has for `group`'s instance, by the rule and not
+        by the code under test: a CONFIRMED from any cell that was asked reports it
+        confirmed; a cell that was never asked takes nothing else from the others; the
+        cells that were asked decide between them, and one that said nothing leaves it
+        unverified; only every one of them rejecting it dismisses it."""
+        words = [said for g, (asked, claims) in cells.items() if g != skip and asked
+                 for c, said in claims if c["title"] == title]
+        if "CONFIRMED" in words:
+            return "CONFIRMED"
+        if not cells[group][0] or None in words:
+            return None
+        return "NEEDS_MORE_INFO" if "NEEDS_MORE_INFO" in words else "REJECTED"
+
+    def run_of(self, cells, tool, skip=None):
+        """(report, {tag: (list, status)}, {tag: standing}, {tag: the tag it is merged
+        under}) for one run. A standing is the finding's OWN, worked out here."""
+        loaded = self.write(cells, tool, skip)
+        fs = findings_mod.FindingSet.load(
+            types.SimpleNamespace(verdicts_dir=self.verdicts), [], "standard", None,
+            prepared=([dict(f) for f in loaded], None, None), run_dir=self.run_dir)
+        with _target_with_files(GROUPS3, lines=5000) as target, \
+                contextlib.redirect_stderr(io.StringIO()):
+            report = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target=target, fail_on="high",
+                                         timestamp="2026-01-01T00:00:00Z"),
+                findings=fs, plan=plan_mod.PlanInputs(groups_meta=GROUPS3)))
+        shown, claims = {}, set()
+        for where in ("findings", "discarded_claims"):
+            for f in report[where]:
+                self.assertNotIn(f["description"], shown, "one finding is in the report twice")
+                shown[f["description"]] = (where, f["evidence"]["status"])
+                self.assertNotIn((f["id"], f["evidence"]["status"]), claims,
+                                 "one claim is in the report twice on one verdict")
+                claims.add((f["id"], f["evidence"]["status"]))
+        # The oracle's own view of the merge and of what was owed: dedupe on a fresh
+        # copy, and the engagement score on every loaded finding.
+        fresh = [dict(f) for f in loaded]
+        owed_cells = plan_mod.engaged_matrix_cells(fresh)
+        under = {m["description"]: survivor["description"]
+                 for survivor in corroborate_mod.dedupe([dict(f) for f in fresh])
+                 for m in survivor.get(corroborate_mod.ABSORBED_FIELD) or ()}
+        stands, words, ids = {}, {}, {}
+        for f in fresh:
+            tag = f["description"]
+            said = tool[1] if tag == "tool" else self.said_of(cells, skip, *tag.split(":"))
+            owed = plan_mod._finding_owed_verification(f, owed_cells)
+            stands[tag] = {"CONFIRMED": 3, "NEEDS_MORE_INFO": 1, "REJECTED": 0,
+                           None: 2 if owed else 1}[said]
+            words[tag] = said
+            ids.setdefault(f["id"], []).append(tag)
+
+        def as_shown(tag):
+            where, status = shown[tag]
+            if where == "discarded_claims":
+                return 0
+            if status in CONFIRMED_AS:
+                return 3
+            return 1 if status == "needs_more_info" else max(stands[tag], 1)
+
+        # What the report shows (P2, P3): every finding is there on its own standing;
+        # or an instance of its id is there on the same verdict (or confirmed); or it
+        # is merged under a finding that is there and stands no lower.
+        for f in fresh:
+            tag = f["description"]
+            if tag in shown:
+                self.assertEqual(stands[tag], as_shown(tag), "%s is shown as %r" % (tag, shown[tag]))
+                continue
+            if any(other in shown and words[other] in (words[tag], "CONFIRMED")
+                   for other in ids[f["id"]]):
+                continue
+            self.assertIn(under.get(tag), shown, "%s is in neither list, and under nothing "
+                                                 "that is" % tag)
+            self.assertGreaterEqual(as_shown(under[tag]), stands[tag],
+                                    "%s is merged under %s" % (tag, under[tag]))
+        return report, shown, stands, under
+
+    @staticmethod
+    def owed_count(report):
+        """(unanswered findings of either kind, every other shortfall reason)."""
+        unanswered, others = 0, []
+        for reason in report["summary"]["grade_shortfalls"]:
+            counted = re.match(r"(\d+) (?:tool )?findings? unanswered by ", reason)
+            if counted:
+                unanswered += int(counted.group(1))
+            else:
+                others.append(reason)
+        return unanswered, others
+
+    def case(self, rng):
+        cells, tool, used = {}, None, set()
+        for _ in range(rng.randint(2, 5)):
+            severity = rng.choice(("CRITICAL", "HIGH", "MEDIUM", "LOW"))
+            if tool is None and rng.random() < 0.2:
+                tool = ({"id": "TL-1", "title": "tool", "description": "tool", "severity": severity,
+                         "confidence": "POSSIBLE", "panel": "security", "domain": "SEC",
+                         "category": rng.choice(("authz", "other")), "source": "tool:semgrep",
+                         "tool_evidence": {"tool": "semgrep", "rule_id": "r.tool"},
+                         "location": {"file": self.LINE_FILE, "line_start": 1},
+                         "provenance": {"discovered_by": "tool:semgrep",
+                                        "confirmation_status": "UNVERIFIED"}},
+                        rng.choice(WORDS))
+                continue
+            group, title = rng.choice(("g1", "g2", "g3")), rng.choice(("t0", "t1", "t2"))
+            if (group, title) in used:
+                continue
+            used.add((group, title))
+            asked, claims = cells.setdefault(group, (rng.random() < 0.7, []))
+            claims.append((dict(claim(self.LINE_FILE, title=title, severity=severity),
+                                description="%s:%s" % (group, title)),
+                           rng.choice(WORDS) if asked else None))
+        # The driver dispatches a cell's advisors only when the cell's claims reach the
+        # verify gate. A cell below it is never asked; one above it was asked, or has
+        # no entry in the record all the same (its findings file was refused).
+        engaged = plan_mod.engaged_matrix_cells(self.write(cells, None))
+        for group, (_asked, claims) in list(cells.items()):
+            if (group, "SEC") not in engaged:
+                cells[group] = (False, [(c, None) for c, _said in claims])
+        return cells, tool
+
+    def test_the_property(self):
+        rng = random.Random(self.SEED)
+        removed = exempted = 0
+        for number in range(self.CASES):
+            cells, tool = self.case(rng)
+            with self.subTest(case=number):
+                with_report, with_shown, with_stands, under = self.run_of(cells, tool)
+            for cell in sorted(cells):
+                with self.subTest(case=number, removed=cell):
+                    less_report, less_shown, less_stands, _under = self.run_of(cells, tool, cell)
+                    removed += 1
+                    summary, without = with_report["summary"], less_report["summary"]
+                    for tag, stood in less_stands.items():
+                        self.assertGreaterEqual(with_stands[tag], stood, tag)
+                    # The one exemption: the tool finding merged into this cell's
+                    # CONFIRMED claim, alone and unanswered without the cell.
+                    cover = under.get("tool", "")
+                    exempt = int(
+                        tool is not None and tool[1] is None and "tool" not in with_shown
+                        and cover.startswith(cell + ":")
+                        and with_shown.get(cover, ("", ""))[1] in CONFIRMED_AS
+                        and less_shown.get("tool") == ("findings", "tool_reported"))
+                    exempted += exempt
+                    (owed, others), (less_owed, less_others) = (
+                        self.owed_count(with_report), self.owed_count(less_report))
+                    self.assertGreaterEqual(owed, less_owed - exempt)
+                    self.assertLessEqual(set(less_others), set(others))
+                    if not (exempt and less_owed == 1):     # ...the one thing owed without it
+                        self.assertGreaterEqual(GATE_RANK[summary["gate"]],
+                                                GATE_RANK[without["gate"]])
+                        self.assertFalse(summary["coverage_certified"]
+                                         and not without["coverage_certified"])
+                    else:
+                        self.assertEqual("INCONCLUSIVE", without["gate"])
+        # The run means something: cells were removed, and the exemption is rare.
+        self.assertGreater(removed, self.CASES)
+        self.assertLess(exempted, removed // 20)
 
 
 class TestTheRule(unittest.TestCase):

@@ -536,7 +536,8 @@
                     "integer",
                     "null"
                   ],
-                  "minimum": 0
+                  "minimum": 0,
+                  "description": "Findings that were owed an advisor verdict and have none. Since #3711 it is counted over every loaded finding, before findings at one line are merged: a claim merged under another finding still counts; a claim that another review cell confirmed still counts when its own cell was asked and said nothing; one claim held by several cells counts once. A tool finding merged into an agent claim is not counted while it is merged: no advisor is asked about it. null when no verdicts were supplied."
                 },
                 "unloadable": {
                   "type": [

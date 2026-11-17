@@ -844,7 +844,7 @@ class TestADiscardedSurvivorGivesBackItsMembers(unittest.TestCase):
                                   source="tool:semgrep",
                                   tool_evidence={"tool": "semgrep", "rule_id": "r.tool"}), **more})
 
-    def _report(self, pairs, by_id=True):
+    def _report(self, pairs, by_id=True, max_verify=None):
         if by_id:
             answers = {"verdict_bundles": {f["id"]: [
                 {"finding_id": f["id"], "verdict": v, "reasoning": "r", "run_id": "RID",
@@ -857,7 +857,8 @@ class TestADiscardedSurvivorGivesBackItsMembers(unittest.TestCase):
                                      verdicts_supplied=True, **answers)
         with contextlib.redirect_stderr(io.StringIO()):
             return report_mod.build_report(report_mod.ReportInputs(
-                run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-10-20T00:00:00Z"),
+                run=report_mod.RunConfig(target="t", fail_on="high", max_verify=max_verify,
+                                         timestamp="2026-10-20T00:00:00Z"),
                 findings=fs))
 
     @staticmethod
@@ -887,7 +888,8 @@ class TestADiscardedSurvivorGivesBackItsMembers(unittest.TestCase):
                           ("real", "findings", "unverified")], self._fates(report))
         self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
 
-    def test_an_unsure_member_comes_back_as_unsure(self):
+    def test_an_unsure_member_comes_back_from_under_a_rejected_survivor(self):
+        # Merged, it would be visible only under a discarded claim.
         report = self._report([(_agentic(fid="AG-D", sev="CRITICAL", title="decoy"), "REJECTED"),
                                (_agentic(fid="AG-R", sev="HIGH", title="real"), "NEEDS_MORE_INFO")])
         self.assertEqual([("decoy", "discarded_claims", "rejected"),
@@ -943,22 +945,179 @@ class TestADiscardedSurvivorGivesBackItsMembers(unittest.TestCase):
                           ("unsure", "findings", "needs_more_info")], self._fates(report))
         self.assertEqual("FAIL", report["summary"]["gate"])
 
-    def test_under_a_published_survivor_a_member_that_is_not_confirmed_stays_merged(self):
-        """Unchanged. The survivor is in the report, and the member is merged under it."""
+    def test_under_a_survivor_in_the_report_only_what_is_owed_comes_back(self):
+        """Under a survivor that is in the report a member stays merged, with one
+        exception (round 2, P2): a member that is owed an answer and has none comes back
+        when the survivor is unsure. Under a CONFIRMED survivor, and under one that is
+        itself owed and unanswered, it stays merged, and it is still counted (P1)."""
         for survivor in (None, "NEEDS_MORE_INFO", "CONFIRMED"):
             for member in (None, "NEEDS_MORE_INFO", "REJECTED"):
                 with self.subTest(survivor=survivor, member=member):
                     report = self._report([
                         (_agentic(fid="AG-S", sev="CRITICAL", title="survivor"), survivor),
                         (_agentic(fid="AG-M", sev="HIGH", title="member"), member)])
-                    self.assertEqual([("survivor", "findings", self.STATUS[survivor][0])],
+                    back = [("member", "findings", "unverified")] if (
+                        survivor, member) == ("NEEDS_MORE_INFO", None) else []
+                    self.assertEqual(back + [("survivor", "findings", self.STATUS[survivor][0])],
                                      self._fates(report))
+                    self.assertEqual((survivor is None) + (member is None),
+                                     report["meta"]["coverage"]["verdicts"]["unanswered"])
+
+    def test_an_owed_member_comes_back_from_under_an_unsure_survivor(self):
+        """The seat's N2: the NEEDS_MORE_INFO decoy did what the REJECTED one had done.
+        It was: `real` merged under an unsure claim, PASS, nothing owed."""
+        for by_id in (True, False):
+            for order in ("decoy first", "decoy second"):
+                with self.subTest(by_id=by_id, order=order):
+                    pairs = [(_agentic(fid="AG-D", sev="CRITICAL", title="decoy"), "NEEDS_MORE_INFO"),
+                             (_agentic(fid="AG-R", sev="HIGH", title="real"), None)]
+                    report = self._report(pairs if order == "decoy first" else pairs[::-1], by_id)
+                    self.assertEqual([("decoy", "findings", "needs_more_info"),
+                                      ("real", "findings", "unverified")], self._fates(report))
+                    summary = report["summary"]
+                    self.assertEqual(("INCONCLUSIVE", False), (summary["gate"],
+                                                               summary["coverage_certified"]))
+                    self.assertIn("1 finding unanswered by its verify advisor",
+                                  summary["grade_shortfalls"])
+
+    def test_a_tool_finding_comes_back_from_under_an_unsure_agent_claim(self):
+        """N2's tool case. And the two are then published apart: the agent claim is no
+        longer `reinforced`, so the scanner's one finding is queued once."""
+        for said, status in (("NEEDS_MORE_INFO", "needs_more_info"), ("REJECTED", "rejected")):
+            with self.subTest(said=said):
+                report = self._report([(_agentic(fid="AG-D", sev="CRITICAL", title="decoy"), said),
+                                       (self._tool(), None)])
+                where = "discarded_claims" if said == "REJECTED" else "findings"
+                self.assertEqual([("decoy", where, status), ("tool", "findings", "tool_reported")],
+                                 self._fates(report))
+                self.assertIn("1 tool finding unanswered by its advisor",
+                              report["summary"]["grade_shortfalls"])
+                axis = report["meta"]["coverage"]["tool_axis"]
+                self.assertEqual((1, 1, 0), (axis["queued"], axis["unanswered"], axis["rejected"]))
+                decoy = [f for f in report["findings"] + report["discarded_claims"]
+                         if f["title"] == "decoy"][0]
+                self.assertNotIn("reinforced", decoy)
+
+    def test_a_tool_finding_that_stays_merged_is_one_issue_with_its_survivor(self):
+        """The queue is built on the merged list, so no advisor is ever asked about a tool
+        finding merged into an agent claim: the claim's advisor answers for the one issue.
+        It owes nothing while it stays merged, under a CONFIRMED claim or one that is
+        itself unanswered."""
+        for said, unanswered, tools in (("CONFIRMED", 0, 0), (None, 1, 1)):
+            with self.subTest(said=said):
+                report = self._report([(_agentic(fid="AG-S", sev="CRITICAL", title="claim"), said),
+                                       (self._tool(), None)])
+                self.assertEqual(["claim"], [title for title, _where, _status in self._fates(report)])
+                self.assertEqual(unanswered, report["meta"]["coverage"]["verdicts"]["unanswered"])
+                axis = report["meta"]["coverage"]["tool_axis"]
+                self.assertEqual((1, tools), (axis["queued"], axis["unanswered"]))
+                self.assertTrue(report["findings"][0]["reinforced"])
+        self.assertTrue(self._report([(_agentic(fid="AG-S", sev="CRITICAL", title="claim"),
+                                       "CONFIRMED"), (self._tool(), None)]
+                                     )["summary"]["coverage_certified"])
+
+    def test_an_agent_claim_is_owed_whatever_it_is_merged_under(self):
+        """P1. Its cell's advisors are handed every claim of the cell, merged or not.
+        Under a CONFIRMED survivor the run certified with a claim nobody had answered."""
+        report = self._report([(_agentic(fid="AG-S", sev="CRITICAL", title="survivor"), "CONFIRMED"),
+                               (_agentic(fid="AG-M", sev="HIGH", title="member"), None)])
+        self.assertEqual([("survivor", "findings", "advisor_confirmed")], self._fates(report))
+        summary = report["summary"]
+        self.assertEqual(("FAIL", False), (summary["gate"], summary["coverage_certified"]))
+        self.assertIn("1 finding unanswered by its verify advisor", summary["grade_shortfalls"])
+        # Two claims at one line, neither answered: two are owed, where one was counted.
+        report = self._report([(_agentic(fid="AG-S", sev="CRITICAL", title="survivor"), None),
+                               (_agentic(fid="AG-M", sev="HIGH", title="member"), None)])
+        self.assertEqual([("survivor", "findings", "unverified")], self._fates(report))
+        self.assertIn("2 findings unanswered by their verify advisors",
+                      report["summary"]["grade_shortfalls"])
+
+    def test_what_was_cut_from_the_verify_queue_is_owed_nothing_merged_or_not(self):
+        """`--max-verify` cuts the queue, and what it cuts was never counted as
+        unanswered. Nor is a claim merged under a finding that was cut."""
+        pairs = [(_agentic(fid="AG-S", sev="CRITICAL", title="survivor"), None),
+                 (_agentic(fid="AG-M", sev="HIGH", title="member"), None)]
+        self.assertEqual(2, self._report(pairs)["meta"]["coverage"]["verdicts"]["unanswered"])
+        cut = self._report(pairs, max_verify=0)["meta"]["coverage"]["verdicts"]
+        self.assertEqual((1, 0, 0), (cut["cut"], cut["queued"], cut["unanswered"]))
+
+    def test_a_claim_reinforced_in_place_stays_reinforced_when_a_member_comes_back(self):
+        """Three findings of one category at a line: the tool finding is not merged into
+        the agent claim, it reinforces it in place and stays in the report. A member
+        coming back from under that claim parts no pair."""
+        report = self._report([
+            (_agentic(fid="AG-S", sev="CRITICAL", title="survivor"), "REJECTED"),
+            (_agentic(fid="AG-M", sev="HIGH", title="member"), None),
+            (self._tool(category="injection"), "CONFIRMED")])
+        self.assertEqual([("member", "findings", "unverified"),
+                          ("survivor", "discarded_claims", "rejected"),
+                          ("tool", "findings", "tool_confirmed")], self._fates(report))
+        self.assertTrue(report["discarded_claims"][0]["reinforced"])
+
+    def test_the_pair_is_parted_only_when_nothing_of_the_other_kind_stays_merged(self):
+        from scripts.synth import verdicts as verdicts_mod
+        one, two = self._tool(fid="TL-1"), self._tool(fid="TL-2")
+        for back, still in (([one], True), ([one, two], False), ([], True)):
+            claim = _agentic(fid="AG-S", reinforced=True)
+            verdicts_mod._part_the_pair(claim, [one, two], back)
+            self.assertEqual(still, "reinforced" in claim, [f["id"] for f in back])
+        # Another agent claim coming back parts nothing: it is not the other of the pair.
+        claim, member = _agentic(fid="AG-S", reinforced=True), _agentic(fid="AG-M")
+        verdicts_mod._part_the_pair(claim, [member, one], [member])
+        self.assertTrue(claim["reinforced"])
+
+    @staticmethod
+    def _verdict_of(report):
+        summary = report["summary"]
+        return (summary["gate"], summary["coverage_certified"], summary["grade_shortfalls"])
+
+    def test_the_run_owes_what_it_would_with_nothing_merged(self):
+        """P3. Three claims at one line, under every verdict each can have, against the
+        same three claims and verdicts at three lines, where nothing merges: the same
+        gate, certification and shortfalls."""
+        def claims(lines):
+            return [_agentic(fid="AG-%d" % n, sev=sev, title=title,
+                             location={"file": "app.py", "line_start": line})
+                    for n, (sev, title, line) in enumerate(zip(
+                        ("CRITICAL", "HIGH", "HIGH"), ("one", "two", "three"), lines))]
+        for said in itertools.product(self.WORDS, repeat=3):
+            for by_id in (True, False):
+                with self.subTest(said=said, by_id=by_id):
+                    merged = self._report(list(zip(claims((10, 10, 10)), said)), by_id)
+                    apart = self._report(list(zip(claims((10, 20, 30)), said)), by_id)
+                    self.assertEqual(3, len(apart["findings"]) + len(apart["discarded_claims"]))
+                    self.assertEqual(self._verdict_of(apart), self._verdict_of(merged))
+
+    def test_a_merged_tool_finding_is_the_one_thing_merging_changes(self):
+        """The same for an agent claim and a tool finding. The exception is the merged
+        tool finding with no verdict, which owes nothing while it is merged: apart, it
+        is one more unanswered tool finding."""
+        for agent_sev, tool_sev in (("CRITICAL", "HIGH"), ("HIGH", "CRITICAL")):
+            for said in itertools.product(self.WORDS, repeat=2):
+                with self.subTest(agent=agent_sev, tool=tool_sev, said=said):
+                    def pair(tool_line):
+                        return [(_agentic(fid="AG-1", sev=agent_sev, title="agent"), said[0]),
+                                (self._tool(sev=tool_sev,
+                                            location={"file": "app.py", "line_start": tool_line}),
+                                 said[1])]
+                    merged, apart = self._report(pair(10)), self._report(pair(20))
+                    titles = [title for title, _where, _status in self._fates(merged)]
+                    if "tool" in titles or said[1] is not None:
+                        self.assertEqual(self._verdict_of(apart), self._verdict_of(merged))
+                    else:       # merged under the agent claim, and nobody was asked about it
+                        self.assertEqual(["agent"], titles)
+                        self.assertIn(said[0], ("CONFIRMED", None))
+                        owed = "1 tool finding unanswered by its advisor"
+                        self.assertIn(owed, apart["summary"]["grade_shortfalls"])
+                        self.assertEqual(
+                            [r for r in apart["summary"]["grade_shortfalls"] if r != owed],
+                            merged["summary"]["grade_shortfalls"])
 
     def _one_fate_each(self, pairs, by_id):
-        """The invariant. Every loaded finding is in `findings`, or in `discarded_claims`,
-        or merged under a finding of its cluster that is published; one merged under a
-        discarded survivor was REJECTED itself. And each one that is in a list is there
-        on its own verdict."""
+        """The invariant (P3). Every loaded finding is in `findings`, or in
+        `discarded_claims`, or merged under a finding of its cluster that is in one of
+        the two; one merged under a discarded survivor was REJECTED itself. And each one
+        that is in a list is there on its own verdict."""
         report = self._report([(dict(f), said) for f, said in pairs], by_id)
         fates = self._fates(report)
         titles = [title for title, _where, _status in fates]

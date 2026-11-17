@@ -2,18 +2,32 @@
 
 ## Unreleased
 
-- **A finding leaves the report only on its own verdict (#3716).** Findings of one category at
-  one line are merged into the most severe before any verdict is read. When that one was
-  REJECTED it went to `discarded_claims`, and only the CONFIRMED findings under it came back
-  (#2991). An unverified CRITICAL under a rejected claim at its line was in neither list: the gate
-  went from INCONCLUSIVE to PASS and the run certified. A HIGH tool finding with no verdict was
-  lost the same way under a rejected agent claim.
-  - Under a REJECTED finding, every finding merged under it that was not itself REJECTED is now
-    reported as its own finding: confirmed, unsure, unverified or tool-reported. One nobody
-    answered for counts as unanswered, as it would with nothing else at its line.
-  - Under a finding that is in the report, nothing changes: what is merged under it stays merged,
-    unless it is CONFIRMED and that finding is not.
-  - A report can gain findings: each is one that used to disappear with a rejected claim.
+- **Merging findings at one line no longer changes what the run owes (#3716).** Findings of one
+  category at one line are merged into the most severe before any verdict is read, and only the
+  CONFIRMED findings under it came back (#2991). So a claim at another finding's line could take
+  it out of the accounting: an unverified CRITICAL under a REJECTED claim was in neither
+  `findings` nor `discarded_claims`, and under a NEEDS_MORE_INFO claim it read as "unsure". Either
+  way the gate went from INCONCLUSIVE to PASS and the run certified. A HIGH tool finding with no
+  verdict was lost the same way under an agent claim.
+  - **What is owed is counted before anything is merged.** A claim that was owed an advisor's
+    answer and has none is one unanswered finding whatever it is merged under. One claim held by
+    several cells counts once.
+  - **A silent advisor is a shortfall even when another cell confirmed the claim.** The claim is
+    reported confirmed. The cell that was asked and said nothing still owes its answer, so the run
+    is not certified. This changes an honest run: two cells report one claim, one advisor confirms
+    it and the other never answers. That run certified before and does not now.
+  - **A claim merged under a CONFIRMED finding is still owed.** Two different claims at one line,
+    one confirmed and one never answered, used to certify. The unanswered one is now a shortfall,
+    and two unanswered claims at one line count as two, where one was counted.
+  - **What comes back out of a merge:** a CONFIRMED finding, as before; under a REJECTED finding,
+    everything not itself REJECTED; and a finding that is owed an answer and has none, unless the
+    one it is merged under is CONFIRMED or is itself owed and unanswered. A report can gain
+    findings: each is one that used to disappear under another claim.
+  - **A tool finding merged into an agent claim owes nothing while it is merged.** No advisor is
+    asked about it; the claim's advisor answers for the one issue, as before. When it comes back
+    it is `tool_reported` and unanswered, and the agent claim is no longer marked `reinforced`:
+    `tool_axis.queued` counted that one scanner finding twice.
+  - "Owed" is scored on every loaded finding, where it was scored after merging.
 
 - **A verdict speaks only for its own cell's instance of a claim (#3707, high).** A claim id is
   derived from what a reviewer wrote (domain, category, file, title and line) and holds no group.
