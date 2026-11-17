@@ -107,6 +107,31 @@ class Scope:
         return frozenset(parts[part])
 
 
+    def asked(self, cell, finding_id):
+        """Did the controller hand `cell`'s advisors the claim `finding_id`, at either
+        stage (#3707)? True when a recorded scope of that cell holds the id. False when
+        the record shows it never did: the cell was dispatched without that id, or was
+        never dispatched at all (a cell below the verify gate has no entry). None when
+        the record cannot say: there is none, or the cell was charged with no whole
+        scope recorded.
+
+        Read from the record, never from a missing bundle: a cell that was asked and
+        did not answer was still asked."""
+        if self._record is None or cell is None:
+            return None
+        group, domain = cell
+        cannot_say = False
+        for stage in STAGES:
+            parts = self._parts(group, domain, stage)
+            if parts is None:
+                key = "%s/%s/%s" % (group, domain, stage)
+                cannot_say = cannot_say or any(
+                    name == key or name.startswith(key + "/") for name in self._record)
+            elif any(str(finding_id) in part for part in parts):
+                return True
+        return None if cannot_say else False
+
+
 def counts(bundle_files):
     """(out of scope, scope not recorded): the verdicts the loader dropped, summed
     over its per-file stamps."""

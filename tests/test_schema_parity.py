@@ -38,6 +38,7 @@ import scripts.language_detection as language_detection
 import scripts.ocrdb as ocrdb
 import scripts.tools_manifest as tools_manifest
 import scripts.synth.delta as delta_mod
+import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.render as render_mod
 import scripts.synth.validate_schema as validate_schema_mod
@@ -173,7 +174,9 @@ def _build_report(tmpdir):
         json.dump({"groups": [{"name": "app", "files": ["src/app.py"],
                                "panels": ["SEC", "COD"]}]}, fh)
 
-    findings_path = os.path.join(run_dir, "agent-findings.json")
+    # A cell's own file: a verdict binds only to a finding of the cell its bundle is
+    # stamped for (#3707), so hand-collected findings would bind none.
+    findings_path = os.path.join(run_dir, "findings-app-COD.json")
     with open(findings_path, "w", encoding="utf-8") as fh:
         json.dump({"findings": [_agentic(n) for n in range(1, 9)]}, fh)
 
@@ -346,14 +349,18 @@ def _build_report(tmpdir):
                      "verdict": "REJECTED" if n < 2 else "CONFIRMED",
                      "reasoning": "adjudicated for the parity fixture"}
                     for n, e in enumerate(entries)]
-        with open(os.path.join(vdir, "verdicts-app-SEC.json"), "w",
-                  encoding="utf-8") as fh:
-            json.dump({"verdicts": verdicts,
-                       "_panopticon": {"run_id": queue["run_id"],
-                                       "role": "domain_advisor", "domain": "SEC",
-                                       "group": "app", "stage": "primary"}}, fh)
-        # #3702: what the verify phase records it handed that advisor.
-        record_verify_scope(run_dir, "app", "SEC", [v["finding_id"] for v in verdicts])
+        # One bundle per cell, each answering its own cell's claims (#3707), with what
+        # the verify phase records it handed that advisor (#3702).
+        for domain, path in (("COD", findings_path), ("SEC", cross_path)):
+            held = {f["id"] for f in findings_mod.load_findings([path])}
+            mine = [v for v in verdicts if v["finding_id"] in held]
+            with open(os.path.join(vdir, "verdicts-app-%s.json" % domain), "w",
+                      encoding="utf-8") as fh:
+                json.dump({"verdicts": mine,
+                           "_panopticon": {"run_id": queue["run_id"],
+                                           "role": "domain_advisor", "domain": domain,
+                                           "group": "app", "stage": "primary"}}, fh)
+            record_verify_scope(run_dir, "app", domain, [v["finding_id"] for v in mine])
         render_mod.write_report = _small_write
         with contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):

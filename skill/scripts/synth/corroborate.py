@@ -40,11 +40,21 @@ def _is_tool_sourced(finding):
 # #2991: the members dedupe drops, kept on their survivor. Dedupe runs BEFORE any
 # verdict binds (both passes share it, #443), so it picks the survivor by
 # severity alone; a dropped member's own verdict can still matter. A CONFIRMED
-# one is restored as its own finding when the survivor's own verdict is not
+# one is restored as its own finding when the survivor's own verdict is not, and
+# under a REJECTED survivor so is every member not itself REJECTED (#3716)
 # (`verdicts.restore_confirmed`). Underscore-prefixed like `_merged_ids`: never
 # serialized (pass 1 drops `_` keys) and stripped before the report. The ONLY
 # record of a dropped member since #3202 withdrew #1476's id aliases.
 ABSORBED_FIELD = "_absorbed"
+
+
+def outranks(finding, other):
+    """Would `dedupe` keep `finding` over `other`: more severe, then more confident;
+    the first seen among equals, so False on a tie. True when there is no `other`."""
+    if other is None:
+        return True
+    return ((findings_mod._sev_rank(finding), _conf_rank(finding))
+            < (findings_mod._sev_rank(other), _conf_rank(other)))
 
 
 def _absorb(best, other):

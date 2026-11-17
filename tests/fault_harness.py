@@ -256,6 +256,65 @@ class OutOfScope(FixtureReplies):
         return sorted(self.answers)
 
 
+class CopiedClaim(FixtureReplies):
+    """#3707: a reviewer that copies another cell's claim. With `copy`, the reviewer of the
+    cell `copier` emits, beside its own claim, one with the identity of the cell `owner`'s:
+    the same domain, category, file, title and line, so the same id. The controller then
+    hands that id to the copier's advisors as one of the cell's own.
+
+    `says` is what the copier's advisors say of the copy, by stage ({"primary": ...,
+    "backup": ...}); a stage not named confirms it. `owner_says` is what the owner's own
+    advisors say of the claim. Without `copy` nobody copies anything: the silent run.
+    `severity` is the claim's, and its copy's: a HIGH claim summons no backup, so the
+    owner's backup does not stand over the two primaries. With `below_gate`, everything the
+    copier's cell reports is INFO, its copy too: the cell does not reach the verify gate,
+    so no advisor is ever dispatched for it. With `bad_owner`, the owner's reviewer returns
+    its claim and a `null` beside it, every time: the driver refuses the file until the
+    cell's review budget is spent, so no advisor is ever dispatched for the OWNER's cell,
+    and synthesis still reads the claim out of the file.
+
+    #3716: with `decoy`, what the copier emits is not a copy. It is another claim at the
+    owner's line, in its category, under another title (so another id): dedupe keeps it,
+    the first loaded, over the owner's claim. With `owner_says=None` the owner's advisors
+    are asked about the claim and say nothing of it."""
+    COPIER, OWNER = ("app", "COD"), ("lib", "COD")
+    CLAIM = "%s/%s defect" % OWNER
+    DECOY = "another reading of the %s/%s defect" % OWNER
+
+    def __init__(self, copy=True, says=None, owner_says="CONFIRMED", severity="CRITICAL",
+                 below_gate=False, bad_owner=False, decoy=False):
+        self.copy, self.says, self.owner_says = copy, says or {}, owner_says
+        self.severity, self.below_gate, self.bad_owner = severity, below_gate, bad_owner
+        self.decoy = decoy
+
+    def findings(self, entry):
+        claims = super().findings(entry)
+        copier = (entry["group"], entry["domain"]) == self.COPIER
+        if self.copy and copier:
+            claims += [dict(claim, title=self.DECOY) if self.decoy else claim
+                       for claim in super().findings(dict(entry, group=self.OWNER[0],
+                                                          domain=self.OWNER[1]))]
+        claims = [dict(claim, severity=self.severity)
+                  if claim["title"] in (self.CLAIM, self.DECOY) else claim for claim in claims]
+        if self.bad_owner and (entry["group"], entry["domain"]) == self.OWNER:
+            return claims + [None]
+        return [dict(claim, severity="INFO") for claim in claims] if (
+            copier and self.below_gate) else claims
+
+    def answered(self, entry, cell):
+        silent = (self.owner_says is None
+                  and (entry.get("group"), entry.get("domain")) == self.OWNER)
+        return [finding for finding in cell
+                if not (silent and finding.get("title") == self.CLAIM)]
+
+    def verdict(self, entry, finding):
+        if finding is None or finding.get("title") not in (self.CLAIM, self.DECOY):
+            return super().verdict(entry, finding)
+        if (entry["group"], entry["domain"]) == self.COPIER:
+            return self.says.get(entry.get("stage", "primary"), "CONFIRMED"), "of its copy"
+        return self.owner_says, "of its own claim"
+
+
 class NoEcho(FixtureReplies):
     """#3709: a reviewer that returns its findings and never echoes the `targeted_review`
     list its entry handed it. With `echo`, it echoes that instead (a wrong list)."""

@@ -536,7 +536,8 @@
                     "integer",
                     "null"
                   ],
-                  "minimum": 0
+                  "minimum": 0,
+                  "description": "Findings that were owed an advisor verdict and have none. Since #3711 it is counted over every loaded finding, before findings at one line are merged: a claim merged under another finding still counts; a claim that another review cell confirmed still counts when its own cell was asked and said nothing; one claim held by several cells counts once. A tool finding merged into an agent claim is not counted while it is merged: no advisor is asked about it. null when no verdicts were supplied."
                 },
                 "unloadable": {
                   "type": [
@@ -611,6 +612,10 @@
                 "scope_not_recorded": {
                   "type": "integer",
                   "description": "#3702: verdicts in a verdict bundle that were not counted because the dispatch record holds no scope for that bundle's cell and stage: there is no record, it is unreadable, or it was written before the scope was recorded. They are in none of the other counts here. A non-zero count is a `grade_shortfalls` reason."
+                },
+                "ids_in_several_cells": {
+                  "type": "integer",
+                  "description": "#3707: claim ids held by more than one review cell. An id is derived from the claim's domain, category, file, title and line, and no group, so two cells can report one id. Each cell's advisors answer for their own instance only: any CONFIRMED keeps the claim reported, a holding cell that gave no verdict leaves it unverified, and only every holding cell rejecting it discards it. A cell that was never asked about the claim dismisses nothing, and its own instance is dismissed by no other cell. Disclosure only."
                 },
                 "misrouted": {
               "type": "integer",

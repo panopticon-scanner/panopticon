@@ -590,7 +590,9 @@ class TestPlantedCarrierIsNotTrusted(unittest.TestCase):
                 evidence.SCOPE_LIMITED_FIELD: ["x.py"]})
             v = evidence.match_verdict_by_id({"id": "SEC-100"}, by_fid,
                                              run_id="R")
-            self.assertEqual([k for k in v if k.startswith("_")], [])
+            # ...bar the one the CONTROLLER sets after the strip: its bundle's cell (#3707).
+            self.assertEqual([k for k in v if k.startswith("_")], [evidence.CELL_FIELD])
+            self.assertNotEqual("Other", (v[evidence.CELL_FIELD] or ("",))[0])
 
     def test_the_legacy_single_verdict_loader_strips_it_too(self):
         with tempfile.TemporaryDirectory() as d:

@@ -69,6 +69,9 @@ class FindingSet:
     # controller stamps and a count; `evidence.load_verdict_bundles(accepted=)`),
     # and #3702's two counts of the verdicts in it that were not counted.
     bundle_files: dict = field(default_factory=dict)
+    # #3707: the run's dispatch record (`verdict_scope.Scope`), for "was this cell
+    # asked about this claim". None for a set built without one: nothing can be said.
+    scope: Any = None
 
     @classmethod
     def prepare(cls, args, tool_findings, security_mode):
@@ -124,9 +127,9 @@ class FindingSet:
         findings, doc_policy, catalog = prepared
         verdicts, verdict_unloadable = evidence_mod.load_verdicts_detailed(args.verdicts_dir)
         bundle_files: dict[str, dict] = {}
+        scope = verdict_scope_mod.Scope.load(run_dir)
         verdict_bundles, bundle_unloadable = evidence_mod.load_verdict_bundles(
-            args.verdicts_dir, accepted=bundle_files,
-            scope=verdict_scope_mod.Scope.load(run_dir).handed)
+            args.verdicts_dir, accepted=bundle_files, scope=scope.handed)
         # Both loaders scan the same verdicts_dir and independently attempt to
         # parse every *.json in it, so a single unparseable file is reported by
         # both -- dedupe on filename or a genuinely-corrupt file double-counts
@@ -141,7 +144,7 @@ class FindingSet:
                    verdicts_supplied=args.verdicts_dir is not None,
                    verdict_unloadable=verdict_unloadable, verdict_run_id=verdict_run_id,
                    verdict_bundles=verdict_bundles, catalog=catalog, doc_policy=doc_policy,
-                   bundle_files=bundle_files)
+                   bundle_files=bundle_files, scope=scope)
 
 
 SHORT_TITLE_MAX = 100
@@ -429,6 +432,9 @@ def load_findings_detailed(paths):
             nf["id"] = evidence_mod.matrix_finding_id(nf)
             if group is not None:
                 nf["_group"] = group
+                # #3707: the cell is the FILE's. `nf["domain"]` is what the reviewer
+                # wrote, and a verdict binds to the cell its advisor was dispatched for.
+                nf[evidence_mod.CELL_DOMAIN_FIELD] = cell[1]
             out.append(nf)
     return out, diagnostics
 

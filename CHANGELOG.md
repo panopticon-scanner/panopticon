@@ -2,6 +2,64 @@
 
 ## Unreleased
 
+- **Merging findings at one line no longer changes what the run owes (#3716).** Findings of one
+  category at one line are merged into the most severe before any verdict is read, and only the
+  CONFIRMED findings under it came back (#2991). So a claim at another finding's line could take
+  it out of the accounting: an unverified CRITICAL under a REJECTED claim was in neither
+  `findings` nor `discarded_claims`, and under a NEEDS_MORE_INFO claim it read as "unsure". Either
+  way the gate went from INCONCLUSIVE to PASS and the run certified. A HIGH tool finding with no
+  verdict was lost the same way under an agent claim.
+  - **What is owed is counted before anything is merged.** A claim that was owed an advisor's
+    answer and has none is one unanswered finding whatever it is merged under. One claim held by
+    several cells counts once.
+  - **A silent advisor is a shortfall even when another cell confirmed the claim.** The claim is
+    reported confirmed. The cell that was asked and said nothing still owes its answer, so the run
+    is not certified. This changes an honest run: two cells report one claim, one advisor confirms
+    it and the other never answers. That run certified before and does not now.
+  - **A claim merged under a CONFIRMED finding is still owed.** Two different claims at one line,
+    one confirmed and one never answered, used to certify. The unanswered one is now a shortfall,
+    and two unanswered claims at one line count as two, where one was counted.
+  - **What comes back out of a merge:** a CONFIRMED finding, as before; under a REJECTED finding,
+    everything not itself REJECTED; and a finding that is owed an answer and has none, unless the
+    one it is merged under is CONFIRMED or is itself owed and unanswered. A report can gain
+    findings: each is one that used to disappear under another claim.
+  - **A tool finding merged into an agent claim owes nothing while it is merged.** No advisor is
+    asked about it; the claim's advisor answers for the one issue, as before. When it comes back
+    it is `tool_reported` and unanswered, and the agent claim is no longer marked `reinforced`:
+    `tool_axis.queued` counted that one scanner finding twice.
+  - "Owed" follows what the controller asked. A claim's cell is the findings file it was loaded
+    from, whatever domain its reviewer declared, and the cell is scored over every loaded claim,
+    where it was scored after merging and by declared domain. A cell the dispatch record says
+    was asked about a claim owes its answer whatever its claims score.
+
+- **A verdict speaks only for its own cell's instance of a claim (#3707, high).** A claim id is
+  derived from what a reviewer wrote (domain, category, file, title and line) and holds no group.
+  So one cell's reviewer could emit a copy of another cell's claim, and the controller handed that
+  id to the copying cell's advisors as one of the cell's own. Their REJECTED was in scope, and it
+  discarded a CRITICAL claim the other cell's own advisor had CONFIRMED: gate PASS, certified, no
+  shortfall. It worked through the copying cell's primary (its verdict file sorts first) and
+  through its backup (a backup won over every primary).
+  - A bundle verdict now counts for a finding only when the bundle is stamped for the cell that
+    finding was loaded from. The cell is the findings file's, never the `domain` a reviewer wrote.
+  - Where several cells hold one id, each cell's advisors answer for their own instance, and a
+    backup stands over its own cell's primary only. Any CONFIRMED keeps the claim reported. A
+    holding cell that gave no verdict leaves it unverified. Only every holding cell rejecting it
+    discards it.
+  - A cell that was never asked about the claim is not one of the cells that decide it: the
+    dispatch record shows the id in none of that cell's scopes. That is a cell below the verify
+    gate, and also a cell whose findings file was refused until its review budget ran out. Such a
+    cell dismisses nothing, and no other cell dismisses its instance: the instance stays in the
+    report as it would with no other cell holding the id, at its own severity. A CONFIRMED from a
+    cell that was asked still reports the claim as confirmed. A cell that was asked and did not
+    answer is one of the cells that decide, and so is one the record cannot speak for.
+  - `meta.coverage.verdicts.ids_in_several_cells` counts the ids held by more than one cell. It is
+    a disclosure and not a shortfall: two cells that really report one claim, and agree, decide it
+    as before.
+  - The id itself is unchanged, so baselines and delta review are not affected.
+  - A verdict bundle now binds only to findings loaded from a cell's own file
+    (`findings-<group>-<domain>.json`). Findings collected by hand into a file of another name
+    get no bundle verdict.
+
 - **A full scan leaves out of review only the config file it loaded, and the report names it
   (#3708).** Discovery dropped both root config names, `panopticon.yml` and `.panopticon.yml`,
   from every review group (#3642), whichever one was in use. A repo configured by

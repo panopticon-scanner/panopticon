@@ -87,6 +87,21 @@ FIRST_PARTY_PACKAGE_ORIGIN = "first_party"
 # confers a round.
 CONTROLLER_STAMPED = ("stage",)
 
+# #3707: which CELL a finding or a verdict belongs to, as the controller knows it.
+# A finding's is the findings file it was loaded from (`_group` and this), never the
+# `domain` its reviewer wrote: filing under another domain's code is allowed. A
+# bundle verdict's is its bundle's controller stamp. Both are `_`-prefixed carriers,
+# so an agent that writes one has it stripped at the door.
+CELL_DOMAIN_FIELD = "_cell_domain"
+CELL_FIELD = "_cell"
+
+
+def finding_cell(finding):
+    """(group, domain) of the review cell `finding` was loaded from, or None for one
+    that came from no cell (a tool finding, a hand-collected file)."""
+    group, domain = finding.get("_group"), finding.get(CELL_DOMAIN_FIELD)
+    return (group, domain) if group and domain else None
+
 
 def _agent_verdict(raw):
     """THE trust boundary for an agent-written verdict. One sanitizer, used by
@@ -748,6 +763,9 @@ def load_verdict_bundles(verdicts_dir, accepted=None, scope=None):
         stage_default = pano.get("stage") or "primary"
         kept = outside = unrecorded = 0
         kept_ids: set[str] = set()
+        group, domain = pano.get("group"), pano.get("domain")
+        cell = ((group, domain) if isinstance(group, str) and group
+                and isinstance(domain, str) and domain else None)
         handed = (scope(name, {"group": pano.get("group"), "domain": pano.get("domain"),
                                "stage": stage_default})
                   if scope is not None else None)
@@ -776,6 +794,9 @@ def load_verdict_bundles(verdicts_dir, accepted=None, scope=None):
             # "primary" -- fail closed, since there is no authority for "backup"
             # and persist refuses such a bundle anyway.
             v["run_id"], v["stage"] = run_id, stage_default
+            # #3707: and which cell's advisor this is. A verdict speaks for its
+            # own cell's instance of a claim only (`across_cells`).
+            v[CELL_FIELD] = cell
             by_fid.setdefault(str(v["finding_id"]), []).append(v)
             kept += 1
             kept_ids.add(str(v["finding_id"]))
@@ -908,6 +929,43 @@ def claims_out_of_scope(claim_ids, verdict_ids):
     handed = {str(i) for i in claim_ids if i is not None}
     return [said for said in dict.fromkeys(str(i) for i in verdict_ids if i is not None)
             if said not in handed]
+
+
+def _favour(verdict):
+    """How favourable to the finding one cell's verdict is, for `across_cells`: the
+    scepticism order read the other way, with a value nobody defined as a bare
+    NEEDS_MORE_INFO (which is how `apply_verdict` records it)."""
+    known = str(verdict.get("verdict", "")).upper() in _VERDICT_SCEPTICISM
+    return _scepticism(verdict) if known else _VERDICT_SCEPTICISM["NEEDS_MORE_INFO"]
+
+
+def across_cells(by_cell, own):
+    """THE rule for a claim id that more than one cell holds (#3707): one verdict from
+    what each holding cell's advisors said of ITS OWN instance, or None.
+
+    `by_cell` is {cell: that cell's verdict, or None when it gave none}; `own` is the
+    cell of the finding being decided. A claim id is derived from what a reviewer
+    wrote -- domain, category, file, title, line, and no group -- so a reviewer can
+    emit a copy of another cell's claim, and its cell's advisor is then handed that id
+    as its own. Pooled by id, that advisor's REJECTED discarded a CRITICAL claim the
+    other cell's own advisor had CONFIRMED: gate PASS, certified, no shortfall.
+
+    - Any CONFIRMED keeps the claim: one cell's advisor found it real.
+    - Otherwise a cell that gave no verdict leaves it unverified (None): a dismissal
+      needs every holding cell, and that one has not dismissed it.
+    - Otherwise the verdict most favourable to the finding stands, so only every
+      cell saying REJECTED rejects it.
+
+    Among equals the finding's own cell speaks, then the first cell by name. With one
+    holding cell this is that cell's verdict, unchanged."""
+    order = sorted(by_cell, key=lambda cell: (cell != own, cell is None, cell or ()))
+    given = [by_cell[cell] for cell in order if by_cell[cell] is not None]
+    confirmed = [v for v in given if str(v.get("verdict", "")).upper() == "CONFIRMED"]
+    if confirmed:
+        return confirmed[0]
+    if len(given) < len(order) or not given:
+        return None
+    return max(given, key=_favour)      # `max` keeps the first of equals: `order`
 
 
 def match_verdict_by_id(finding, by_fid, run_id=None):

@@ -121,6 +121,37 @@ version reads as, and a hand `synthesize.py --verdicts-dir` call over bundles wi
 affected too: the verify cells it had already finished are never dispatched again, so their scope
 is never recorded and their verdicts are not counted. The remedy is a full re-run, not a re-verify:
 `--reset` discards the whole run folder, the review included, and the run starts from discovery.
+A verdict speaks only for its own cell's instance of a claim (#3707). A claim id is derived from the
+claim's domain, category, file, title and line, and no group, so two cells can hold one id: two
+reviewers reporting the same thing, or one copying the other's claim. A bundle verdict counts for a
+finding only when the bundle is stamped for the cell that finding was loaded from. Where several
+cells hold one id, each cell's advisors answer for their own instance (a backup stands over its own
+cell's primary and no other), and the claim is decided across them: any CONFIRMED keeps it reported;
+otherwise a holding cell that gave no verdict leaves it unverified; and only every holding cell
+rejecting it discards it. A cell that was never asked about the claim is not one of the cells that
+decide it: the dispatch record shows the id in none of its scopes, as for a cell below the verify
+gate, or one whose findings file was refused. It dismisses nothing, and no other cell dismisses its
+instance, which stays in the report as it would with no other cell holding the id (a CONFIRMED from
+a cell that was asked still reports the claim as confirmed). A cell that was asked and did not
+answer is one of the cells that decide. `meta.coverage.verdicts.ids_in_several_cells` counts such
+ids. It is a disclosure, not a shortfall: an honest duplicate that both cells confirm, or both
+reject, is decided as it always was.
+Merging findings at one line changes what the report shows and never what the run owes (#3716).
+Findings of one category at one line are merged into the most severe before any verdict is read.
+What is owed is counted first, over every loaded finding. A claim is owed an advisor's answer when
+its review cell reaches the verify gate, or the dispatch record says the cell was asked about it;
+the cell is the findings file the claim was loaded from, whatever domain its reviewer declared. A
+claim that was owed an answer and has none is one unanswered finding whatever it is merged under,
+and so is a claim that
+another cell confirmed when its own cell was asked and said nothing (the claim is reported
+confirmed, and the run is not certified). One claim held by several cells counts once. A tool
+finding merged into an agent claim is the exception: no advisor is asked about it while it is
+merged, so it owes nothing until it is reported by itself.
+What comes back out of a merge as its own finding: a CONFIRMED finding, unless the one it is
+merged under is CONFIRMED too; under a REJECTED finding, which goes to `discarded_claims`,
+everything not itself REJECTED; and a finding that is owed an answer and has none, unless the one
+it is merged under is CONFIRMED or is itself owed and unanswered. Anything else stays merged under
+a finding that is in the report.
 `meta.coverage.dependency_audit` is the dependency-audit receipt: the ecosystems the tree has a
 dependency manifest for (`applicable`), and the dedicated auditors that were `selected` and
 `produced` output. Its `unaudited` map (#3648) names each applicable ecosystem that no selected
