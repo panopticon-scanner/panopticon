@@ -372,17 +372,29 @@ def is_done(entry):
     if role == "review-cell":
         return group_runner.entry_is_done(out_file, entry)
     if role == "verify-cell":
-        # I3, spec 4.5: the verify PHASE's own done predicate, verbatim --
-        # `_pending` filters on this, so anything looser drops a cell the
-        # engine still wants and the loop launches nothing for it. Mirrors
-        # how `review-cell` delegates to group_runner.entry_is_done.
+        # I3, spec 4.5: the verify PHASE's own predicate for an answered part,
+        # `verify._part_done` -- `_pending` filters on this, so anything looser
+        # drops a part the engine still wants and the loop launches nothing for
+        # it. Mirrors how `review-cell` delegates to group_runner.entry_is_done.
+        #
+        # #3698: the ARTIFACT only, for this entry's own part, and never the
+        # budget. This used to ask `verify._verify_cell_done`, which is also true
+        # once the cell's dispatches are spent. The phase charges a dispatch and
+        # THEN the loop asks here, so on the third dispatch a short or unloadable
+        # bundle on disk read as done and nothing was launched: charged 3,
+        # launched 2. Whether a cell may be dispatched again is the phase's
+        # question (`_verify_cell_done`, unchanged); an exhausted cell is never
+        # in a request, so the loop cannot spin on it.
         placed = _verify_cell_of(entry)
         if placed is None:
             return False
-        review_root, manifest, group, domain, stage, _part = placed
-        return verify._verify_cell_done(
-            review_root, manifest, group, domain, stage,
-            cell=_verify_claims(review_root, manifest, group, domain, stage))
+        review_root, manifest, group, domain, stage, part = placed
+        chunks = verify._cell_chunks(
+            _verify_claims(review_root, manifest, group, domain, stage))
+        if part >= len(chunks):
+            return False
+        return verify._part_done(review_root, manifest, group, domain, stage,
+                                 part, chunks[part])
     data = runio._load_return_json(out_file)
     return data is not None and accepts(entry, data)[0]
 

@@ -324,17 +324,19 @@ class TestVerifyBundleCompletenessGatesResume(LoopCase):
         # The bounded A2 budget still terminates the run -- but only after the
         # advisor was actually re-dispatched, which is the whole point of it.
         self.assertEqual(status["status"], "complete", status)
-        self.assertGreaterEqual(runner.launched.count("verify-app-SEC-primary"), 2)
-        # The defect was an empty pending set on EVERY iteration after the
-        # first short bundle: the cell's whole re-dispatch budget spent on
-        # round trips that launched nothing. The one empty set that remains is
-        # the handoff at the cap -- `verify_execute` bumps to
-        # `_MAX_VERIFY_ATTEMPTS` and writes the request in the SAME call, then
-        # disowns the cell on the next one, so the loop is right to decline an
-        # entry the engine has already given up on.
+        # #3698: every dispatch the budget is charged for launches the advisor.
+        # The third used to launch nothing: the phase charged it, and the loop then
+        # read "budget spent" as "this bundle is good" and declined the entry. That
+        # empty pending set was called the handoff at the cap; it was a paid-for
+        # attempt that never ran. The loop asks about the artifact only now, and
+        # the run still ends, because the phase never dispatches a spent cell.
+        self.assertEqual(3, verify._MAX_VERIFY_ATTEMPTS)
+        self.assertEqual(3, runner.launched.count("verify-app-SEC-primary"))
+        with open(runio._pano(d, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh:
+            self.assertEqual(3, json.load(fh)["app/SEC/primary"])
         self.assertTrue(pending_seen)
-        self.assertEqual(pending_seen[-1], [])
-        self.assertNotIn([], pending_seen[:-1])
+        self.assertNotIn([], pending_seen)
+        self.assertEqual(3, sum("verify-app-SEC-primary" in seen for seen in pending_seen))
 
 
 # #3185: verify now caps its own dispatches at 3, which would end these runs before the loop's

@@ -182,8 +182,13 @@ class PartialBackup(FixtureReplies):
     CLAIMS = 3
     SHORT = "verify-app-COD-backup"
 
-    def __init__(self, whole=False):
+    def __init__(self, whole=False, short=None):
         self.whole = whole
+        if short is not None:
+            self.SHORT = short             # the entry that answers in part, if not the backup
+        # A short PRIMARY leaves its backup one claim to check, and a backup is handed
+        # only its scope: the fake answers the whole review cell unless told otherwise.
+        self.one_claim = {self.SHORT, "verify-%s-%s-backup" % self.CELL}
 
     def findings(self, entry):
         if (entry["group"], entry["domain"]) != self.CELL:
@@ -197,7 +202,7 @@ class PartialBackup(FixtureReplies):
                 for n in range(self.CLAIMS)]
 
     def answered(self, entry, cell):
-        return cell[:1] if entry["id"] == self.SHORT and not self.whole else cell
+        return cell[:1] if entry["id"] in self.one_claim and not self.whole else cell
 
     def short(self):
         """The entries that answer only part of what they are handed."""
