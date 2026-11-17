@@ -370,9 +370,8 @@ def _loc_span(finding):
     """Lines a finding spans: line_end - line_start + 1, floored at 1 and capped at
     SPAN_CAP. Missing/None/non-int/inverted ranges count as 1.
 
-    #3732: for a scanner rule's hits collapsed into one finding, the widest hit. Which
-    hit is the shown one can follow an agent's line, and the weight must not. Only a
-    scanner finding's own hits count: a claim that absorbed one carries its other
+    #3732: for a scanner rule's hits collapsed into one finding, the widest hit, not
+    the shown one's (the lowest line). Only a scanner finding's own hits count: a claim that absorbed one carries its other
     lines for the reader, and what a reviewer writes there is not read at all."""
     loci = [finding.get("location") or {}]
     if evidence_mod.is_tool_sourced(finding):

@@ -115,11 +115,11 @@ def _reinforce_merge(best, other):
             best[field] = other[field]
     evidence_mod.merge_citations(best, other)
 
-# `findings.aggregate_tool_findings` deliberately parks an aggregated survivor on
-# a locus an agent also flagged so the pair still reinforces in `dedupe` -- which
-# then keeps the more severe member, usually the agent finding. Without the carry
-# below, that rule's other lines and its count left the report with the dropped
-# member, disclosed nowhere.
+# An aggregated survivor sits on its rule's lowest line (#3731; until then
+# `findings.aggregate_tool_findings` parked it on a locus an agent had also flagged).
+# A claim at that line pairs with it in `dedupe`, which keeps the more severe
+# member, usually the agent finding. Without the carry below, that rule's other
+# lines and its count left the report with the dropped member, disclosed nowhere.
 def _carry_aggregation(best, other):
     """Carry a DROPPED tool member's aggregation onto the survivor (#2361).
 

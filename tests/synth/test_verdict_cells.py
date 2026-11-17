@@ -1284,7 +1284,8 @@ CONFIRMED_AS = ("advisor_confirmed", "tool_confirmed")
 class _Lines(_Verdicts):
     """Runs built from cells and scanner hits at chosen lines of `b.py`."""
 
-    def report_of(self, cells, hits=(), hits_say="CONFIRMED", gate_unverified=False):
+    def report_of(self, cells, hits=(), hits_say="CONFIRMED", gate_unverified=False,
+                  fail_on="high"):
         """The report for `cells` ({group: [(claim, verdict word or None)]}) and the
         scanner `hits`, which share one verdict (they are one rule: one finding)."""
         for name in os.listdir(self.verdicts):
@@ -1319,7 +1320,7 @@ class _Lines(_Verdicts):
         with _target_with_files(GROUPS, lines=5000) as target, \
                 contextlib.redirect_stderr(io.StringIO()):
             return report_mod.build_report(report_mod.ReportInputs(
-                run=report_mod.RunConfig(target=target, fail_on="high",
+                run=report_mod.RunConfig(target=target, fail_on=fail_on,
                                          gate_unverified=gate_unverified,
                                          timestamp="2026-01-01T00:00:00Z"),
                 findings=fs, plan=plan_mod.PlanInputs(groups_meta=GROUPS)))
@@ -1434,6 +1435,13 @@ class TestAMergeGroupIsCountedOnceAtItsHeaviestFinding(_Lines):
                           ("the decoy", "CRITICAL", "needs_more_info", 10, 10)],
                          self.spans(report, "the victim", "the copy", "the decoy"))
         self.assertEqual(silent["summary"]["health"], report["summary"]["health"])
+        # The row that stands for the victim says whose weight it carries. The decoy
+        # weighs nothing: it carries no weight and is not said to be counted with one.
+        rows = {f["description"]: f for f in report["findings"]}
+        self.assertEqual({"id": self.ids["the victim"], "weight": 1250},
+                         rows["the copy"]["weight_from"])
+        for key in ("weight_from", "weight_with"):
+            self.assertNotIn(key, rows["the decoy"])
 
     def test_nothing_is_mixed_and_a_third_cell_cannot_unmix_it(self):
         """Two confirmed claims at one line: a CRITICAL on one line (125) and a HIGH over
@@ -1485,9 +1493,16 @@ class TestAMergeGroupIsCountedOnceAtItsHeaviestFinding(_Lines):
             json.dump({"findings": [self.at("b.py", "inverted", 52, end=1),
                                     self.at("b.py", "a range", 52, end=60, title="other"),
                                     self.at("b.py", "one line", 7, title="third")]}, fh)
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            loaded = findings_mod.load_findings([path])
         self.assertEqual([(52, 52), (52, 60), (7, 7)],
                          [(f["location"]["line_start"], f["location"]["line_end"])
-                          for f in findings_mod.load_findings([path])])
+                          for f in loaded])
+        # The repair is announced, once, for the finding it was made to.
+        self.assertEqual(["findings: b.py:52: line_end 1 is before line_start 52 -- read as "
+                          "one line"],
+                         [line for line in said.getvalue().splitlines() if "line_end" in line])
 
     def test_a_member_that_does_not_count_on_its_own_adds_nothing(self):
         """As ruled (a): the group weighs as its heaviest finding that would count for
@@ -1568,6 +1583,56 @@ class TestAMergeGroupIsCountedOnceAtItsHeaviestFinding(_Lines):
         self.assertEqual(["the claim", "the spoiler"],
                          sorted(f["description"] for f in report["findings"]))
         self.assertEqual(1000, report["summary"]["health"]["weighted_defect"])
+
+    def test_a_claim_of_the_scanner_findings_category_takes_it_from_a_confirmed_pair(self):
+        """The review seat's case. A scanner HIGH that names no rule, over lines 300 to
+        349, category authz, is a pair with `g2`'s one-line CONFIRMED HIGH of another
+        category: confirmed as one, 1,250. `g1` files a CRITICAL authz claim at the
+        line and says nothing: three findings, no pair, and the scanner finding shares
+        that claim's bucket. Nobody was asked about it in either run. With `g1` it has
+        no confirmed claim over it and weighs nothing, and that run is closed."""
+        ruleless = self.hit(300, end=349, category="authz")
+        ruleless["tool_evidence"] = {"tool": "semgrep"}
+        mine = (self.at("b.py", "the claim", 300, category="other"), "CONFIRMED")
+        silent = self.report_of({"g2": [mine]}, hits=[ruleless], hits_say=None)
+        self.assertEqual(("FAIL", True, 1250), (
+            silent["summary"]["gate"], silent["summary"]["coverage_certified"],
+            silent["summary"]["health"]["weighted_defect"]))
+        taker = self.at("b.py", "the taker", 300, severity="CRITICAL", title="third",
+                        confidence="CERTAIN")
+        report = self.report_of({"g2": [mine], "g1": [(taker, None)]}, hits=[ruleless],
+                                hits_say=None)
+        summary = report["summary"]
+        self.assertEqual(25, summary["health"]["weighted_defect"])
+        self.assertEqual(("FAIL", False, None), (
+            summary["gate"], summary["coverage_certified"], summary["overall_grade"]))
+        self.assertTrue([reason for reason in summary["grade_shortfalls"]
+                         if "unanswered" in reason], summary["grade_shortfalls"])
+        self.assertEqual([("the claim", "HIGH", "advisor_confirmed", 300, 300),
+                          ("the taker", "CRITICAL", "tool_reported", 300, 300)],
+                         self.spans(report, "the claim", "the taker", "the scanner's"))
+
+    def test_a_reviewer_cannot_write_the_controllers_weight_and_severity_fields(self):
+        """`weight_from`, `weight_with` and `severity_from` are what the controller says
+        of a merge group and of an aggregated finding. A claim written with them is
+        published without them, and the loader says it stripped them."""
+        forged = dict(self.at("b.py", "the claim", 10), weight_from={"id": "X", "weight": 0},
+                      weight_with="X", severity_from={"file": "b.py", "line_start": 1,
+                                                      "shown_hit_severity": "LOW"})
+        path = os.path.join(self.run_dir, "findings-g1-SEC.json")
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump({"findings": [forged]}, fh)
+        said = io.StringIO()
+        with contextlib.redirect_stderr(said):
+            loaded, = findings_mod.load_findings([path])
+        for key in ("weight_from", "weight_with", "severity_from"):
+            self.assertNotIn(key, loaded)
+            self.assertIn("stripped self-asserted %r" % key, said.getvalue())
+        report = self.report_of({"g1": [(forged, "CONFIRMED")]})
+        row, = report["findings"]
+        self.assertEqual([], [key for key in ("weight_from", "weight_with", "severity_from")
+                              if key in row])
+        self.assertEqual(25, report["summary"]["health"]["weighted_defect"])
 
     def test_what_a_reviewer_writes_as_other_lines_is_not_weighed(self):
         """`additional_loci` is the scanner aggregation's field. On a claim it is carried
@@ -1871,19 +1936,26 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
     is asked about the scanner findings in the verify queue, which is built on the
     merged list, so one that a claim absorbed has none in that run.
 
-    A THIRD EXEMPTION, as ruled, for a scanner finding that was asked about in one of
-    the two runs only. The runs then know different things about it, and what no
+    A THIRD EXEMPTION, as ruled, for a scanner finding nobody was asked about. What no
     advisor was asked cannot be compared with an answer:
-    - with the cell it was absorbed and has no answer, and without the cell the run
-      FAILS. The run with the cell is INCONCLUSIVE, not certified, has no letter, owes
-      an answer, and shows the finding (itself or as the claim it is under). A PASS, a
-      certification or a letter is never covered;
-    - seen from the other side, it was asked about only with the cell there. The run
-      without the cell owes it an answer: not certified, no letter, INCONCLUSIVE or
-      FAIL. The run with the cell has the tool advisor's own answer and is judged on it;
-    - where it has no answer with the cell, or had none without and its own advisor
-      did not confirm it with, its weight is not compared.
-    Asking about every scanner finding, absorbed or not, is #3734."""
+    - with the cell it has no answer (a claim absorbed it), and that run is closed:
+      not certified, no letter, INCONCLUSIVE or FAIL, and an answer owed. Its weight
+      is not compared. Where the run without the cell FAILS, the run with it is
+      INCONCLUSIVE and shows the finding, itself or as the claim it is under. A PASS,
+      a certification or a letter is never covered;
+    - seen from the other side (A), it was asked about only with the cell there. The
+      run without the cell owes it an answer: not certified, no letter, INCONCLUSIVE
+      or FAIL. The run with the cell has the tool advisor's own answer and is judged
+      on it, and where the run without it FAILS, so does the run with it;
+    - (B) it counted as confirmed with the claim over it without the cell, and with
+      the cell it was asked and its own advisor did not confirm it: its weight is not
+      compared.
+    In every such case the two runs are identical once the scanner finding's own
+    answer is supplied in both. Asking about every scanner finding, absorbed or not,
+    is #3734.
+
+    Claims are in two categories (one in four is `other`), so that a pair across
+    categories and a bucket within one are both made."""
 
     CASES, SEED = 900, 3711    # 900: the first case of review F1's shape is the 826th
     LINE_FILE = "b.py"
@@ -1955,16 +2027,16 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
         return loaded
 
     @staticmethod
-    def said_of(cells, skip, group, declared, title, line):
-        """The verdict the claim (`declared`, `title`, at `line`) has for `group`'s instance, by the
+    def said_of(cells, skip, group, declared, title, line, category):
+        """The verdict the claim (`declared`, `title`, `category`, at `line`) has for `group`'s instance, by the
         rule and not by the code under test: a CONFIRMED from any cell that was asked
         reports it confirmed; a cell that was never asked takes nothing else from the
         others; the cells that were asked decide between them, and one that said
         nothing leaves it unverified; only every one of them rejecting it dismisses it."""
         words = [said for g, (asked, claims) in cells.items() if g != skip and asked
                  for c, said in claims
-                 if (c["domain"], c["title"], str(c["location"]["line_start"]))
-                 == (declared, title, line)]
+                 if (c["domain"], c["title"], str(c["location"]["line_start"]), c["category"])
+                 == (declared, title, line, category)]
         if "CONFIRMED" in words:
             return "CONFIRMED"
         if not cells[group][0] or None in words:
@@ -2104,6 +2176,8 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
     def case(self, rng):
         cells, tool, used = {}, None, set()
         self.second_hit = None
+        if not hasattr(self, "side"):       # a second stream: the first is as it was
+            self.side = random.Random(self.SEED * 7919 + 1)
         # Half the cases sit on a file that is not Python: there a `TST-A1*` claim cannot
         # be witnessed and is capped. On a Python file with no test, it is not.
         self.LINE_FILE = rng.choice(("b.py", "b.sh"))
@@ -2143,12 +2217,13 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
             # #3731: a range of its own, sometimes one that ends before it starts; and
             # one claim in five is at the other line, where a second hit can be.
             where = self.place(rng, self.OTHER_LINE if rng.random() < 0.2 else 1)
+            category = "other" if self.side.random() < 0.25 else "authz"
             claims.append(({**claim(self.LINE_FILE, title=title, severity=severity),
-                            "location": where,
+                            "location": where, "category": category,
                             "domain": declared, "code": "%s-A1A" % declared,
                             "confidence": rng.choice(("CERTAIN", "LIKELY", "POSSIBLE")),
-                            "description": "%s:%s:%s:%d" % (group, declared, title,
-                                                            where["line_start"]), **lever},
+                            "description": "%s:%s:%s:%d:%s" % (
+                                group, declared, title, where["line_start"], category), **lever},
                            rng.choice(WORDS) if asked else None))
         # The driver dispatches a cell's advisors only when the cell's claims reach the
         # verify gate. A cell below it is never asked; one above it was asked, or has
@@ -2216,11 +2291,11 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
                     second_half = differs and asked and self.tool_waiting
                     # ...or without the cell it counted as confirmed with the claim over
                     # it, and with the cell its own advisor did not confirm it.
-                    lighter = differs and asked and tool[1] != "CONFIRMED"
+                    lighter = (differs and asked and tool[1] != "CONFIRMED"
+                               and not self.tool_waiting)
                     # The third exemption, its first half, as ruled and no wider: with the
                     # cell the scanner finding has no answer, and without it the run FAILS.
-                    third = (waiting and differs and without["gate"] == "FAIL"
-                             and summary["gate"] != "FAIL")
+                    third = waiting and without["gate"] == "FAIL" and summary["gate"] != "FAIL"
                     if third:
                         self.assertEqual(("INCONCLUSIVE", False, None), (
                             summary["gate"], summary["coverage_certified"], grade))
@@ -2235,6 +2310,8 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
                         self.assertIsNone(less_grade)
                         self.assertGreater(less_owed, 0)
                         self.assertIn(without["gate"], ("INCONCLUSIVE", "FAIL"))
+                        if without["gate"] == "FAIL":       # ...and a FAIL stays one
+                            self.assertEqual("FAIL", summary["gate"])
                     elif not first:
                         self.assertGreaterEqual(GATE_RANK[summary["gate"]],
                                                 GATE_RANK[without["gate"]])
@@ -2251,7 +2328,12 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
                     # set aside: its first half (no answer with the cell), and its second
                     # (an answer only with the cell, and it is not CONFIRMED).
                     health, less_health = summary["health"], without["health"]
-                    if not (differs and waiting) and not lighter:
+                    if waiting:
+                        # No answer with the cell: that run is closed, whatever it weighs.
+                        self.assertEqual((False, None), (summary["coverage_certified"], grade))
+                        self.assertIn(summary["gate"], ("INCONCLUSIVE", "FAIL"))
+                        self.assertGreater(owed, 0)
+                    elif not lighter:
                         self.assertGreaterEqual(health["weighted_defect"],
                                                 less_health["weighted_defect"])
                         self.assertLessEqual(health["score"], less_health["score"])

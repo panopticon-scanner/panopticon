@@ -416,10 +416,14 @@ def restore_confirmed(fs, findings, queue, holders=None, owed=None, published=No
                           "finding": member})
         _part_the_pair(survivor, absorbed, back)
         if published is not None:
-            _weigh_the_group(survivor, absorbed, back, weights)
+            # The row that is in the report for each merged member: the instance of
+            # its claim that came back, or the survivor.
+            stands_for = {id(member): kept[claim] for member, _fp, claim, _under in returning
+                          if claim is not None and any(kept[claim] is row for row in back)}
+            _weigh_the_group(survivor, absorbed, back, weights, stands_for)
 
 
-def _weigh_the_group(survivor, absorbed, back, weights):
+def _weigh_the_group(survivor, absorbed, back, weights, stands_for=None):
     """Count a merge group once in the health score, at its heaviest counted finding
     (#3731). The group is what the merge itself put together: the survivor and all it
     absorbed, whatever has since come back. `weights` gives each finding's own weight
@@ -437,15 +441,17 @@ def _weigh_the_group(survivor, absorbed, back, weights):
     changes, and nothing is mixed: the weight is one finding's own.
 
     Stamped only where it differs from the sum of the rows' own weights. `weight_from`
-    on a row says whose weight it carries when that is not its own, and `weight_with`
-    on the group's other counted rows names that row."""
+    on a row says whose weight it carries when that is not its own: the row that
+    stands for that finding (`stands_for`, else the survivor). `weight_with` on the
+    group's other rows that weigh something names that row."""
     rows = [survivor] + list(back)
     group = rows + [member for member in absorbed if not any(member is row for row in rows)]
     heaviest = max(group, key=lambda finding: weights.get(id(finding), 0))  # the first of them
     weight = weights.get(id(heaviest), 0)
     if weight == sum(weights.get(id(row), 0) for row in rows):
         return
-    carrier = heaviest if any(heaviest is row for row in rows) else survivor
+    carrier = (heaviest if any(heaviest is row for row in rows)
+               else (stands_for or {}).get(id(heaviest), survivor))
     for row in rows:
         row[grading_mod.GROUP_WEIGHT] = (id(survivor), weight)
         if row is carrier:

@@ -227,6 +227,11 @@ def normalize_finding(f):
         # written, the delta classifier read `line_end` and the health weight did not:
         # a claim at line 52 with `line_end: 1` was off a hunk at 50-55.
         if _inverted(loc):
+            # Announced, as `validate_schema.repair_finding` announces its repairs.
+            # (An agent's finding has no id yet: its file and line say which it is.)
+            print("findings: %s: line_end %s is before line_start %s -- read as one line"
+                  % (f.get("id") or "%s:%s" % (loc.get("file"), loc["line_start"]),
+                     loc["line_end"], loc["line_start"]), file=sys.stderr)
             loc["line_end"] = loc["line_start"]
         loc.setdefault("function", None)
     else:
@@ -317,7 +322,10 @@ def normalize_finding(f):
 # point this entry can go.
 AGENT_FORBIDDEN_FIELDS = ("source", "reinforced", "corroborated", "corroborated_by",
                           "evidence", "fingerprint", "delta", "doc_policy",
-                          "code_corrected_by", "backup_confirmed", evidence_mod.CATEGORY_SOURCE)
+                          "code_corrected_by", "backup_confirmed", evidence_mod.CATEGORY_SOURCE,
+                          # #3731, #3732: what the controller says of a merge group's
+                          # weight and of an aggregated finding's severity.
+                          "weight_from", "weight_with", "severity_from")
 
 
 def cell_panel(domain):
@@ -699,10 +707,11 @@ def _locus(hit):
 def _take_the_worst_hit(best, members):
     """#3732: the collapsed finding carries the highest severity among its hits.
 
-    The shown hit is the lowest line, or the line an agent flagged, and it kept its
-    own severity: a rule that fired LOW at line 10 and CRITICAL at line 300 was one
-    LOW finding, and a claim filed at the right line chose which. `severity_from`
-    names the hit, when it is not the shown one."""
+    The shown hit kept its own severity: a rule that fired LOW at line 10 and
+    CRITICAL at line 300 was one LOW finding. (And while an agent's line could choose
+    the shown hit, a claim filed at the right line chose which; the shown hit is the
+    lowest line now, #3731.) `severity_from` names the hit, when it is not the shown
+    one."""
     worst = min(members, key=_sev_rank)     # the first of the most severe, in sort order
     if _sev_rank(worst) < _sev_rank(best):
         best["severity_from"] = {"file": (worst.get("location") or {}).get("file"),

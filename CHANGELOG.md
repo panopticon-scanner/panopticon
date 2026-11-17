@@ -65,7 +65,13 @@
     - A scanner finding whose hits differ in severity reads higher: the worst hit's.
     - A claim on a later hit of a rule no longer pairs with the scanner finding. They are two
       rows. The claim is not `reinforced` and is not at the head of the verify queue. A claim
-      on the first hit pairs as before. (Corroboration without the move is #3734.)
+      on the first hit still pairs. Which of the two is the row can change where the hits
+      differ in severity: the scanner finding ranks at its worst hit now, and can win a pair
+      it used to lose. (Corroboration without the move is #3734.)
+    - More scanner findings are asked about. A scanner finding that a claim on a later hit
+      used to absorb is its own row now, so its advisor is asked, and its place in the verify
+      queue follows its worst hit. A run that read INCONCLUSIVE because nobody had been asked
+      can read PASS where that advisor rejects the finding, and FAIL where it confirms it.
     - A confirmed scanner-and-claim pair weighs as the heavier of the two. Where the scanner's
       hit spans more lines than the claim, health is lower than before. A one-line HIGH claim
       over a scanner HIGH spanning 40 lines weighs 1,000, where it weighed 25.
@@ -74,14 +80,26 @@
       now counted once, at the heavier. An uncapped `TST-A1*` HIGH that comes back beside the
       confirmed MEDIUM that won their tie (#3727) weighed 25 + 5 and weighs 25.
     - An aggregated scanner finding with a wide hit that is not its shown hit weighs more.
-  - Not changed: which findings are in the report, their severities and evidence, the gate and
-    the certification. The property that removing any one cell never makes the run stricter now
-    also compares the letter and the health score, and a second property pins that adding a
-    cell's findings never joins two other findings into one merge group.
+  - The group-weight rule itself changes no row: which findings are in the report, their
+    ranges, severities and evidence, the gate and the certification are as they were. The
+    scanner changes above do change rows, as listed.
+  - The property that removing any one cell never makes the run stricter now also compares
+    the letter and the health score, and a second property pins that adding a cell's findings
+    never joins two other findings into one merge group.
   - Known and not fixed here: no advisor is asked about a scanner finding that a claim
-    absorbed. A cell that files a claim at a scanner finding's line and does not confirm it
-    turns a certified FAIL into INCONCLUSIVE, not certified, with the scanner finding named as
-    unanswered. It cannot make a PASS. Asking about every scanner finding is #3734.
+    absorbed. The runs with and without a cell are the same once that finding's own answer is
+    supplied in both; what differs is whether anybody asked. Three faces of it:
+    - A cell files a claim at a scanner finding's line and does not confirm it. A certified
+      FAIL becomes INCONCLUSIVE, not certified, with the scanner finding named as unanswered.
+      This one cannot make a PASS.
+    - A cell's claim breaks the pair that had absorbed a scanner finding, so its advisor is
+      asked. The run is then judged on that answer: where the advisor rejects the finding,
+      INCONCLUSIVE becomes PASS, certified. Under `--gate-unverified` the run without the cell
+      is FAIL (the unanswered finding counts) and the run with it is PASS, certified.
+    - A scanner finding that counted as confirmed with the claim over it is asked about once a
+      cell's claim breaks the pair, and weighs nothing where its advisor does not confirm it.
+    In each the cell gains only the tool advisor's own answer. Asking about every scanner
+    finding, absorbed or not, is #3734.
 
 - **The merge ranks a finding by the severity it will be published at (#3727, high).** Findings
   of one category at one line are merged into the most severe. "Most severe" was the severity a

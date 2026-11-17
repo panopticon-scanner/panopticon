@@ -1443,8 +1443,8 @@ class TestFirstPartyAdvisoryStability(unittest.TestCase):
         self.assertEqual("PASS", gate([f for f in both if f["severity"] == "LOW"]))
 
     def test_the_lowest_line_is_shown_and_the_worst_hit_gives_the_severity(self):
-        # Which hit is SHOWN is decided by corroborated locus, then the LOWEST LINE,
-        # then severity: the LOW at line 1, in either input order. Its severity is the
+        # Which hit is SHOWN is decided by the LOWEST LINE, then severity (#3731: no
+        # longer by a locus an agent flagged): the LOW at line 1, in either input order. Its severity is the
         # group's worst (#3732): it read LOW, and the CRITICAL at line 5 was only an
         # additional locus. `severity_from` names the hit that gave it.
         base = [f for f in self._ingest(["cargo-audit.json", "osv-scanner.json"])
