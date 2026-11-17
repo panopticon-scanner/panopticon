@@ -42,6 +42,7 @@ import scripts.synth.plan as plan_mod
 import scripts.synth.render as render_mod
 import scripts.synth.validate_schema as validate_schema_mod
 import scripts.synthesize as syn
+from tests._test_helpers import record_verify_scope
 
 SCHEMA_PATH = os.path.join(validate_schema_mod.REFERENCE_DIR, validate_schema_mod.REPORT_SCHEMA)
 
@@ -351,6 +352,8 @@ def _build_report(tmpdir):
                        "_panopticon": {"run_id": queue["run_id"],
                                        "role": "domain_advisor", "domain": "SEC",
                                        "group": "app", "stage": "primary"}}, fh)
+        # #3702: what the verify phase records it handed that advisor.
+        record_verify_scope(run_dir, "app", "SEC", [v["finding_id"] for v in verdicts])
         render_mod.write_report = _small_write
         with contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):

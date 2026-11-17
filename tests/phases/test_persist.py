@@ -555,6 +555,79 @@ class TestVerifyCellCompleteness(unittest.TestCase):
         self.assertFalse(persist.is_done(entry))
 
 
+class TestAReplyNamesOnlyTheClaimsItWasHanded(unittest.TestCase):
+    """#3702. Verdicts are matched to findings by id across the whole run, so a
+    reply that also named a claim it was not handed spoke for that claim: another
+    cell's, another part's. It answered everything it was asked, so it was
+    accepted. It is refused whole, and the advisor is asked again."""
+
+    def setUp(self):
+        self.d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.d, ignore_errors=True))
+
+    def _reply(self, ids):
+        return json.dumps({"verdicts": [_advisor_verdict(i, "REJECTED") for i in ids],
+                           "_panopticon": {"run_id": "RID", "group": "app",
+                                           "domain": "SEC", "stage": "primary"}})
+
+    def test_a_reply_that_also_names_another_claim_is_refused_and_nothing_is_written(self):
+        env = _verify_cell(self.d, findings=2)
+        entry = env["entry"]
+        for extra, count in ((["SEC-999"], 1), (["SEC-999", "COD-1", "SEC-999"], 2),
+                             (["no such claim"], 1)):
+            with self.subTest(extra=extra):
+                ok, reason = persist.write_reply(entry, self._reply(env["ids"] + extra))
+                self.assertFalse(ok)
+                self.assertIn("names %d claim(s) it was not handed in part 0" % count, reason)
+                self.assertFalse(os.path.exists(entry["out_file"]))
+                self.assertFalse(persist.is_done(entry))
+
+    def test_the_reason_gives_a_count_and_never_the_advisors_ids(self):
+        env = _verify_cell(self.d, findings=2)
+        planted = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        ok, reason = persist.write_reply(env["entry"], self._reply(env["ids"] + [planted]))
+        self.assertFalse(ok)
+        self.assertNotIn(planted, reason)
+        self.assertNotIn("ghp_", reason)
+
+    def test_a_reply_short_of_its_own_claims_that_names_another_is_refused_for_the_other(self):
+        """The outside id is the reason given: it is the one that must not be missed."""
+        env = _verify_cell(self.d, findings=2)
+        ok, reason = persist.write_reply(env["entry"], self._reply(env["ids"][:1] + ["SEC-999"]))
+        self.assertFalse(ok)
+        self.assertIn("it was not handed", reason)
+
+    def test_the_same_reply_without_the_other_claim_is_accepted(self):
+        env = _verify_cell(self.d, findings=2)
+        ok, reason = persist.write_reply(env["entry"], self._reply(env["ids"]))
+        self.assertTrue(ok, reason)
+        self.assertTrue(persist.is_done(env["entry"]))
+
+    def test_a_part_is_held_to_its_own_slice_of_the_cell(self):
+        """One advisor per part: part 0 may not speak of part 1's claim, and part 1's
+        reply is not helped by what part 0's bundle says of its claims."""
+        manifest = {"run_id": "RID", "host": "claude", "security_mode": "standard", "flags": {}}
+        with mock.patch.object(verify, "_CELL_CLAIMS_CAP", 2):
+            env = _verify_cell(self.d, findings=3)
+            first, second = (verify._verify_entry(
+                self.d, manifest, "app", "SEC", ["src/pay.py"], chunk, "claude",
+                ocrdb.load_bundle(), "primary", part)
+                for part, chunk in enumerate(verify._cell_chunks(env["cell"])))
+            ok, reason = persist.write_reply(first, self._reply(env["ids"]))
+            self.assertFalse(ok)
+            self.assertIn("names 1 claim(s) it was not handed in part 0", reason)
+            # Part 0 on disk, self-written, speaking of part 1's claim as well:
+            runio._write_json(first["out_file"], json.loads(self._reply(env["ids"])))
+            ok, reason = persist.write_reply(second, self._reply([]))
+            self.assertFalse(ok)
+            self.assertIn("does not adjudicate every claim it was handed", reason)
+            ok, reason = persist.write_reply(second, self._reply(env["ids"][:2]))
+            self.assertFalse(ok)
+            self.assertIn("names 2 claim(s) it was not handed in part 1", reason)
+            ok, reason = persist.write_reply(second, self._reply(env["ids"][2:]))
+            self.assertTrue(ok, reason)
+
+
 class TestABackupReplyMustAnswerEveryScopedClaim(TestBackupCellFixture):
     """#3695: the same rule for a backup reply. It used to be accepted once it was
     stamped for its cell, so a backup that answered 1 of its 3 scoped claims was
@@ -578,8 +651,7 @@ class TestABackupReplyMustAnswerEveryScopedClaim(TestBackupCellFixture):
                                 "role": "domain_advisor", "stage": "backup"}}
 
     def test_a_reply_that_leaves_a_scoped_claim_unanswered_is_refused(self):
-        for ids in ([], self.ids[:1], self.ids[:2] + ["not-in-scope"],
-                    [self.ids[0]] * 3):
+        for ids in ([], self.ids[:1], self.ids[:2], [self.ids[0]] * 3):
             with self.subTest(ids=ids):
                 ok, reason = persist.write_reply(self.entry, json.dumps(self._bundle(ids)))
                 self.assertFalse(ok)
@@ -624,10 +696,16 @@ class TestABackupReplyIsHeldToTheBackupRoundsOwnScope(TestBackupCellFixture):
                                                "domain": "SEC", "role": "domain_advisor",
                                                "stage": "backup"}})
 
-        # The rejected claim and one scoped claim: two verdicts, and one claim still owed.
-        ok, reason = persist.write_reply(entry, reply([cell[0]["id"], scoped[0]]))
+        # One scoped claim: one claim still owed. (Held to the review cell, two would be.)
+        ok, reason = persist.write_reply(entry, reply(scoped[:1]))
         self.assertFalse(ok)
-        self.assertIn("does not adjudicate every claim it was handed", reason)
+        self.assertIn("1 verdict(s) for 2 claim(s)", reason)
+        # #3702: the claim the primary rejected is not the backup's to speak of at all,
+        # even beside a verdict on everything it was handed.
+        ok, reason = persist.write_reply(entry, reply([cell[0]["id"]] + scoped))
+        self.assertFalse(ok)
+        self.assertIn("names 1 claim(s) it was not handed", reason)
+        self.assertFalse(os.path.exists(entry["out_file"]))
         ok, reason = persist.write_reply(entry, reply(scoped))
         self.assertTrue(ok, reason)
         self.assertTrue(persist.is_done(entry))

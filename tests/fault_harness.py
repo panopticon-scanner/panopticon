@@ -21,10 +21,12 @@ import subprocess
 import tempfile
 from unittest import mock
 
+import scripts.claim_scope as claim_scope
 import scripts.driver as driver
 import scripts.loop_progress as loop_progress
 import scripts.orchestrate as orchestrate
 import scripts.phases.child as child
+import scripts.phases.review as review
 import scripts.phases.runio as runio
 import scripts.runners.outage as outage
 import scripts.synth.render as render
@@ -202,6 +204,51 @@ class PartialBackup(FixtureReplies):
     def short(self):
         """The entries that answer only part of what they are handed."""
         return [] if self.whole else [self.SHORT]
+
+
+class OutOfScope(FixtureReplies):
+    """#3702: an advisor that speaks of claims it was not handed. `speaker` (an entry id)
+    answers what it was handed as the fixture does, and also says `says` about every claim
+    of the review cell `about` that it was not handed (only the one titled `only`, when
+    given). With no `says`, nobody volunteers anything: the silent row beside it.
+
+    The rest sets the scene. `triple` is a cell that makes three claims in one category, as
+    `PartialBackup`'s does. `answers` is {entry id: how many of its handed claims it gives
+    a verdict on}, for an advisor that falls short. `severity` is {cell: its claims'
+    severity}: a HIGH claim summons no backup, so nothing stands over its primary."""
+
+    def __init__(self, speaker=None, about=None, says=None, only=None, triple=None,
+                 answers=None, severity=None):
+        self.speaker, self.about, self.says, self.only = speaker, about, says, only
+        self.triple, self.answers, self.severity = triple, answers or {}, severity or {}
+
+    def findings(self, entry):
+        cell = (entry["group"], entry["domain"])
+        claims = super().findings(entry)
+        if cell == self.triple:
+            claims = [dict(claims[0], title="%s/%s defect %d" % (cell + (n,)),
+                           location=dict(claims[0]["location"],
+                                         line_start=claims[0]["location"]["line_start"] + n))
+                      for n in range(3)]
+        return [dict(claim, severity=self.severity.get(cell, claim["severity"]))
+                for claim in claims]
+
+    def answered(self, entry, cell):
+        return cell[:self.answers.get(entry["id"], len(cell))]
+
+    def volunteered(self, entry, handed):
+        if self.says is None or entry["id"] != self.speaker:
+            return []
+        root = claim_scope.review_root_of_artifact_path(entry["out_file"])
+        theirs = review._load_cell_findings(root, {"run_id": entry["run_id"]}, *self.about)
+        mine = {finding["id"] for finding in handed}
+        return [(finding["id"], self.says, "nobody handed this advisor this claim")
+                for finding in theirs
+                if finding["id"] not in mine and self.only in (None, finding["title"])]
+
+    def short(self):
+        """The entries that answer only part of what they are handed."""
+        return sorted(self.answers)
 
 
 def build_target(test_case):

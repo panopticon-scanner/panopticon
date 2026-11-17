@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- **An advisor's verdict counts only for a claim that advisor was handed (#3702, high).** Verify
+  verdicts are matched to findings by finding id across the whole run, and a backup advisor's
+  verdict wins over a primary's. Nothing asked whether the advisor that wrote a verdict had been
+  handed that claim. A backup handed one claim could say REJECTED about two that no primary had
+  answered: both were discarded, "2 findings unanswered by their verify advisors" disappeared and
+  the run certified. A primary could do the same to another cell's claims, and where two
+  primaries spoke of one claim the first verdict file by name won, not the claim's own advisor.
+  An honest advisor is shown only its own claims, but finding ids are derived from content, and
+  an advisor's reply is untrusted text. This has been so since 5.0.0.
+  - **Verify records what it hands out.** For each cell and stage it dispatches, primary and
+    backup, `verify-attempts.json` now holds the claim ids, the number of parts and the part
+    size (`<group>/<domain>/<stage>/claims`, `/parts`, `/part_size`), in the same write as the
+    charge.
+  - **A reply that names a claim it was not handed is refused.** A returned reply is refused
+    whole, with a count and never the ids. A bundle an advisor wrote itself is asked for again.
+    Both are on the usual budget of three dispatches. A claim is answered by its own part's
+    bundle only: the parts of a split cell are no longer merged.
+  - **Synthesis counts a bundle verdict only when the record shows its part was handed that
+    claim.** Any other is dropped before anything is matched: another part's claim, another
+    cell's, or an id that names no claim. `meta.coverage.verdicts.out_of_scope` counts them, and
+    `summary.grade_shortfalls` says "2 advisor verdicts outside their handed scope". The letter
+    is held back and coverage is NOT CERTIFIED, even when every advisor answered all it was
+    asked.
+  - **With no recorded scope, nothing in a bundle counts.** `meta.coverage.verdicts`'
+    `scope_not_recorded` counts those verdicts, and the reason reads "verify scope not recorded:
+    12 advisor verdicts not counted".
+  - **Upgrading:** a run whose verify phase ran before this version has no such record. Its
+    advisor verdicts are not counted and its report is NOT CERTIFIED, for the reason above.
+    Re-run it with `--reset`. The same holds for a hand `synthesize.py --verdicts-dir` call
+    over verdict bundles with no `verify-attempts.json` in the run folder. Single-verdict files
+    (the tool advisors' and the queue flow's) are not affected.
+
 - **The report says why a dependency ecosystem was not audited (#3648).** A JavaScript tree with
   `package.json` and no lockfile is counted as having dependencies, and no auditor reads it:
   npm-audit needs `package-lock.json` or `npm-shrinkwrap.json`, and osv-scanner needs one of those

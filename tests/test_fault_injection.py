@@ -674,6 +674,135 @@ def test_the_two_claims_a_partial_backup_left_are_counted_and_named(partial):
             assert reason in surface, (reason, surface)
 
 
+# --- an advisor that speaks of claims it was not handed (#3702) ---------------------------
+
+_COD, _LIB, _SEC = ("app", "COD"), ("lib", "COD"), ("app", "SEC")
+#: name -> (the scene, what one advisor volunteers in it, how many verdicts that is). Each row
+#: is run twice: with the advisor silent about the claims it was not handed, and with it
+#: speaking. On main every one of these changed a claim's disposition, and the first and the
+#: third certified a run with claims no advisor of theirs had answered.
+HOSTILE_ROWS = {
+    # The issue's case. The primary answers one claim of three, so the backup is handed that
+    # one. The backup rejects the two no primary answered: they were discarded.
+    "backup-rejects-what-no-primary-answered": (
+        dict(triple=_COD, answers={"verify-app-COD-primary": 1}),
+        dict(speaker="verify-app-COD-backup", about=_COD, says="REJECTED"), 2),
+    # The primary rejected a claim, so the backup was not handed it. The backup confirms it:
+    # it came back out of the discarded claims, confirmed twice.
+    "backup-confirms-what-its-primary-rejected": (
+        dict(), dict(speaker="verify-app-SEC-backup", about=_SEC, says="CONFIRMED",
+                     only=fh.REFUTED_CLAIM), 1),
+    # Another cell's primary never answers. This cell's primary rejects that cell's claim.
+    "primary-rejects-another-cells-unanswered-claim": (
+        dict(answers={"verify-lib-COD-primary": 0}),
+        dict(speaker="verify-app-COD-primary", about=_LIB, says="REJECTED"), 1),
+    # Every advisor answers what it was handed. One primary also rejects another cell's
+    # claim, which that cell's own primary confirmed; HIGH, so no backup stands over it. The
+    # first verdict file by name used to win: `verdicts-app-COD` before `verdicts-lib-COD`.
+    "primary-rejects-what-another-cells-primary-confirmed": (
+        dict(severity={_LIB: "HIGH"}),
+        dict(speaker="verify-app-COD-primary", about=_LIB, says="REJECTED"), 1),
+    # ...and the other way: it confirms a claim another cell's own primary rejected.
+    "primary-confirms-what-another-cells-primary-rejected": (
+        dict(), dict(speaker="verify-app-COD-primary", about=_SEC, says="CONFIRMED",
+                     only=fh.REFUTED_CLAIM), 1),
+}
+#: The rows whose silent run certifies: the advisor answers all it was handed and adds to it.
+CERTIFIED_WHEN_SILENT = {"backup-confirms-what-its-primary-rejected",
+                         "primary-rejects-what-another-cells-primary-confirmed",
+                         "primary-confirms-what-another-cells-primary-rejected"}
+
+
+@pytest.fixture(scope="module")
+def hostile(lab):
+    """{row: (silent, speaking)}, each driven once."""
+    return {name: (fh.drive(lab, replies=fh.OutOfScope(**scene)),
+                   fh.drive(lab, replies=fh.OutOfScope(**scene, **voice)))
+            for name, (scene, voice, _count) in HOSTILE_ROWS.items()}
+
+
+def _dispositions(outcome):
+    """Where every claim ended up and on whose word: (title, id, in the report or discarded,
+    evidence status, severity, backup_confirmed, confirmation status)."""
+    report = outcome.report
+    return sorted(
+        (str(f.get("title")), f["id"], where, _status(f), f["severity"],
+         str(f.get("backup_confirmed")), str((f.get("provenance") or {}).get("confirmation_status")))
+        for where, claims in (("report", report["findings"]),
+                              ("discarded", report["discarded_claims"]))
+        for f in claims)
+
+
+def _out_of_scope_reason(count):
+    return "%d advisor verdict%s outside %s handed scope" % (
+        count, "" if count == 1 else "s", "its" if count == 1 else "their")
+
+
+@pytest.mark.parametrize("row", sorted(HOSTILE_ROWS))
+def test_an_advisor_cannot_speak_for_a_claim_it_was_not_handed(hostile, row):
+    _scene, voice, count = HOSTILE_ROWS[row]
+    silent, speaking = hostile[row]
+    assert (silent.status, speaking.status) == ("complete", "complete")
+    # The five invariants hold for the silent run, and 1, 2 and 4 for the speaking one as
+    # they stand. 3 and 5 read "no launch failed" as "certifies as the control does", and
+    # this row is the case where that is not so: the pins below ask what they would.
+    assert problems(silent, silent) == []
+    for invariant in (no_silent_loss, counts_reconcile, gate_fails_closed):
+        assert invariant(silent, speaking) == []
+    before, after = silent.report["summary"], speaking.report["summary"]
+    # 1. Every claim is where the silent run left it, on the same advisor's word.
+    assert _dispositions(speaking) == _dispositions(silent)
+    assert after["gate"] == before["gate"]
+    # 2. The run is not certified, whatever the silent run was: the verdicts nobody asked
+    #    for are a shortfall of their own, and the only one added.
+    assert before["coverage_certified"] is (row in CERTIFIED_WHEN_SILENT)
+    assert after["grade_shortfalls"] == before["grade_shortfalls"] + [_out_of_scope_reason(count)]
+    assert (after["coverage_certified"], after["overall_grade"]) == (False, None)
+    assert after["provisional_grade"] == (before["overall_grade"] or before["provisional_grade"])
+    # 3. They are counted, and named on every surface beside NOT CERTIFIED.
+    counted = [o.report["meta"]["coverage"]["verdicts"] for o in (silent, speaking)]
+    assert [(v["out_of_scope"], v["scope_not_recorded"]) for v in counted] == [(0, 0), (count, 0)]
+    terminal, page = _not_certified_text(speaking)
+    for surface in (after["coverage_note"], terminal, page):
+        assert _out_of_scope_reason(count) in surface, surface
+    # 4. The advisor was asked again, on the budget of any advisor that did not answer.
+    group, domain, stage = voice["speaker"].split("-")[1:]
+    with open(runio._pano(speaking.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        charged = json.load(fh_)[verify._verify_key(group, domain, stage)]
+    assert charged == verify._MAX_VERIFY_ATTEMPTS
+    assert speaking.launched.count(voice["speaker"]) > silent.launched.count(voice["speaker"]) == 1
+
+
+def test_the_hostile_rows_cover_both_stages_both_verdicts_and_a_certified_run(hostile):
+    """The table itself: a backup and a primary, a REJECTED and a CONFIRMED, and for each
+    stage a row whose silent run certifies, so the count alone is what holds the letter."""
+    voices = {name: voice for name, (_scene, voice, _count) in HOSTILE_ROWS.items()}
+    stages = {name: fh.phase_of(voice["speaker"]) for name, voice in voices.items()}
+    assert set(stages.values()) == {fh.ADVISOR, fh.BACKUP}
+    assert {(stages[name], voices[name]["says"]) for name in voices} == {
+        (stage, said) for stage in (fh.ADVISOR, fh.BACKUP) for said in ("REJECTED", "CONFIRMED")}
+    assert {stages[name] for name in CERTIFIED_WHEN_SILENT} == {fh.ADVISOR, fh.BACKUP}
+    for name in CERTIFIED_WHEN_SILENT:
+        assert hostile[name][0].report["summary"]["grade_shortfalls"] == []
+
+
+def test_the_fake_backup_answers_what_it_was_handed_and_no_more(lab):
+    """The shared runner's backup used to give a verdict on its whole review cell: on the
+    claim the primary rejected too, which no backup is shown. It hid every row above."""
+    control = lab.control
+    with open(runio._pano(control.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        record = json.load(fh_)
+    with open(runio._pano(control.root, "verdicts", "verdicts-app-SEC-backup.json"),
+              encoding="utf-8") as fh_:
+        said = [v["finding_id"] for v in json.load(fh_)["verdicts"]]
+    refuted = [f["id"] for f in control.report["discarded_claims"]
+               if f.get("title") == fh.REFUTED_CLAIM]
+    assert len(refuted) == 1 and refuted[0] not in said
+    assert said == record[verify._verify_key("app", "SEC", "backup") + "/claims"]
+    assert refuted[0] in record[verify._verify_key("app", "SEC", "primary") + "/claims"]
+    assert control.report["meta"]["coverage"]["verdicts"]["out_of_scope"] == 0
+
+
 SPLIT_BYTES = 9000
 
 

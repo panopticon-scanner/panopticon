@@ -100,7 +100,7 @@ def _agent_verdict(raw):
         findings -- so an advisor that plants one is asserting a controller
         decision (round 1 F1: a backup REJECTION laundered into a retained
         primary CONFIRMED, out of the gate -> in it; round 2 N1: a cell's whole
-        backup scope emptied through `phases/verify._cell_verdicts`);
+        backup scope emptied through `phases/verify._part_verdicts`);
 
     (b) drop `CONTROLLER_STAMPED` (`stage`), which is round 2 N2: an advisor may
         say what it concluded, never which ROUND it was.
@@ -691,7 +691,7 @@ def _bundle_entry_defect(raw):
     return findings_contract.schema_version_defect(raw)   # #2104: this entry only
 
 
-def load_verdict_bundles(verdicts_dir, accepted=None):
+def load_verdict_bundles(verdicts_dir, accepted=None, scope=None):
     """Load per-cell verdict BUNDLES ({"verdicts": [...], "_panopticon": {...}})
     into a finding_id -> list of candidate verdicts map.
 
@@ -716,6 +716,17 @@ def load_verdict_bundles(verdicts_dir, accepted=None):
     one that never answered without reading a verdict file of its own. The ids are
     what the advisor wrote: `claims_unanswered` counts one only when the
     controller handed that claim out (#3695).
+
+    #3702: `scope`, when given, is `(file name, the bundle's controller stamp) ->
+    the claim ids that part was handed`, from the controller's own dispatch record
+    (`synth.verdict_scope`). A verdict counts only for an id in that set: any
+    other is dropped here, at the one bundle loader, so it reaches no matcher and
+    no count. `None` from `scope` means the record holds no scope for that bundle,
+    and then nothing in it counts. Both are tallied per file in `accepted`
+    (`out_of_scope`, `scope_not_recorded`), and `kept` / `finding_ids` there cover
+    only what counted. Synthesis always passes one; without it every sanitized
+    entry is kept, which is for a caller that is not deciding what a verdict binds
+    to.
     """
     by_fid: dict[str, list[dict[str, Any]]] = {}
     unloadable = []
@@ -735,8 +746,11 @@ def load_verdict_bundles(verdicts_dir, accepted=None):
             pano = {}
         run_id = pano.get("run_id")
         stage_default = pano.get("stage") or "primary"
-        kept = 0
+        kept = outside = unrecorded = 0
         kept_ids: set[str] = set()
+        handed = (scope(name, {"group": pano.get("group"), "domain": pano.get("domain"),
+                               "stage": stage_default})
+                  if scope is not None else None)
         for index, raw in enumerate(data["verdicts"]):
             reason = _bundle_entry_defect(raw)
             if reason:
@@ -749,6 +763,12 @@ def load_verdict_bundles(verdicts_dir, accepted=None):
                 unloadable.append({"file": name, "entry": index, "reason": reason})
                 continue
             v = _agent_verdict(raw)
+            if scope is not None and handed is None:
+                unrecorded += 1      # #3702: no record of what this part was handed
+                continue
+            if scope is not None and claims_out_of_scope(handed, [v["finding_id"]]):
+                outside += 1         # #3702: a claim this part was not handed
+                continue
             # Assigned, not setdefault'ed (fix round 2, N2): the CONTROLLER
             # stamp is the only authority for either. The sanitizer has already
             # dropped any declared `stage`; `run_id` is overwritten here for the
@@ -761,7 +781,8 @@ def load_verdict_bundles(verdicts_dir, accepted=None):
             kept_ids.add(str(v["finding_id"]))
         if isinstance(accepted, dict):
             accepted[name] = {"run_id": run_id, "stage": stage_default, "kept": kept,
-                              "finding_ids": sorted(kept_ids)}
+                              "finding_ids": sorted(kept_ids),
+                              "out_of_scope": outside, "scope_not_recorded": unrecorded}
     return by_fid, unloadable
 
 
@@ -869,6 +890,24 @@ def claims_unanswered(claim_ids, verdict_ids):
     nobody was asked about, or one id said twice, changes nothing here."""
     got = {str(i) for i in verdict_ids if i is not None}
     return [claim for claim in dict.fromkeys(map(str, claim_ids)) if claim not in got]
+
+
+def claims_out_of_scope(claim_ids, verdict_ids):
+    """THE rule for "did an advisor speak only of what it was handed" (#3702): the
+    ids in `verdict_ids` that are not in `claim_ids`, in the order written, each
+    once. [] means every verdict is for a claim that advisor was handed.
+
+    The other half of `claims_unanswered`, and one definition for the same three
+    readers. An advisor's verdict used to count for any claim in the run whose id
+    it named: verdicts are pooled by finding id, so a backup advisor handed one
+    claim could REJECT two claims no primary had answered, which discarded them
+    and certified the run, and a primary could do the same to another cell's.
+
+    `claim_ids` is the controller's list and `verdict_ids` an advisor's, so an id
+    that names no claim anywhere is outside the scope like any other."""
+    handed = {str(i) for i in claim_ids if i is not None}
+    return [said for said in dict.fromkeys(str(i) for i in verdict_ids if i is not None)
+            if said not in handed]
 
 
 def match_verdict_by_id(finding, by_fid, run_id=None):

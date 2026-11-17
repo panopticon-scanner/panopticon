@@ -423,6 +423,8 @@ class TestVerdictAccountingMeta(unittest.TestCase):
                 "unknown": 1,
                 "unanswered": 1,
                 "misrouted": 0,
+                "out_of_scope": 0,
+                "scope_not_recorded": 0,
                 "unloadable": 0,
             },
         )
@@ -502,6 +504,8 @@ class TestVerdictAccountingMeta(unittest.TestCase):
                 # the whole point: an advisor DID answer, mislabelled -- not a
                 # dispatch that never happened.
                 "misrouted": 1,
+                "out_of_scope": 0,
+                "scope_not_recorded": 0,
                 "unloadable": 0,
             },
         )
@@ -566,6 +570,8 @@ class TestVerdictAccountingMeta(unittest.TestCase):
                 "unknown": 0,
                 "unanswered": None,
                 "misrouted": 0,
+                "out_of_scope": 0,
+                "scope_not_recorded": 0,
                 "unloadable": 0,
             },
         )

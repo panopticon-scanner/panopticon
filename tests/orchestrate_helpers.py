@@ -14,7 +14,9 @@ import scripts.driver as driver
 import scripts.ledger as ledger_mod
 import scripts.loop_batch as loop_batch
 import scripts.orchestrate as orchestrate
+import scripts.phases.persist as persist
 import scripts.phases.review as review
+import scripts.phases.verify as verify
 import scripts.runners.batch as batch_mod
 import scripts.phases.runio as runio
 import scripts.read_guard_hook as read_guard_hook
@@ -59,8 +61,13 @@ class Replies:
                  "location": {"file": "src/app.py", "line_start": 1}}]
 
     def answered(self, entry, cell):
-        """The cell's findings this advisor gives a verdict on."""
+        """The claims this advisor gives a verdict on, of the `cell` it was handed."""
         return cell[:1]
+
+    def volunteered(self, entry, handed):
+        """(finding id, verdict, reasoning) for claims this advisor was NOT handed and
+        speaks of anyway (#3702); `handed` is what it was. A well-behaved agent has none."""
+        return []
 
     def verdict(self, entry, finding):
         """(verdict, reasoning) for one claim. `finding` is the cell's finding, or None for a
@@ -121,6 +128,15 @@ class FakeRunner(base.HostRunner):
                               cost_usd=0.0, model="claude-sonnet-5", session_id="s-" + eid,
                               denials=[], error=None)
 
+    def _handed(self, entry):
+        """The claims this verify entry's prompt lists: its own part of the review cell, or
+        of the backup round's scope. The backup used to be read as handed the whole review
+        cell, so the fake answered claims no advisor would have been shown (#3702)."""
+        review_root, manifest, group, domain, stage, part = persist._verify_cell_of(entry)
+        chunks = verify._cell_chunks(
+            persist._verify_claims(review_root, manifest, group, domain, stage))
+        return chunks[part] if part < len(chunks) else []
+
     def _answer(self, entry):
         """The reply body for `entry`, and whether its role always returns JSON."""
         eid, run_id = entry["id"], entry.get("run_id")
@@ -136,14 +152,14 @@ class FakeRunner(base.HostRunner):
                     "confidence": "LIKELY", "reasoning": reasoning,
                     "explored": [], "references": [], "citations": {}}
         if eid.startswith("verify-"):
-            cell = review._load_cell_findings(self.review_root, {"run_id": run_id},
-                                              entry["group"], entry["domain"])
-            verdicts = []
-            for finding in self.replies.answered(entry, cell):
-                verdict, reasoning = self.replies.verdict(entry, finding)
-                verdicts.append({"finding_id": finding["id"], "verdict": verdict,
-                                 "confidence": "LIKELY", "reasoning": reasoning,
-                                 "explored": [], "references": [], "citations": {}})
+            handed = self._handed(entry)
+            said = [(finding["id"],) + tuple(self.replies.verdict(entry, finding))
+                    for finding in self.replies.answered(entry, handed)]
+            verdicts = [{"finding_id": finding_id, "verdict": verdict,
+                         "confidence": "LIKELY", "reasoning": reasoning,
+                         "explored": [], "references": [], "citations": {}}
+                        for finding_id, verdict, reasoning
+                        in said + list(self.replies.volunteered(entry, handed))]
             return {"verdicts": verdicts,
                     "_panopticon": {"run_id": run_id, "role": "domain_advisor",
                                     "domain": entry["domain"], "group": entry["group"],

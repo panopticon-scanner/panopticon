@@ -497,7 +497,7 @@ def main(argv=None):
     queue = integrity_mod.load_verify_queue(run_dir)
     fs = findings_mod.FindingSet.load(args, tool_findings, run.security_mode,
                                       verdict_run_id=(queue[0] or {}).get("run_id"),
-                                      prepared=prepared)
+                                      prepared=prepared, run_dir=run_dir)
     plan = plan_mod.PlanInputs.load(run_dir, args.files, args.verdicts_dir, groups_meta,
                                     plans, queue, fs.verdicts,
                                     git_drivers_suppressed=getattr(

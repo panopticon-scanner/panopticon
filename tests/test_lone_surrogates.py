@@ -51,7 +51,7 @@ import scripts.tools.base as base
 import scripts.tools.legacy_sarif as legacy_sarif
 import scripts.x0x_report as x0x_report
 import tests.test_schema_parity as parity
-from tests._test_helpers import SKILL_ROOT, adopt_panopticon, first
+from tests._test_helpers import SKILL_ROOT, adopt_panopticon, first, record_verify_scope
 from tests.discovery_test_helpers import run_script
 
 SCRIPTS = os.path.join(SKILL_ROOT, "scripts")
@@ -614,6 +614,8 @@ class TestTheRealChild(unittest.TestCase):
                 "verdicts": verdicts, "_panopticon": {"run_id": RUN_ID, "role": "domain_advisor", "domain": "COD",
                                                       "group": self.group, "stage": "primary"}})
             argv += ["--verdicts-dir", os.path.join(pano, "verdicts")]
+            # #3702: the run folder (beside groups.json) records what that advisor was handed.
+            record_verify_scope(repo, self.group, "COD", [v["finding_id"] for v in verdicts])
         for name, output in (scans or {}).items():
             write(os.path.join(pano, "tools", name), output)
         if scans:
