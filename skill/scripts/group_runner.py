@@ -42,6 +42,11 @@ def entry_is_done(out_file, entry=None):
     # #3709: and the echo the review phase asks of this cell (#3614). The entry
     # carries the list it was handed; without this the phase said "not done" and
     # charged again while the loop said "done" and launched nothing.
+    # A missing `targeted_review` key means "handed none", deliberately: that is
+    # how the phase writes a cell with no targets. The one case where it is
+    # stricter than the file deserves is a plan written by a build before #3614
+    # and resumed on this one: its SEC cells read as not executed. That
+    # under-counts, and `dispatch_valid` already flags such a run, so it fails closed.
     if not findings_contract.echoes_targeted_review(data, entry.get("targeted_review")):
         return False
     # Cross-check every cell-identity key the ENTRY declares against the file's

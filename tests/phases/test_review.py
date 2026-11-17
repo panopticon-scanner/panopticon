@@ -985,6 +985,16 @@ class TestTheEchoRule(unittest.TestCase):
         self.assertFalse(rule(None, _HANDED))
         self.assertTrue(rule(None, ()))
 
+    def test_an_expected_value_that_is_not_a_list_matches_nothing(self):
+        """#3712 N2: `tuple("src")` is its three characters, which a reply could echo."""
+        rule = findings_contract.echoes_targeted_review
+        self.assertFalse(rule(_echo_reply(["s", "r", "c"]), "src"))
+        for expected in ("src", "a.py", "", {"a.py": 1}, {"a.py"}, 7, True, b"a.py"):
+            with self.subTest(expected=expected):
+                for echo in ("absent", [], ["a.py"], list("src")):
+                    self.assertFalse(rule(_echo_reply(echo), expected))
+        self.assertTrue(rule(_echo_reply(["a.py"]), ("a.py",)))
+
 
 class _EchoCell(unittest.TestCase):
     """One SEC cell, `Auth/SEC`, handed `a.py` because Semgrep could not parse it."""
@@ -1150,6 +1160,18 @@ class TestAReturnedReplyMustEcho(_EchoCell):
         ok, reason = persist.accepts(entry, self.body(["a.py"]))
         self.assertFalse(ok)
         self.assertEqual("carries a `targeted_review` list, and this cell was handed none", reason)
+
+    def test_an_entry_whose_list_is_not_a_list_accepts_no_reply(self):
+        """#3712 N2, at the receipt: nothing echoes it, and the reason does not count its
+        characters as paths."""
+        entry = dict(self.entry, targeted_review="src")
+        for echo in (["s", "r", "c"], ["src"], "absent"):
+            with self.subTest(echo=echo):
+                ok, reason = persist.accepts(entry, self.body(echo))
+                self.assertFalse(ok)
+                self.assertEqual("cannot be checked: this entry's `targeted_review` is not a "
+                                 "list of paths", reason)
+        self.assertFalse(group_runner.entry_is_done(self.entry["out_file"], entry))
 
     def test_the_other_checks_of_a_review_reply_still_apply(self):
         ok, reason = persist.accepts(self.entry, {"findings": [None], "targeted_review": ["a.py"]})

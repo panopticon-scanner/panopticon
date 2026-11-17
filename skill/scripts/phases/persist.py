@@ -264,8 +264,11 @@ def accepts(entry, data):
         # #3709: the echo the review phase asks for (#3614), by its own rule. A
         # reply accepted without it was written, read back "not done" by the phase
         # and never told why. The reason gives counts, never the reply's own text.
-        handed = entry.get("targeted_review") or ()
+        handed = entry.get("targeted_review")
         if not findings_contract.echoes_targeted_review(data, handed):
+            if handed is not None and not isinstance(handed, (list, tuple)):
+                return False, ("cannot be checked: this entry's `targeted_review` is not a "
+                               "list of paths")
             if handed:
                 return False, ("does not echo the `targeted_review` list it was handed "
                                "(%d path(s), in the order given)" % len(handed))

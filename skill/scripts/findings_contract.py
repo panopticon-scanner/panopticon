@@ -131,8 +131,13 @@ def echoes_targeted_review(data, expected):
 
     `expected` is the controller's list (an entry's `targeted_review`, absent or
     empty for a cell that was handed none). An echo that is not a well-formed list
-    of repository paths matches nothing."""
-    return targeted_review_paths(data) == tuple(expected or ())
+    of repository paths matches nothing, and neither does an `expected` that is not
+    a list: a string would otherwise be taken apart into its characters (#3712 N2)."""
+    if expected is None:
+        expected = ()
+    if not isinstance(expected, (list, tuple)):
+        return False
+    return targeted_review_paths(data) == tuple(expected)
 
 
 def is_acceptable(data):
