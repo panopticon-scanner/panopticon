@@ -614,7 +614,7 @@
                 },
                 "ids_in_several_cells": {
                   "type": "integer",
-                  "description": "#3707: claim ids held by more than one review cell. An id is derived from the claim's domain, category, file, title and line, and no group, so two cells can report one id. Each cell's advisors answer for their own instance only: any CONFIRMED keeps the claim reported, a holding cell that gave no verdict leaves it unverified, and only every holding cell rejecting it discards it. Disclosure only."
+                  "description": "#3707: claim ids held by more than one review cell. An id is derived from the claim's domain, category, file, title and line, and no group, so two cells can report one id. Each cell's advisors answer for their own instance only: any CONFIRMED keeps the claim reported, a holding cell that gave no verdict leaves it unverified, and only every holding cell rejecting it discards it. A cell that was never asked about the claim dismisses nothing, and its own instance is dismissed by no other cell. Disclosure only."
                 },
                 "misrouted": {
               "type": "integer",

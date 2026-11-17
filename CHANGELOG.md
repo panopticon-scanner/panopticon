@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **A finding leaves the report only on its own verdict (#3716).** Findings of one category at
+  one line are merged into the most severe before any verdict is read. When that one was
+  REJECTED it went to `discarded_claims`, and only the CONFIRMED findings under it came back
+  (#2991). An unverified CRITICAL under a rejected claim at its line was in neither list: the gate
+  went from INCONCLUSIVE to PASS and the run certified. A HIGH tool finding with no verdict was
+  lost the same way under a rejected agent claim.
+  - Under a REJECTED finding, every finding merged under it that was not itself REJECTED is now
+    reported as its own finding: confirmed, unsure, unverified or tool-reported. One nobody
+    answered for counts as unanswered, as it would with nothing else at its line.
+  - Under a finding that is in the report, nothing changes: what is merged under it stays merged,
+    unless it is CONFIRMED and that finding is not.
+  - A report can gain findings: each is one that used to disappear with a rejected claim.
+
 - **A verdict speaks only for its own cell's instance of a claim (#3707, high).** A claim id is
   derived from what a reviewer wrote (domain, category, file, title and line) and holds no group.
   So one cell's reviewer could emit a copy of another cell's claim, and the controller handed that
@@ -15,9 +28,13 @@
     backup stands over its own cell's primary only. Any CONFIRMED keeps the claim reported. A
     holding cell that gave no verdict leaves it unverified. Only every holding cell rejecting it
     discards it.
-  - A cell that was never asked about the claim is not one of its holders: the dispatch record
-    shows the id in none of that cell's scopes, as for a cell below the verify gate. A cell that
-    was asked and did not answer still is, and so is one the record cannot speak for.
+  - A cell that was never asked about the claim is not one of the cells that decide it: the
+    dispatch record shows the id in none of that cell's scopes. That is a cell below the verify
+    gate, and also a cell whose findings file was refused until its review budget ran out. Such a
+    cell dismisses nothing, and no other cell dismisses its instance: the instance stays in the
+    report as it would with no other cell holding the id, at its own severity. A CONFIRMED from a
+    cell that was asked still reports the claim as confirmed. A cell that was asked and did not
+    answer is one of the cells that decide, and so is one the record cannot speak for.
   - `meta.coverage.verdicts.ids_in_several_cells` counts the ids held by more than one cell. It is
     a disclosure and not a shortfall: two cells that really report one claim, and agree, decide it
     as before.

@@ -40,7 +40,8 @@ def _is_tool_sourced(finding):
 # #2991: the members dedupe drops, kept on their survivor. Dedupe runs BEFORE any
 # verdict binds (both passes share it, #443), so it picks the survivor by
 # severity alone; a dropped member's own verdict can still matter. A CONFIRMED
-# one is restored as its own finding when the survivor's own verdict is not
+# one is restored as its own finding when the survivor's own verdict is not, and
+# under a REJECTED survivor so is every member not itself REJECTED (#3716)
 # (`verdicts.restore_confirmed`). Underscore-prefixed like `_merged_ids`: never
 # serialized (pass 1 drops `_` keys) and stripped before the report. The ONLY
 # record of a dropped member since #3202 withdrew #1476's id aliases.

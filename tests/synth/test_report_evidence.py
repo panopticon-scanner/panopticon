@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import itertools
 import json
 import unittest
 import scripts.synth.corroborate as corroborate_mod
@@ -764,9 +765,12 @@ class TestAConfirmedFindingIsNotAbsorbed(unittest.TestCase):
                 report = self._report([(_agentic(**self.HIGH), "CONFIRMED"), (_agentic(**self.CRIT), "CONFIRMED")], by_id)
                 self.assertEqual(self._fates(report), [("decoy critical", "CRITICAL", "advisor_confirmed")])
 
-    def test_a_stale_or_misrouted_confirmed_restores_nothing(self):
+    def test_a_stale_or_misrouted_confirmed_confirms_nothing(self):
         # The restore reads a member's OWN verdict under the same rules as any
-        # binding: the run_id filter and the finding_id echo.
+        # binding: the run_id filter and the finding_id echo. A verdict that fails
+        # them is no verdict: the member is not confirmed. Under the REJECTED decoy
+        # it comes back as what it is, unverified (#3716), and no longer leaves the
+        # report with the gate at PASS.
         high, crit = _agentic(**self.HIGH), _agentic(**self.CRIT)
         for name, verdict in (("other run", {"finding_id": "AG-H", "run_id": "OLD"}),
                               ("misrouted echo", {"finding_id": "AG-X", "run_id": "RID"})):
@@ -783,8 +787,9 @@ class TestAConfirmedFindingIsNotAbsorbed(unittest.TestCase):
                     report = report_mod.build_report(report_mod.ReportInputs(
                         run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-10-20T00:00:00Z"),
                         findings=fs))
-                self.assertEqual(report["summary"]["gate"], "PASS")
-                self.assertEqual(self._fates(report), [("decoy critical", "CRITICAL", "rejected")])
+                self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+                self.assertEqual(self._fates(report), [("decoy critical", "CRITICAL", "rejected"),
+                                                       ("honest high", "HIGH", "unverified")])
 
     def test_the_carrier_is_transitive_across_stages(self):
         # A survivor dropped by a later stage hands on what it had absorbed, as
@@ -817,6 +822,189 @@ class TestAConfirmedFindingIsNotAbsorbed(unittest.TestCase):
         self.assertNotIn(corroborate_mod.ABSORBED_FIELD, json.dumps(report))
         report = self._report([(_agentic(**self.HIGH), "REJECTED"), (_agentic(**self.CRIT), "REJECTED")], True)
         self.assertNotIn(corroborate_mod.ABSORBED_FIELD, json.dumps(report))
+
+
+class TestADiscardedSurvivorGivesBackItsMembers(unittest.TestCase):
+    """#3716: a finding leaves the report only by its own disposition. #2991 gave back
+    only the CONFIRMED members of a dedupe cluster. Under a survivor that was REJECTED, a
+    member no advisor had answered for was in neither list: an unverified CRITICAL left
+    the report, and INCONCLUSIVE became PASS, certified. A HIGH tool finding was lost the
+    same way under a rejected agent claim at its line. Under a REJECTED survivor every
+    member not itself REJECTED now comes back. Under a survivor that is published, a
+    member that is not confirmed stays merged, as before."""
+
+    WORDS = (None, "CONFIRMED", "REJECTED", "NEEDS_MORE_INFO")
+    STATUS = {None: ("unverified", "tool_reported"), "REJECTED": ("rejected",),
+              "CONFIRMED": ("advisor_confirmed", "tool_confirmed"),
+              "NEEDS_MORE_INFO": ("needs_more_info",)}
+
+    @staticmethod
+    def _tool(**more):
+        return _agentic(**{**dict(fid="TL-1", sev="HIGH", title="tool", category="other",
+                                  source="tool:semgrep",
+                                  tool_evidence={"tool": "semgrep", "rule_id": "r.tool"}), **more})
+
+    def _report(self, pairs, by_id=True):
+        if by_id:
+            answers = {"verdict_bundles": {f["id"]: [
+                {"finding_id": f["id"], "verdict": v, "reasoning": "r", "run_id": "RID",
+                 "stage": "primary"}] for f, v in pairs if v}}
+        else:
+            answers = {"verdicts": {evidence_mod.finding_fingerprint(f): {
+                "finding_id": f["id"], "verdict": v, "reasoning": "r", "run_id": "RID"}
+                for f, v in pairs if v}}
+        fs = findings_mod.FindingSet(findings=[f for f, _ in pairs], verdict_run_id="RID",
+                                     verdicts_supplied=True, **answers)
+        with contextlib.redirect_stderr(io.StringIO()):
+            return report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="t", fail_on="high", timestamp="2026-10-20T00:00:00Z"),
+                findings=fs))
+
+    @staticmethod
+    def _fates(report):
+        return sorted((f["title"], where, f["evidence"]["status"])
+                      for where in ("findings", "discarded_claims") for f in report[where])
+
+    def test_a_member_nobody_answered_for_comes_back_unverified(self):
+        for by_id in (True, False):
+            for order in ("decoy first", "decoy second"):
+                with self.subTest(by_id=by_id, order=order):
+                    pairs = [(_agentic(fid="AG-D", sev="CRITICAL", title="decoy"), "REJECTED"),
+                             (_agentic(fid="AG-R", sev="HIGH", title="real"), None)]
+                    report = self._report(pairs if order == "decoy first" else pairs[::-1], by_id)
+                    self.assertEqual([("decoy", "discarded_claims", "rejected"),
+                                      ("real", "findings", "unverified")], self._fates(report))
+                    # It was: PASS, with `real` in neither list.
+                    self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+                    self.assertEqual({"active": 1, "discarded": 1, "total": 2},
+                                     report["summary"]["counts"])
+                    self.assertEqual(1, report["meta"]["coverage"]["verdicts"]["unanswered"])
+
+    def test_a_critical_as_severe_as_the_decoy_and_loaded_after_it_comes_back(self):
+        report = self._report([(_agentic(fid="AG-D", sev="CRITICAL", title="decoy"), "REJECTED"),
+                               (_agentic(fid="AG-R", sev="CRITICAL", title="real"), None)])
+        self.assertEqual([("decoy", "discarded_claims", "rejected"),
+                          ("real", "findings", "unverified")], self._fates(report))
+        self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+
+    def test_an_unsure_member_comes_back_as_unsure(self):
+        report = self._report([(_agentic(fid="AG-D", sev="CRITICAL", title="decoy"), "REJECTED"),
+                               (_agentic(fid="AG-R", sev="HIGH", title="real"), "NEEDS_MORE_INFO")])
+        self.assertEqual([("decoy", "discarded_claims", "rejected"),
+                          ("real", "findings", "needs_more_info")], self._fates(report))
+
+    def test_a_verdict_word_counts_in_whatever_case_the_report_reads_it(self):
+        """The loaders take a verdict word in any case, and a finding is published on the
+        word upper-cased. So is the question asked here: was the survivor dismissed, and
+        was the member."""
+        for decoy, real, fate in (("rejected", None, "unverified"),
+                                  ("Rejected", "confirmed", "advisor_confirmed"),
+                                  ("rejected", "needs_more_info", "needs_more_info")):
+            with self.subTest(decoy=decoy, real=real):
+                report = self._report([(_agentic(fid="AG-D", sev="CRITICAL", title="decoy"), decoy),
+                                       (_agentic(fid="AG-R", sev="HIGH", title="real"), real)])
+                self.assertEqual([("decoy", "discarded_claims", "rejected"),
+                                  ("real", "findings", fate)], self._fates(report))
+        report = self._report([(_agentic(fid="AG-D", sev="CRITICAL", title="decoy"), "REJECTED"),
+                               (_agentic(fid="AG-R", sev="HIGH", title="real"), "rejected")])
+        self.assertEqual([("decoy", "discarded_claims", "rejected")], self._fates(report))
+
+    def test_a_tool_finding_under_a_rejected_agent_claim_comes_back(self):
+        """The exactly-two cluster: one agent claim and one tool finding at a line collapse
+        into the more severe, across categories."""
+        for by_id in (True, False):
+            with self.subTest(by_id=by_id):
+                report = self._report([(_agentic(fid="AG-D", sev="CRITICAL", title="decoy"), "REJECTED"),
+                                       (self._tool(), None)], by_id)
+                self.assertEqual([("decoy", "discarded_claims", "rejected"),
+                                  ("tool", "findings", "tool_reported")], self._fates(report))
+                self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+                # ...and the scanner's own count says where it went (#3667).
+                self.assertEqual({"ingested": 1, "in_report": 1, "merged_into_agent": 0,
+                                  "dropped": 0, "dropped_reasons": {}},
+                                 report["meta"]["coverage"]["tool_axis"]["by_tool"]["semgrep"])
+
+    def test_an_agent_claim_under_a_rejected_tool_finding_comes_back(self):
+        report = self._report([(self._tool(sev="CRITICAL"), "REJECTED"),
+                               (_agentic(fid="AG-R", sev="HIGH", title="real"), None)])
+        self.assertEqual([("real", "findings", "unverified"),
+                          ("tool", "discarded_claims", "rejected")], self._fates(report))
+
+    def test_every_member_comes_back_but_the_ones_rejected_themselves(self):
+        report = self._report([
+            (_agentic(fid="AG-D", sev="CRITICAL", title="decoy"), "REJECTED"),
+            (_agentic(fid="AG-1", sev="HIGH", title="silent"), None),
+            (_agentic(fid="AG-2", sev="HIGH", title="confirmed"), "CONFIRMED"),
+            (_agentic(fid="AG-3", sev="MEDIUM", title="unsure"), "NEEDS_MORE_INFO"),
+            (_agentic(fid="AG-4", sev="MEDIUM", title="rejected too"), "REJECTED")])
+        self.assertEqual([("confirmed", "findings", "advisor_confirmed"),
+                          ("decoy", "discarded_claims", "rejected"),
+                          ("silent", "findings", "unverified"),
+                          ("unsure", "findings", "needs_more_info")], self._fates(report))
+        self.assertEqual("FAIL", report["summary"]["gate"])
+
+    def test_under_a_published_survivor_a_member_that_is_not_confirmed_stays_merged(self):
+        """Unchanged. The survivor is in the report, and the member is merged under it."""
+        for survivor in (None, "NEEDS_MORE_INFO", "CONFIRMED"):
+            for member in (None, "NEEDS_MORE_INFO", "REJECTED"):
+                with self.subTest(survivor=survivor, member=member):
+                    report = self._report([
+                        (_agentic(fid="AG-S", sev="CRITICAL", title="survivor"), survivor),
+                        (_agentic(fid="AG-M", sev="HIGH", title="member"), member)])
+                    self.assertEqual([("survivor", "findings", self.STATUS[survivor][0])],
+                                     self._fates(report))
+
+    def _one_fate_each(self, pairs, by_id):
+        """The invariant. Every loaded finding is in `findings`, or in `discarded_claims`,
+        or merged under a finding of its cluster that is published; one merged under a
+        discarded survivor was REJECTED itself. And each one that is in a list is there
+        on its own verdict."""
+        report = self._report([(dict(f), said) for f, said in pairs], by_id)
+        fates = self._fates(report)
+        titles = [title for title, _where, _status in fates]
+        self.assertEqual(sorted(set(titles)), titles, "a finding is in the report twice")
+        published = [title for title, where, _status in fates if where == "findings"]
+        for finding, said in pairs:
+            mine = [(where, status) for title, where, status in fates if title == finding["title"]]
+            if mine:
+                where, status = mine[0]
+                self.assertIn(status, self.STATUS[said], finding["title"])
+                self.assertEqual("discarded_claims" if said == "REJECTED" else "findings", where)
+            elif said != "REJECTED":
+                self.assertTrue(published, "%s left the report with nothing published at its "
+                                           "line" % finding["title"])
+            if not mine and said == "CONFIRMED":      # ...then under a confirmed survivor
+                self.assertTrue([status for _title, where, status in fates
+                                 if where == "findings" and status in self.STATUS["CONFIRMED"]])
+        counts = report["summary"]["counts"]
+        self.assertEqual((len(published), len(fates) - len(published), len(fates)),
+                         (counts["active"], counts["discarded"], counts["total"]))
+        return report, fates
+
+    def test_every_loaded_agent_claim_has_exactly_one_fate(self):
+        """Three claims of one category at one line, under every verdict each can have."""
+        claims = [_agentic(fid="AG-1", sev="CRITICAL", title="one"),
+                  _agentic(fid="AG-2", sev="HIGH", title="two"),
+                  _agentic(fid="AG-3", sev="HIGH", title="three")]
+        for said in itertools.product(self.WORDS, repeat=3):
+            for by_id in (True, False):
+                with self.subTest(said=said, by_id=by_id):
+                    self._one_fate_each(list(zip(claims, said)), by_id)
+
+    def test_every_loaded_tool_finding_has_exactly_one_fate_and_is_counted(self):
+        """One agent claim and one tool finding at a line, either the more severe."""
+        for agent_sev, tool_sev in (("CRITICAL", "HIGH"), ("HIGH", "CRITICAL")):
+            for said in itertools.product(self.WORDS, repeat=2):
+                for by_id in (True, False):
+                    with self.subTest(agent=agent_sev, tool=tool_sev, said=said, by_id=by_id):
+                        pairs = [(_agentic(fid="AG-1", sev=agent_sev, title="agent"), said[0]),
+                                 (self._tool(sev=tool_sev), said[1])]
+                        report, fates = self._one_fate_each(pairs, by_id)
+                        row = report["meta"]["coverage"]["tool_axis"]["by_tool"]["semgrep"]
+                        there = int(any(title == "tool" for title, _where, _status in fates))
+                        self.assertEqual((1, there, 1), (
+                            row["ingested"], row["in_report"],
+                            row["in_report"] + row["merged_into_agent"] + row["dropped"]))
 
 
 class TestAClaimsVerdictIsItsOwn(unittest.TestCase):

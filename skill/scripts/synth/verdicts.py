@@ -137,11 +137,10 @@ def holding_cells(findings):
 def asked_cells(holders, scope):
     """`holders` less the cells that were never asked about the id (#3707, ruling 1):
     {claim id: the holding cells whose advisors the controller handed that claim, or
-    may have}. A cell below the verify gate holds its claims and is asked about none
-    of them. It cannot dismiss anything, so leaving it out opens nothing; counted, it
-    left a claim the other cell's advisor rejected unverified, and an honest run
-    uncertified. `scope.asked` reads the dispatch record: a cell that was asked and
-    did not answer stays, and so does one the record cannot speak for."""
+    may have}. These are the cells that decide the claim between them. A cell that was
+    never asked can dismiss nothing, and its own instance is dismissed by nobody
+    (`claim_verdict`). `scope.asked` reads the dispatch record: a cell that was asked
+    and did not answer stays, and so does one the record cannot speak for."""
     if scope is None:
         return holders
     return {fid: {cell for cell in cells if scope.asked(cell, fid) is not False}
@@ -162,14 +161,22 @@ def claim_verdict(finding, by_fid, run_id, holders):
     by_cell = {}
     # A finding that came from no cell (a tool finding) is no cell's instance of
     # anything: the cells that hold its id do not speak for it. For a cell's finding,
-    # `holders` names the cells that speak: its own is among them unless it was never
-    # asked, and then the cells that were asked decide the claim.
+    # `holders` names the cells that were asked about the id.
     cells = {None} if own is None else holders.get(str(fid), {own})
     for cell in cells:
         theirs = [c for c in candidates if c.get(evidence_mod.CELL_FIELD) == cell]
         by_cell[cell] = evidence_mod.match_verdict_by_id({"id": fid}, {str(fid): theirs},
                                                          run_id=run_id)
-    return evidence_mod.across_cells(by_cell, own)
+    decided = evidence_mod.across_cells(by_cell, own)
+    if own is None or own in cells:
+        return decided
+    # Its own cell was never asked (ruling 1, revised): the instance stands as it would
+    # with no other cell holding the id. "No entry in the record" is a cell below the
+    # verify gate, and it is also a cell whose findings file the driver refused, whose
+    # CRITICAL synthesis still salvages. So another cell's REJECTED does not dismiss
+    # it, and another cell's unanswered ask is not its shortfall. A CONFIRMED from a
+    # cell that was asked still reports the claim as confirmed.
+    return decided if _confirmed(decided) else None
 
 
 def _own_verdict(fs, finding, queue_id, holders):
@@ -184,8 +191,16 @@ def _own_verdict(fs, finding, queue_id, holders):
     return None
 
 
+def _verdict_is(verdict, word):
+    return isinstance(verdict, dict) and str(verdict.get("verdict", "")).upper() == word
+
+
 def _confirmed(verdict):
-    return isinstance(verdict, dict) and verdict.get("verdict") == "CONFIRMED"
+    return _verdict_is(verdict, "CONFIRMED")
+
+
+def _dismissed(verdict):
+    return _verdict_is(verdict, "REJECTED")
 
 
 def restore_confirmed(fs, findings, queue, holders=None):
@@ -195,34 +210,47 @@ def restore_confirmed(fs, findings, queue, holders=None):
     A dropped member whose own verdict is CONFIRMED is restored as its own
     finding and queued, unless the survivor's OWN verdict is CONFIRMED too
     (a claim's verdict is its own; #3202 withdrew the aliases that let one lend
-    it). Anything else collapses exactly as before. Strips the carrier either
-    way.
+    it). Strips the carrier either way.
+
+    #3716: a finding leaves the report only by its own disposition. Where the
+    survivor's own verdict is REJECTED it goes to `discarded_claims`, and every
+    member under it went with it, in neither list: an unverified CRITICAL, or a
+    tool finding no advisor had answered for. So under a REJECTED survivor every
+    member not itself REJECTED is restored: confirmed, NEEDS_MORE_INFO, unverified,
+    tool-reported. Under a survivor that is published, a member that is not
+    confirmed stays merged, as before.
 
     #3707: a member's own verdict is its claim's, decided across the cells that
     hold its id (`claim_verdict`). Pooled by id, a second cell's copy of the
     member answered for it: with the copy REJECTED the confirmed member was
-    never restored and left the report altogether. And where several dropped
-    members are instances of ONE id, one of them is restored, the one dedupe
+    never restored and left the report altogether. And where several members to
+    restore are instances of ONE id, one of them is restored, the one dedupe
     itself would have kept: an id is published once."""
     holders = {} if holders is None else holders    # none given: each by its own cell
     queue_ids = {id(e["finding"]): e["queue_id"] for e in queue}
     taken = {e["queue_id"] for e in queue}
     for survivor in list(findings):
         absorbed = survivor.pop(corroborate_mod.ABSORBED_FIELD, [])
-        if not absorbed or _confirmed(_own_verdict(fs, survivor, queue_ids.get(id(survivor)),
-                                                   holders)):
+        if not absorbed:
             continue
-        kept: dict[str, dict[str, Any]] = {}
+        theirs = _own_verdict(fs, survivor, queue_ids.get(id(survivor)), holders)
+        if _confirmed(theirs):
+            continue
+        discarded = _dismissed(theirs)
+        owed = []       # (member, its queue id-to-be) for each member that comes back
         for member in absorbed:
+            fp = evidence_mod.finding_fingerprint(member)
+            own = _own_verdict(fs, member, fp, holders)
+            if _confirmed(own) or (discarded and not _dismissed(own)):
+                owed.append((member, fp))
+        kept: dict[str, dict[str, Any]] = {}
+        for member, _fp in owed:
             if member.get("id") and corroborate_mod.outranks(
                     member, kept.get(str(member["id"]))):
                 kept[str(member["id"])] = member
-        for member in absorbed:
+        for member, fp in owed:
             if member.get("id") and kept[str(member["id"])] is not member:
                 continue        # another instance of this id is the one restored
-            fp = evidence_mod.finding_fingerprint(member)
-            if not _confirmed(_own_verdict(fs, member, fp, holders)):
-                continue
             qid, n = fp, 0
             while qid in taken:
                 n += 1

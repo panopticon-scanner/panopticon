@@ -1004,24 +1004,81 @@ def test_a_copied_claim_is_decided_by_every_cell_that_holds_it(copied, row):
         assert speaking.report["summary"]["gate"] == "FAIL"
 
 
-def test_a_cell_below_the_verify_gate_that_holds_the_claim_is_not_asked_and_does_not_hold_it(lab):
-    """Ruling 1. The copying cell rates everything INFO, so it is never dispatched for
-    verification. It was never asked about the claim, so it is not one of its holders:
-    the owner's rejection stands, and the run certifies as it does with no copy."""
+def _record_of(outcome, cell):
+    """The dispatch record's entries for one review cell."""
+    with open(runio._pano(outcome.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        return sorted(key for key in json.load(fh_) if key.startswith("%s/%s/" % cell))
+
+
+def test_an_instance_in_a_cell_below_the_verify_gate_stays_where_it_would_be_alone(lab):
+    """Ruling 1, revised (the seat's F2). The copying cell rates everything INFO, so it is
+    never dispatched for verification: it was never asked about the claim. The owner's
+    advisor rejects the owner's instance, and that one is discarded. The copier's stays in
+    the report, unverified at INFO, as in a run where only that cell held it; it used to
+    move to the discarded claims on the owner's word. An unverified INFO is no shortfall:
+    the run certifies as it does with no copy."""
     silent = fh.drive(lab, replies=fh.CopiedClaim(copy=False, owner_says="REJECTED",
                                                   below_gate=True))
     held = fh.drive(lab, replies=fh.CopiedClaim(owner_says="REJECTED", below_gate=True))
     copier = "verify-%s-%s-primary" % fh.CopiedClaim.COPIER
     assert copier not in silent.launched and copier not in held.launched
-    with open(runio._pano(held.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
-        assert not [key for key in json.load(fh_)
-                    if key.startswith("%s/%s/" % fh.CopiedClaim.COPIER)]
+    assert _record_of(held, fh.CopiedClaim.COPIER) == []
     assert problems(silent, silent) == [] and problems(silent, held) == []
-    assert _the_claim(held) == _the_claim(silent) == [("discarded", "rejected", "CRITICAL")]
+    assert _the_claim(silent) == [("discarded", "rejected", "CRITICAL")]
+    assert _the_claim(held) == [("report", "unverified", "INFO"),
+                                ("discarded", "rejected", "CRITICAL")]
     assert _verdict_of(held) == _verdict_of(silent)
     assert held.report["summary"]["coverage_certified"] is True
     counted = [o.report["meta"]["coverage"]["verdicts"] for o in (silent, held)]
     assert [v["ids_in_several_cells"] for v in counted] == [0, 1]
+
+
+BOTH_STAGES_REJECT = {"primary": "REJECTED", "backup": "REJECTED"}
+
+
+def test_an_instance_whose_cell_was_never_asked_is_not_another_cells_to_dismiss(lab):
+    """Ruling 1, revised (the seat's F1, its `BadOwner` row). The owner's reviewer returns
+    its CRITICAL and a `null` beside it, every time. The driver refuses the file until the
+    review budget is spent, so the owner's cell has no entry in the dispatch record, and
+    synthesis still reads the CRITICAL out of the file. The copier was asked and REJECTS
+    its copy at both stages. The run was: the claim discarded and nothing owed. It is the
+    run with no copy: unverified, one finding unanswered, not certified."""
+    silent = fh.drive(lab, replies=fh.CopiedClaim(copy=False, bad_owner=True))
+    copied = fh.drive(lab, replies=fh.CopiedClaim(says=BOTH_STAGES_REJECT, bad_owner=True))
+    owner = "review-%s-%s" % fh.CopiedClaim.OWNER
+    for outcome in (silent, copied):
+        assert outcome.launched.count(owner) == review.MAX_CELL_ATTEMPTS
+        assert _record_of(outcome, fh.CopiedClaim.OWNER) == []
+    assert _record_of(copied, fh.CopiedClaim.COPIER)       # ...and the copier was asked
+    assert _the_claim(silent) == [("report", "unverified", "CRITICAL")]
+    assert _the_claim(copied) == [("report", "unverified", "CRITICAL"),
+                                  ("discarded", "rejected", "CRITICAL")]
+    assert _verdict_of(copied) == _verdict_of(silent)
+    summary = copied.report["summary"]
+    assert summary["coverage_certified"] is False
+    assert "1 finding unanswered by its verify advisor" in summary["grade_shortfalls"]
+    for invariant in (no_silent_loss, counts_reconcile):
+        assert invariant(silent, copied) == []
+
+
+def test_a_rejected_claim_at_another_cells_line_does_not_take_that_cells_claim_with_it(lab):
+    """#3716. The copier emits a decoy at the owner's line: its category, another title.
+    Dedupe keeps the decoy, the first loaded, and merges the owner's CRITICAL under it.
+    The copier's advisors REJECT the decoy. The owner's advisors were asked about the
+    CRITICAL and said nothing. It was in neither list, and nothing was owed for it. It is
+    in the report, unverified and unanswered, as in the run with no decoy."""
+    silent = fh.drive(lab, replies=fh.CopiedClaim(copy=False, owner_says=None))
+    decoyed = fh.drive(lab, replies=fh.CopiedClaim(says=BOTH_STAGES_REJECT, owner_says=None,
+                                                   decoy=True))
+    assert _the_claim(decoyed) == _the_claim(silent) == [("report", "unverified", "CRITICAL")]
+    assert [(f["title"], _status(f)) for f in decoyed.report["discarded_claims"]
+            if f["title"] == fh.CopiedClaim.DECOY] == [(fh.CopiedClaim.DECOY, "rejected")]
+    assert _verdict_of(decoyed) == _verdict_of(silent)
+    summary = decoyed.report["summary"]
+    assert summary["coverage_certified"] is False
+    assert "1 finding unanswered by its verify advisor" in summary["grade_shortfalls"]
+    for invariant in (no_silent_loss, counts_reconcile):
+        assert invariant(silent, decoyed) == []
 
 
 def test_the_copied_rows_cover_both_stages_and_both_directions():

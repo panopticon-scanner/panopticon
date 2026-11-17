@@ -12,7 +12,8 @@ A bundle verdict now counts for a finding only when the bundle is stamped for th
 cell that finding came from. Where several cells hold one id, each answers for its
 own instance: any CONFIRMED keeps the claim reported, a holding cell that did not
 answer leaves it unverified, and only every holding cell dismissing it dismisses
-it.
+it. A cell that was never asked about the claim dismisses nothing, and its own
+instance is dismissed by no other cell.
 """
 
 import json
@@ -229,9 +230,12 @@ class TestACopyBehindADecoy(_TwoCells):
 
 
 class TestACellThatWasNeverAsked(_TwoCells):
-    """Ruling 1. A cell below the verify gate holds its claims and is asked about none of
-    them. It is not a holder: the cells that were asked decide the claim. "Asked" is read
-    from the dispatch record, never from a missing bundle."""
+    """Ruling 1, as revised. A cell with no entry in the dispatch record was never asked
+    about its claims. That is a cell below the verify gate. It is also a cell whose
+    findings file the driver refused until the review budget ran out, and synthesis reads
+    its claims out of that file all the same. Such a cell dismisses nothing, and no other
+    cell dismisses its instance: the instance stands as in the run where no other cell
+    holds the id. "Asked" is read from the dispatch record, never from a missing bundle."""
 
     def scene(self, g1_record, owner="REJECTED", copy_severity="LOW"):
         """`g1` holds a LOW copy of `B` (so `g1` is below the gate) and `g1_record` is
@@ -241,6 +245,49 @@ class TestACellThatWasNeverAsked(_TwoCells):
         self.bundle([verdict(self.b, owner)], group="g2")
         return self.report()
 
+    def no_verdicts(self):
+        for name in os.listdir(self.verdicts):
+            os.unlink(os.path.join(self.verdicts, name))
+
+    def lone(self, g1_record):
+        """The run in which `g2` holds nothing: `g1`'s LOW instance of `B` by itself."""
+        self.cells(copy_severity="LOW")
+        with open(self.paths[1], "w", encoding="utf-8") as fh:
+            json.dump({"findings": []}, fh)
+        self.no_verdicts()
+        self.record(g1_record(self))
+        return self.report()
+
+    def refused(self, copy, says="REJECTED", copy_severity="CRITICAL", owner_severity="CRITICAL",
+                decoy=False):
+        """The seat's F1. `g2` holds `B` and the record holds nothing for `g2`: the driver
+        refused its findings file, no advisor was dispatched for it, and synthesis reads
+        the file. `g1` copies `B`, was asked about its copy and says `says` of it. With
+        `decoy`, `g1` also holds another claim at `B`'s line, loaded before the copy, and
+        says the same of it."""
+        mine = [claim("a.py", severity="LOW")] + (
+            [claim("b.py", title="another reading of b.py")] if decoy else []) + (
+            [dict(claim("b.py", severity=copy_severity), description="the copy")] if copy else [])
+        theirs = [dict(claim("b.py", severity=owner_severity), description="the owner's")]
+        self.paths = []
+        for group, findings in (("g1", mine), ("g2", theirs)):
+            self.paths.append(os.path.join(self.run_dir, "findings-%s-SEC.json" % group))
+            with open(self.paths[-1], "w", encoding="utf-8") as fh:
+                json.dump({"findings": findings}, fh)
+        ids = [f["id"] for f in findings_mod.load_findings(self.paths)]
+        self.a, self.b = ids[0], ids[-1]
+        self.no_verdicts()
+        self.record(record(claims=ids[:-1], size=25))
+        self.bundle([verdict(self.a)] + [verdict(i, says) for i in dict.fromkeys(ids[1:-1])])
+        return self.report(fail_on="high")
+
+    def published(self, report):
+        """`facts`, less the discarded claims; and those, apart."""
+        facts = self.facts(report)
+        discarded = [c for c in facts["claims"] if c[1] == "discarded"]
+        facts["claims"] = [c for c in facts["claims"] if c[1] == "report"]
+        return facts, discarded
+
     NEVER_DISPATCHED = staticmethod(lambda self: {})
     WITHOUT_THE_CLAIM = staticmethod(lambda self: record(claims=(self.a,), size=25))
     WITH_THE_CLAIM = staticmethod(lambda self: record(claims=(self.a, self.b), size=25))
@@ -249,25 +296,92 @@ class TestACellThatWasNeverAsked(_TwoCells):
         **record(stage="backup", claims=(self.b,), size=25)})
     CHARGED_WITH_NO_SCOPE = staticmethod(lambda self: {"g1/SEC/primary": 1})
 
-    def test_the_other_cells_rejection_stands_and_the_run_can_certify(self):
-        """The honest case the ruling is for: one cell rates a shared claim below the
-        gate, the other cell's advisor rejects it."""
-        self.cells(copy=False)
-        self.record(record(group="g2", claims=(self.b,), size=25))
-        self.bundle([verdict(self.b, "REJECTED")], group="g2")
-        silent = self.facts(self.report())
+    def test_a_below_gate_instance_stays_where_the_run_with_no_other_holder_has_it(self):
+        """The honest case, and the seat's F2: one cell rates a shared claim below the
+        gate, and the other cell's advisor rejects its own instance. The rejected
+        instance is the one discarded. The below-gate one stays in the report, unverified
+        at its own severity. That is no shortfall, so the run still certifies. It used to
+        move to `discarded_claims` on the other cell's word."""
         for label, g1_record in (("never dispatched", self.NEVER_DISPATCHED),
                                  ("dispatched without the claim", self.WITHOUT_THE_CLAIM)):
             with self.subTest(label):
-                report = self.scene(g1_record)
-                self.assertEqual([("discarded", "rejected")], self.where(report, self.b))
-                self.assertEqual((silent["gate"], silent["certified"], silent["letter"]),
-                                 (self.facts(report)["gate"], self.facts(report)["certified"],
-                                  self.facts(report)["letter"]))
-        report = self.scene(self.NEVER_DISPATCHED)
-        self.assertEqual(([], True, "PASS"), (report["summary"]["grade_shortfalls"],
-                                              report["summary"]["coverage_certified"],
-                                              report["summary"]["gate"]))
+                lone, nothing = self.published(self.lone(g1_record))
+                held, discarded = self.published(self.scene(g1_record))
+                self.assertEqual(lone, held)
+                self.assertEqual(([], [(self.b, "discarded", "rejected", "CRITICAL")]),
+                                 (nothing, discarded))
+                self.assertIn((self.b, "report", "unverified", "LOW"), held["claims"])
+                self.assertEqual(("PASS", True, []),
+                                 (held["gate"], held["certified"], held["shortfalls"]))
+
+    def test_no_other_cell_dismisses_an_instance_whose_cell_was_never_asked(self):
+        """The seat's F1. An honest cell holds a CRITICAL and has no entry in the record.
+        A copier that was asked REJECTS its copy. The run was: discarded, PASS, certified.
+        It is the run with no copy: unverified, INCONCLUSIVE, not certified. Whichever
+        instance dedupe kept: the copy (as severe, loaded first) or the owner's."""
+        silent = self.facts(self.refused(copy=False))
+        self.assertEqual(("INCONCLUSIVE", False, [(self.a, "report", "advisor_confirmed", "LOW"),
+                                                  (self.b, "report", "unverified", "CRITICAL")]),
+                         (silent["gate"], silent["certified"], silent["claims"]))
+        self.assertIn("1 finding unanswered by its verify advisor", silent["shortfalls"])
+        for copy_severity, kept in (("CRITICAL", "the copy"), ("HIGH", "the owner's"),
+                                    ("LOW", "the owner's")):
+            with self.subTest(copy_severity=copy_severity):
+                copied, discarded = self.published(
+                    self.refused(copy=True, copy_severity=copy_severity))
+                self.assertEqual(silent, copied)
+                # The copy is what is discarded, where dedupe kept it; where dedupe kept
+                # the owner's, the rejected copy is merged under a published finding.
+                self.assertEqual([(self.b, "discarded", "rejected", copy_severity)]
+                                 if kept == "the copy" else [], discarded)
+
+    def test_the_copys_severity_neither_raises_nor_lowers_the_published_instance(self):
+        """The instance published is the never-asked cell's own, at its own severity,
+        whether the rejected copy was the one dedupe kept (more severe, or as severe and
+        loaded first) or the one it dropped."""
+        for owner_severity, copy_severity in (("HIGH", "CRITICAL"), ("HIGH", "HIGH"),
+                                              ("HIGH", "LOW"), ("LOW", "CRITICAL"),
+                                              ("CRITICAL", "LOW")):
+            with self.subTest(owner=owner_severity, copy=copy_severity):
+                report = self.refused(copy=True, copy_severity=copy_severity,
+                                      owner_severity=owner_severity)
+                self.assertEqual(
+                    [(owner_severity, "the owner's", "unverified")],
+                    [(f["severity"], f["description"], f["evidence"]["status"])
+                     for f in report["findings"] if f["id"] == self.b])
+
+    def test_a_confirmation_from_a_cell_that_was_asked_still_reports_the_claim_confirmed(self):
+        for copy_severity in ("CRITICAL", "LOW"):       # dedupe keeps the copy / the owner's
+            with self.subTest(copy_severity=copy_severity):
+                report = self.refused(copy=True, says="CONFIRMED", copy_severity=copy_severity)
+                self.assertEqual([("report", "advisor_confirmed")], self.where(report, self.b))
+                self.assertEqual(["CRITICAL"], [f["severity"] for f in report["findings"]
+                                                if f["id"] == self.b])
+        # ...and where the never-asked instance is the copy (`g1`, never dispatched,
+        # loaded first and as severe), confirmed by the owner's own advisor.
+        report = self.scene(self.NEVER_DISPATCHED, owner="CONFIRMED", copy_severity="CRITICAL")
+        self.assertEqual([("report", "advisor_confirmed")], self.where(report, self.b))
+
+    def test_behind_a_rejected_decoy_the_never_asked_instance_is_the_one_that_comes_back(self):
+        """Dedupe keeps the decoy and drops both instances of `B`: the copy first, as
+        severe as the owner's. `g1` REJECTS the decoy and the copy. The copy was
+        dismissed and stays merged. The owner's was never asked about, so it comes back."""
+        silent = self.facts(self.refused(copy=False))
+        copied, discarded = self.published(self.refused(copy=True, decoy=True))
+        self.assertEqual(silent, copied)
+        self.assertEqual(["rejected"], [status for _id, _where, status, _sev in discarded])
+        self.assertNotIn(self.b, [finding_id for finding_id, *_rest in discarded])
+        report = self.refused(copy=True, decoy=True)
+        self.assertEqual(["the owner's"], [f["description"] for f in report["findings"]
+                                           if f["id"] == self.b])
+
+    def test_only_a_confirmation_reaches_it_from_another_cell(self):
+        """An asked cell that is unsure of its copy, or says nothing of it, leaves the
+        never-asked instance as it would be alone: unverified, never `needs_more_info`."""
+        for says in ("NEEDS_MORE_INFO", "REJECTED"):
+            with self.subTest(says=says):
+                report = self.refused(copy=True, says=says, copy_severity="LOW")
+                self.assertEqual([("report", "unverified")], self.where(report, self.b))
 
     def test_a_cell_that_was_asked_and_said_nothing_still_holds_the_claim(self):
         for label, g1_record in (("at the primary", self.WITH_THE_CLAIM),
@@ -284,16 +398,6 @@ class TestACellThatWasNeverAsked(_TwoCells):
         report = self.scene(self.CHARGED_WITH_NO_SCOPE)
         self.assertEqual([("report", "unverified")], self.where(report, self.b))
         self.assertFalse(report["summary"]["coverage_certified"])
-
-    def test_a_claim_whose_own_cell_was_never_asked_takes_the_asked_cells_verdict(self):
-        """The published instance is `g1`'s (loaded first, as severe), and `g1` was never
-        dispatched: the cell that was asked decides the claim, either way."""
-        for owner, where in (("CONFIRMED", ("report", "advisor_confirmed")),
-                             ("REJECTED", ("discarded", "rejected"))):
-            with self.subTest(owner=owner):
-                report = self.scene(self.NEVER_DISPATCHED, owner=owner,
-                                    copy_severity="CRITICAL")
-                self.assertEqual([where], self.where(report, self.b))
 
     def test_the_id_is_still_counted_as_held_by_several_cells(self):
         report = self.scene(self.NEVER_DISPATCHED)
@@ -504,12 +608,14 @@ class TestAVerdictCarriesItsBundlesCell(_Verdicts):
             held, by_fid, None, {"SEC-001": {G1}})["verdict"])
         self.assertIsNone(verdicts_mod.claim_verdict(
             held, by_fid, None, {"SEC-001": {G1, ("g3", "SEC")}}))
-        # Where the map names the id, the cells it names decide the claim: a finding
-        # whose own cell is not among them (it was never asked) takes their verdict.
+        # Where the map names the id, the cells it names decide the claim. A finding
+        # whose own cell is not among them was never asked: the others' CONFIRMED reaches
+        # it and nothing else of theirs does (ruling 1, revised).
         theirs = {"id": "SEC-001", "_group": "g2", evidence_mod.CELL_DOMAIN_FIELD: "SEC"}
-        self.assertEqual("REJECTED", verdicts_mod.claim_verdict(
-            theirs, by_fid, None, {"SEC-001": {G1}})["verdict"])
+        self.assertIsNone(verdicts_mod.claim_verdict(theirs, by_fid, None, {"SEC-001": {G1}}))
         self.assertIsNone(verdicts_mod.claim_verdict(theirs, by_fid, None, {"SEC-001": set()}))
+        self.assertEqual("CONFIRMED", verdicts_mod.claim_verdict(
+            dict(theirs, _group="g3"), by_fid, None, {"SEC-001": {G1, G2}})["verdict"])
         # Where it does not name the id at all, the finding's own cell speaks.
         self.assertEqual("CONFIRMED", verdicts_mod.claim_verdict(
             theirs, by_fid, None, {"OTHER": {G1}})["verdict"])
