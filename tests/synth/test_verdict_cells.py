@@ -1976,7 +1976,7 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
     Claims are in two categories (one in four is `other`), so that a pair across
     categories and a bucket within one are both made."""
 
-    CASES, SEED = 900, 3711    # 900: the first case of review F1's shape is the 826th
+    CASES, SEED = 900, 3711    # (#3728 review F1's shape is first reached at case 203)
     LINE_FILE = "b.py"
     LOW_DEFAULT = "ARC-A2D"         # an OCRDb code whose default severity is LOW
     CAPPED_TO = {"CRITICAL": "MEDIUM", "HIGH": "MEDIUM"}
