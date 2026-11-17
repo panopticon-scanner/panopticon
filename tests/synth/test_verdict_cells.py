@@ -884,24 +884,31 @@ class TestTheMergeRanksByThePublishedSeverity(_Verdicts):
         """The other side of F1, and the exemption as ruled: an ordinary claim at HIGH and
         a scanner finding at CRITICAL nobody confirmed. The scanner finding wins the
         pair on its own severity, as it always did, and the pair is its one MEDIUM row."""
-        for name in os.listdir(self.verdicts):
-            os.unlink(os.path.join(self.verdicts, name))
-        path = os.path.join(self.run_dir, "findings-g2-SEC.json")
-        with open(path, "w", encoding="utf-8") as fh:
-            json.dump({"findings": [dict(claim("b.py", severity="HIGH"),
-                                         description="the claim")]}, fh)
-        loaded = findings_mod.load_findings([path]) + [self.scanner_finding("CRITICAL", "b.py")]
-        fs = findings_mod.FindingSet.load(
-            types.SimpleNamespace(verdicts_dir=None), [], "standard", None,
-            prepared=(loaded, None, None), run_dir=None)
-        with _target_with_files(GROUPS, lines=5000) as target, \
-                contextlib.redirect_stderr(io.StringIO()):
-            report = report_mod.build_report(report_mod.ReportInputs(
-                run=report_mod.RunConfig(target=target, fail_on="high",
-                                         timestamp="2026-01-01T00:00:00Z"),
-                findings=fs, plan=plan_mod.PlanInputs(groups_meta=GROUPS)))
-        self.assertEqual([("the scanner's", "findings", "MEDIUM", "tool_reported")],
-                         self.rows(report, "the claim", "the scanner's"))
+        # ...and a claim whose empty override RAISES it to its code's default (LOW to
+        # HIGH for `SEC-A1A`): it ranks at HIGH and settles at HIGH, so it is the same.
+        raised = dict(claim("b.py", severity="LOW"), severity_override={})
+        self.assertEqual("HIGH", codes_mod.severity_after_discipline(raised, ocrdb.load_bundle()))
+        for label, mine in (("a plain claim", claim("b.py", severity="HIGH")),
+                            ("a claim its override raises", raised)):
+            with self.subTest(label):
+                for name in os.listdir(self.verdicts):
+                    os.unlink(os.path.join(self.verdicts, name))
+                path = os.path.join(self.run_dir, "findings-g2-SEC.json")
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump({"findings": [dict(mine, description="the claim")]}, fh)
+                loaded = findings_mod.load_findings([path]) + [
+                    self.scanner_finding("CRITICAL", "b.py")]
+                fs = findings_mod.FindingSet.load(
+                    types.SimpleNamespace(verdicts_dir=None), [], "standard", None,
+                    prepared=(loaded, None, None), run_dir=None)
+                with _target_with_files(GROUPS, lines=5000) as target, \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    report = report_mod.build_report(report_mod.ReportInputs(
+                        run=report_mod.RunConfig(target=target, fail_on="high",
+                                                 timestamp="2026-01-01T00:00:00Z"),
+                        findings=fs, plan=plan_mod.PlanInputs(groups_meta=GROUPS)))
+                self.assertEqual([("the scanner's", "findings", "MEDIUM", "tool_reported")],
+                                 self.rows(report, "the claim", "the scanner's"))
 
     def test_a_tie_in_final_severity_stays_one_row(self):
         """Two claims that end at one severity are merged as before: the first loaded,
