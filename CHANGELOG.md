@@ -19,6 +19,21 @@
   - Each name alone is left out as before. `--pr` reviews, `--scope-*` runs and tool scans are
     unchanged.
 
+- **A review cell that owes the `targeted_review` echo is launched for every dispatch it is
+  charged (#3709).** A SEC cell handed the files Semgrep could not parse is done only once its
+  reviewer echoes that list exactly (#3614). Only the review phase asked. A reviewer that
+  returned findings and no echo was "not done" to the phase, which charged another dispatch,
+  and "done" to the loop, which launched nothing: charged 3, launched 1. The run then reported
+  the cell as having spent its retry budget, on one launch. It failed closed: coverage was not
+  certified.
+  - The loop and the receipt of a returned reply now ask the phase's own rule
+    (`findings_contract.echoes_targeted_review`): the exact list, in the order given, or no
+    list for a cell that was handed none.
+  - A returned reply without the echo is refused, and the refusal names it: "does not echo the
+    `targeted_review` list it was handed (2 path(s), in the order given)". It used to be
+    accepted, so a retry was never told what was wrong.
+  - Cost: up to two more reviewer launches for a cell that keeps omitting the echo.
+
 - **An advisor's verdict counts only for a claim that advisor was handed (#3702, high).** Verify
   verdicts are matched to findings by finding id across the whole run, and a backup advisor's
   verdict wins over a primary's. Nothing asked whether the advisor that wrote a verdict had been

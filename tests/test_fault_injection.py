@@ -33,6 +33,7 @@ import pytest
 
 from scripts import evidence
 import scripts.loop_progress as loop_progress
+import scripts.phases.review as review
 import scripts.phases.runio as runio
 import scripts.phases.verify as verify
 import scripts.run_manifest as run_manifest
@@ -734,6 +735,73 @@ def test_in_a_run_with_nothing_wrong_every_charge_is_one_launch(lab, partial):
     for outcome in (lab.control, partial[0]):
         assert _charges(outcome) == _launches(outcome)
         assert set(_charges(outcome).values()) == {1}
+
+
+# --- a reviewer that owes the targeted_review echo (#3709) ---------------------------------
+
+#: Semgrep reports it could not parse this file, so `app/SEC` is handed it to read (#3614).
+UNPARSED = ("src/app.py",)
+OWES_ECHO = "review-app-SEC"
+
+
+def _review_charges(outcome):
+    with open(runio._pano(outcome.root, review._ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        return json.load(fh_)
+
+
+def _review_launches(outcome):
+    counts: dict[str, int] = {}
+    for entry in outcome.launched:
+        if fh.phase_of(entry) == fh.REVIEW:
+            _review, group, domain = entry.split("-")
+            counts["%s/%s" % (group, domain)] = counts.get("%s/%s" % (group, domain), 0) + 1
+    return counts
+
+
+@pytest.fixture(scope="module")
+def echoing(lab):
+    """The control for these rows: the same target and the same unparsed file, with a
+    reviewer that echoes what it was handed."""
+    return fh.drive(lab, unparsed=UNPARSED)
+
+
+def test_a_reviewer_that_echoes_its_targets_is_dispatched_once_and_certifies(lab, echoing):
+    assert echoing.status == "complete" and len(echoing.statuses) == 1
+    assert _review_charges(echoing) == _review_launches(echoing)
+    assert set(_review_charges(echoing).values()) == {1}
+    targeted = echoing.report["meta"]["coverage"]["targeted_review"]
+    assert [(row["file"], row["covered_by"]) for row in targeted["files"]] == [
+        ("src/app.py", [["app", "SEC"]])]
+    assert echoing.report["summary"]["coverage_certified"] is True
+    # Beside the note about the file, the run is the plain control's.
+    plain, with_file = _comparable(lab.control), _comparable(echoing)
+    assert with_file["findings"] == plain["findings"] and with_file["cells"] == plain["cells"]
+
+
+@pytest.mark.parametrize("echo", [None, ["lib/util.py"], []], ids=["none", "wrong", "empty"])
+def test_a_reviewer_that_never_echoes_is_launched_for_each_dispatch_it_is_charged(echoing, lab,
+                                                                                 echo):
+    """The cell was charged three dispatches and launched once: its file had findings and
+    no echo, which the phase called not done and the loop called done. The run then said
+    the cell had spent its retry budget, on one launch."""
+    outcome = fh.drive(lab, replies=fh.NoEcho(echo), unparsed=UNPARSED)
+    assert outcome.status == "complete" and len(outcome.statuses) == 1      # it terminates
+    charged, launched = _review_charges(outcome), _review_launches(outcome)
+    assert charged["app/SEC"] == launched["app/SEC"] == review.MAX_CELL_ATTEMPTS == 3
+    assert charged == launched
+    assert {key: count for key, count in charged.items() if key != "app/SEC"} == {
+        key: 1 for key in charged if key != "app/SEC"}
+    # "Spent its retry budget" is true now: three dispatches, three launches.
+    final = outcome.statuses[-1]
+    assert final["cells_exhausted"] == 1 and "(app/SEC)" in final["message"]
+    assert "spent their retry budget" in final["message"]
+    # ...and the report says what was not read.
+    summary = outcome.report["summary"]
+    assert summary["coverage_certified"] is False and summary["overall_grade"] is None
+    targeted = outcome.report["meta"]["coverage"]["targeted_review"]
+    assert [(row["file"], row["covered_by"]) for row in targeted["files"]] == [("src/app.py", [])]
+    assert "src/app.py" in summary["coverage_note"]
+    assert echoing.launched.count(OWES_ECHO) == 1 and "cells_exhausted" not in echoing.statuses[-1]
 
 
 # --- an advisor that speaks of claims it was not handed (#3702) ---------------------------
