@@ -1045,9 +1045,10 @@ def _repo_scan(argv=None):
     # `allf` stays whole for an explicit --scope-* request, and a nested
     # config of the same name in a subdirectory is not the scanner's and is still reviewed.
     # #3708: and only the file that was LOADED (`repo_config.resolve`, through the one
-    # document seam above). Both names used to be dropped whichever was in use, so a
-    # repo configured by `panopticon.yml` could carry anything in a file named
-    # `.panopticon.yml` and no review agent read it. The other name is an ordinary file.
+    # document seam above). Both of `repo_config.CONFIG_NAMES` used to be dropped
+    # whichever was in use, so a repo configured by the first could carry anything in a
+    # file named as the second and no review agent read it. The name that was not
+    # loaded is an ordinary file.
     loaded_config = os.path.basename(committed_doc.path) if committed_doc.path else None
     root_config = sorted(f for f in allf if f == loaded_config)
     whole_repo = [f for f in allf if f != loaded_config]
