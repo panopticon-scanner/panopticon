@@ -261,6 +261,15 @@ def accepts(entry, data):
     if role == "review-cell":
         if not findings_contract.is_acceptable(data):
             return False, "not an acceptable findings file (a `findings` list of objects)"
+        # #3709: the echo the review phase asks for (#3614), by its own rule. A
+        # reply accepted without it was written, read back "not done" by the phase
+        # and never told why. The reason gives counts, never the reply's own text.
+        handed = entry.get("targeted_review") or ()
+        if not findings_contract.echoes_targeted_review(data, handed):
+            if handed:
+                return False, ("does not echo the `targeted_review` list it was handed "
+                               "(%d path(s), in the order given)" % len(handed))
+            return False, "carries a `targeted_review` list, and this cell was handed none"
         return _stamp_matches(entry, data)
     if role == "verify-cell":
         if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):

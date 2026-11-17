@@ -1,5 +1,6 @@
 """Tests for scripts.phases.review: matrix-cell fan-out and cell artifacts.
 """
+import json
 import os
 import tempfile
 import unittest
@@ -9,6 +10,8 @@ from scripts import hosts
 from scripts import native_unparsed
 from scripts import read_guard_hook
 from tests._test_helpers import write_host_evidence
+import scripts.findings_contract as findings_contract
+import scripts.group_runner as group_runner
 import scripts.phases.runio as runio
 import scripts.grouping_engine as grouping_engine
 import scripts.phases.review as review
@@ -931,3 +934,257 @@ class TestTheTerminalBlockAnswersATornLedgerWithAStatus(unittest.TestCase):
         self.assertEqual(status["status"], "error", status.get("message"))
         self.assertIn(path, status["message"])
         self.assertIn("--reset", status["message"])
+
+
+# #3709: the loop and the reply check ask the review phase's own echo rule.
+#
+# #3614 made a SEC cell that is handed a `targeted_review` list (the files Semgrep
+# could not parse) done only once the reviewer echoes that list exactly. Only the
+# phase asked. A reviewer that returned valid findings and no echo was "not done"
+# to the phase, which charged another dispatch, and "done" to the loop, which
+# launched nothing: three charges, one launch, and a cell reported as having spent
+# its retries. A returned reply without the echo was accepted with no refusal, so a
+# retry was never told what was wrong.
+#
+# One rule, `findings_contract.echoes_targeted_review`, now answers for the phase
+# (`review._cell_done`), the loop (`group_runner.entry_is_done`, behind
+# `persist.is_done`) and the receipt of a returned reply (`persist.accepts`).
+
+_HANDED = ["a.py", "lib/b.py"]
+
+
+def _echo_reply(echo="absent", findings=()):
+    body = {"findings": list(findings)}
+    if echo != "absent":
+        body["targeted_review"] = echo
+    return body
+
+
+class TestTheEchoRule(unittest.TestCase):
+    def test_the_echo_is_the_handed_list_exactly(self):
+        rule = findings_contract.echoes_targeted_review
+        self.assertTrue(rule(_echo_reply(["a.py", "lib/b.py"]), _HANDED))
+        self.assertTrue(rule(_echo_reply(["a.py", "lib/b.py"]), tuple(_HANDED)))
+        for label, echo in (("no echo", "absent"), ("an empty one", []),
+                            ("one path of two", ["a.py"]), ("another order", ["lib/b.py", "a.py"]),
+                            ("one more path", _HANDED + ["c.py"]), ("another path", ["a.py", "c.py"]),
+                            ("a path twice", ["a.py", "a.py"]), ("a string", "a.py"),
+                            ("a path that climbs", ["a.py", "../b.py"]),
+                            ("something that is not a path", ["a.py", 7]), ("null", None)):
+            with self.subTest(label):
+                self.assertFalse(rule(_echo_reply(echo), _HANDED))
+
+    def test_a_cell_handed_nothing_echoes_nothing(self):
+        rule = findings_contract.echoes_targeted_review
+        for handed in ((), [], None):
+            with self.subTest(handed=handed):
+                self.assertTrue(rule(_echo_reply(), handed))
+                self.assertTrue(rule(_echo_reply([]), handed))
+                self.assertFalse(rule(_echo_reply(["a.py"]), handed))
+                self.assertFalse(rule(_echo_reply("a.py"), handed))
+        self.assertFalse(rule(None, _HANDED))
+        self.assertTrue(rule(None, ()))
+
+
+class _EchoCell(unittest.TestCase):
+    """One SEC cell, `Auth/SEC`, handed `a.py` because Semgrep could not parse it."""
+
+    def setUp(self):
+        self._t = tempfile.TemporaryDirectory()
+        self.root = os.path.realpath(self._t.name)
+        os.makedirs(runio._pano(self.root))
+        self.addCleanup(self._t.cleanup)
+        self.manifest = {"run_id": "R", "security_mode": "standard", "host": "claude"}
+        write_host_evidence(self.root, {c: hosts.PROVEN for c in hosts.CAPABILITIES})
+        runio._write_json(runio._pano(self.root, "groups.json"),
+                          {"groups": [{"name": "Auth", "files": ["a.py"]}]})
+        with open(os.path.join(self.root, "a.py"), "w", encoding="utf-8") as fh:
+            fh.write("x = 1\n")
+        with open(os.path.join(self.root, "panopticon.yml"), "w", encoding="utf-8") as fh:
+            fh.write("version: 1\ngroups:\n  Auth:\n    match: ['a.py']\n")
+        runio._write_json(runio._pano(self.root, "coverage-Auth.json"),
+                          {"group": "Auth", "effective": ["SEC"], "run_id": "R"})
+        facts = native_unparsed.producer_facts(self.root, ["a.py"])
+        facts["syntax_error_files"] = 1
+        for patch in (
+                mock.patch.object(review, "_ingested_tool_dispositions",
+                                  return_value={"semgrep": {"file_coverage": facts}}),
+                mock.patch.object(review, "_ingested_tool_findings", return_value=()),
+                mock.patch("scripts.ocrdb.domain_menu", return_value=[
+                    {"code": "SEC-A1A", "name": "x", "severity": "HIGH", "cwe": []}]),
+                mock.patch("scripts.dispatch.registered_agent_name",
+                           return_value="panopticon-domain-panel"),
+                mock.patch("scripts.ocrdb.load_bundle", return_value={"domains": {}})):
+            patch.start()
+            self.addCleanup(patch.stop)
+
+    def dispatch(self):
+        """One `review_execute`: the SEC entry it dispatched, or None when it dispatched
+        nothing for the cell."""
+        before = self.charged()
+        review.review_execute(self.root, self.manifest)
+        if self.charged() == before:
+            return None
+        (entry,) = [e for e in requests.load_dispatch_request(self.root)["entries"]
+                    if e["domain"] == "SEC"]
+        return entry
+
+    def charged(self):
+        path = runio._pano(self.root, review._ATTEMPTS_FILE)
+        if not os.path.exists(path):
+            return 0
+        with open(path, encoding="utf-8") as fh:
+            return json.load(fh).get(review._cell_key("Auth", "SEC"), 0)
+
+    def body(self, echo="absent"):
+        return dict(_echo_reply(echo), _panopticon={"run_id": "R", "role": "domain_panel",
+                                              "domain": "SEC", "group": "Auth"})
+
+    def on_disk(self, entry, echo="absent"):
+        runio._write_json(entry["out_file"], self.body(echo))
+
+    def answers(self, entry):
+        """(the phase, the loop): is this cell's file an answer."""
+        return (review._cell_done(self.root, self.manifest, "Auth", "SEC"),
+                persist.is_done(entry))
+
+
+class TestTheLoopAsksThePhasesRule(_EchoCell):
+    def test_the_entry_carries_what_the_cell_was_handed(self):
+        entry = self.dispatch()
+        self.assertEqual(["a.py"], entry["targeted_review"])
+        self.assertEqual("review-cell", persist.role_of(entry))
+
+    def test_a_file_without_the_echo_is_not_done_for_the_phase_or_the_loop(self):
+        entry = self.dispatch()
+        self.assertEqual((False, False), self.answers(entry))          # nothing written yet
+        for label, echo in (("no echo", "absent"), ("an empty echo", []),
+                            ("another file", ["b.py"]), ("one file more", ["a.py", "b.py"]),
+                            ("not a list", "a.py")):
+            with self.subTest(label):
+                self.on_disk(entry, echo)
+                self.assertEqual((False, False), self.answers(entry))
+        self.on_disk(entry, ["a.py"])
+        self.assertEqual((True, True), self.answers(entry))
+
+    def test_a_cell_that_never_echoes_is_launched_for_each_dispatch_it_is_charged(self):
+        """The loop launches what `persist.is_done` says is not done. It was charged
+        three times and pending once."""
+        launches = 0
+        for charged in (1, 2, 3):
+            entry = self.dispatch()
+            self.assertIsNotNone(entry)
+            self.assertEqual(charged, self.charged())
+            pending = [e for e in [entry] if not persist.is_done(e)]
+            self.assertEqual([entry], pending)
+            launches += len(pending)
+            self.on_disk(entry)                 # the reviewer answers, with no echo
+        self.assertEqual(3, launches)
+        self.assertEqual(review.MAX_CELL_ATTEMPTS, self.charged())
+
+    def test_the_phase_stops_asking_once_the_budget_is_spent(self):
+        """Termination: `is_done` stays false for the entry, and that cannot spin the
+        loop, because a spent cell is never in a request again."""
+        for _ in range(review.MAX_CELL_ATTEMPTS):
+            entry = self.dispatch()
+            self.on_disk(entry)
+        record = runio._pano(self.root, review._ATTEMPTS_FILE)
+        with open(record, "rb") as fh:
+            spent = fh.read()
+        for _ in range(4):
+            self.assertIsNone(self.dispatch())
+            with open(record, "rb") as fh:
+                self.assertEqual(spent, fh.read())
+        self.assertTrue(review.review_done(self.root, self.manifest))
+        self.assertEqual((False, False), self.answers(entry))
+
+    def test_an_echoing_reviewer_is_dispatched_once(self):
+        entry = self.dispatch()
+        self.on_disk(entry, ["a.py"])
+        self.assertEqual((True, True), self.answers(entry))
+        self.assertIsNone(self.dispatch())
+        self.assertEqual(1, self.charged())
+
+    def test_the_phase_the_loop_and_the_receipt_ask_one_rule(self):
+        entry = dict(self.dispatch(), delivery="return_json")
+        self.on_disk(entry, ["a.py"])
+        with mock.patch.object(findings_contract, "echoes_targeted_review",
+                               return_value=False) as rule:
+            self.assertEqual((False, False), self.answers(entry))
+            self.assertFalse(persist.accepts(entry, self.body(["a.py"]))[0])
+            self.assertFalse(group_runner.entry_is_done(entry["out_file"], entry))
+        self.assertEqual(4, rule.call_count)
+        for call in rule.call_args_list:
+            self.assertEqual(["a.py"], list(call.args[1]))
+
+
+class TestAReturnedReplyMustEcho(_EchoCell):
+    def setUp(self):
+        super().setUp()
+        self.entry = dict(self.dispatch(), delivery="return_json")
+
+    def test_a_reply_without_the_echo_is_refused_and_says_so(self):
+        for label, echo in (("no echo", "absent"), ("an empty echo", []),
+                            ("another file", ["b.py"]), ("one file more", ["a.py", "b.py"])):
+            with self.subTest(label):
+                ok, reason = persist.write_reply(self.entry, json.dumps(self.body(echo)))
+                self.assertFalse(ok)
+                self.assertIn("does not echo the `targeted_review` list it was handed "
+                              "(1 path(s), in the order given)", reason)
+                self.assertFalse(os.path.exists(self.entry["out_file"]))
+
+    def test_the_reason_never_carries_the_replys_own_text(self):
+        planted = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        ok, reason = persist.write_reply(self.entry, json.dumps(self.body([planted + ".py"])))
+        self.assertFalse(ok)
+        self.assertNotIn("ghp_", reason)
+
+    def test_a_reply_that_echoes_is_accepted_and_reads_back_done(self):
+        ok, reason = persist.write_reply(self.entry, json.dumps(self.body(["a.py"])))
+        self.assertTrue(ok, reason)
+        self.assertEqual((True, True), self.answers(self.entry))
+
+    def test_a_cell_handed_nothing_is_not_asked_for_an_echo(self):
+        entry = {k: v for k, v in self.entry.items() if k != "targeted_review"}
+        self.assertEqual((True, ""), persist.accepts(entry, self.body()))
+        ok, reason = persist.accepts(entry, self.body(["a.py"]))
+        self.assertFalse(ok)
+        self.assertEqual("carries a `targeted_review` list, and this cell was handed none", reason)
+
+    def test_the_other_checks_of_a_review_reply_still_apply(self):
+        ok, reason = persist.accepts(self.entry, {"findings": [None], "targeted_review": ["a.py"]})
+        self.assertIn("not an acceptable findings file", reason)
+        wrong = dict(self.body(["a.py"]), _panopticon={"run_id": "OTHER", "group": "Auth",
+                                                       "domain": "SEC"})
+        ok, reason = persist.accepts(self.entry, wrong)
+        self.assertFalse(ok)
+        self.assertIn("_panopticon.run_id", reason)
+
+
+class TestAPlanEntryOwesItsEcho(unittest.TestCase):
+    """`group_runner.entry_is_done` is also asked of bare plan entries on resume."""
+
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.path = os.path.join(d.name, "findings-Auth-SEC.json")
+
+    def done(self, body, entry):
+        with open(self.path, "w", encoding="utf-8") as fh:
+            json.dump(body, fh)
+        return group_runner.entry_is_done(self.path, entry)
+
+    def test_an_entry_that_lists_targets_needs_them_echoed(self):
+        entry = {"group": "Auth", "domain": "SEC", "targeted_review": ["a.py"]}
+        self.assertFalse(self.done(_echo_reply(), entry))
+        self.assertFalse(self.done(_echo_reply(["b.py"]), entry))
+        self.assertTrue(self.done(_echo_reply(["a.py"]), entry))
+
+    def test_an_entry_that_lists_none_needs_none(self):
+        entry = {"group": "Auth", "domain": "SEC"}
+        self.assertTrue(self.done(_echo_reply(), entry))
+        self.assertFalse(self.done(_echo_reply(["a.py"]), entry))
+
+    def test_with_no_entry_the_file_alone_is_asked(self):
+        self.assertTrue(self.done(_echo_reply(["a.py"]), None))
+        self.assertTrue(self.done(_echo_reply(), None))

@@ -60,6 +60,11 @@ class Replies:
                  "source_role": "domain_panel",
                  "location": {"file": "src/app.py", "line_start": 1}}]
 
+    def attested(self, entry):
+        """The `targeted_review` list a reviewer echoes: the one its entry handed it, or
+        None for no echo at all (#3709). A well-behaved reviewer echoes it exactly."""
+        return entry.get("targeted_review")
+
     def answered(self, entry, cell):
         """The claims this advisor gives a verdict on, of the `cell` it was handed."""
         return cell[:1]
@@ -143,7 +148,9 @@ class FakeRunner(base.HostRunner):
         if eid.startswith("scout-"):
             return self.replies.scout(entry)
         if eid.startswith("review-"):
+            echoed = self.replies.attested(entry)
             return {"findings": self.replies.findings(entry),
+                    **({} if echoed is None else {"targeted_review": list(echoed)}),
                     "_panopticon": {"run_id": run_id, "role": "domain_panel",
                                     "domain": entry["domain"], "group": entry["group"]}}
         if eid.startswith("verify-tool-"):       # before `verify-`: a tool advisor has no cell

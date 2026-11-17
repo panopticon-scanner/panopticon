@@ -39,6 +39,11 @@ def entry_is_done(out_file, entry=None):
         return False
     if not isinstance(entry, dict):
         return True
+    # #3709: and the echo the review phase asks of this cell (#3614). The entry
+    # carries the list it was handed; without this the phase said "not done" and
+    # charged again while the loop said "done" and launched nothing.
+    if not findings_contract.echoes_targeted_review(data, entry.get("targeted_review")):
+        return False
     # Cross-check every cell-identity key the ENTRY declares against the file's
     # own `_panopticon` stamp, so a findings file left behind by an earlier run
     # -- or written for a different cell -- is not silently accepted as this
