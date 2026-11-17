@@ -839,6 +839,7 @@
             "scanner_config_excluded": {
               "type": "array",
               "minItems": 1,
+              "maxItems": 1,
               "items": {"enum": ["panopticon.yml", ".panopticon.yml"]},
               "description": "#3708: the scanner's own root config file that this full scan did not hand to any review group (#3642): the one file `repo_config.resolve` loaded as the config. The other config name, if the tree also holds a file of that name, is an ordinary file and is reviewed. It is not said in `coverage_note`. Absent when none was left out: a scoped run, or a tree with no config. Disclosure only."
             },

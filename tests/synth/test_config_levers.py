@@ -292,6 +292,15 @@ def test_the_config_left_out_of_review_is_named_in_meta_and_moves_nothing(name):
     assert validate_schema_mod.schema_errors(report) == []
 
 
+def test_a_record_naming_both_configs_publishes_nothing():
+    """#3719 review N2. Discovery leaves out the one file that was loaded. A planted
+    groups.json naming both would have the report say both were left out, where one
+    of them was reviewed."""
+    groups_json = {"mode": "repo", "excluded": {"scanner_config": list(repo_config.CONFIG_NAMES)}}
+    run = report_mod.RunConfig.from_args(_cli_args(repo=True), groups_json, DEFAULT_TIMESTAMP)
+    assert run.scanner_config_excluded is None
+
+
 def test_a_run_that_left_no_config_out_says_nothing_of_one():
     for names in (None, []):
         report = _scanner_config_report(names)
@@ -321,8 +330,10 @@ def test_discoverys_record_of_the_config_reaches_the_run_config():
 @pytest.mark.parametrize("planted, read", [
     (["../../etc/passwd"], None),
     (["panopticon.yml", "<script>alert(1)</script>", "sub/panopticon.yml"], ["panopticon.yml"]),
-    ([".panopticon.yml", "panopticon.yml", "panopticon.yml"],
-     [".panopticon.yml", "panopticon.yml"]),
+    ([".panopticon.yml", "panopticon.yml", "panopticon.yml"], None),     # more than one name
+    ([".panopticon.yml", "panopticon.yml"], None),
+    (["panopticon.yml", "panopticon.yml"], ["panopticon.yml"]),         # one name, written twice
+    ([".panopticon.yml", "evil.yml"], [".panopticon.yml"]),
     ("panopticon.yml", None),
     ([7, None, ["panopticon.yml"]], None),
     ({"panopticon.yml": True}, None),
@@ -342,7 +353,8 @@ def test_a_record_with_no_exclusion_block_reads_as_none(inventory):
 
 def test_the_schema_takes_only_the_config_names():
     report = _scanner_config_report(["panopticon.yml"])
-    for bad in ([], ["evil.yml"], "panopticon.yml", ["panopticon.yml", 7]):
+    for bad in ([], ["evil.yml"], "panopticon.yml", ["panopticon.yml", 7],
+                ["panopticon.yml", ".panopticon.yml"], ["panopticon.yml", "panopticon.yml"]):
         planted = copy.deepcopy(report)
         planted["meta"]["coverage"]["scanner_config_excluded"] = bad
         assert validate_schema_mod.schema_errors(planted), bad

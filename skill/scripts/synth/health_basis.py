@@ -176,10 +176,13 @@ def exclude_paths_record(groups_json):
 
 
 def scanner_config_record(groups_json):
-    """The root config file(s) discovery left out of review (#3642, #3708), off its
-    groups.json record: a sorted list, or None when it recorded none. Only a name the
-    scanner itself reads as its config survives the read: groups.json is in the reviewed
-    tree, and this reaches the report as text.
+    """The root config file discovery left out of review (#3642, #3708), off its
+    groups.json record: a list of the one name, or None when it recorded none. Only a
+    name the scanner itself reads as its config survives the read: groups.json is in the
+    reviewed tree, and this reaches the report as text. Discovery leaves out the one file
+    that was loaded, so a record naming more than one is not a record it wrote, and
+    nothing is published for it (#3719 review N2): it would say both were left out
+    where one was reviewed.
 
     It reaches `meta.coverage.scanner_config_excluded` and nothing else (#3719 review):
     `coverage_note` says what needs attention, and this is true of every full review
@@ -191,7 +194,7 @@ def scanner_config_record(groups_json):
         return None
     kept = sorted({name for name in names
                    if isinstance(name, str) and name in repo_config.CONFIG_NAMES})
-    return kept or None
+    return kept if len(kept) == 1 else None
 
 
 def exclude_reason(run, coverages):
