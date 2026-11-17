@@ -116,7 +116,10 @@ the bundle again, on the usual budget of three dispatches. A bundle whose cell a
 recorded scope counts for nothing, and `scope_not_recorded` counts its verdicts: "verify scope not
 recorded: 12 advisor verdicts not counted". That is what a run whose verify phase ran before this
 version reads as, and a hand `synthesize.py --verdicts-dir` call over bundles with no
-`verify-attempts.json` in the run folder. Start such a run again with `--reset`.
+`verify-attempts.json` in the run folder. A run in flight at the upgrade and resumed after it is
+affected too: the verify cells it had already finished are never dispatched again, so their scope
+is never recorded and their verdicts are not counted. The remedy is a full re-run, not a re-verify:
+`--reset` discards the whole run folder, the review included, and the run starts from discovery.
 `meta.coverage.dependency_audit` is the dependency-audit receipt: the ecosystems the tree has a
 dependency manifest for (`applicable`), and the dedicated auditors that were `selected` and
 `produced` output. Its `unaudited` map (#3648) names each applicable ecosystem that no selected

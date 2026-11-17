@@ -30,9 +30,15 @@
     12 advisor verdicts not counted".
   - **Upgrading:** a run whose verify phase ran before this version has no such record. Its
     advisor verdicts are not counted and its report is NOT CERTIFIED, for the reason above.
-    Re-run it with `--reset`. The same holds for a hand `synthesize.py --verdicts-dir` call
-    over verdict bundles with no `verify-attempts.json` in the run folder. Single-verdict files
-    (the tool advisors' and the queue flow's) are not affected.
+    - **A run in flight at the upgrade is affected too.** If it is resumed on this version, the
+      verify cells it finished before the upgrade are never dispatched again, so nothing records
+      their scope and all their verdicts land in `scope_not_recorded`. Only what was dispatched
+      after the upgrade counts.
+    - **The remedy is a full re-run, not a re-verify:** `--reset` discards the whole run folder,
+      the review as well as the verify phase, so the run starts again from discovery.
+    - The same holds for a hand `synthesize.py --verdicts-dir` call over verdict bundles with no
+      `verify-attempts.json` in the run folder.
+    - Single-verdict files (the tool advisors' and the queue flow's) are not affected.
 
 - **Every verify dispatch that is charged now launches its advisor (#3698).** A verify cell has a
   budget of three dispatches. When an advisor kept leaving a bundle that was short (verdicts for
