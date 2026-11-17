@@ -17,6 +17,7 @@ from . import delta as delta_mod
 from . import findings as findings_mod
 from . import plan as plan_mod
 from . import severity_cap as severity_cap_mod
+from . import verdict_scope as verdict_scope_mod
 
 
 def emit_verify_queue(findings, run_dir, max_verify):
@@ -266,6 +267,13 @@ def _verdict_stats(fs, findings, queue, cut, matches):
     _bundle_supplied = sum(len(vs) for vs in by_fid.values())
     _finding_ids = {f.get("id") for f in findings if f.get("id")}
     _bundle_unknown = sum(len(vs) for fid, vs in by_fid.items() if fid not in _finding_ids)
+    out_of_scope, scope_not_recorded = verdict_scope_mod.counts(fs.bundle_files)
+    for count, why in ((out_of_scope, "named a claim its advisor was not handed"),
+                       (scope_not_recorded, "came with no record of what its advisor "
+                                            "was handed")):
+        if count:
+            print("synthesize: %d bundle verdict(s) not counted: each %s"
+                  % (count, why), file=sys.stderr)
     return {
         "queued": len(queue),
         "cut": cut,
@@ -282,6 +290,13 @@ def _verdict_stats(fs, findings, queue, cut, matches):
         # cause is the opposite of a missing dispatch, and the report has to be
         # able to tell an operator which one happened.
         "misrouted": len(verdict_misrouted),
+        # #3702: bundle verdicts dropped at the loader, and in none of the counts
+        # above. `out_of_scope`: for a claim the controller's dispatch record
+        # does not show that advisor's part was handed. `scope_not_recorded`: in
+        # a bundle the record holds no scope for at all. Either holds the letter
+        # back (`verdict_scope.reasons`).
+        "out_of_scope": out_of_scope,
+        "scope_not_recorded": scope_not_recorded,
         # Measured only when --verdicts-dir was passed at all. Emitting 0 for a
         # run with no verify phase would read as "nothing went unanswered",
         # which is the opposite of the truth; null means "not measured", the

@@ -604,6 +604,14 @@
                   ],
                   "description": "Queued findings left without a verdict; null when no --verdicts-dir was supplied, i.e. not measured."
                 },
+                "out_of_scope": {
+                  "type": "integer",
+                  "description": "#3702: verdicts in a verdict bundle that were not counted because the controller's dispatch record (`verify-attempts.json`) does not show that advisor's part was handed the claim they name: another part's claim, another cell's, or an id that names no claim. They are in none of the other counts here. A non-zero count is a `grade_shortfalls` reason."
+                },
+                "scope_not_recorded": {
+                  "type": "integer",
+                  "description": "#3702: verdicts in a verdict bundle that were not counted because the dispatch record holds no scope for that bundle's cell and stage: there is no record, it is unreadable, or it was written before the scope was recorded. They are in none of the other counts here. A non-zero count is a `grade_shortfalls` reason."
+                },
                 "misrouted": {
               "type": "integer",
               "description": "#1475: verdict files that EXISTED for the cell they were written for but could not be bound to it -- the finding_id echo named a different finding, or none. Also counted in `unanswered` (the finding has no valid verdict either way), but the cause is the OPPOSITE of a missing dispatch: an advisor ran, adjudicated, and mislabelled its answer. Reported separately so the two are distinguishable without reading agent transcripts."

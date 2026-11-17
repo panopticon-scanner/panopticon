@@ -104,6 +104,22 @@ never `answered`: its cell is `unanswered`, or `unloadable` when one of its bund
 load. It is counted in `scope_not_recorded` (`scope_not_recorded_unloadable` says how many of those
 are unloadable) and left out of both claim counts, and the reason for the state it landed in says
 so: "1 backup advisor unanswered (1 scope not recorded)".
+An advisor's verdict counts only for a claim that advisor was handed (#3702). Verdicts are matched
+to findings by id across the run, so verify records, for each cell and stage it dispatches, the
+claim ids it hands out, the number of parts and the part size (`<group>/<domain>/<stage>/claims`,
+`/parts` and `/part_size` in `verify-attempts.json`, in the same write as the charge). A verdict in
+a bundle is counted only when that record shows its own part was handed the claim it names. Any
+other is dropped: `meta.coverage.verdicts.out_of_scope` counts them, and "2 advisor verdicts
+outside their handed scope" is a `grade_shortfalls` reason, so a run with one is NOT CERTIFIED even
+when every advisor answered all it was asked. The verify phase refuses such a reply, or asks for
+the bundle again, on the usual budget of three dispatches. A bundle whose cell and stage have no
+recorded scope counts for nothing, and `scope_not_recorded` counts its verdicts: "verify scope not
+recorded: 12 advisor verdicts not counted". That is what a run whose verify phase ran before this
+version reads as, and a hand `synthesize.py --verdicts-dir` call over bundles with no
+`verify-attempts.json` in the run folder. A run in flight at the upgrade and resumed after it is
+affected too: the verify cells it had already finished are never dispatched again, so their scope
+is never recorded and their verdicts are not counted. The remedy is a full re-run, not a re-verify:
+`--reset` discards the whole run folder, the review included, and the run starts from discovery.
 `meta.coverage.dependency_audit` is the dependency-audit receipt: the ecosystems the tree has a
 dependency manifest for (`applicable`), and the dedicated auditors that were `selected` and
 `produced` output. Its `unaudited` map (#3648) names each applicable ecosystem that no selected

@@ -26,6 +26,7 @@ import scripts.synth.cost as cost_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
 import scripts.synthesize as syn
+from tests._test_helpers import record_verify_scope
 from tests.synth.helpers import DEFAULT_TIMESTAMP, _chdir
 
 CODED = "SEC-A3A"                 # the catalog's `sql-injection`, which also names a CWE to derive
@@ -468,6 +469,7 @@ class ThroughBothPassesTest(unittest.TestCase):
                     {"finding_id": reject, "verdict": "REJECTED", "reasoning": "not reachable"},
                 ], "_panopticon": {"run_id": queue_run_id, "role": "domain_advisor", "domain": "SEC",
                                    "group": "app", "stage": "primary"}}, fh)
+            record_verify_scope(run, "app", "SEC", [keep, reject])   # #3702: what it was handed
             syn.main(["--target", "app", "--out", out, "--run-dir", run, "--groups", groups,
                       "--verdicts-dir", verdicts, findings])
         with open(out, encoding="utf-8") as fh:

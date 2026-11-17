@@ -19,6 +19,7 @@ import scripts.phases.evidence_scope as evidence_scope
 import scripts.ocrdb as ocrdb
 import scripts.evidence as evidence
 import scripts.synth.backups as backups_mod
+import scripts.synth.verdict_scope as scope_mod
 
 
 class TestVerifyCreatesDir(unittest.TestCase):
@@ -470,7 +471,7 @@ class TestPlantedCarrierCannotSuppressTheBackupRound(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             root = os.path.realpath(d)
             self._cell(root, planted=True)
-            got = verify._cell_verdicts(root, "G", "SEC", "primary")
+            got = verify._part_verdicts(root, "G", "SEC", "primary", 0)
             self.assertEqual(len(got), 3)
             for v in got:
                 self.assertEqual([k for k in v if k.startswith("_")], [], v)
@@ -510,17 +511,20 @@ class TestBackupCellFixture(unittest.TestCase):
             "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
                             "domain": "SEC", "group": "G"}})
         cell = review._load_cell_findings(self.root, self.manifest, "G", "SEC")
-        verdicts = []
-        for f in cell:
-            verdicts.extend((verdicts_for or (lambda fid: [
-                {"finding_id": fid, "verdict": "CONFIRMED",
-                 "reasoning": "real"}]))(f["id"]))
-        runio._write_json(
-            verify._verify_out_file(self.root, "G", "SEC", "primary"),
-            {"verdicts": verdicts,
-             "_panopticon": {"run_id": self.RUN_ID, "role": "domain_advisor",
-                             "domain": "SEC", "group": "G",
-                             "stage": "primary"}})
+        # One bundle per part, as the primary round writes them: a verdict counts
+        # only in the bundle of the part that was handed its claim (#3702).
+        for part, chunk in enumerate(verify._cell_chunks(cell)):
+            verdicts = []
+            for f in chunk:
+                verdicts.extend((verdicts_for or (lambda fid: [
+                    {"finding_id": fid, "verdict": "CONFIRMED",
+                     "reasoning": "real"}]))(f["id"]))
+            runio._write_json(
+                verify._verify_out_file(self.root, "G", "SEC", "primary", part),
+                {"verdicts": verdicts,
+                 "_panopticon": {"run_id": self.RUN_ID, "role": "domain_advisor",
+                                 "domain": "SEC", "group": "G",
+                                 "stage": "primary"}})
         return cell
 
 
@@ -552,12 +556,12 @@ class TestDuplicatePrimariesResolveTheSameWayEverywhere(TestBackupCellFixture):
 
     def test_driver_and_synthesis_agree_on_the_winner(self):
         cell = self._cell(verdicts_for=self._dupes)
-        verdicts = verify._cell_verdicts(self.root, "G", "SEC", "primary")
+        verdicts = verify._part_verdicts(self.root, "G", "SEC", "primary", 0)
         by_fid = {}
         for v in verdicts:
             by_fid.setdefault(str(v["finding_id"]), []).append(v)
         for f in cell:
-            # run_id=None: `_cell_verdicts` reads a per-cell FILE, so it never
+            # run_id=None: `_part_verdicts` reads a per-cell FILE, so it never
             # stamps one, and the driver path passes none either.
             synthesis = evidence.match_verdict_by_id(f, by_fid)
             driver = evidence.by_finding_id(verdicts, "primary")[str(f["id"])]
@@ -613,6 +617,19 @@ class BackupDispatch(TestBackupCellFixture):
         return [f["id"] for f in
                 verify._cell_backup_findings(self.root, self.manifest, "G", "SEC")]
 
+    def _loaded(self):
+        """(verdicts by finding id, per-file stamps, unloadable rows) as synthesis loads
+        them: through this run's own dispatch record (#3702)."""
+        accepted = {}
+        by_fid, unloadable = evidence.load_verdict_bundles(
+            runio._pano(self.root, "verdicts"), accepted=accepted,
+            scope=scope_mod.Scope.load(runio._pano(self.root)).handed)
+        return by_fid, accepted, unloadable
+
+    def _coverage(self):
+        _by_fid, accepted, unloadable = self._loaded()
+        return backups_mod.coverage(runio._pano(self.root), accepted, unloadable, self.RUN_ID)
+
 
 class TestTheBackupPartCountIsRecordedAtDispatch(BackupDispatch):
     """#3679 review F1: a backup scope of more than `_CELL_CLAIMS_CAP` claims is
@@ -627,18 +644,20 @@ class TestTheBackupPartCountIsRecordedAtDispatch(BackupDispatch):
         self.assertEqual(3, len(ids))
         self.assertIsNotNone(self._dispatch())
         self.assertEqual({"G/SEC/backup": 1, "G/SEC/backup/parts": 1,
-                          "G/SEC/backup/claims": ids}, self._attempts())
+                          "G/SEC/backup/claims": ids,
+                          "G/SEC/backup/part_size": verify._CELL_CLAIMS_CAP}, self._attempts())
 
     def test_a_chunked_cell_records_every_part_and_keeps_the_count_on_redispatch(self):
-        self._cell()
         with mock.patch.object(verify, "_CELL_CLAIMS_CAP", 2):
+            self._cell()
             self.scope = verify._cell_chunks(
                 verify._cell_backup_findings(self.root, self.manifest, "G", "SEC"))
             self.assertEqual(2, len(self.scope))
             ids = self._scope_ids()
             self.assertIsNotNone(self._dispatch())
             self.assertEqual({"G/SEC/backup": 1, "G/SEC/backup/parts": 2,
-                              "G/SEC/backup/claims": ids}, self._attempts())
+                              "G/SEC/backup/claims": ids, "G/SEC/backup/part_size": 2},
+                             self._attempts())
             # Part 0 answers and part 1 never comes back: the re-dispatch sends part 1
             # alone, but the cell still has two parts.
             self._answer(0)
@@ -647,21 +666,16 @@ class TestTheBackupPartCountIsRecordedAtDispatch(BackupDispatch):
             self.assertEqual(1, len(entries))
             # #3695: ...and its whole scope, in order, not only the claims re-sent.
             self.assertEqual({"G/SEC/backup": 2, "G/SEC/backup/parts": 2,
-                              "G/SEC/backup/claims": ids}, self._attempts())
+                              "G/SEC/backup/claims": ids, "G/SEC/backup/part_size": 2},
+                             self._attempts())
         # The seat's probe, through the real loader: one part of two is unanswered.
-        accepted = {}
-        verdicts_dir = runio._pano(self.root, "verdicts")
-        _by_fid, unloadable = evidence.load_verdict_bundles(verdicts_dir, accepted=accepted)
-        block = backups_mod.coverage(runio._pano(self.root), accepted, unloadable,
-                                     self.RUN_ID)
+        # Read outside the patch: the record says how big a part is (#3702).
+        block = self._coverage()
         self.assertEqual({"summoned": 1, "answered": 0, "unanswered": 1, "unloadable": 0,
                           "claims_scoped": 3, "claims_unanswered": 1, "scope_not_recorded": 0,
                           "scope_not_recorded_unloadable": 0, "record_unreadable": False}, block)
         self._answer(1)
-        accepted = {}
-        _by_fid, unloadable = evidence.load_verdict_bundles(verdicts_dir, accepted=accepted)
-        self.assertEqual(1, backups_mod.coverage(runio._pano(self.root), accepted, unloadable,
-                                                 self.RUN_ID)["answered"])
+        self.assertEqual(1, self._coverage()["answered"])
 
     def test_a_planted_part_count_refuses_like_a_planted_charge(self):
         self._cell()
@@ -774,8 +788,8 @@ class TestABackupPartIsDoneWhenEveryScopedClaimIsAnswered(BackupDispatch):
         self.assertEqual((True, True, True), self._done())
 
     def test_a_chunked_backup_cell_is_done_part_by_part(self):
-        self._cell()
         with mock.patch.object(verify, "_CELL_CLAIMS_CAP", 2):
+            self._cell()
             self.scope = verify._cell_chunks(
                 verify._cell_backup_findings(self.root, self.manifest, "G", "SEC"))
             self.assertIsNotNone(self._dispatch())
@@ -793,22 +807,159 @@ class TestABackupPartIsDoneWhenEveryScopedClaimIsAnswered(BackupDispatch):
         ids = self._scope_ids()
         self.assertIsNotNone(self._dispatch())
         self._answer(0, ids[:1])
-        accepted = {}
-        _by_fid, unloadable = evidence.load_verdict_bundles(
-            runio._pano(self.root, "verdicts"), accepted=accepted)
-        block = backups_mod.coverage(runio._pano(self.root), accepted, unloadable, self.RUN_ID)
+        block = self._coverage()
         self.assertEqual((1, 0, 1, 3, 2), tuple(block[key] for key in (
             "summoned", "answered", "unanswered", "claims_scoped", "claims_unanswered")))
         self.assertEqual(["1 backup advisor unanswered",
                           "2 findings unanswered by their backup advisors"],
                          backups_mod.shortfall_reasons(block))
         self._answer(0, ids)
-        accepted = {}
-        _by_fid, unloadable = evidence.load_verdict_bundles(
-            runio._pano(self.root, "verdicts"), accepted=accepted)
-        block = backups_mod.coverage(runio._pano(self.root), accepted, unloadable, self.RUN_ID)
+        block = self._coverage()
         self.assertEqual((1, 0, 0), (block["answered"], block["unanswered"],
                                      block["claims_unanswered"]))
+
+
+class TestAnAdvisorSpeaksOnlyOfTheClaimsItWasHanded(BackupDispatch):
+    """#3702. Verdicts are matched to findings by id across the run, and nothing
+    asked whether the advisor that wrote one had been handed that claim. A bundle
+    that names a claim its part was not handed is not an answer: it is asked for
+    again. And the scope each cell and stage is handed is recorded at dispatch,
+    for the primary as for the backup, so synthesis can hold each verdict to it."""
+
+    def _primary(self):
+        return verify.verify_execute(self.root, self.manifest)
+
+    def _unanswer_primary(self):
+        for part in range(3):
+            path = verify._verify_out_file(self.root, "G", "SEC", "primary", part)
+            if os.path.exists(path):
+                os.remove(path)
+
+    def _entries(self):
+        return [e["id"] for e in requests.load_dispatch_request(self.root)["entries"]]
+
+    def test_the_primary_records_its_scope_beside_the_charge(self):
+        cell = self._cell()
+        self._unanswer_primary()
+        self.assertEqual("checkpoint", self._primary().kind)
+        self.assertEqual(["verify-G-SEC-primary"], self._entries())
+        self.assertEqual({"G/SEC/primary": 1, "G/SEC/primary/parts": 1,
+                          "G/SEC/primary/claims": [f["id"] for f in cell],
+                          "G/SEC/primary/part_size": verify._CELL_CLAIMS_CAP}, self._attempts())
+
+    def test_a_chunked_primary_records_its_whole_scope_and_keeps_it_when_one_part_is_resent(self):
+        with mock.patch.object(verify, "_CELL_CLAIMS_CAP", 2):
+            cell = self._cell()                       # both parts answered
+            ids = [f["id"] for f in cell]
+            os.remove(verify._verify_out_file(self.root, "G", "SEC", "primary", 1))
+            self._primary()
+            self.assertEqual(["verify-G-SEC-primary-part1"], self._entries())
+            self.assertEqual({"G/SEC/primary": 1, "G/SEC/primary/parts": 2,
+                              "G/SEC/primary/claims": ids, "G/SEC/primary/part_size": 2},
+                             self._attempts())
+
+    def test_what_the_primary_was_handed_is_what_synthesis_counts(self):
+        cell = self._cell()
+        self._unanswer_primary()
+        self._primary()
+        ids = [f["id"] for f in cell]
+        self._cell(verdicts_for=lambda fid: [
+            {"finding_id": fid, "verdict": "CONFIRMED", "reasoning": "real"},
+            {"finding_id": "COD-%s" % fid, "verdict": "REJECTED", "reasoning": "volunteered"}])
+        by_fid, accepted, _unloadable = self._loaded()
+        self.assertEqual(set(ids), set(by_fid))
+        self.assertEqual((3, 3), tuple(accepted["verdicts-G-SEC.json"][key]
+                                       for key in ("kept", "out_of_scope")))
+
+    def test_a_primary_bundle_naming_a_claim_it_was_not_handed_is_asked_for_again(self):
+        self._cell(verdicts_for=lambda fid: [
+            {"finding_id": fid, "verdict": "CONFIRMED", "reasoning": "real"},
+            {"finding_id": "SEC-999", "verdict": "REJECTED", "reasoning": "volunteered"}])
+        self.assertFalse(verify._verify_cell_done(self.root, self.manifest, "G", "SEC",
+                                                  "primary"))
+        for charged in (1, 2, 3):
+            self._primary()
+            self.assertEqual(["verify-G-SEC-primary"], self._entries())
+            self.assertEqual(charged, self._attempts()["G/SEC/primary"])
+        # The budget is spent with the bundle still there: the phase moves on, and what
+        # the bundle says of the claim it was not handed is left for synthesis to drop.
+        self.assertTrue(verify._verify_cell_done(self.root, self.manifest, "G", "SEC",
+                                                 "primary"))
+        self._primary()
+        self.assertEqual(["verify-G-SEC-backup"], self._entries())
+
+    def test_a_backup_bundle_naming_a_claim_it_was_not_handed_is_asked_for_again(self):
+        self._cell()
+        ids = self._scope_ids()
+        dispatches = 0
+        for _ in range(8):
+            if self._dispatch() is None:
+                break
+            dispatches += 1
+            self._answer(0, ids + ["SEC-999"])
+            done = verify._part_done(self.root, self.manifest, "G", "SEC", "backup", 0,
+                                     verify._cell_backup_findings(
+                                         self.root, self.manifest, "G", "SEC"))
+            self.assertFalse(done)
+        self.assertEqual(3, dispatches)
+        self._answer(0, ids)
+        self.assertTrue(verify._part_done(
+            self.root, self.manifest, "G", "SEC", "backup", 0,
+            verify._cell_backup_findings(self.root, self.manifest, "G", "SEC")))
+
+    def test_a_claim_is_answered_by_its_own_part_alone(self):
+        """Parts 0..N used to be merged, so part 0's bundle could answer part 1's claim."""
+        with mock.patch.object(verify, "_CELL_CLAIMS_CAP", 2):
+            self._cell()
+            self.scope = verify._cell_chunks(
+                verify._cell_backup_findings(self.root, self.manifest, "G", "SEC"))
+            first, second = ([f["id"] for f in chunk] for chunk in self.scope)
+
+            def done():
+                return [verify._part_done(self.root, self.manifest, "G", "SEC", "backup",
+                                          part, chunk) for part, chunk in enumerate(self.scope)]
+
+            self._answer(0, first + second)       # part 0 speaks of part 1's claim too
+            self._answer(1, [])                   # part 1 says nothing
+            self.assertEqual([False, False], done())
+            self._answer(0, first)
+            self.assertEqual([True, False], done())
+            self._answer(1, second + first[:1])   # part 1 speaks of one of part 0's
+            self.assertEqual([True, False], done())
+            self._answer(1, second)
+            self.assertEqual([True, True], done())
+
+    def test_the_backup_scope_is_decided_by_each_claims_own_part(self):
+        """The driver and synthesis must read one bundle the same way (D1): what part 0
+        says of part 1's claim decides nothing in either."""
+        with mock.patch.object(verify, "_CELL_CLAIMS_CAP", 2):
+            ids = [f["id"] for f in self._cell()]
+            self._unanswer_primary()
+            self._primary()                                       # records the scope
+            self.assertEqual(["verify-G-SEC-primary", "verify-G-SEC-primary-part1"],
+                             self._entries())
+
+            def verdicts(fid):
+                mine = [{"finding_id": fid, "verdict": "CONFIRMED", "reasoning": "real"}]
+                if fid == ids[0]:           # part 0 also rejects part 1's claim
+                    mine.append({"finding_id": ids[2], "verdict": "REJECTED",
+                                 "reasoning": "volunteered"})
+                return mine
+
+            self._cell(verdicts_for=verdicts)
+            scope = verify._cell_backup_findings(self.root, self.manifest, "G", "SEC")
+            self.assertEqual(ids, [f["id"] for f in scope])
+        by_fid, accepted, _unloadable = self._loaded()
+        self.assertEqual(["CONFIRMED"], [v["verdict"] for v in by_fid[ids[2]]])
+        self.assertEqual(1, accepted["verdicts-G-SEC.json"]["out_of_scope"])
+        self.assertEqual("CONFIRMED",
+                         evidence.match_verdict_by_id({"id": ids[2]}, by_fid)["verdict"])
+
+    def test_a_part_that_speaks_of_another_cells_claim_does_not_shrink_its_own_scope(self):
+        self._cell(verdicts_for=lambda fid: [
+            {"finding_id": fid, "verdict": "CONFIRMED", "reasoning": "real"},
+            {"finding_id": "COD-1", "verdict": "REJECTED", "reasoning": "volunteered"}])
+        self.assertEqual(3, len(self._scope_ids()))
 
 
 class TestNoBackupEntryIsEverDispatchedWithAnEmptyGrant(TestBackupCellFixture):

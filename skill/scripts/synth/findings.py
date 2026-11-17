@@ -20,6 +20,7 @@ import scripts.redact as redact
 import scripts.tools.base as tool_base
 from . import artifacts as artifacts_mod
 from . import validate_schema as validate_schema_mod
+from . import verdict_scope as verdict_scope_mod
 
 
 # evidence_mod owns the canonical severity and panel scales (#688's aliasing
@@ -65,7 +66,8 @@ class FindingSet:
     catalog: dict | None = None      # CWE catalog; None -> citations.load_cwe_catalog()
     doc_policy: dict | None = None   # apply_doc_severity_policy's disclosure
     # #3676: per loadable bundle file, {"run_id", "stage", "kept"} (the
-    # controller stamps and a count; `evidence.load_verdict_bundles(accepted=)`).
+    # controller stamps and a count; `evidence.load_verdict_bundles(accepted=)`),
+    # and #3702's two counts of the verdicts in it that were not counted.
     bundle_files: dict = field(default_factory=dict)
 
     @classmethod
@@ -104,7 +106,8 @@ class FindingSet:
         return findings, doc_policy, catalog
 
     @classmethod
-    def load(cls, args, tool_findings, security_mode, verdict_run_id, prepared=None):
+    def load(cls, args, tool_findings, security_mode, verdict_run_id, prepared=None,
+             run_dir=None):
         """main()'s findings stage (WS-0 S3), in its original order: `prepare`
         (above) for the findings half, then the advisor verdicts and bundles.
         `verdict_run_id` is the verify queue's run_id (None without a queue)
@@ -112,14 +115,18 @@ class FindingSet:
         reuse a `prepare()` it already ran ahead of the --emit-verify-queue
         branch (WS-0 S3 fix #1) instead of re-deriving the same findings;
         when omitted `load` calls `prepare` itself, so this contract (and
-        every existing caller) is unchanged."""
+        every existing caller) is unchanged. `run_dir` holds the verify phase's
+        dispatch record (#3702): a bundle verdict counts only for a claim that
+        record shows its advisor was handed, so with no `run_dir`, or no record
+        in it, no bundle verdict counts."""
         if prepared is None:
             prepared = cls.prepare(args, tool_findings, security_mode)
         findings, doc_policy, catalog = prepared
         verdicts, verdict_unloadable = evidence_mod.load_verdicts_detailed(args.verdicts_dir)
         bundle_files: dict[str, dict] = {}
         verdict_bundles, bundle_unloadable = evidence_mod.load_verdict_bundles(
-            args.verdicts_dir, accepted=bundle_files)
+            args.verdicts_dir, accepted=bundle_files,
+            scope=verdict_scope_mod.Scope.load(run_dir).handed)
         # Both loaders scan the same verdicts_dir and independently attempt to
         # parse every *.json in it, so a single unparseable file is reported by
         # both -- dedupe on filename or a genuinely-corrupt file double-counts

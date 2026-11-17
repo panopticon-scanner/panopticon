@@ -12,6 +12,7 @@ import scripts.tolerant_json as tolerant_json
 import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
 import scripts.synth.codes as codes_mod
+from tests._test_helpers import record_verify_scope
 
 def _bundle(tmp_path, name, verdicts, stage="primary", run_id="R"):
     d = tmp_path / "verdicts"
@@ -357,11 +358,13 @@ class TestVerdictBundles(unittest.TestCase):
                 {"verdicts": [{"finding_id": fid, "verdict": "CONFIRMED"}],
                  "_panopticon": {"run_id": "R", "role": "domain_advisor",
                                  "domain": "SEC", "group": "app", "stage": "primary"}}))
+            record_verify_scope(str(tmp_path), "app", "SEC", [fid])   # #3702: what it was handed
             out = tmp_path / "report.json"
             cwd = os.getcwd()
             try:
                 os.chdir(tmp_path)
-                synthesize.main(["--repo", "--verdicts-dir", str(vd), "--out", str(out), str(fp)])
+                synthesize.main(["--repo", "--run-dir", str(tmp_path), "--verdicts-dir", str(vd),
+                                 "--out", str(out), str(fp)])
             finally:
                 os.chdir(cwd)
             rep = json.loads(out.read_text())

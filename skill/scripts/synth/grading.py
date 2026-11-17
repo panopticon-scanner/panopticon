@@ -12,6 +12,7 @@ from . import coverage_io
 from . import health_basis
 from . import delta as delta_mod
 from . import findings as findings_mod
+from . import verdict_scope as verdict_scope_mod
 
 
 @dataclass(frozen=True)
@@ -128,7 +129,9 @@ def grade_shortfalls(resolved, backups=None):
     launch fails nothing is confirmed, health reads 100 and the letter S stood
     beside an INCONCLUSIVE gate -- the same undone work, the same rule.
     Summoned backup advisors that never answered, or answered unloadably
-    (#3676, `meta.coverage.backups`), are the third."""
+    (#3676, `meta.coverage.backups`), are the third. Advisor verdicts that were
+    not counted, because they named a claim their advisor was not handed or came
+    with no record of what it was handed (#3702), are the fourth."""
     reasons = []
     unanswered_tools = getattr(resolved, "unanswered_tools", 0) or 0
     unanswered_claims = max((getattr(resolved, "unanswered_gate", 0) or 0) - unanswered_tools, 0)
@@ -137,7 +140,10 @@ def grade_shortfalls(resolved, backups=None):
             reasons.append("%d %s%s unanswered by %s %sadvisor%s" % (
                 count, kind, "" if count == 1 else "s", "its" if count == 1 else "their",
                 "" if kind == "tool finding" else "verify ", "" if count == 1 else "s"))
-    return reasons + backups_mod.shortfall_reasons(backups)
+    # #3702: verdicts an advisor wrote that were not counted are undone work too:
+    # whatever they said, nobody the controller asked has said it.
+    return (reasons + backups_mod.shortfall_reasons(backups)
+            + verdict_scope_mod.reasons(getattr(resolved, "verdict_stats", None)))
 
 
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,

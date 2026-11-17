@@ -53,9 +53,9 @@ from . import artifacts as artifacts_mod
 # here because synth may not import phases; tests pin the two names equal.
 ATTEMPTS_FILE = "verify-attempts.json"
 BACKUP_SUFFIX = "/backup"
-# `phases/verify._backup_parts_key`: the part count beside the attempt count.
+# `phases/verify._parts_key`: the part count beside the attempt count.
 PARTS_SUFFIX = "/parts"
-# `phases/verify._backup_claims_key`: the claim ids the cell was handed (#3695).
+# `phases/verify._claims_key`: the claim ids the cell was handed (#3695).
 CLAIMS_SUFFIX = "/claims"
 
 
