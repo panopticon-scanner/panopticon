@@ -610,9 +610,11 @@ groups:
       - skill/scripts/groups_schema.py
       - skill/scripts/tests_axis.py
       - skill/scripts/diff_map.py
+      - skill/scripts/delta_withdrawn.py
       - skill/scripts/plan_contract.py
       tests:
       - tests/discovery_test_helpers.py
+      - tests/test_delta_withdrawn.py
       - tests/test_discovery_artifact_guard.py
       - tests/test_discovery_catalog.py
       - tests/test_discovery_chunking.py

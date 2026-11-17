@@ -102,7 +102,7 @@ def test_a_missing_named_inventory_does_not_become_repo(tmp_path, monkeypatch, c
 def test_explicit_changes_still_names_the_scope(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     output = tmp_path / "report.json"
-    assert synthesize.main(["--changes", "--out", str(output)]) == 0
+    assert synthesize.main(["--changes", "--out", str(output)], refuse_delta=False) == 0
     assert json.loads(output.read_text())["meta"]["review_type"] == "changes"
 
 

@@ -451,8 +451,8 @@ class TestDriverPersistCLI(unittest.TestCase):
                          ("persist", "scout-app", "/dev/null", "/tmp/t"))
         b = driver.parse_cli(["persist", "scout-app", "/tmp/t", "--file", "/dev/null"])
         self.assertEqual(b.target, "/tmp/t")
-        c = driver.parse_cli(["persist", "scout-app", "--pr", "42", "--base", "origin/main", "/tmp/t"])
-        self.assertEqual((c.pr, c.base, c.target), (42, "origin/main", "/tmp/t"))
+        c = driver.parse_cli(["persist", "scout-app", "--setup", "/tmp/t"])
+        self.assertEqual((c.setup, c.target), (True, "/tmp/t"))
         # a second bare word is still an error, and so is any leftover on
         # another verb -- the fold is persist-only and one word wide
         with self.assertRaises(SystemExit):
@@ -468,15 +468,18 @@ class TestDriverPersistCLI(unittest.TestCase):
         # request in the wrong tree and refused every entry with "no entry in
         # the current dispatch request". The persist verb had no way to say
         # which run it meant.
-        parser_args = driver.parse_cli(
-            ["persist", "scout-app", "--pr", "42", "--base", "origin/main", "."])
-        self.assertEqual((parser_args.pr, parser_args.base), (42, "origin/main"))
+        # #3735: the command line refuses `--pr` and `--base` in 5.4, so this reaches
+        # `persist_cli` below it, with the namespace the parser itself builds.
         d = self._repo()
         self._request(d, [])
+        parser_args = driver.build_parser().parse_args(
+            ["persist", "scout-app", "--pr", "42", "--base", "origin/main", d])
+        self.assertEqual((parser_args.pr, parser_args.base), (42, "origin/main"))
+        import scripts.orchestrate as orchestrate
         with mock.patch("scripts.phases.runio.resolve_review_root",
                         return_value=(d, None, None)) as rr, \
              contextlib.redirect_stderr(io.StringIO()):
-            driver.main(["persist", "scout-app", "--pr", "42", "--base", "origin/main", d])
+            orchestrate.persist_cli(parser_args)
         self.assertEqual(rr.call_args.args, (d,))
         self.assertEqual(rr.call_args.kwargs, {"base": "origin/main", "pr": 42})
 

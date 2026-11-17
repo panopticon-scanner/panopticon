@@ -124,12 +124,12 @@ Scope a review instead of running the whole repository:
 ```bash
 python3 skill/scripts/driver.py loop . -f src/auth.py        # one file plus its tests and neighbours
 python3 skill/scripts/driver.py loop . -d src/payments       # one directory
-python3 skill/scripts/driver.py loop . -c                    # this branch vs its base
-python3 skill/scripts/driver.py loop . -c --base release-2   # vs an explicit base
-python3 skill/scripts/driver.py loop . --pr 217              # PR 217 in an isolated worktree
+python3 skill/scripts/driver.py loop . --files a.py b.py     # the files you name
 ```
 
-Useful flags: `--security redteam` for the adversarial security posture, `--fail-on high` to tighten the gate (it fails on a confirmed CRITICAL by default; `--fail-on off` disables it, loudly), `--tools` or `--no-tools`, `--max-budget-usd` and `--max-iterations` to bound spend, `--max-verify N` to cap the verification queue on large deltas. The full list is in [`docs/PANOPTICON.md`](docs/PANOPTICON.md), "Global flags".
+**Panopticon 5.4 is a whole-repository audit. Delta review is withdrawn.** `--pr`, `--changes` (`-c`), `--base` and `--gate-scope` are refused at the command line, and a run folder that was started as a delta review is not resumed (`--reset` starts a whole-repository run). Reviewing a diff was never calibrated or stress-tested, and a wrong PASS on a pull request is the worst failure this tool can have. It returns when it has been rebuilt and measured (#3735, #3736).
+
+Useful flags: `--security redteam` for the adversarial security posture, `--fail-on high` to tighten the gate (it fails on a confirmed CRITICAL by default; `--fail-on off` disables it, loudly), `--tools` or `--no-tools`, `--max-budget-usd` and `--max-iterations` to bound spend, `--max-verify N` to cap the verification queue. The full list is in [`docs/PANOPTICON.md`](docs/PANOPTICON.md), "Global flags".
 
 ## What a review costs
 
@@ -146,7 +146,7 @@ This is a multi-agent fan-out, so the first question is the right one. One measu
 | Wall clock | 24.5 h, of which roughly 9 h was waiting on session quota |
 | Result | 1,124 findings kept (0 critical, 13 high), 1,079 of them confirmed; coverage certified |
 
-That is the most expensive shape the tool has: adversarial mode, every tool, the largest model tier for verification, on a repository that is itself a scanner. Levers, in order of effect: scope (`-c`, `--pr`, `-d`), `--security standard`, `--max-verify`, a smaller advisor tier in the host's model profile, and `--max-budget-usd` on `driver loop` as the hard stop. Every report carries its own ledger under `meta.cost`, so your second run can be budgeted from your first.
+That is the most expensive shape the tool has: adversarial mode, every tool, the largest model tier for verification, on a repository that is itself a scanner. Levers, in order of effect: scope (`-d`, `-f`, `--files`), `--security standard`, `--max-verify`, a smaller advisor tier in the host's model profile, and `--max-budget-usd` on `driver loop` as the hard stop. Every report carries its own ledger under `meta.cost`, so your second run can be budgeted from your first.
 
 ## What you get
 

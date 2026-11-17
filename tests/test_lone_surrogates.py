@@ -501,7 +501,7 @@ class TestTheBackstop(unittest.TestCase):
         calls = []
         with tempfile.TemporaryDirectory() as tmp:
             real = syn.main
-            with mock.patch.object(syn, "main", lambda argv: calls.append(list(argv)) or real(argv)):
+            with mock.patch.object(syn, "main", lambda argv, **kw: calls.append(list(argv)) or real(argv, **kw)):
                 out, _ = parity._build_report(tmp)
             argv, out_dir = calls[-1], os.path.dirname(out)
             walked = []
@@ -767,20 +767,20 @@ class TestTheRealChild(unittest.TestCase):
         self.same(self.child(*flags, findings=high(lone)), self.child(*flags, findings=high(twin)))
         self.same(self.child(findings=[], scans=tool(lone)), self.child(findings=[], scans=tool(twin)))
 
-    def test_a_hunk_map_names_a_file_as_the_finding_on_it_does(self):
-        # The `--diff-hunks` case of round 2's B3: the map's keys were read as written while the finding's path
-        # was spelled, so the finding on a changed file read as off the diff where its spelled twin read as on it.
-        def delta(text):
+    def test_the_child_refuses_a_hunk_map(self):
+        # #3735: delta review is withdrawn in 5.4, and the real child refuses `--diff-hunks` before it reads
+        # or writes anything. (This was the `--diff-hunks` case of round 2's B3: a hunk map's keys were read as
+        # written while the finding's path was spelled. That code is unreachable now and is deleted in 5.5.)
+        for text in (LONE, SPELLED):
             name = "src/b%s.py" % text
             hunks = {"diff-hunks.json": {"base": "main", "base_source": "explicit", "diff_context": 5,
                                          "files_changed": 1, "hunks": {name: [[1, 5]]}}}
-            return self.child("--diff-hunks", "diff-hunks.json", "--gate-scope", "on-diff", "--gate-unverified",
-                              "--fail-on", "medium", findings=[a_finding(1, location={"file": name, "line_start": 2})],
-                              beside=hunks)
-
-        run = delta(LONE)
-        self.assertEqual(("FAIL", 1), (self.whole(run)["summary"]["gate"], run[0]), run[1])     # on the diff: it gates
-        self.same(run, delta(SPELLED))
+            run = self.child("--diff-hunks", "diff-hunks.json", "--gate-scope", "on-diff", "--gate-unverified",
+                             "--fail-on", "medium", findings=[a_finding(1, location={"file": name, "line_start": 2})],
+                             beside=hunks)
+            self.assertEqual(2, run[0], run[1])
+            self.assertIn("delta review is withdrawn in 5.4 (#3735): --diff-hunks, --gate-scope are refused", run[1])
+            self.assertEqual([], [name for name in run[2] if name.startswith("report")])
 
     def test_the_queue_pass_writes_a_queue_without_one(self):
         run = self.child("--emit-verify-queue", findings=planted(LONE))

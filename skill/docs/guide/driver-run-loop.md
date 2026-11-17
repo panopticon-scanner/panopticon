@@ -1,8 +1,18 @@
 ## Driver run-loop (5.0)
 
 The 5.0 driver (`skill/scripts/driver.py`) runs every mode from Modes above — whole-repo
-committed-matrix review, `-f`/`-d`/`-g` scope, `-c`/`--pr` delta — as one resumable state machine;
+committed-matrix review and `-f`/`-d`/`-g`/`--files` scope — as one resumable state machine;
 the host drives it through its status protocol.
+
+**Delta review is withdrawn in 5.4 (#3735).** `--pr`, `--changes` (`-c`), `--base` and
+`--gate-scope` are refused at the command line on `run`, `loop`, `readiness` and `persist`, with
+`--diff-context`, before a root is resolved or a file written (exit 2, one message). A run folder
+that was started as a delta review is refused on resume with the same reason; `--reset` discards it.
+`discovery.py` and `synthesize.py`, run by hand, refuse their delta flags too, and the driver hands
+`synthesize.py` a hunk map only for a run whose manifest says it is a delta run, which no command
+line can now write. Everything this page still says about `-c`, `--pr`, `--base`, `diff-hunks.json`
+and the on-diff gate describes code that is in the tree and unreachable; it is deleted in 5.5
+(#3736).
 
 **Installed-flow substitution (#495):** `skill/` in every command below means THIS SKILL'S INSTALL
 DIRECTORY — literally `skill/` inside the panopticon repo, or the absolute path you installed it to
@@ -100,8 +110,9 @@ The host contract (5.2, plan 6):
   `python3 skill/scripts/driver.py persist <id> --file <reply.txt>`), then re-run
   `driver loop --mode session <target>` with the same flags. Under `--setup`, BOTH commands need
   `--setup` too, so they resolve setup's namespace rather than the review's — the printed status's
-  `persist` and `then` hints already carry it. On a `--pr` or `--base` run, pass the same
-  `--pr`/`--base` to **both** as well: a PR run's review root is the PR worktree, not your checkout,
+  `persist` and `then` hints already carry it. (Withdrawn in 5.4, #3735: `--pr` and `--base` are
+  refused on both.) On a `--pr` or `--base` run, the same
+  `--pr`/`--base` went to **both** as well: a PR run's review root is the PR worktree, not your checkout,
   and `driver persist` has to resolve the same one the loop did or it reads a different tree's
   dispatch request and refuses the entry as unknown. That worktree sits at a **deterministic** path
   under the system temp dir (so a `--pr` run resumes in the same tree), which means anyone with
@@ -809,7 +820,7 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   bytes that arrived came out of this repository's build. That step is `continue-on-error: true`, so
   a missing attestation reads as unknown, not as tampered.
 - **`discovery`** — `discovery.py --repo-scan` writes `.panopticon/runs/<tag>/groups.json` against
-  the committed `panopticon.yml`; delta scopes (`-c`/`--pr`/`--base`) additionally write
+  the committed `panopticon.yml`; delta scopes (`-c`/`--pr`/`--base`, withdrawn in 5.4) additionally wrote
   `.panopticon/runs/<tag>/diff-hunks.json`. **Both halves carry this run's `run_id`** (#2107): the child
   writes the hunk map first and the inventory second, as two independent atomic writes, so the
   driver stamps the sibling with the same stamp it puts on `groups.json` — the surface the review
@@ -1301,7 +1312,8 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   `report.json.html`, and the fix is the target's `panopticon.yml`, not its test suite.
 - **`synthesize`** — runs `skill/scripts/synthesize.py --verdicts-dir .panopticon/runs/<tag>/verdicts`
   (`--tools-dir .panopticon/runs/<tag>/tools` added when `tools` produced output; `--diff-hunks
-  .panopticon/runs/<tag>/diff-hunks.json` added when `discovery` emitted it, always beside
+  .panopticon/runs/<tag>/diff-hunks.json` added only for a delta run's manifest, which 5.4 cannot
+  write (#3735: a hunk map left in the run folder is handed to no child), always beside
   `--diff-hunks-run-id <this run's run_id>`) → `.panopticon/<tag>-report.json`, with
   `.panopticon/report.json` a symlink to the latest. A foreign or absent
   stamp is REFUSED (#2107): the pair is handed over WITH the expectation, so the child's loader

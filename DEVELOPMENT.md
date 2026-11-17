@@ -31,7 +31,7 @@ summary + JSON artifact) with standards citations and CI gating.
 - `skill/` — the installable skill surface (symlink target); everything an agent loads lives here.
 - `skill/SKILL.md` — driver run-loop spec (modes, driver verbs, flags). Instructions
   the host follows to drive the driver; not a runnable script.
-- `skill/scripts/discovery.py` — resolve a target (`-f/-d/-g/-c/--pr`/repo) to cohesive
+- `skill/scripts/discovery.py` — resolve a target (`-f/-d/-g/--files`/repo) to cohesive
   ≤15-file groups (`groups.json`); extracted from the retired `orchestrator.py` (5.0 Slice A).
   Language-neutral, stdlib only.
 - `skill/scripts/driver.py` — the resumable driver: a table-driven phase state machine
@@ -406,9 +406,10 @@ characters, and matching consumes the whole path.
   in one toolchain cannot invalidate the others' layers.
 
 ## Running
-Fresh session → `/panopticon` (`-f file`, `-d dir`, `-g <name>` one committed group, `-c`
-changes, `--pr N`, or whole repo — see `docs/PANOPTICON.md` "Modes" for the authoritative
-flag list). `--epss` enables EPSS lookups; `--fail-on high`
+Fresh session → `/panopticon` (`-f file`, `-d dir`, `-g <name>` one committed group, `--files`,
+or whole repo — see `docs/PANOPTICON.md` "Modes" for the authoritative flag list; delta review,
+`-c` and `--pr N`, is withdrawn in 5.4 and refused at the command line, #3735; its code is in the
+tree, unreachable, and its tests reach it below the refusal with `refuse_delta=False`). `--epss` enables EPSS lookups; `--fail-on high`
 gates CI (keys off `summary.gate` in the JSON). Tool layer: build the image once (above);
 normal runs require Docker and the tools image at readiness, or `--no-tools` to
 skip the layer explicitly. `driver readiness` prints a read-only preflight.
