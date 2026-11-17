@@ -826,8 +826,8 @@ def test_an_advisor_cannot_speak_for_a_claim_it_was_not_handed(hostile, row):
     group, domain, stage = voice["speaker"].split("-")[1:]
     with open(runio._pano(speaking.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
         charged = json.load(fh_)[verify._verify_key(group, domain, stage)]
-    assert charged == verify._MAX_VERIFY_ATTEMPTS
-    assert speaking.launched.count(voice["speaker"]) > silent.launched.count(voice["speaker"]) == 1
+    assert charged == verify._MAX_VERIFY_ATTEMPTS == speaking.launched.count(voice["speaker"])
+    assert silent.launched.count(voice["speaker"]) == 1
 
 
 def test_the_hostile_rows_cover_both_stages_both_verdicts_and_a_certified_run(hostile):
