@@ -70,8 +70,9 @@ untouched.
 **A split report explains itself, and undone verify work holds the letter back (#3667).** Past
 the writer's byte budget `findings[]` is split into `_partN.json` files named in `meta.parts`; the
 main file then also carries `meta.parts_findings`, `{part: {origin: count}}` (origin is
-`tool:<name>` or `agent`), and the terminal and HTML print a `**Report parts:**` line saying how
-many findings the main file holds and what each part holds. `findings[]` is published worst first
+`tool:<name>` or `agent`), and the terminal prints a `**Report parts:**` line, the HTML a `JSON
+report split:` one, saying how many findings the main file holds and what each part holds.
+`findings[]` is published worst first
 -- gate-eligible, then severity, then evidence status, then pipeline order -- split or not, so the
 main file carries what matters most. `meta.coverage.tool_axis.by_tool` reconciles each scanner:
 `ingested == in_report + merged_into_agent + dropped`, every drop with its reason. A tool finding

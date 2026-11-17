@@ -35,6 +35,18 @@ class NativeUnparsedFactsTest(unittest.TestCase):
             "unknown": 0,
         })
 
+    def test_an_env_shebang_names_its_interpreter_past_flags_and_assignments(self):
+        """#3720. `env` takes options and `NAME=value` assignments before the command it
+        runs. The interpreter is the first word that is neither: read as `FOO=1`, the
+        file was a known non-native one and was left out of the targeted review."""
+        self._write("bin/tool", "#!/usr/bin/env FOO=1 python3\nprint('ready')\n")
+        self._write("bin/both", "#!/usr/bin/env -S BAR=2 BAZ=3 bash -e\necho ready\n")
+        self._write("bin/none", "#!/usr/bin/env FOO=1\n")
+        state = native_unparsed.read_facts(self.root, native_unparsed.producer_facts(
+            self.root, ["bin/both", "bin/none", "bin/tool"]))
+        self.assertEqual([{"file": "bin/both", "language": "Shell"},
+                          {"file": "bin/tool", "language": "Python"}], state["files"])
+
     def test_unmapped_extension_shebang_promotes_the_file_to_native(self):
         # N1: Semgrep selects executable languages by shebang even when the
         # suffix is not in our map. The shared classifier must do the same.

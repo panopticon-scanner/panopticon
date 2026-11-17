@@ -854,9 +854,11 @@ the actionlint/zizmor CI change is maintained separately from this test-only rul
 
 ## Versioning
 Scheme: a **minor** bump (2.x.0) per release round; **major** (x.0.0) reserved for breaking
-changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.version`,
-`synth.report.build_report`'s `meta.version`, and `evidence.write_verify_queue`'s payload
-`version` together.
+changes to the report schema, CLI, or grade contract. The version is set in one place,
+`skill/scripts/_version.py` (`__version__`): `synth.report.build_report`'s `meta.version` and
+`evidence.write_verify_queue`'s payload `version` read it. A bump edits that file and the three
+places that state the same value by hand, which `tests/test_version.py` holds to it:
+`pyproject.toml`, the "Current version" line above, and `SKILL.md`'s `metadata.version`.
 
 History:
 - **5.3.0** (current) — red-team hardening and the armor audit. 191 pull requests, 119
