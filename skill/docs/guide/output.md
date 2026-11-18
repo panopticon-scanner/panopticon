@@ -181,10 +181,13 @@ that wins the merge over a confirmed finding spanning 50 lines does not lighten 
 rows that came out of one merge are not added.
 **A scanner rule's hits (#3732).** A rule that fires several times in one file is one finding. It
 is shown at its lowest line, whatever a reviewer flagged (a claim on a later hit is its own row),
-with the other hits in `additional_loci`, each with its `line_end` where it spans more than one
-line. It carries the highest severity among its hits, and `severity_from` names the hit and the
-shown hit's own severity when they differ. It weighs as its widest hit. A range that ends before
-it starts is read as one line at load.
+with the other hits in `additional_loci`. It carries the highest severity among its hits, and
+`severity_from` names the hit and the shown hit's own severity when they differ. In 5.4 every
+scanner finding is one line, because no scanner adapter reports a span: no hit carries a
+`line_end`, and a scanner finding weighs as one line. The widest-hit rule (a scanner finding
+weighs as its widest hit, and a hit in `additional_loci` keeps its `line_end`) would apply only
+if an adapter reported a span. The ranges that weigh in 5.4 are agent findings' own. A range that
+ends before it starts is read as one line at load.
 `meta.coverage.dependency_audit` is the dependency-audit receipt: the ecosystems the tree has a
 dependency manifest for (`applicable`), and the dedicated auditors that were `selected` and
 `produced` output. Its `unaudited` map (#3648) names each applicable ecosystem that no selected
