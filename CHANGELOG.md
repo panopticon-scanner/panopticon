@@ -13,7 +13,8 @@ evidence, contract), each gate by a reviewer who took no part in the work.
   With `--severity` set to anything but `all`, or for findings under a docs tree, a scanner
   finding its advisor confirmed can be reported as unanswered: the run is NOT CERTIFIED
   (INCONCLUSIVE where nothing else fails the gate) and the finding shows as MEDIUM
-  `tool_reported`. Run without `--severity` (`--reset` for a finished run).
+  `tool_reported`. Run without `--severity` (`--reset` for a finished run); for a finding
+  under a docs tree, check the unanswered scanner finding by hand.
 - **Re-running a loop that still cannot launch spends dispatches (#3740).** Re-running
   `driver loop` while the `--max-budget-usd` cap is already reached, or in session mode before
   the agents finish, charges every pending review cell one of its three dispatches each time,
@@ -26,13 +27,13 @@ evidence, contract), each gate by a reviewer who took no part in the work.
   - If the next run says "cannot recover stale batch batch-N.json" and
     `.panopticon/runs/<run-tag>/batch-N.json` is 0 bytes, delete that file and re-run.
     `--discard-batch` does not help.
-  - If the driver was killed as review finished and `run-manifest.json` has no
-    `out_file_snapshot` stamp, delete `.panopticon/runs/<run-tag>/out-file-hashes.json`
-    before re-running. If you already re-ran and the report says "CONTENT SNAPSHOT CHANGED",
+  - If the driver was killed as review finished and `.panopticon/run-manifest.json` has no
+    top-level `out_file_snapshot` key, delete
+    `.panopticon/runs/<run-tag>/out-file-hashes.json` before re-running. If you already re-ran and the report says "CONTENT SNAPSHOT CHANGED",
     only `--reset` recovers. Never delete a snapshot the manifest has stamped.
 - **No advisor is asked about a scanner finding that a reviewer's claim absorbed (#3734).**
-  When a report says "N tool finding(s) unanswered by its advisor", check those scanner
-  findings by hand.
+  When a report says "1 tool finding unanswered by its advisor" (or "N tool findings
+  unanswered by their advisors"), check those scanner findings by hand.
 
 - **BREAKING: delta review is withdrawn (#3735). Panopticon 5.4 is a whole-repository audit.**
   `--pr`, `--changes` (`-c`), `--base` and `--gate-scope` are refused at the command line, with
@@ -543,7 +544,8 @@ evidence, contract), each gate by a reviewer who took no part in the work.
   fault-free control: no finding is lost silently, the tool-axis counts reconcile, undone work
   is never certified, the gate never passes over undone work, and the shortfall is disclosed on
   the terminal, in the JSON and in the HTML. No model, network or Docker is used. The default
-  run is a subset of the 165 cases; `PANOPTICON_FAULT_MATRIX=full` runs them all.
+  run is 56 of the 126 matrix cases (95 of the file's 165 tests);
+  `PANOPTICON_FAULT_MATRIX=full` runs them all.
   Invariants that did not hold when the harness landed were strict `xfail`s naming their issue
   (#3641, #3667, #3676, #3677). Each has since been fixed and un-marked, so `KNOWN_GAPS` is empty.
 
@@ -578,7 +580,7 @@ evidence, contract), each gate by a reviewer who took no part in the work.
     threshold, and it gates at CRITICAL when it synthesizes.
   - `driver readiness` reports the default threshold on its `gate` row and warns only for
     `--fail-on off`. The delta-review notice (`DELTA REVIEW WITH Gate: OFF`) now fires only for
-    `--fail-on off`.
+    `--fail-on off`. (Delta review is withdrawn in 5.4, #3735, so the notice cannot fire.)
 
 - **`driver readiness` no longer shows another run's posture as this one's (#3668).** Its
   `capabilities` row read back whatever posture the target's run folder held. So
@@ -619,10 +621,12 @@ evidence, contract), each gate by a reviewer who took no part in the work.
   reinforced when the agent agrees on category), and the agent claim queues on its own.
   Separately, two tools reporting one advisory on one package (osv-scanner and cargo-audit at
   `Cargo.lock:1`) kept whichever came first in input order, so the survivor's severity and source
-  moved with the order. Content now decides: the most severe, then the source, the reported
-  version and the title; the finding is shown at its lowest line. (As first merged, an
-  agent-corroborated locus came first and the lowest line beat severity; #3731 and #3732
-  removed both before release.) And the first-party mark is part of the grouping key, so the
+  moved with the order. Content now decides: the hit at the lowest line is the row that is
+  kept, and among hits on one line the most severe, then the source, the reported version and
+  the title. The kept row carries the highest severity among its hits, and `severity_from`
+  names that hit (#3732). (As first merged, an agent-corroborated locus came first, and a LOW
+  at line 1 kept its own severity over a CRITICAL at line 5; #3731 removed the first and #3732
+  the second before release.) And the first-party mark is part of the grouping key, so the
   project's own `workspace-app 1.2.3` and a registry `workspace-app 0.9.0` in the same lock stay
   two findings: before, one copy was dropped by input order or by an agent's line.
   **Intended gating change (owner ruling):** because the most severe duplicate now survives, a
@@ -663,8 +667,7 @@ evidence, contract), each gate by a reviewer who took no part in the work.
   delta review is withdrawn in 5.4, #3735) out of
   the whole-repo surface and discloses them under `excluded.scanner_config` and on stderr. A nested
   `sub/panopticon.yml` is still reviewed; naming the file explicitly (`--files` on the driver,
-  `--scope-files` on `discovery.py` itself) and a plain delta that changes the root config are
-  unchanged, as are tool scans. This supersedes #1681 Task 7's
+  `--scope-files` on `discovery.py` itself) is unchanged, as are tool scans. This supersedes #1681 Task 7's
   grouping of the root config under Commons `Config` in full-repo scans.
 
 - **agy's `Individual quota reached` response now pauses as a host outage (#3640).** The
