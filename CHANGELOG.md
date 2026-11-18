@@ -7,7 +7,8 @@
 Cut after a five-gate review of everything since 5.3.0 (security, correctness, robustness,
 evidence, contract), each gate by a reviewer who took no part in the work.
 
-**Known issues in 5.4.0.** Each fails closed: the run reads worse than it is, never better.
+**Known issues in 5.4.0.** All but the last fail closed: the run reads worse than it is, never
+better.
 
 - **`--severity` or a docs tree can leave a confirmed scanner finding "unanswered" (#3739).**
   With `--severity` set to anything but `all`, or for findings under a docs tree, a scanner
@@ -35,6 +36,12 @@ evidence, contract), each gate by a reviewer who took no part in the work.
 - **No advisor is asked about a scanner finding that a reviewer's claim absorbed (#3734).**
   When a report says "1 tool finding unanswered by its advisor" (or "N tool findings
   unanswered by their advisors"), check those scanner findings by hand.
+- **An advisory against the project's own package is not always confirmed (#3747).** When a
+  scanner advisory matches the reviewed project's own package, the advisor can answer
+  `needs_more_info` because it could not read the manifest, and the answer can differ between
+  identical runs. Rarely it rejects the advisory as "not an external dependency", and then the
+  finding is dropped: this is the one known issue where a run can read better than it is.
+  Check advisories that name your own package by hand.
 
 - **BREAKING: delta review is withdrawn (#3735). Panopticon 5.4 is a whole-repository audit.**
   `--pr`, `--changes` (`-c`), `--base` and `--gate-scope` are refused at the command line, with
