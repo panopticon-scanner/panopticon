@@ -738,10 +738,13 @@ on Claude hooks, and always uses the return-persist path.
   cells the way three automatic iterations of it used to. `paused` exits **non-zero**, so a CI job
   cannot read an outage as a clean review. A batch that mixes the two classes charges only the
   entry-class failures, and the cap above is unchanged for them. A **second** stop rule — the
-  `--max-budget-usd` cap described with the flags above — stops launching the same way without
-  charging anyone, and the loop's own "stopped launching after …" line names which of the two
-  fired, so a budget stop does not read as a host outage. A **third** rule is yours: a
-  **drain-and-pause** (#3350). A headless loop prints `driver loop: pid N; kill -USR1 N drains and
+  `--max-budget-usd` cap described with the flags above — stops launching the same way, and the
+  stop inside a batch charges no one; the loop's own "stopped launching after …" line names which
+  of the two fired, so a budget stop does not read as a host outage. Re-running a loop that is
+  already at its cap is different (#3740): each such re-run charges every pending review cell one
+  of its three dispatches with nothing launched, so three of them exhaust the cells, and then
+  only `--reset` recovers. After a budget stop, raise `--max-budget-usd` before re-running.
+  A **third** rule is yours: a **drain-and-pause** (#3350). A headless loop prints `driver loop: pid N; kill -USR1 N drains and
   pauses` when it starts; send it `SIGUSR1` and it launches nothing more — not even the next queued
   entry a freed worker would pick up — lets the running entries finish within `--entry-timeout`,
   persists and ledgers them as usual, gives back the attempts of every entry it never launched and
