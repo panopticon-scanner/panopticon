@@ -864,6 +864,11 @@ The same test wants a CHANGELOG section for the version: rename `## Unreleased` 
 `## <version> — <title>`, leave an empty `## Unreleased` above it, and add the entry to the
 History list below.
 
+One exception, by owner ruling (2026-11-17): 5.4.0 is a minor release that withdraws delta
+review (`--pr`, `--changes`, `--base`, `--gate-scope`, `--diff-context`; #3735), a breaking
+CLI change. The mode had never been calibrated or stress-tested, so it was withdrawn where it
+was found instead of waiting for a major. The rule above stands for everything else.
+
 History:
 - **5.4.0** (current) — verdict integrity and the whole-repository audit. A reviewer's
   verdict binds only to its own cell's findings, and no cell can make a run read better by
