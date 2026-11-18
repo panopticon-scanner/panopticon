@@ -2,6 +2,47 @@
 
 ## Unreleased
 
+## 5.4.0 — Verdict integrity and the whole-repository audit
+
+Cut after a five-gate review of everything since 5.3.0 (security, correctness, robustness,
+evidence, contract), each gate by a reviewer who took no part in the work.
+
+**Known issues in 5.4.0.** All but the last fail closed: the run reads worse than it is, never
+better.
+
+- **`--severity` or a docs tree can leave a confirmed scanner finding "unanswered" (#3739).**
+  With `--severity` set to anything but `all`, or for findings under a docs tree, a scanner
+  finding its advisor confirmed can be reported as unanswered: the run is NOT CERTIFIED
+  (INCONCLUSIVE where nothing else fails the gate) and the finding shows as MEDIUM
+  `tool_reported`. Run without `--severity` (`--reset` for a finished run); for a finding
+  under a docs tree, check the unanswered scanner finding by hand.
+- **Re-running a loop that still cannot launch spends dispatches (#3740).** Re-running
+  `driver loop` while the `--max-budget-usd` cap is already reached, or in session mode before
+  the agents finish, charges every pending review cell one of its three dispatches each time,
+  with nothing launched. After three such re-runs the cells are exhausted, then the
+  tool-advisor entries the same way, and the run completes INCONCLUSIVE, not certified. Only
+  `--reset` recovers. After a budget stop, raise `--max-budget-usd` before you re-run.
+- **Three crash points need a hand (#3741).**
+  - If `driver loop` dies with an `OSError` traceback (disk full, read-only run folder), fix
+    the cause and re-run the same command.
+  - If the next run says "cannot recover stale batch batch-N.json" and
+    `.panopticon/runs/<run-tag>/batch-N.json` is 0 bytes, delete that file and re-run.
+    `--discard-batch` does not help.
+  - If the driver was killed as review finished and `.panopticon/run-manifest.json` has no
+    top-level `out_file_snapshot` key, delete
+    `.panopticon/runs/<run-tag>/out-file-hashes.json` before re-running. If you already
+    re-ran and the report says "CONTENT SNAPSHOT CHANGED",
+    only `--reset` recovers. Never delete a snapshot the manifest has stamped.
+- **No advisor is asked about a scanner finding that a reviewer's claim absorbed (#3734).**
+  When a report says "1 tool finding unanswered by its advisor" (or "N tool findings
+  unanswered by their advisors"), check those scanner findings by hand.
+- **An advisory against the project's own package is not always confirmed (#3747).** When a
+  scanner advisory matches the reviewed project's own package, the advisor can answer
+  `needs_more_info` because it could not read the manifest, and the answer can differ between
+  identical runs. Rarely it rejects the advisory as "not an external dependency", and then the
+  finding is dropped: this is the one known issue where a run can read better than it is.
+  Check advisories that name your own package by hand.
+
 - **BREAKING: delta review is withdrawn (#3735). Panopticon 5.4 is a whole-repository audit.**
   `--pr`, `--changes` (`-c`), `--base` and `--gate-scope` are refused at the command line, with
   `--diff-context`, on `driver run`, `loop`, `readiness` and `persist`: exit 2, one message,
@@ -53,11 +94,11 @@
       agent had flagged used to win. Nothing a reviewer writes moves a scanner finding now, so
       no cell changes how many findings sit on a line it never touched, and the shown line is
       the same on every run.
-    - An aggregated scanner finding weighs as its widest hit. `additional_loci` keeps a hit's
-      `line_end`.
+    - An aggregated scanner finding weighs as its widest hit. In 5.4 no scanner adapter
+      reports a span, so every scanner hit is one line and this rule changes nothing yet.
     - A scanner finding that a CONFIRMED claim absorbed counts as confirmed with it. No advisor
       is asked about an absorbed scanner finding, so on its own missing verdict it weighed
-      nothing, and a one-line claim hid a scanner finding's 40-line hit.
+      nothing, and a claim hid the scanner finding it sat on.
     - A range that ends before it starts is read as one line, the start, at load.
     - `additional_loci` on a reviewer's claim is not weighed. It is the scanner aggregation's
       field.
@@ -72,14 +113,12 @@
       used to absorb is its own row now, so its advisor is asked, and its place in the verify
       queue follows its worst hit. A run that read INCONCLUSIVE because nobody had been asked
       can read PASS where that advisor rejects the finding, and FAIL where it confirms it.
-    - A confirmed scanner-and-claim pair weighs as the heavier of the two. Where the scanner's
-      hit spans more lines than the claim, health is lower than before. A one-line HIGH claim
-      over a scanner HIGH spanning 40 lines weighs 1,000, where it weighed 25.
+    - A confirmed scanner-and-claim pair weighs as the heavier of the two. Scanner hits are
+      one line each in 5.4, so the heavier is the claim wherever the claim spans more.
     - A merge group whose heaviest counted finding is merged under a lighter row weighs more.
     - **Health can rise** where one merge group has two counted rows: they were added and are
       now counted once, at the heavier. An uncapped `TST-A1*` HIGH that comes back beside the
       confirmed MEDIUM that won their tie (#3727) weighed 25 + 5 and weighs 25.
-    - An aggregated scanner finding with a wide hit that is not its shown hit weighs more.
   - The group-weight rule itself changes no row: which findings are in the report, their
     ranges, severities and evidence, the gate and the certification are as they were. The
     scanner changes above do change rows, as listed.
@@ -217,7 +256,7 @@
   - `meta.coverage.verdicts.ids_in_several_cells` counts the ids held by more than one cell. It is
     a disclosure and not a shortfall: two cells that really report one claim, and agree, decide it
     as before.
-  - The id itself is unchanged, so baselines and delta review are not affected.
+  - The id itself is unchanged, so baselines are not affected.
   - A verdict bundle now binds only to findings loaded from a cell's own file
     (`findings-<group>-<domain>.json`). Findings collected by hand into a file of another name
     get no bundle verdict.
@@ -232,8 +271,7 @@
     was loaded (a symlink at either name is refused), neither is left out.
   - The report names the file in `meta.coverage.scanner_config_excluded`. It is a disclosure:
     the letter, the gate, the certification and `coverage_note` do not move.
-  - Each name alone is left out as before. `--pr` reviews, `--scope-*` runs and tool scans are
-    unchanged.
+  - Each name alone is left out as before. `--scope-*` runs and tool scans are unchanged.
 
 - **A malformed Semgrep result no longer stops the tool scan (#3713).** In a tree with a
   Dockerfile variant Semgrep runs twice and the two captures are folded into one. A result
@@ -514,7 +552,8 @@
   fault-free control: no finding is lost silently, the tool-axis counts reconcile, undone work
   is never certified, the gate never passes over undone work, and the shortfall is disclosed on
   the terminal, in the JSON and in the HTML. No model, network or Docker is used. The default
-  run is 56 of 126 cases (about 45 s serial); `PANOPTICON_FAULT_MATRIX=full` runs them all.
+  run is 56 of the 126 matrix cases (95 of the file's 165 tests);
+  `PANOPTICON_FAULT_MATRIX=full` runs them all.
   Invariants that did not hold when the harness landed were strict `xfail`s naming their issue
   (#3641, #3667, #3676, #3677). Each has since been fixed and un-marked, so `KNOWN_GAPS` is empty.
 
@@ -549,7 +588,7 @@
     threshold, and it gates at CRITICAL when it synthesizes.
   - `driver readiness` reports the default threshold on its `gate` row and warns only for
     `--fail-on off`. The delta-review notice (`DELTA REVIEW WITH Gate: OFF`) now fires only for
-    `--fail-on off`.
+    `--fail-on off`. (Delta review is withdrawn in 5.4, #3735, so the notice cannot fire.)
 
 - **`driver readiness` no longer shows another run's posture as this one's (#3668).** Its
   `capabilities` row read back whatever posture the target's run folder held. So
@@ -590,9 +629,12 @@
   reinforced when the agent agrees on category), and the agent claim queues on its own.
   Separately, two tools reporting one advisory on one package (osv-scanner and cargo-audit at
   `Cargo.lock:1`) kept whichever came first in input order, so the survivor's severity and source
-  moved with the order. Content now decides: an agent-corroborated locus first, then the lowest
-  line (a LOW at line 1 still beats a CRITICAL at line 5), then the most severe, the source, the
-  reported version and the title. And the first-party mark is part of the grouping key, so the
+  moved with the order. Content now decides: the hit at the lowest line is the row that is
+  kept, and among hits on one line the most severe, then the source, the reported version and
+  the title. The kept row carries the highest severity among its hits, and `severity_from`
+  names that hit when it is not the shown one (#3732). (As first merged, an agent-corroborated locus came first, and a LOW
+  at line 1 kept its own severity over a CRITICAL at line 5; #3731 removed the first and #3732
+  the second before release.) And the first-party mark is part of the grouping key, so the
   project's own `workspace-app 1.2.3` and a registry `workspace-app 0.9.0` in the same lock stay
   two findings: before, one copy was dropped by input order or by an agent's line.
   **Intended gating change (owner ruling):** because the most severe duplicate now survives, a
@@ -629,11 +671,12 @@
 - **A full-repo scan no longer reviews the scanner's own root config (#3642).** The root
   `panopticon.yml` / `.panopticon.yml` -- including the one setup-scan just wrote -- was reviewed
   like target code, and an owner-observed run graded a HIGH finding against the matrix itself.
-  Discovery now leaves the same `repo_config.CONFIG_NAMES` that `--pr` mode drops (#1681) out of
+  Discovery now leaves the same `repo_config.CONFIG_NAMES` that `--pr` mode dropped (#1681;
+  delta review is withdrawn in 5.4, #3735) out of
   the whole-repo surface and discloses them under `excluded.scanner_config` and on stderr. A nested
   `sub/panopticon.yml` is still reviewed; naming the file explicitly (`--files` on the driver,
-  `--scope-files` on `discovery.py` itself) and a plain delta that changes the root config are
-  unchanged, as are tool scans. This supersedes #1681 Task 7's
+  `--scope-files` on `discovery.py` itself) is unchanged, as are tool scans. This supersedes
+  #1681 Task 7's
   grouping of the root config under Commons `Config` in full-repo scans.
 
 - **agy's `Individual quota reached` response now pauses as a host outage (#3640).** The
