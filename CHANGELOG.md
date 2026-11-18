@@ -29,7 +29,8 @@ evidence, contract), each gate by a reviewer who took no part in the work.
     `--discard-batch` does not help.
   - If the driver was killed as review finished and `.panopticon/run-manifest.json` has no
     top-level `out_file_snapshot` key, delete
-    `.panopticon/runs/<run-tag>/out-file-hashes.json` before re-running. If you already re-ran and the report says "CONTENT SNAPSHOT CHANGED",
+    `.panopticon/runs/<run-tag>/out-file-hashes.json` before re-running. If you already
+    re-ran and the report says "CONTENT SNAPSHOT CHANGED",
     only `--reset` recovers. Never delete a snapshot the manifest has stamped.
 - **No advisor is asked about a scanner finding that a reviewer's claim absorbed (#3734).**
   When a report says "1 tool finding unanswered by its advisor" (or "N tool findings
@@ -624,7 +625,7 @@ evidence, contract), each gate by a reviewer who took no part in the work.
   moved with the order. Content now decides: the hit at the lowest line is the row that is
   kept, and among hits on one line the most severe, then the source, the reported version and
   the title. The kept row carries the highest severity among its hits, and `severity_from`
-  names that hit (#3732). (As first merged, an agent-corroborated locus came first, and a LOW
+  names that hit when it is not the shown one (#3732). (As first merged, an agent-corroborated locus came first, and a LOW
   at line 1 kept its own severity over a CRITICAL at line 5; #3731 removed the first and #3732
   the second before release.) And the first-party mark is part of the grouping key, so the
   project's own `workspace-app 1.2.3` and a registry `workspace-app 0.9.0` in the same lock stay
@@ -667,7 +668,8 @@ evidence, contract), each gate by a reviewer who took no part in the work.
   delta review is withdrawn in 5.4, #3735) out of
   the whole-repo surface and discloses them under `excluded.scanner_config` and on stderr. A nested
   `sub/panopticon.yml` is still reviewed; naming the file explicitly (`--files` on the driver,
-  `--scope-files` on `discovery.py` itself) is unchanged, as are tool scans. This supersedes #1681 Task 7's
+  `--scope-files` on `discovery.py` itself) is unchanged, as are tool scans. This supersedes
+  #1681 Task 7's
   grouping of the root config under Commons `Config` in full-repo scans.
 
 - **agy's `Individual quota reached` response now pauses as a host outage (#3640).** The
