@@ -744,7 +744,8 @@ on Claude hooks, and always uses the return-persist path.
   already at its cap is different (#3740): each such re-run charges every pending review cell one
   of its three dispatches with nothing launched, so three of them exhaust the cells, and then
   only `--reset` recovers. After a budget stop, raise `--max-budget-usd` before re-running.
-  A **third** rule is yours: a **drain-and-pause** (#3350). A headless loop prints `driver loop: pid N; kill -USR1 N drains and
+  A **third** rule is yours: a
+  **drain-and-pause** (#3350). A headless loop prints `driver loop: pid N; kill -USR1 N drains and
   pauses` when it starts; send it `SIGUSR1` and it launches nothing more — not even the next queued
   entry a freed worker would pick up — lets the running entries finish within `--entry-timeout`,
   persists and ledgers them as usual, gives back the attempts of every entry it never launched and
