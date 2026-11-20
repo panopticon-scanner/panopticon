@@ -168,6 +168,8 @@ def verify_host_shortfall(resolved, verify_ledger):
     failure; an entry-class or legacy-unknown failure cannot taint a different
     shortfall. Unreadable bounded ledger bytes fail closed with an explicit
     unknown-class reason, while a missing ledger remains ordinary legacy state.
+    Because an unknown-shape host row cannot be joined safely, its conservative
+    count may overlap a named pending item; the emitted reason says so.
     """
     if verify_ledger is None:
         return None
@@ -223,14 +225,18 @@ def verify_host_shortfall(resolved, verify_ledger):
     # was never launched before the active/unknown host failure cut the phase.
     stranded.update(pending - launched_targets)
     counts = _verify_shortfall_counts(stranded, unknown=unknown_host_entries)
+    if unknown_host_entries and stranded:
+        counts += " (unknown-shape count may overlap named pending work)"
     return ("verify phase cut short by a host-class failure — %s left undone; %s"
             % (counts, outage_mod.RESUME_ADVICE))
+
+
 def grade_shortfalls(resolved, backups=None, verify_ledger=None):
     """#3667 (owner ruling 2026-11-15): verify work this run left UNDONE, one
     reason per entry. ONE shared rule reads this list: any reason here holds the
     letter back as `provisional_grade`, sinks `coverage_certified`, moves a PASS
     gate to INCONCLUSIVE, and is named in `coverage_note` and beside the letter.
-    A new kind of undone verify work (#3641's host-cut-short verify phase) adds
+    A new kind of undone verify work (#3753's host-cut-short verify phase) adds
     its reason here and nothing else.
 
     Unanswered tool advisors: each such finding stays in the report as

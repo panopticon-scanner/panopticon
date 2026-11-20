@@ -492,7 +492,8 @@ class TestResumeDisclosure(unittest.TestCase):
 
     def _cut_short_report(self, failure_class=outage_mod.HOST_FAILURE, max_verify=None,
                           include_cell=True, tool_names=("bandit", "semgrep"),
-                          answer_all=False, host_target="cell", ledger_unreadable=False):
+                          answer_all=False, host_target="cell", ledger_unreadable=False,
+                          verdicts_supplied=False):
         groups = [{"name": "app", "files": ["app.py"]}]
         finding = _agentic(
             fid="SEC-001", sev="HIGH", _group="app", domain="SEC",
@@ -534,7 +535,9 @@ class TestResumeDisclosure(unittest.TestCase):
                 run=report_mod.RunConfig(
                     target=target, root=target, fail_on="high", timestamp=self.TS,
                     max_verify=max_verify),
-                findings=findings_mod.FindingSet(findings=findings, verdicts=verdicts),
+                findings=findings_mod.FindingSet(
+                    findings=findings, verdicts=verdicts,
+                    verdicts_supplied=verdicts_supplied),
                 plan=plan_mod.PlanInputs(
                     groups_meta=groups,
                     resume={
@@ -612,6 +615,18 @@ class TestResumeDisclosure(unittest.TestCase):
             "host-class failure" in reason
             for reason in host["summary"]["grade_shortfalls"]
         ))
+
+    def test_host_reason_uses_the_shared_shortfall_path_with_verdicts_supplied(self):
+        summary = self._cut_short_report(verdicts_supplied=True)["summary"]
+        host_reasons = [
+            reason for reason in summary["grade_shortfalls"]
+            if "host-class failure" in reason
+        ]
+        self.assertEqual(1, len(host_reasons))
+        self.assertIn(host_reasons[0], summary["coverage_note"])
+        self.assertIsNone(summary["overall_grade"])
+        self.assertIsNotNone(summary["provisional_grade"])
+        self.assertEqual("INCONCLUSIVE", summary["gate"])
 
     def test_findings_deliberately_cut_from_verify_are_not_counted_as_undone(self):
         report = self._cut_short_report(outage_mod.HOST_FAILURE, max_verify=2)
@@ -724,6 +739,23 @@ class TestResumeDisclosure(unittest.TestCase):
         self.assertNotIn("2 verify cells", note)
         self.assertNotIn("tool-advisor", note)
 
+    def test_ambiguous_host_row_stays_unknown_and_names_neither_candidate(self):
+        ambiguous = "verify-tool-SEC-primary"
+        resolved = types.SimpleNamespace(
+            verify_matrix={"unverified_engaged": [["tool", "SEC"]]},
+            verify_engaged_cells=(("tool", "SEC"),),
+            tool_advisor_queue_ids=("SEC-primary",),
+            tool_advisor_pending_ids=("SEC-primary",),
+        )
+        note = grading_mod.verify_host_shortfall(
+            resolved,
+            cost_mod.VerifyLedger(
+                launched_entries=(ambiguous,), host_failure_entries=(ambiguous,)),
+        )
+        self.assertIn("1 verify entry of unknown shape", note)
+        self.assertNotIn("verify cell", note)
+        self.assertNotIn("tool-advisor", note)
+
     def test_complete_run_stays_certified_with_an_unknown_host_entry(self):
         report = self._cell_report(
             ("SEC",),
@@ -746,6 +778,7 @@ class TestResumeDisclosure(unittest.TestCase):
                 )
                 self.assertFalse(report["summary"]["coverage_certified"])
                 self.assertRegex(report["summary"]["coverage_note"], r"\b1 verify cell\b")
+                self.assertNotIn("unknown shape", report["summary"]["coverage_note"])
 
     def test_unreadable_ledger_names_unknown_failure_class_and_all_pending_work(self):
         report = self._cut_short_report(ledger_unreadable=True)
@@ -775,6 +808,7 @@ class TestResumeDisclosure(unittest.TestCase):
             ))
         self.assertFalse(report["summary"]["coverage_certified"])
         self.assertIn("1 verify entry of unknown shape", report["summary"]["coverage_note"])
+        self.assertIn("may overlap named pending work", report["summary"]["coverage_note"])
 
     def test_main_tolerates_non_list_verify_queue_entries(self):
         # A verify-queue.json with a truthy non-list `entries` (e.g. an int)
