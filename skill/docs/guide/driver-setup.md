@@ -127,6 +127,10 @@ working_tree`, and `origin=working_tree (FRESH: ...)` on the report's `Matrix:` 
 it is still setup's last draft. Once committed it reads `committed` (`origin=committed (reused:
 ...)`), and every later run on that commit shares one `matrix_fingerprint` (#3651, see Output).
 
+Repeatable does not mean identical. The README gives the measured figures for 5.4.0 (seven runs on
+each of 16 repositories, #3584): scanner findings are steady, and 46% of reviewer-agent findings
+appear in only one run of seven.
+
 **Upgrading from a `.panopticon/groups.yml` tree.** Nothing reads that file any more.
 `python3 skill/scripts/driver.py migrate-config .` writes `panopticon.yml` from it (group order
 preserved — `panels:`/`exclude:` are domain sets and come out sorted — and `version: 1` added);
