@@ -11,12 +11,14 @@
   `pyproject.toml` has the same name and a static version and is publishable. `[project]` comes
   first; Poetry's legacy `[tool.poetry]` is read only without it.
   - **Unpublishable:** any `Private ::` classifier (PyPI refuses them all), `package-mode =
-    false`, `[tool.uv] package = false`, `[tool.pdm] distribution = false` and a uv `virtual`
-    source. The review root itself is exempt, as for npm's `private`; a member is not.
+    false`, `[tool.uv] package = false`, `[tool.pdm] distribution = false`, a uv `virtual`
+    source, and `dynamic = ["classifiers"]` (a private classifier filled in at build time could
+    not be seen). The review root itself is exempt, as for npm's `private`; a member is not.
   - **Fails closed onto the advisor path:** a dynamic version, a registry / git / url / archive
     copy of the same identity (or of a PEP 440-equal spelling of it, such as `1.2.0-rc1` beside
-    `1.2.0rc1`; confirmation itself stays an exact match), an outside-tree package, a version
-    mismatch, a malformed lock or manifest, and an unread manifest.
+    `1.2.0rc1`; confirmation itself stays an exact match), a second local spelling of the same
+    release, an outside-tree package, a version mismatch, a lock entry whose name is not a PEP
+    508 name, a malformed lock or manifest, and an unread manifest.
   - **Out of scope:** `Pipfile.lock` and `requirements.txt` (no versioned local identity), and
     pip-audit, which audits an environment rather than the lock.
 
@@ -26,8 +28,8 @@
     no longer read. The parser and its cache follow the resolved name, so such a lock could be
     parsed as a format no scanner read it as.
 
-- **Go advisories always stay with the advisor (#3623, owner ruling).** Unlike Cargo and npm,
-  Go has no first-party marker: a go.mod declares `module M` but no version of its own
+- **Go advisories always stay with the advisor (#3623, owner ruling).** Unlike Cargo, npm and
+  Python, Go has no first-party marker: a go.mod declares `module M` but no version of its own
   (the main module's comes from VCS tags at build time), so there is no identity a manifest can
   prove. A main module, a go.work `use` module and a local `replace` target -- whose version is
   the consumer's `require` line, often a placeholder pseudo-version -- are all pinned to the

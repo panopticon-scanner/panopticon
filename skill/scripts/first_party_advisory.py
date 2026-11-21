@@ -19,9 +19,10 @@ source, a PDM ``path``). An exact match under PEP 503 names against only those
 entries is first-party when the package's realpath is inside the review root and
 its own pyproject.toml proves the same name and static version and is
 publishable: a ``Private ::`` classifier, Poetry's ``package-mode = false``,
-uv's ``package = false``, PDM's ``distribution = false`` and a uv ``virtual``
-source are not, except for the review root itself. A dynamic version fails closed,
-and so does a PEP 440-equal non-local spelling of the same release. Pipfile.lock
+uv's ``package = false``, PDM's ``distribution = false``, dynamic classifiers
+and a uv ``virtual`` source are not, except for the review root itself. A dynamic
+version fails closed, and so does another PEP 440-equal spelling of the same
+release, local or not. Pipfile.lock
 and requirements.txt carry no versioned local identity and stay with the advisor.
 
 Go (#3623, owner ruling G1): nothing is classified. A go.mod declares no version
