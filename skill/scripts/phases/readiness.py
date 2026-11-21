@@ -343,7 +343,7 @@ def _sub_skill_line(rows):
         if row["found_at"]:
             return row["found_at"]
         if row.get("unlistable"):
-            return "not found (%s could not be listed)" % row["unlistable"]
+            return "not found (%s could not be listed)" % safe_glob.shown(row["unlistable"])
         return "not found"
     return "; ".join("%s: %s" % (row["name"].split(":", 1)[-1], state(row)) for row in rows)
 

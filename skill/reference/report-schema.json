@@ -1338,7 +1338,7 @@
                 "object",
                 "null"
               ],
-              "description": "Host-reported token usage, read verbatim from <run_dir>/usage.json when the host writes it (#run10 D4). Null when it does not -- never estimated from the dispatch counts."
+              "description": "Host-reported token usage, read verbatim from <run_dir>/usage.json when the host writes it (#run10 D4). Null when it does not -- never estimated from the dispatch counts. On the driver path the document also says what it could not measure (#3764): `unmeasured_rows` counts the launches whose usage was not measured (split in `unmeasured_by_host` and `unmeasured_by_phase`), which add to no figure; `total_is_lower_bound` is true when `total` leaves some out; and `total`, or one phase's figure in `by_phase`, is null rather than zero when nothing behind it was measured."
             }
           },
           "required": [

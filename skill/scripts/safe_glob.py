@@ -25,8 +25,11 @@ directory itself. (Matching a NAME against a pattern with `fnmatch`, as
 is not this module's business.)
 """
 import fnmatch
+import ntpath
 import os
 import re
+
+import scripts.inert as inert
 
 _MAGIC = re.compile(r"[*?\[]")
 _SEPARATORS = "".join(sep for sep in (os.sep, os.altsep) if sep)
@@ -39,12 +42,24 @@ class Unlistable(Exception):
 
     Not an `OSError`, on purpose. This package is full of readers that skip one
     file they cannot read (`except OSError: continue`), and a listing that failed
-    must not be skipped along with it."""
+    must not be skipped along with it.
+
+    The message is one line whatever the path holds: every caller prints it, and a
+    directory named with a newline or an escape sequence would otherwise write a
+    second line, or move the cursor, in the operator's terminal. `directory` stays
+    the path itself."""
 
     def __init__(self, directory, error):
         self.directory = directory
         self.reason = getattr(error, "strerror", None) or str(error)
-        super().__init__("%s could not be listed: %s" % (directory, self.reason))
+        super().__init__("%s could not be listed: %s"
+                         % (shown(directory), inert.inert_spelling(self.reason)))
+
+
+def shown(directory):
+    """`directory` as a diagnostic prints it: each control character spelled out
+    (`scripts.inert`), so the path stays on its one line."""
+    return inert.inert_spelling(os.fspath(directory))
 
 
 def under(directory, *pattern):
@@ -61,8 +76,10 @@ def under(directory, *pattern):
       cannot be read. Nothing is returned for the part that could be read.
     - Every match is under `directory`. `directory` is not empty, there is at
       least one pattern part, and no part is empty, absolute, `.` or `..`. A
-      part may hold separators (`"*/skills/x"` is three parts). Anything else
-      is a `ValueError`, raised at the call.
+      part may hold separators (`"*/skills/x"` is three parts). No part holds a
+      backslash or starts with a drive (`C:`), on any platform: both leave the
+      directory where they are read as path syntax, and no caller needs either.
+      Anything else is a `ValueError`, raised at the call.
     - A name the caller builds a pattern part from is the caller's to vouch
       for: the run tag in `<tag>-report*.json` is alphanumerics and hyphens by
       construction."""
@@ -90,6 +107,9 @@ def _parts(pattern):
             if part in ("", os.curdir, os.pardir):
                 raise ValueError("safe_glob: a pattern part is empty, absolute, %r or %r: %r"
                                  % (os.curdir, os.pardir, given))
+            if "\\" in part or ntpath.splitdrive(part)[0]:
+                raise ValueError("safe_glob: a pattern part holds a backslash or a drive: %r"
+                                 % (given,))
             parts.append(part)
     return parts
 

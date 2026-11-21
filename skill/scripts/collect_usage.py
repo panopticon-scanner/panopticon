@@ -157,6 +157,16 @@ def _cap_transcripts(paths, info):
     return paths[:TASK_TRANSCRIPTS_MAX]
 
 
+def _another_users(base):
+    """Whether `base` is known to belong to another user: it has an owner, and the
+    owner is not us. Not known is not another's. (What we may do with it says
+    nothing: our own directory at mode 000 is closed to us too.)"""
+    try:
+        return os.lstat(base).st_uid != os.geteuid()
+    except OSError:
+        return False
+
+
 def find_task_transcripts(controller_transcript, tasks_dir=None, info=None):
     """Every subagent transcript for the controller's session.
 
@@ -194,8 +204,8 @@ def find_task_transcripts(controller_transcript, tasks_dir=None, info=None):
             except safe_glob.Unlistable:
                 # #3706: a shared machine has one `claude-<uid>` per user, and another
                 # user's is closed to us. This session's tasks are not in it, so it is
-                # passed over. One we can enter and still cannot list is ours: that stops.
-                if os.access(base, os.R_OK | os.X_OK):
+                # passed over. Any other one is ours, and ours stops the collection.
+                if not _another_users(base):
                     raise
     subagents = os.path.join(proj, session, "subagents")
     candidates.extend(safe_glob.under(subagents, "workflows", "*", "agent-*.jsonl"))

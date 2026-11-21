@@ -71,6 +71,49 @@ def unlistable(*directories):
         yield
 
 
+@contextlib.contextmanager
+def owned_by_another_user(directory):
+    """`os.lstat` reports `directory` as owned by a user who is not us, which no test
+    can arrange for real without being root. Everything else is reported as it is."""
+    real = os.lstat
+
+    def lstat(path, *args, **kwargs):
+        info = real(path, *args, **kwargs)
+        if isinstance(path, (str, os.PathLike)) and os.fspath(path) == directory:
+            fields = list(info)
+            fields[4] = info.st_uid + 1                              # st_uid
+            return os.stat_result(fields)
+        return info
+
+    with mock.patch.object(os, "lstat", lstat):
+        yield
+
+
+#: A directory name that is two lines and an escape sequence when it is printed raw.
+FORGED = "run\nFAKE PASS\x1b[2J"
+FORGED_SHOWN = "run\\x0aFAKE PASS\\x1b[2J"
+#: Where each text says that nothing but the helper matches under a directory. Each
+#: passage runs from these words to the next blank line or list item.
+ONLY_MATCHER_CLAIMS = (("skill/scripts/safe_glob.py", "No module in the package calls `glob`"),
+                       ("panopticon.yml", "the one matcher in `skill/scripts`"),
+                       ("CHANGELOG.md", "One helper does the matching"))
+
+
+def claim_passage(text, opening):
+    """The passage of `text` that starts at `opening`, its line breaks and comment
+    marks folded away, or None when the words are not there exactly once."""
+    if text.count(opening) != 1:
+        return None
+    lines = text[text.index(opening):].split("\n")
+    passage = [lines[0]]
+    for line in lines[1:]:
+        bare = line.lstrip("# ").rstrip()
+        if not bare or bare.startswith("- "):
+            break
+        passage.append(bare)
+    return " ".join(passage)
+
+
 def glob_uses(source):
     """The line numbers where `source` reaches the `glob` module's matchers, or hands the
     helper no directory:
@@ -194,6 +237,29 @@ class TestOnlyTheOwnerCallsGlob(unittest.TestCase):
             with self.subTest(source=source):
                 self.assertEqual([], glob_uses(source))
 
+    def test_each_text_that_says_so_names_the_exception(self):
+        """#3706 five-gate review, item 6: the helper's docstring, the ownership note
+        and the changelog each say no module calls `glob`. Each could lose the one
+        exception and go on saying it; none may."""
+        exception = "`%s`" % os.path.basename(STDLIB_ONLY)
+        passages = {}
+        for relative, opening in ONLY_MATCHER_CLAIMS:
+            with open(os.path.join(REPO_ROOT, relative), encoding="utf-8") as fh:
+                passages[relative] = claim_passage(fh.read(), opening)
+        self.assertEqual({}, {relative: passage for relative, passage in passages.items()
+                              if passage is None or exception not in passage},
+                         "each of these says nothing but the helper matches; each must "
+                         "name %s, which still calls glob" % exception)
+
+    def test_a_passage_ends_where_the_next_one_starts(self):
+        text = ("# - one: only the helper matches,\n#   but `x.py`.\n# - two: `y.py`\n\n"
+                "after a blank line: `z.py`\n")
+        self.assertEqual("only the helper matches, but `x.py`.",
+                         claim_passage(text, "only the helper"))
+        self.assertEqual("two: `y.py`", claim_passage(text, "two:"))
+        self.assertIsNone(claim_passage(text, "not there"))
+        self.assertIsNone(claim_passage(text + text, "only the helper"))
+
     def test_every_module_under_the_scanned_root_is_read(self):
         with tempfile.TemporaryDirectory() as directory:
             expected = {}
@@ -278,6 +344,21 @@ class TestUnder(unittest.TestCase):
         # Not an OSError: this package is full of readers that skip a file they cannot
         # read (`except OSError: continue`), and a failed listing must not be skipped too.
         self.assertNotIsInstance(caught.exception, OSError)
+
+    def test_the_message_is_one_line_whatever_the_directory_is_named(self):
+        """#3706 five-gate review, item 3: every caller prints the message. A directory
+        named with a newline printed a second line of its own choosing, and an escape
+        sequence reached the terminal."""
+        there = os.path.dirname(self.make(FORGED, "findings-a.json"))
+        with unlistable(there), self.assertRaises(safe_glob.Unlistable) as caught:
+            safe_glob.under(there, "findings-*.json")
+        self.assertEqual("%s could not be listed: Permission denied"
+                         % os.path.join(self.base, FORGED_SHOWN), str(caught.exception))
+        self.assertEqual(there, caught.exception.directory)          # the path itself
+        self.assertEqual(os.path.join(self.base, FORGED_SHOWN), safe_glob.shown(Path(there)))
+        # The reason is the system's, and one that carries no `strerror` is spelled too.
+        self.assertEqual("/d could not be listed: a\\x0ab",
+                         str(safe_glob.Unlistable("/d", OSError("a\nb"))))
 
     def test_a_directory_under_a_wildcard_that_cannot_be_listed_raises(self):
         seen = self.make("home", "sessions", "d1", "s1", "wire.jsonl")
@@ -365,6 +446,12 @@ class TestUnder(unittest.TestCase):
                                    (inside, ("a.json/",)),
                                    (inside, ("x//a.json",)),
                                    (inside, ("*", "")),
+                                   (inside, ("..\\a.json",)),
+                                   (inside, ("sub\\a.json",)),
+                                   (inside, ("*", "a\\")),
+                                   (inside, ("C:",)),
+                                   (inside, ("C:a.json",)),
+                                   (inside, ("*", "c:a.json")),
                                    ("", ("*",)),
                                    ("", (os.path.join(inside, "*"),))):
             with self.subTest(directory=directory, pattern=pattern):
@@ -378,14 +465,20 @@ class TestUnder(unittest.TestCase):
         would hand a caller that never iterates a pattern outside the directory."""
         inside = os.path.dirname(self.make("d", "a.json"))
         refused = []
-        for directory, pattern in ((inside, ("..", "a.json")), (inside, ("",)), (inside, ()),
-                                   (inside, ("/etc/*",)), ("", ("*",))):
+        shapes = ((inside, ("..", "a.json")), (inside, ("",)), (inside, ()),
+                  (inside, ("/etc/*",)), ("", ("*",)),
+                  # #3706 five-gate review, item 5: a backslash and a drive are path
+                  # syntax where this package does not run. Refused everywhere, so
+                  # "every match is under the directory" needs no platform beside it.
+                  (inside, ("..\\a.json",)), (inside, ("C:",)), (inside, ("C:a.json",)),
+                  (inside, ("*", "c:a.json")))
+        for directory, pattern in shapes:
             try:
                 safe_glob.iter_under(directory, *pattern)            # never iterated
             except ValueError:
                 refused.append((directory, pattern))
         # No `subTest`: one plain assertion, for a harness that does not count subtests.
-        self.assertEqual(5, len(refused), "nothing was checked until the first match")
+        self.assertEqual(list(shapes), refused, "nothing was checked until the first match")
         # A good call returns an iterator and has listed nothing yet.
         with mock.patch.object(os, "scandir", side_effect=AssertionError("listed")):
             found = safe_glob.iter_under(inside, "*.json")
@@ -694,11 +787,42 @@ class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
                     read()
                 self.assertEqual(locked, caught.exception.directory)
 
+    def test_each_listing_of_the_verdicts_stops_the_count_alone(self):
+        """#3706 five-gate review, item 4: the verdict directory is listed twice, and a
+        locked directory fails both, so each listing hid the other. One fails here
+        while the other answers, each way round."""
+        run = os.path.join(self.base, "run")
+        self.write(run, "dispatch-plan-driver.json", [])
+        verdicts = os.path.join(run, "verdicts")
+        for name in ("verdicts-app-SEC.json", "verdicts-app-SEC-backup.json", "q1.json"):
+            self.write(verdicts, name, {})
+        real = safe_glob.under
+
+        def failing(pattern):
+            def under(directory, *parts):
+                if parts == (pattern,):
+                    raise safe_glob.Unlistable(directory, PermissionError(
+                        errno.EACCES, "Permission denied"))
+                return real(directory, *parts)
+            return under
+
+        counts = cost_mod.driver_cost_counts(run, None, [])
+        self.assertEqual((1, 1, 1), (counts["verify_primary"], counts["verify_backup"],
+                                     counts["verify_tools"]))
+        raised = []
+        for pattern in ("verdicts-*.json", "*.json"):
+            with mock.patch.object(safe_glob, "under", failing(pattern)):
+                try:
+                    cost_mod.driver_cost_counts(run, None, [])
+                except safe_glob.Unlistable as exc:
+                    raised.append((pattern, exc.directory))
+        self.assertEqual([("verdicts-*.json", verdicts), ("*.json", verdicts)], raised)
+
     def test_synthesis_stops_with_the_directory_and_the_reason(self):
         """#3706 review round 2, item 4: the readers above raise out of the synthesize
         child, and the driver shows the first 400 characters of its stderr. That was
         the top of a traceback. It is one line now, with exit 3 (invalid input)."""
-        run = os.path.join(self.base, "run")
+        run = os.path.join(self.base, FORGED)
         tools = os.path.join(run, "tools")
         os.makedirs(tools)
         self.write(run, "scout-g1.json", {"group": "g1", "tools": ["semgrep"], "domains": []})
@@ -718,7 +842,10 @@ class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
         with unlistable(run):
             rc, err = synthesize()
         self.assertEqual(3, rc, err)
-        self.assertEqual("synthesize: %s could not be listed: Permission denied" % run,
+        # One line whatever the run folder is named (five-gate review, item 3): the
+        # name's own newline and escape sequence are spelled out, not printed.
+        self.assertEqual("synthesize: %s could not be listed: Permission denied"
+                         % os.path.join(self.base, FORGED_SHOWN),
                          err.strip().splitlines()[-1])
         self.assertNotIn("Traceback", err)
         self.assertFalse(os.path.exists(out))
@@ -736,15 +863,18 @@ class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
 
     # --- the host's transcripts --------------------------------------------------------
 
-    def transcripts(self):
-        """(controller transcript, the session's task directory under a temp root)."""
+    def transcripts(self, temp="tmp"):
+        """(controller transcript, the session's task directory under a temp root). The
+        one task transcript there holds 17 tokens."""
         project = os.path.join(self.base, "project")
         slug = collect_usage.project_slug(project)
         home = os.path.join(self.base, "home")
         controller = self.write(home, os.path.join(".claude", "projects", slug, "s1.jsonl"), "")
-        temp = os.path.join(self.base, "tmp")
+        temp = os.path.join(self.base, temp)
         tasks = os.path.join(temp, "claude-505", slug, "s1", "tasks")
-        self.write(tasks, "t1.output", "")
+        self.write(tasks, "t1.output", json.dumps(
+            {"type": "assistant", "message": {"role": "assistant", "model": "m", "usage": {
+                "input_tokens": 10, "output_tokens": 7}}}) + "\n")
         patch = mock.patch.object(collect_usage, "TEMP_ROOTS", (temp,))
         patch.start()
         self.addCleanup(patch.stop)
@@ -772,38 +902,99 @@ class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
                     read()
                 self.assertEqual(locked, caught.exception.directory)
 
+    def collect(self, project, controller):
+        """(exit code, stderr, the usage document or None) of one collector run."""
+        run = os.path.join(self.base, "run")
+        os.makedirs(run, exist_ok=True)
+        written = os.path.join(run, "usage.json")
+        if os.path.exists(written):
+            os.remove(written)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
+            rc = collect_usage.main(["--run-dir", run, "--project-dir", project, "--transcript",
+                                     controller, "--since", "none", "--until", "none"])
+        self.assertEqual(["usage.json"] if os.path.exists(written) else [], os.listdir(run))
+        document = None
+        if os.path.exists(written):
+            with open(written, encoding="utf-8") as fh:
+                document = json.load(fh)
+        return rc, err.getvalue(), document
+
     def test_usage_collection_says_which_directory_it_could_not_list(self):
         """#3706 review round 2, item 4: the collector is a child of the driver too, and
-        it ended in a traceback. One line, exit 2, and nothing written."""
-        project, _home, controller, tasks = self.transcripts()
-        run = os.path.join(self.base, "run")
-        os.makedirs(run)
-        argv = ["--run-dir", run, "--project-dir", project, "--transcript", controller,
-                "--since", "none", "--until", "none"]
-        err = io.StringIO()
-        with unlistable(tasks), contextlib.redirect_stderr(err):
-            rc = collect_usage.main(argv)
-        self.assertEqual(2, rc, err.getvalue())
+        it ended in a traceback. One line, exit 2, and nothing written. The line stays
+        one line when the directory's name is two (five-gate review, item 3)."""
+        project, _home, controller, tasks = self.transcripts(temp=FORGED)
+        with unlistable(tasks):
+            rc, err, document = self.collect(project, controller)
+        self.assertEqual((2, None), (rc, document), err)
         self.assertEqual("collect-usage: %s could not be listed: Permission denied; usage "
-                         "was not collected\n" % tasks, err.getvalue())
-        self.assertEqual([], os.listdir(run))
-        with contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(0, collect_usage.main(argv))
-        self.assertEqual(["usage.json"], os.listdir(run))
+                         "was not collected\n"
+                         % tasks.replace(FORGED, FORGED_SHOWN), err)
+        rc, err, document = self.collect(project, controller)
+        self.assertEqual((0, 17), (rc, document["total"]), err)
 
     @unittest.skipIf(not hasattr(os, "geteuid") or os.geteuid() == 0,
-                     "root reads another user's directory")
-    def test_another_users_temp_directory_is_not_ours_to_list(self):
+                     "root lists a directory whatever its mode")
+    def test_our_own_temp_directory_closed_to_us_stops_the_collection(self):
+        """#3706 five-gate review, item 2. `claude-<our uid>` at mode 000 was passed
+        over as if it were another user's, because all that was asked was whether we
+        could enter it: exit 0, nothing on stderr, and a total of 0 for a session that
+        had spent 17 tokens."""
+        project, _home, controller, tasks = self.transcripts()
+        ours = os.path.join(self.base, "tmp", "claude-505")
+        rc, err, document = self.collect(project, controller)
+        self.assertEqual((0, 17), (rc, document["total"]), err)
+        self.addCleanup(os.chmod, ours, 0o700)
+        os.chmod(ours, 0o000)
+        rc, err, document = self.collect(project, controller)
+        self.assertEqual((2, None), (rc, document), err)
+        self.assertEqual("collect-usage: %s could not be listed: Permission denied; usage "
+                         "was not collected\n" % tasks, err)
+
+    def test_only_a_temp_directory_another_user_owns_is_passed_over(self):
         """A shared machine has one `claude-<uid>` per user under the temp root, and the
-        others' are closed to us. This session's tasks are not in them: they are passed
-        over, and ours is still read."""
+        others' are closed to us. This session's tasks are not in them: one that
+        another user owns is passed over, and ours is still read. Its name does not
+        make it another's, and neither does being closed to us."""
         _project, _home, controller, tasks = self.transcripts()
         theirs = os.path.join(self.base, "tmp", "claude-501")
         os.makedirs(theirs)
-        self.addCleanup(os.chmod, theirs, 0o700)
-        os.chmod(theirs, 0o000)
-        self.assertEqual([os.path.join(tasks, "t1.output")],
-                         collect_usage.find_task_transcripts(controller))
+        closed = os.path.join(theirs, os.path.basename(os.path.dirname(os.path.dirname(tasks))),
+                              "s1", "tasks")
+        with unlistable(closed):
+            with owned_by_another_user(theirs):
+                self.assertEqual([os.path.join(tasks, "t1.output")],
+                                 collect_usage.find_task_transcripts(controller))
+            with self.assertRaises(safe_glob.Unlistable) as caught:
+                collect_usage.find_task_transcripts(controller)
+        self.assertEqual(closed, caught.exception.directory)
+
+    def test_whose_a_temp_directory_is(self):
+        mine = os.path.join(self.base, "claude-1")
+        os.makedirs(mine)
+        self.assertIs(False, collect_usage._another_users(mine))
+        with owned_by_another_user(mine):
+            self.assertIs(True, collect_usage._another_users(mine))
+        # One that cannot be asked is not known to be another's, so it is not skipped.
+        self.assertIs(False, collect_usage._another_users(os.path.join(self.base, "gone")))
+
+    def test_both_temp_roots_are_searched(self):
+        """#3706 five-gate review, item 4: every other test here replaces the roots, so
+        either could be dropped from the list unseen. This one leaves the list alone
+        and watches the helper."""
+        controller = self.write(self.base, os.path.join("projects", "slug", "s1.jsonl"), "")
+        real, roots = safe_glob.under, []
+
+        def under(directory, *parts):
+            if parts == ("claude-*",):
+                roots.append(directory)
+                return []                              # this machine's are not read
+            return real(directory, *parts)
+
+        with mock.patch.object(safe_glob, "under", under):
+            collect_usage.find_task_transcripts(controller)
+        self.assertEqual(["/private/tmp", "/tmp"], roots)
 
     def test_the_temp_task_directory_is_taken_as_it_is_spelled(self):
         """#3706 review, item 6: the one site of #3701 with no test. A session named
@@ -873,6 +1064,9 @@ class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
         self.assertEqual("leaf: not found ({0} could not be listed); "
                          "absent: not found ({0} could not be listed)".format(root),
                          readiness._sub_skill_line(rows))
+        # The line is one line whatever the directory is named; the row holds the path.
+        self.assertEqual("absent: not found (%s could not be listed)" % FORGED_SHOWN,
+                         readiness._sub_skill_line([dict(found[1], unlistable=FORGED)]))
 
 
 if __name__ == "__main__":

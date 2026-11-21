@@ -310,6 +310,109 @@ class TestLedgerMoney(LoopCase):
         self.assertEqual(0, ledger.usage_document()["corrupt_rows"])
 
 
+class TestUnmeasuredUsage(LoopCase):
+    """#3764: a launch whose usage could not be measured is not a launch that used
+    nothing. Its row holds `usage: {}`; summed as zero, it made the total too low and
+    nothing in the document said so."""
+
+    def _ledger(self):
+        d, _floor = self._repo()
+        return ledger_mod.Ledger(d)
+
+    def _record(self, ledger, entry_id, checkpoint, host, usage, ok=True):
+        ledger.record({"id": entry_id}, checkpoint,
+                      base.RunResult(entry_id=entry_id, ok=ok, text="", usage=usage,
+                                     cost_usd=None, model=None, session_id=None, denials=[],
+                                     error=None if ok else "timed out"),
+                      "headless", host)
+
+    def test_an_unmeasured_row_is_counted_and_the_total_is_a_floor(self):
+        ledger = self._ledger()
+        self._record(ledger, "review-a", "review", "kimi",
+                     {"input_tokens": 10, "output_tokens": 7})
+        self._record(ledger, "review-b", "review", "kimi", {})
+        self._record(ledger, "verify-a", "verify", "kimi", {})
+        self._record(ledger, "verify-b", "verify", "codex", {}, ok=False)
+        doc = ledger.usage_document()
+        self.assertEqual((17, True), (doc["total"], doc["total_is_lower_bound"]))
+        self.assertEqual(3, doc["unmeasured_rows"])
+        self.assertEqual({"kimi": 2, "codex": 1}, doc["unmeasured_by_host"])
+        self.assertEqual({"review": 1, "verify": 2}, doc["unmeasured_by_phase"])
+        # Review has a measured row, so its figure is a floor. Verify has none: null,
+        # not zero. A phase with no rows at all spent nothing.
+        self.assertEqual({"scout": 0, "review": 17, "verify": None, "unattributed": 0},
+                         doc["by_phase"])
+        self.assertEqual({"input_tokens": 10, "output_tokens": 7,
+                          "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                         doc["by_field"])
+
+    def test_nothing_measured_is_null_and_not_zero(self):
+        ledger = self._ledger()
+        self._record(ledger, "review-a", "review", "kimi", {})
+        doc = ledger.usage_document()
+        self.assertEqual((None, False, 1), (doc["total"], doc["total_is_lower_bound"],
+                                            doc["unmeasured_rows"]))
+        self.assertEqual({"scout": 0, "review": None, "verify": 0, "unattributed": 0},
+                         doc["by_phase"])
+        self.assertEqual(dict.fromkeys(doc["by_field"]), doc["by_field"])
+        self.assertEqual(4, len(doc["by_field"]))
+
+    def test_a_measured_zero_is_zero(self):
+        ledger = self._ledger()
+        self._record(ledger, "review-a", "review", "kimi", {"input_tokens": 0})
+        doc = ledger.usage_document()
+        self.assertEqual((0, False, 0, {}, {}),
+                         (doc["total"], doc["total_is_lower_bound"], doc["unmeasured_rows"],
+                          doc["unmeasured_by_host"], doc["unmeasured_by_phase"]))
+        self.assertEqual({"scout": 0, "review": 0, "verify": 0, "unattributed": 0},
+                         doc["by_phase"])
+        self.assertEqual({0}, set(doc["by_field"].values()))
+
+    def test_a_run_that_launched_nothing_spent_nothing(self):
+        doc = self._ledger().usage_document()
+        self.assertEqual((0, False, 0), (doc["total"], doc["total_is_lower_bound"],
+                                         doc["unmeasured_rows"]))
+        self.assertEqual({0}, set(doc["by_phase"].values()) | set(doc["by_field"].values()))
+
+    def test_the_rows_an_interrupt_writes_are_not_launches(self):
+        """A marker row sits beside the real row of an entry that completed, or stands
+        for one that was cut. Neither is a launch that went unmeasured."""
+        ledger = self._ledger()
+        self._record(ledger, "e1", "review", "kimi", {"input_tokens": 5})
+        ledger.rollback_rows([{"id": "e1"}, {"id": "e2"}], {"e1"}, "review", "headless", "kimi")
+        doc = ledger.usage_document()
+        self.assertEqual((5, False, 0, {}),
+                         (doc["total"], doc["total_is_lower_bound"], doc["unmeasured_rows"],
+                          doc["unmeasured_by_host"]))
+
+    def test_rows_no_writer_of_ours_made(self):
+        """A row with no host is counted under `unknown`. One whose usage is not an
+        object, or holds none of the four fields, is unmeasured, not a crash."""
+        ledger = self._ledger()
+        with open(ledger.path, "w", encoding="utf-8") as fh:
+            for row in ({"phase": "review", "usage": {}},
+                        {"phase": "review", "host": 7, "usage": "many"},
+                        {"phase": "review", "host": "agy", "usage": {"other": 3}},
+                        {"phase": "review", "host": "agy",
+                         "usage": {"input_tokens": None, "output_tokens": None}},
+                        {"host": "agy"},
+                        {"phase": "review", "host": "agy", "usage": {"output_tokens": 2}}):
+                fh.write(json.dumps(row) + "\n")
+        doc = ledger.usage_document()
+        self.assertEqual((2, True, 5), (doc["total"], doc["total_is_lower_bound"],
+                                        doc["unmeasured_rows"]))
+        self.assertEqual({ledger_mod.UNKNOWN_HOST: 2, "agy": 3}, doc["unmeasured_by_host"])
+        self.assertEqual({"review": 4, "unattributed": 1}, doc["unmeasured_by_phase"])
+        self.assertEqual({"scout": 0, "review": 2, "verify": 0, "unattributed": None},
+                         doc["by_phase"])
+
+    def test_the_document_says_what_its_figures_leave_out(self):
+        doc = self._ledger().usage_document()
+        self.assertTrue(doc["definition"].endswith(
+            "; a launch whose usage was not measured is in unmeasured_rows and in no "
+            "figure, and a figure with nothing measured behind it is null"), doc["definition"])
+
+
 class TestCancelledRows(LoopCase):
     """#1662: what a Ctrl-C cut is written into the run's history, through
     `Ledger.record` -- the ledger's ONE writer -- and never by a second one.

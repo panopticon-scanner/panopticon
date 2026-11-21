@@ -9,9 +9,11 @@ import unittest
 from unittest import mock
 
 import scripts.hosts as hosts
+import scripts.ledger as ledger_mod
 import scripts.runners.base as base
 import scripts.runners.kimi as kimi_runner
 import scripts.runners.outage as outage
+import scripts.synth.cost as cost_mod
 from tests._test_helpers import (kimi_fixture_home as _fixture_home,
                            prepared_kimi as _prepared)
 
@@ -255,6 +257,16 @@ class TestRunEntry(unittest.TestCase):
             err = io.StringIO()
             with unlistable(sessions), contextlib.redirect_stderr(err):
                 res = r.run_entry(_entry(False), self._env())
+            # #3764, five-gate review item 1: carried to what the run publishes. The
+            # ledger summed this row as zero, and `usage.json` and `meta.cost.tokens`
+            # said the review had cost nothing.
+            run = os.path.join(d, "ledgered")
+            os.makedirs(run)
+            ledger = ledger_mod.Ledger(run)
+            ledger.record({"id": "review-a"}, "review", res, "headless", "kimi")
+            alone = self._published(run, ledger)
+            ledger.record({"id": "review-b"}, "review", measured, "headless", "kimi")
+            beside_a_measured_one = self._published(run, ledger)
         self.assertEqual(42, measured.usage["input_tokens"])
         self.assertTrue(res.ok, res.error)
         self.assertIsNone(res.error)
@@ -264,6 +276,25 @@ class TestRunEntry(unittest.TestCase):
         self.assertEqual(({}, None, None), (res.usage, res.model, res.cost_usd))
         self.assertEqual("kimi: %s could not be listed: Permission denied; the reply is kept "
                          "and its token usage is unknown\n" % sessions, err.getvalue())
+        self.assertEqual((None, False, 1, {"kimi": 1}),
+                         (alone["total"], alone["total_is_lower_bound"],
+                          alone["unmeasured_rows"], alone["unmeasured_by_host"]))
+        self.assertIsNone(alone["by_phase"]["review"])
+        self.assertEqual((152, True, 1, {"kimi": 1}),
+                         (beside_a_measured_one["total"],
+                          beside_a_measured_one["total_is_lower_bound"],
+                          beside_a_measured_one["unmeasured_rows"],
+                          beside_a_measured_one["unmeasured_by_host"]))
+
+    def _published(self, run, ledger):
+        """`meta.cost.tokens` as a report of this run would hold it: the ledger's
+        document, written where the loop writes it and read back by synthesis."""
+        document = ledger.usage_document()
+        with open(os.path.join(run, "usage.json"), "w", encoding="utf-8") as fh:
+            json.dump(document, fh)
+        tokens = cost_mod.cost_section(cost_mod.CostInputs.load(run, None, []), 0, 0)["tokens"]
+        self.assertEqual(document, tokens)
+        return tokens
 
     def test_an_enforced_entry_without_a_registered_shell_fails_closed(self):
         with tempfile.TemporaryDirectory() as d, \

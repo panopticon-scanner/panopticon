@@ -610,7 +610,14 @@ on Claude hooks, and always uses the return-persist path.
   rewrites `runs/<tag>/usage.json` (`{"total", "by_phase", "corrupt_rows"}` — `corrupt_rows` counts
   the ledger lines whose cost could not be read as money, whose tokens are still counted because
   they were still spent) from it after every batch, so `meta.cost.tokens` is exact and host-supplied
-  on the headless path. In session mode `collect_usage.py` still runs from synthesize as before,
+  on the headless path. A launch whose usage could not be measured is not counted as zero (#3764):
+  its row holds `usage: {}` (a Kimi reply whose wire file is missing or whose directory cannot be
+  listed, a host that timed out before it printed its figures), and the document counts it in
+  `unmeasured_rows`, split in `unmeasured_by_host` and `unmeasured_by_phase`. It adds to no figure.
+  When that count is not zero, `total_is_lower_bound` is true and `total` is a floor; when nothing
+  at all was measured `total` is null, and so is a phase's figure when none of its launches was.
+  The rows an interrupt writes are not launches and are not counted.
+  In session mode `collect_usage.py` still runs from synthesize as before,
   and its `usage.json` discloses its own drops too: `sources` counts the transcripts it
   could not read, the lines JSON rejected and the non-integer usage fields it ignored, so a
   non-zero count there marks `total` as a floor (#1782). A subagent's phase comes from the prompt

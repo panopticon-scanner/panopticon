@@ -43,10 +43,28 @@
       was not collected`, the driver relays that line (it used to print the "wrong
       directory?" advice for every failure), and `meta.cost.tokens` stays null. A Kimi reply
       whose wire directory cannot be listed is kept, with its usage unknown and the reason on
-      stderr. Another user's `claude-<uid>` directory under the temp root is passed over, as
-      it cannot hold this session's transcripts.
+      stderr. A `claude-<uid>` directory under the temp root that another user owns is passed
+      over, as it cannot hold this session's transcripts. Our own stops the collection, closed
+      to us or not.
+  - Each of those lines is one line whatever the directory is named: a newline or an escape
+    sequence in the path is spelled out (`\x0a`, `\x1b`), not printed.
   - The helper refuses a pattern that would leave its directory: an empty, absolute, `.` or
-    `..` part, no pattern at all, or an empty directory is a `ValueError`.
+    `..` part, no pattern at all, or an empty directory is a `ValueError`. So is a part that
+    holds a backslash or starts with a drive (`C:`), on every platform.
+
+- **A reply whose token usage could not be measured is no longer counted as zero tokens
+  (#3764).** The dispatch ledger records `usage: {}` for such a launch: a Kimi reply whose wire
+  file is missing or, since #3701, whose directory cannot be listed, or a host that timed out
+  before it printed its figures. `usage.json` and `meta.cost.tokens` summed that row as 0 and said
+  nothing, so the total was too low with no sign of it.
+  - `usage.json` now counts those launches in `unmeasured_rows`, split by host
+    (`unmeasured_by_host`) and by phase (`unmeasured_by_phase`). They add to no figure.
+  - `total_is_lower_bound` is true when `total` leaves some launches out. When no launch at all
+    was measured, `total` is null, not 0; the same holds for one phase's figure in `by_phase`.
+  - A run that launched nothing still reads 0, and a launch that measured zero still counts as
+    measured. The rows an interrupt writes are not launches and are not counted.
+  - `meta.cost.tokens` is that document unchanged, so a reader that summed `total` or a
+    `by_phase` value must now expect null there. No finding, gate or certification reads it.
 
 - **Tools closure re-resolved: semgrep 1.185.0 (supersedes Dependabot #3751; #3619 not taken).**
   - Taken as offered: semgrep 1.183.0 -> 1.185.0, with the Dockerfile `SEMGREP_VERSION` moved to
