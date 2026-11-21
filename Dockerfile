@@ -30,7 +30,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 ARG GITLEAKS_VERSION=8.18.4
 ARG GOSEC_VERSION=2.29.0
-ARG SEMGREP_VERSION=1.183.0
+ARG SEMGREP_VERSION=1.185.0
 ARG BANDIT_VERSION=1.9.4
 ARG BRAKEMAN_VERSION=8.0.6
 ARG BUNDLER_AUDIT_VERSION=0.9.3
@@ -58,7 +58,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # unpinned transitive release is install-time code execution here and a
 # substituted scanner everywhere downstream.
 #
-#   pip  `--require-hashes --no-deps -r requirements-tools.txt`: 91 packages,
+#   pip  `--require-hashes --no-deps -r requirements-tools.txt`: 92 packages,
 #        each with the sha256 of every wheel either published architecture may
 #        be served. --no-deps makes that file the complete list.
 #   gem  each .gem fetched to a file, gated on `sha256sum -c`, then installed

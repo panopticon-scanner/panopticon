@@ -1478,6 +1478,29 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
             return mock.Mock(returncode=0, stdout=stdout, stderr="")
         return launch, seen
 
+    def limited(self, envelope, returncode=1):
+        """#3646: a launch the host refused before the model ran -- the envelope a
+        quota-limited `claude -p` prints, and no file written."""
+        seen = {"calls": 0}
+
+        def launch(cmd, cwd=None, env=None, **_kw):
+            seen["calls"] += 1
+            return mock.Mock(returncode=returncode, stdout=json.dumps(envelope), stderr="")
+        return launch, seen
+
+    def limited_after(self, behaviour, *, envelope=True):
+        """#3646 review: the CLI plays `behaviour` (files written, denials recorded),
+        then the turn ends on a host 429 -- the seat's repro."""
+        launch, seen = self.fake(behaviour)
+
+        def limited(cmd, **kwargs):
+            done = launch(cmd, **kwargs)
+            body = json.loads(done.stdout or "{}")
+            body.update(is_error=True, result="API Error: 429 Too Many Requests")
+            return mock.Mock(returncode=1, stderr="",
+                             stdout=json.dumps(body) if envelope else "429 Too Many Requests")
+        return limited, seen
+
     def canary(self, *behaviours):
         import scripts.probes.claude_write_canary as canary
         launch, seen = self.fake(*behaviours)
@@ -1545,6 +1568,154 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
         self.assertEqual(verdict, canary.NOT_MEASURED)
         self.assertIn("could not run", detail)
         self.assertEqual(seen["calls"], 2)
+
+    def test_a_host_class_launch_failure_is_host_limited_not_a_measurement(self):
+        # #3646: the resume probe under a Claude usage limit. Classified exactly as the
+        # loop classifies a reviewer's launch (`Runner.parse_envelope`), so the detail
+        # carries `hosts.HOST_LIMITED_LEAD` -- what lets a resume stay paused.
+        import scripts.probes.claude_write_canary as canary
+        for label, envelope in (
+                ("error object", {"type": "result", "is_error": True, "result": "",
+                                  "error": {"type": "rate_limit_error",
+                                            "message": "usage limit reached"}}),
+                ("CLI error line", {"type": "result", "is_error": True,
+                                    "result": "API Error: 429 Too Many Requests"})):
+            with self.subTest(label):
+                launch, seen = self.limited(envelope)
+                with mock.patch.object(canary, "_launch", side_effect=launch):
+                    measured = canary.measure()
+                for capability in ("write", "read"):
+                    verdict, detail = measured[capability]
+                    self.assertEqual(canary.HOST_LIMITED, verdict)
+                    self.assertTrue(detail.startswith(hosts.HOST_LIMITED_LEAD), detail)
+                self.assertEqual(canary.ATTEMPTS, seen["calls"])
+
+    def test_refuting_evidence_wins_over_a_host_limit(self):
+        # The seat's repro: the PEER out_file was written and the sentinel reached,
+        # then a 429 ended the turn. That is a real breakage, never "host-limited".
+        import scripts.probes.claude_write_canary as canary
+        for label, envelope in (("envelope", True), ("no envelope", False)):
+            with self.subTest(label):
+                launch, _seen = self.limited_after("wide-open", envelope=envelope)
+                with mock.patch.object(canary, "_launch", side_effect=launch):
+                    measured = canary.measure()
+                self.assertEqual(canary.REFUTED, measured["write"][0], measured)
+                self.assertIn("PEER", measured["write"][1])
+                self.assertEqual(canary.REFUTED, measured["read"][0], measured)
+                self.assertIn("sentinel", measured["read"][1])
+
+    def test_with_no_envelope_a_host_failure_still_loses_to_refuting_evidence(self):
+        # #3663 review: no stdout shape classifies as a host failure WITHOUT a JSON
+        # envelope today, so the subtest above never set `host_limited` there. Force the
+        # classification, so the defence is exercised: refuting evidence still decides,
+        # and the twin that refutes nothing proves `host_limited` really was set.
+        import types
+        import scripts.probes.claude_write_canary as canary
+        import scripts.runners.outage as outage
+        host = types.SimpleNamespace(ok=False, failure_class=outage.HOST_FAILURE)
+        for behaviour, write, read in (("wide-open", canary.REFUTED, canary.REFUTED),
+                                       ("no-attempt", canary.HOST_LIMITED,
+                                        canary.HOST_LIMITED)):
+            with self.subTest(behaviour):
+                launch, _seen = self.limited_after(behaviour, envelope=False)
+                with mock.patch.object(canary, "_launch", side_effect=launch), \
+                        mock.patch.object(canary.claude_runner.Runner, "parse_envelope",
+                                          return_value=host):
+                    measured = canary.measure()
+                self.assertEqual((write, read), (measured["write"][0], measured["read"][0]),
+                                 measured)
+                if write == canary.REFUTED:
+                    self.assertIn("PEER", measured["write"][1])
+                    self.assertIn("sentinel", measured["read"][1])
+                else:
+                    self.assertTrue(measured["write"][1].startswith(hosts.HOST_LIMITED_LEAD))
+
+    def test_a_denial_row_still_proves_under_a_host_limit(self):
+        import scripts.probes.claude_write_canary as canary
+        launch, _seen = self.limited_after("always-deny")
+        with mock.patch.object(canary, "_launch", side_effect=launch):
+            measured = canary.measure()
+        self.assertEqual(canary.REFUTED, measured["write"][0], measured)
+        self.assertIn("DENIED through the real CLI", measured["write"][1])
+        self.assertEqual(canary.PROVEN, measured["read"][0], measured)
+
+    def test_a_host_limit_names_only_what_would_otherwise_be_unmeasured(self):
+        import scripts.probes.claude_write_canary as canary
+        launch, seen = self.limited_after("no-attempt")
+        with mock.patch.object(canary, "_launch", side_effect=launch):
+            measured = canary.measure()
+        for capability in ("write", "read"):
+            verdict, detail = measured[capability]
+            self.assertEqual(canary.HOST_LIMITED, verdict)
+            self.assertTrue(detail.startswith(hosts.HOST_LIMITED_LEAD), detail)
+        self.assertEqual(canary.ATTEMPTS, seen["calls"])
+
+    def test_the_host_limited_detail_carries_the_hosts_redacted_words(self):
+        # #3663 review item 4: what the loop's outage message does -- the host's own
+        # error, redacted, on one line and bounded.
+        import scripts.probes.claude_write_canary as canary
+        secret = "sk-ant-api03-" + "A" * 95
+        for label, envelope, expected in (
+                ("CLI error line",
+                 {"type": "result", "is_error": True,
+                  "result": "API Error: 429 Too Many Requests\nkey %s %s" % (secret, "x" * 900)},
+                 "API Error: 429 Too Many Requests key [REDACTED"),
+                ("error object",
+                 {"type": "result", "is_error": True, "result": "",
+                  "error": {"type": "rate_limit_error", "message": "usage limit reached"}},
+                 "usage limit reached")):
+            with self.subTest(label):
+                launch, _seen = self.limited(envelope)
+                with mock.patch.object(canary, "_launch", side_effect=launch):
+                    detail = canary.measure()["write"][1]
+                lead = hosts.HOST_LIMITED_LEAD + " (exit 1): "
+                self.assertTrue(detail.startswith(lead), detail)
+                self.assertIn(expected, detail)
+                self.assertNotIn(secret, detail)
+                self.assertNotIn("\n", detail)
+                self.assertLessEqual(len(detail) - len(lead), canary.HOST_ERROR_EXCERPT)
+        self.assertEqual(240, canary.HOST_ERROR_EXCERPT)
+
+    def test_a_successful_launch_carrying_a_host_shaped_error_is_not_host_limited(self):
+        # `not launched.ok`: only a FAILED launch can be host-limited.
+        import scripts.probes.claude_write_canary as canary
+        launch, _seen = self.limited({"type": "result", "is_error": False, "result": "done",
+                                      "error": {"type": "rate_limit_error",
+                                                "message": "usage limit reached"}},
+                                     returncode=0)
+        with mock.patch.object(canary, "_launch", side_effect=launch):
+            measured = canary.measure()
+        for capability in ("write", "read"):
+            verdict, detail = measured[capability]
+            self.assertEqual(canary.NOT_MEASURED, verdict)
+            self.assertFalse(detail.startswith(hosts.HOST_LIMITED_LEAD), detail)
+
+    def test_an_entry_class_failure_stays_plain_not_measured(self):
+        # A failed launch the host did not cause (the agent's own reply quoting a 429)
+        # is NOT host-limited: it measured nothing, and a resume reading it is drift.
+        import scripts.probes.claude_write_canary as canary
+        launch, _seen = self.limited({"type": "result", "is_error": True,
+                                      "result": "the handler returns 429 Too Many Requests"})
+        with mock.patch.object(canary, "_launch", side_effect=launch):
+            measured = canary.measure()
+        for capability in ("write", "read"):
+            verdict, detail = measured[capability]
+            self.assertEqual(canary.NOT_MEASURED, verdict)
+            self.assertFalse(detail.startswith(hosts.HOST_LIMITED_LEAD), detail)
+
+    def test_the_probes_report_a_host_limit_as_unknown_with_the_lead(self):
+        import scripts.probes.claude_write_canary as canary
+        launch, _seen = self.limited({"type": "result", "is_error": True,
+                                      "result": "API Error: 429 Too Many Requests"})
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(canary, "_launch", side_effect=launch):
+            settings = os.path.join(d, "host-settings.json")
+            for probe in (claude_probes.probe_write_guard_armed,
+                          claude_probes.probe_read_guard_armed):
+                with self.subTest(probe=probe.__name__):
+                    state, _by, detail = probe("claude", settings_path=settings)
+                    self.assertEqual(hosts.UNKNOWN, state)
+                    self.assertTrue(detail.startswith(hosts.HOST_LIMITED_LEAD), detail)
 
     def test_one_flaky_launch_is_retried_once(self):
         import scripts.probes.claude_write_canary as canary

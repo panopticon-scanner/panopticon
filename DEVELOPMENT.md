@@ -794,12 +794,14 @@ Dependabot proposes version bumps: the root `pip` entry sees `requirements-fixtu
 `requirements-tools.txt`, and `pyproject.toml`; the `/.github` entry sees the gate file. The root
 entry groups routine Python version updates and filters proposals that would break the current
 pinned tools graph: all version updates for `mcp`, `opentelemetry-*`, and `pydantic-core` (Pydantic
-2.14.2 requires exactly pydantic-core 2.50.2); major updates for `peewee`, `boltons`, `protobuf`,
+2.14.3 requires exactly pydantic-core 2.50.4); major updates for `peewee`, `boltons`, `protobuf`,
 `pyjwt`, `wcmatch`, and `wrapt`; and major/minor updates for `click`, `jsonschema`,
-`exceptiongroup`, `importlib-metadata`, and `tomli`. Semgrep 1.183.0 (whose requirements are
-1.182.1's, that is 1.179.0's plus a `certifi>=2026.10.19` floor the pinned certifi meets)
+`exceptiongroup`, `importlib-metadata`, `structlog`, and `tomli`. Semgrep 1.185.0 (whose
+requirements are 1.183.0's plus `structlog~=26.1.0`, which 1.184.0 added)
 constrains `boltons`, `exceptiongroup`, `pyjwt` (to its major line: `<3,>=2.15.0`, where 1.178.0 held it to 2.13.x),
-`tomli` (`~=2.4.0`), and `wcmatch`; pinned OpenTelemetry packages constrain `importlib-metadata`,
+`structlog` (`~=26.1.0`), `tomli` (`~=2.4.0`), and `wcmatch`; it also pins `mcp==1.29.0` and
+`opentelemetry-api~=1.37.0`, so a security update for either cannot be taken until Semgrep moves
+them (#3619). Pinned OpenTelemetry packages constrain `importlib-metadata`,
 `protobuf`, and `wrapt`. These filters match dependency names across the root entry, including the
 same name in `pyproject.toml`; they are not specific to the tools file. Revisit them when upgrading
 the scanner roots and other pinned parents together. They use `update-types`, so security updates
@@ -820,7 +822,7 @@ The differences between the files are deliberate:
 
 - `.github/requirements-gate.txt` is installed with `--no-deps`, so it must list the COMPLETE
   closure (hence jsonschema's four runtime dependencies). A missing one fails loudly at import.
-- `requirements-tools.txt` is also installed with `--no-deps`, and its closure is 91 packages, so
+- `requirements-tools.txt` is also installed with `--no-deps`, and its closure is 92 packages, so
   it is not written by hand. Bandit's native SARIF formatter depends on `jschema-to-python` and
   `sarif-om`; both remain explicit in the closure because `--no-deps` will not install them. A normal
   `bump_pins.py requirements` refresh preserves every explicit pin. For a fresh dependency resolution,
