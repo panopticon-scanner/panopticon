@@ -34,7 +34,10 @@ SOURCES = tuple("tool:" + name for name in sorted(tools.ADVISORY_ADAPTERS | {"tr
 MANIFESTS = ("pom.xml", "core/pom.xml", "app/pom.xml", "gradle.lockfile",
              "lib/gradle.lockfile", "buildscript-gradle.lockfile",
              "gradle/verification-metadata.xml", "build.gradle", "lib/build.gradle.kts",
-             "settings.gradle")
+             "settings.gradle",
+             # At the root too: only the root's own lock is ever read, so a subdirectory
+             # copy alone would not show a read.
+             "build.gradle.kts", "verification-metadata.xml", "settings.gradle.kts")
 
 
 def _write(path, text):
@@ -85,8 +88,11 @@ def _jvm_tree(root):
                 "empty=\n")
     for path in ("gradle.lockfile", "lib/gradle.lockfile", "buildscript-gradle.lockfile"):
         _write(os.path.join(root, path), lockfile)
-    _write(os.path.join(root, "gradle", "verification-metadata.xml"),
-           '<?xml version="1.0" encoding="UTF-8"?>\n<verification-metadata/>\n')
+    for path in ("gradle/verification-metadata.xml", "verification-metadata.xml"):
+        _write(os.path.join(root, path),
+               '<?xml version="1.0" encoding="UTF-8"?>\n<verification-metadata/>\n')
+    for path in ("build.gradle.kts", "settings.gradle.kts"):
+        _write(os.path.join(root, path), 'version = "1.2.0"\n')
 
 
 def _finding(package, *, path, source):
