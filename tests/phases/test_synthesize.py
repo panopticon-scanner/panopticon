@@ -125,6 +125,23 @@ class TestHostUsageCollection(unittest.TestCase):
         self.assertIn("/somewhere/session", err)
         self.assertIn("--session-dir", err)
 
+    def test_a_collector_that_failed_says_why_and_not_where_to_look(self):
+        # #3706 review round 2, item 4: the "searched the wrong directory?" advice is
+        # for rc 1, "no transcript found". It was printed for every non-zero exit, so a
+        # collector that stopped for another reason (a transcript directory it could
+        # not list) had its own reason dropped and the wrong remedy offered.
+        reason = ("collect-usage: /tmp/claude-505/p/s/tasks could not be listed: "
+                  "Permission denied; usage was not collected\n")
+        buf = io.StringIO()
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch("scripts.phases.child._run_child") as run, \
+             contextlib.redirect_stderr(buf):
+            write_host_evidence(d, _UL_PROVEN)
+            run.return_value = mock.Mock(returncode=2, stderr=reason)
+            synthesize._collect_host_usage(d, self._manifest(session_dir="/somewhere/session"))
+        self.assertEqual("driver: usage collection failed (rc 2): %s; meta.cost.tokens stays "
+                         "null\n" % reason.strip(), buf.getvalue())
+
     def test_successful_collection_forwards_the_collectors_disclosure(self):
         disclosure = "collect-usage: dropped input; reported total is a FLOOR\n"
         with tempfile.TemporaryDirectory() as d, \

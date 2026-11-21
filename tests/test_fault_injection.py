@@ -23,7 +23,6 @@ a row whose check holds again: each fix removes its own rows.
 """
 import dataclasses
 import functools
-import glob
 import json
 import os
 import re
@@ -37,6 +36,7 @@ import scripts.phases.review as review
 import scripts.phases.runio as runio
 import scripts.phases.verify as verify
 import scripts.run_manifest as run_manifest
+import scripts.safe_glob as safe_glob
 import scripts.runners.outage as outage
 from tests import fault_harness as fh
 from tests.orchestrate_helpers import (FAULT_EMPTY, FAULT_EXIT, FAULT_MALFORMED, FAULT_MODES,
@@ -181,7 +181,7 @@ def _accounts_for(claim, finding):
 def _persisted_claims(root):
     """(title, cell file) for every agent claim a review cell left on disk."""
     claims = []
-    for path in sorted(glob.glob(runio._pano(root, "findings-*.json"))):
+    for path in sorted(safe_glob.under(*os.path.split(runio._pano(root, "findings-*.json")))):
         with open(path, encoding="utf-8") as cell:
             try:
                 body = json.load(cell)
@@ -1197,6 +1197,28 @@ def test_the_copy_reaches_the_copying_cells_advisors_as_their_own_claim(copied):
               encoding="utf-8") as fh_:
         said = {v["finding_id"]: v["verdict"] for v in json.load(fh_)["verdicts"]}
     assert said[claim_id] == "REJECTED"
+
+
+# --- a target whose path holds pattern characters (#3701) ----------------------------------
+
+@pytest.mark.parametrize("suffix", ["[x]", "-re*po?", "[!a][a-z]"])
+def test_a_target_path_with_pattern_characters_is_reviewed_as_any_other(lab, suffix):
+    """Under `repo[x]/` the run found none of its own findings files, plans, scout replies
+    or coverage files: no agent finding reached the report, no cell read as reviewed, and
+    the report said only "incomplete". The run folder was globbed with its own path as part
+    of the pattern."""
+    outcome = fh.drive(lab, suffix=suffix)
+    assert outcome.root.endswith(suffix)
+    assert outcome.status == "complete"
+    assert problems(lab.control, outcome) == []
+    assert _comparable(outcome) == _comparable(lab.control)
+    claims = {title for title, _cell in _persisted_claims(outcome.root)}
+    assert claims and claims <= {f.get("title") for f in outcome.report["findings"]
+                                 + outcome.report["discarded_claims"]}
+    assert outcome.report["meta"]["coverage"]["cells"]["reviewed"]
+    # ...and what the run spent is counted from the same folder.
+    assert (outcome.report["meta"]["cost"]["dispatches"]
+            == lab.control.report["meta"]["cost"]["dispatches"])
 
 
 SPLIT_BYTES = 9000

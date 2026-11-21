@@ -62,7 +62,7 @@ class TestWire(unittest.TestCase):
                             "../session_abc", "..\\session_abc", "*", "session_?bc",
                             "session_[a]bc", "session_abc\n"):
                 with self.subTest(session=session), mock.patch.object(
-                        kimi_runner.glob, "glob") as search:
+                        kimi_runner.safe_glob, "under") as search:
                     self.assertIsNone(kimi_runner.wire_path(home, session))
                     search.assert_not_called()
 

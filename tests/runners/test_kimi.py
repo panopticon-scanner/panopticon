@@ -1,4 +1,6 @@
+import contextlib
 import dataclasses
+import io
 import json
 import os
 import subprocess
@@ -14,6 +16,7 @@ from tests._test_helpers import (kimi_fixture_home as _fixture_home,
                            prepared_kimi as _prepared)
 
 from tests.runners.kimi_support import CONFIGURED, STREAM, _entry
+from tests.test_safe_glob import unlistable
 
 class TestCommand(unittest.TestCase):
     def setUp(self):
@@ -227,6 +230,40 @@ class TestRunEntry(unittest.TestCase):
         self.assertEqual(res.usage["cache_read_input_tokens"], 100)
         self.assertEqual(res.model, "kimi-code/k3")
         self.assertIsNone(res.cost_usd)                       # no USD metering on OAuth
+
+    def test_a_reply_survives_a_wire_directory_that_cannot_be_listed(self):
+        # #3706 review round 2, item 1. The wire file is where the token count comes
+        # from, and it is looked for after the reply is in hand. When its directory
+        # could not be listed the lookup raised, `run_entry` raised with it, and the
+        # runner seam turned a finished, paid review into a failed entry. A retry
+        # failed the same way. The reply is kept; its usage is unknown, and says why.
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+            r = kimi_runner.Runner("kimi", runner=self._fake_run({}))
+            r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(r.teardown, "complete")
+            sessions = os.path.join(r.kimi_home, "sessions")
+            wire = os.path.join(sessions, "wd_x_1", "session_test-1", "agents", "main",
+                                "wire.jsonl")
+            os.makedirs(os.path.dirname(wire))
+            with open(wire, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(
+                    {"type": "usage.record", "model": "kimi-code/k3", "usageScope": "turn",
+                     "usage": {"inputOther": 42, "output": 7,
+                               "inputCacheRead": 100, "inputCacheCreation": 3}}) + "\n")
+            measured = r.run_entry(_entry(False), self._env())
+            err = io.StringIO()
+            with unlistable(sessions), contextlib.redirect_stderr(err):
+                res = r.run_entry(_entry(False), self._env())
+        self.assertEqual(42, measured.usage["input_tokens"])
+        self.assertTrue(res.ok, res.error)
+        self.assertIsNone(res.error)
+        self.assertEqual((measured.text, measured.session_id), (res.text, res.session_id))
+        self.assertTrue(res.text)
+        # Unknown, not zero: an empty usage is "not measured" to the ledger.
+        self.assertEqual(({}, None, None), (res.usage, res.model, res.cost_usd))
+        self.assertEqual("kimi: %s could not be listed: Permission denied; the reply is kept "
+                         "and its token usage is unknown\n" % sessions, err.getvalue())
 
     def test_an_enforced_entry_without_a_registered_shell_fails_closed(self):
         with tempfile.TemporaryDirectory() as d, \

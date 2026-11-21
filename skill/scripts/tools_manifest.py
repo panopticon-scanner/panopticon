@@ -35,11 +35,11 @@ That is why `VENV_MAX_DEPTH` lives here while the walk that reads it back
 (`find_virtualenvs`) lives in `venv_scope`, part 4 of the same split, which
 imports it from here. Stdlib-only.
 """
-import glob
 import json
 import os
 import sys
 
+from scripts import safe_glob
 from scripts import safe_write
 from scripts import language_detection
 from scripts.tolerant_json import depth_checked
@@ -96,7 +96,14 @@ def dependency_audit_applicable(target):
     """
     found = {ecosystem for ecosystem, markers in _DEPENDENCY_AUDIT_MARKERS.items()
              if any(os.path.isfile(os.path.join(target, marker)) for marker in markers)}
-    if next(glob.iglob(os.path.join(glob.escape(target), "requirements*.txt")), None):
+    try:
+        python = next(safe_glob.iter_under(target, "requirements*.txt"), None) is not None
+    except safe_glob.Unlistable:
+        # #3706: the target could not be listed, so whether it holds a requirements file
+        # is not known. Not known is applicable: with nothing produced for it, that is
+        # the certification gap, where "no Python here" was a clean bill.
+        python = True
+    if python:
         found.add("python")
     return sorted(found)
 

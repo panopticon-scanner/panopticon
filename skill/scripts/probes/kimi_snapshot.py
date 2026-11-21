@@ -20,12 +20,12 @@ tests/test_host_launch_guard.py). `_kimi_version` stayed behind with it for
 exactly that reason: a second spawn seam here would be a second launcher to
 keep refusing, for one `kimi --version`.
 """
-import glob
 import json
 import os
 import tempfile
 import tomllib
 
+import scripts.safe_glob as safe_glob
 from . import common
 
 
@@ -59,10 +59,10 @@ def _kimi_wire_snapshots(run_home):
     home = run_home
     if not home or not os.path.isdir(home):
         return [], "this run has no per-run kimi home yet"
-    pattern = os.path.join(glob.escape(home), "sessions", "*", "*", "agents", "*", "wire.jsonl")
     try:
-        wires = sorted(glob.glob(pattern), key=os.path.getmtime, reverse=True)
-    except OSError as exc:        # a file that vanished between glob and stat
+        wires = sorted(safe_glob.under(home, "sessions", "*", "*", "agents", "*", "wire.jsonl"),
+                       key=os.path.getmtime, reverse=True)
+    except (OSError, safe_glob.Unlistable) as exc:   # vanished between listing and stat, or unlistable
         return [], "the per-run home's wire files could not be listed: %s" % exc
     found = []
     for wire in wires:
