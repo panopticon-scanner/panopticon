@@ -206,7 +206,8 @@ def is_first_party_advisory(finding):
     after an exact sourceless Cargo.lock identity and in-tree publishable
     Cargo.toml package/version match (#3593), or the npm equivalent: a local
     package-lock entry and its in-tree publishable package.json (#3623), or the
-    Python one: a local-path uv/poetry/pdm lock entry and its pyproject.toml (#3623).
+    Python one: a local-path uv/poetry/pdm lock entry and its pyproject.toml (#3623),
+    or the Ruby one: a Gemfile.lock PATH gem and its literal gemspec (#3623).
     """
     return (is_tool_sourced(finding)
             and _tool_evidence(finding).get("package_origin")
@@ -217,6 +218,28 @@ def location_of(finding):
     """`location` as a dict (the finding's own, not a copy), `{}` for absent or malformed (#2365)."""
     loc = finding.get("location")
     return loc if isinstance(loc, dict) else {}
+
+
+# #3692 review: the confirmation names what was matched. Keyed by the lock the
+# advisory was reported at, which is what chose the first-party parser at ingest.
+_FIRST_PARTY_FORMS = {
+    "Cargo.lock": "Cargo member",
+    "package-lock.json": "npm workspace package",
+    "npm-shrinkwrap.json": "npm workspace package",
+    "uv.lock": "Python workspace package",
+    "poetry.lock": "Python workspace package",
+    "pdm.lock": "Python workspace package",
+    "Gemfile.lock": "Ruby path gem",
+}
+
+
+def first_party_package_form(finding):
+    """The ecosystem and package form a first-party advisory was matched as (``Cargo
+    member``, ``Ruby path gem``, ...), from the lock it was reported at; ``package``
+    for a lock this table does not know."""
+    name = location_of(finding).get("file")
+    name = name.replace("\\", "/").rsplit("/", 1)[-1] if isinstance(name, str) else None
+    return _FIRST_PARTY_FORMS.get(name or "", "package")
 
 
 def provenance_of(finding):
@@ -395,7 +418,8 @@ def derive_evidence(finding, verdict=None):
             "status": "tool_confirmed",
             "verified_by": origin,
             "reasoning": ("Advisory database matched the exact name and version "
-                          "of this project's in-tree publishable Cargo member."),
+                          "of this project's in-tree publishable %s."
+                          % first_party_package_form(finding)),
             "citation_quality": quality,
         }
 
@@ -468,11 +492,11 @@ def build_verify_queue(findings, max_verify=None):
 
     Entries hold REFERENCES to the original finding dicts (verdict application
     must mutate the real objects); tool-sourced and reinforced findings queue
-    too, as claims like any other (P2, #446). The sole exception is #3593's
-    ingest-proved first-party Cargo advisory: a sourceless lock identity also
-    matched one in-tree publishable member manifest, so its claim is that THIS
-    project version matches the advisory, not that a third-party dependency is
-    used. `derive_evidence` confirms that deterministic match without an advisor.
+    too, as claims like any other (P2, #446). The sole exception is an
+    ingest-proved first-party advisory (#3593 for Cargo; #3623 for npm, Python and
+    Ruby): a local lock identity also matched one in-tree publishable manifest, so
+    its claim is that THIS project version matches the advisory, not that a
+    third-party dependency is used. `derive_evidence` confirms that deterministic match without an advisor.
     P2 (#443/#438): the sort key and queue_id are pure functions of finding
     CONTENT — no input index anywhere, including in the collision-suffix
     assignment (see `_queue_tiebreak`) — so both passes of a run compute the

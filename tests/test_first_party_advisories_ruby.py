@@ -205,7 +205,10 @@ class TestTheGemspecIsReadAsLiteralsOnly(_RubyCase):
                 ("a frozen literal", name + '  s.version = "1.2.0".freeze\n'),
                 ("percent literal", name + "  s.version = %q{1.2.0}\n"),
                 ("a second assignment", name + version + '  s.version = "1.3.0"\n'),
-                ("a commented second assignment", name + version + '  # s.version = "9"\n'),
+                # Not text beside an assignment: `x # s.version = "9"` is a second
+                # statement shape, refused. A whole-line comment is inert (below).
+                ("an assignment with a trailing comment",
+                 name + '  s.version = "1.2.0" # s.version = "9"\n'),
                 ("no version", name),
                 ("no name", version),
                 ("another variable", name + '  spec.version = "1.2.0"\n'),
@@ -620,7 +623,8 @@ class TestTheReviewProbes(_RubyCase):
                 ("or-assign", self._spec(lit + '  s.version ||= "9.9"\n')),
                 ("safe navigation", self._spec(lit + '  s&.version = "9.9"\n')),
                 ("block var in a nested block", self._spec(lit + '  [1].each { s }\n')),
-                ("two Specifications", self._spec(lit) + "# Gem::Specification\n"),
+                ("two Specifications",
+                 self._spec(lit) + "Gem::Specification.new do |t|\nend\n"),
                 ("unclosed block", self._spec(lit).replace("end\n", "  end\n")),
                 ("tab whitespace", self._spec(lit.replace("  s.name", "\ts.name"))),
                 ("u2028", self._spec(lit + "  s.summary = 1\u2028\n"))):
@@ -653,8 +657,6 @@ class TestTheReviewProbes(_RubyCase):
         for label, gemspec in cases:
             with self.subTest(refused=label):
                 self.assertIsNone(self._probe(self.PATH, gemspec=gemspec))
-        self.assertEqual("first_party", self._probe(
-            self.PATH, gemspec=self._spec(lit + "  x = Object.sender(:y)\n")))
 
     def test_metadata_must_be_literal_lines(self):
         # M2: an escaped or computed key, or a whole-hash assignment, may set a host.
@@ -779,6 +781,10 @@ class TestTheSecondReview(TestTheReviewProbes):
     def test_the_allowlisted_shapes_still_prove_the_identity(self):
         lit = self.LIT
         for label, gemspec in (
+                # A whole-line comment is inert, whatever it says (earlier rounds
+                # refused these because only some lines were on the allowlist).
+                ("a commented second assignment", self._spec(lit + '  # s.version = "9"\n')),
+                ("a comment naming the constant", self._spec(lit) + "# Gem::Specification\n"),
                 ("plain", self._spec(lit)),
                 ("crlf", self._spec(lit).replace("\n", "\r\n")),
                 ("comments and blank lines everywhere",
@@ -936,10 +942,13 @@ class TestTheSecondReview(TestTheReviewProbes):
         # ...except the literal `.gemspec`, which the glob's empty alternative names.
         self.assertIsNone(reset(**{"foo.gemspec": good, ".gemspec": private}))
         self.assertEqual("first_party", reset(**{".gemspec": good}))
-        # A file that only ends like one, and a directory named like one.
+        # A file that only ends like one is not matched; a DIRECTORY named like one is
+        # (the glob does not ask what it matched), so Bundler would fail on it.
         self.assertEqual("first_party",
                          reset(**{"foo.gemspec": good, "foo.gemspec.bak": private,
-                                  "x.gemspec/readme": "x"}))
+                                  "real/foo.gemspecs": private}))
+        self.assertIsNone(reset(**{"foo.gemspec": good, "x.gemspec/readme": "x"}))
+        self.assertIsNone(reset(**{"foo.gemspec": good, "real/x.gemspec/readme": "x"}))
         # A subdirectory that resolves out of the tree is never listed.
         outside = tempfile.mkdtemp(prefix="outside-")
         self.addCleanup(shutil.rmtree, outside, ignore_errors=True)

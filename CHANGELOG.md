@@ -8,24 +8,32 @@
   ingest, without an advisor, when every lock entry with that identity sits under a `PATH`
   source whose realpath is inside the review root, and the source's one `*.gemspec` proves the
   same name and version.
-  - **Literal only (R1):** exactly one `x.name = "lit"` and one `x.version = "lit"` inside the
-    one `Gem::Specification.new do |x|` block, plain string literals. `Foo::VERSION`,
-    interpolation, `.freeze`, `%q{}`, a second assignment (even commented) and every other form
-    fail closed -- so most real gems, which read a `VERSION` constant, stay with the advisor.
-    The reader is an allowlist: every other use of `x` must be a line `x.<field> = ...`,
-    `x.add_*dependency ...` or a literal metadata line, and dynamic dispatch (`send`,
-    `instance_eval`, `method`, ...), `def`, heredocs, `__END__`, `=begin`, line continuations,
-    an aliased `Gem` and whitespace other than spaces fail closed.
-  - **Publishable (R2):** every line naming `metadata` must be `x.metadata["key"] = "lit"`. A
-    literal `allowed_push_host` other than rubygems.org is private-only, and any other mention
-    of that key fails closed. The review root is exempt; a member is not.
-  - **Fails closed:** a GEM or GIT copy of the same identity, including a platform copy such as
-    `foo (1.0-java)` (Bundler reads it as foo 1.0), an outside-tree or symlinked-out source, a
-    `PATH` source with any option besides `remote` (such as `glob:`), a directory without
-    exactly one gemspec, a version mismatch, and a malformed lock. The lock parser is an
-    allowlist too: an unknown header (even `GEM ` with a trailing space), whitespace other than
-    spaces (a tab, `\r`, U+2028, a BOM), and an option after `specs:` fail the whole lock.
+  - **Literal only (R1):** `x.name = "lit"` and `x.version = "lit"`, each exactly once, in the
+    one `Gem::Specification.new do |x|` block, plain string literals. The reader allowlists
+    every line of the file. Outside the block only blank lines and `#` comments are allowed.
+    Inside it only blank lines, comments, `x.<field> = <literal>`, `x.add_*dependency "lit", ...`
+    and `x.metadata["key"] = "lit"` are; a literal is a plain string, an array of plain strings,
+    `true` / `false` / `nil` or an integer. Everything else refuses the file: `Foo::VERSION`,
+    interpolation, `.freeze`, `%q{}`, `Dir[...]`, a `require`, a conditional, a second
+    statement or a trailing comment on a line, a non-UTF-8 `coding:` comment, and whitespace
+    other than spaces. So most real gems stay with the advisor, which is the ruled trade-off.
+  - **Publishable (R2):** a literal `allowed_push_host` other than `https://rubygems.org` (bare
+    or with one trailing `/`) is private-only, and that key may appear only as that one
+    metadata line. The review root is exempt; a member is not.
+  - **The gemspec is Bundler's:** the one file its glob `{,*,*/*}.gemspec` finds (this
+    directory and one level down, no dot-prefixed names). More than one refuses.
+  - **Fails closed:** a copy of the same name at a version RubyGems reads as equal, under any
+    source or platform (`1.2` beside `1.2.0`, `foo (1.0-java)` beside `foo (1.0)`); an
+    outside-tree or symlinked-out source; a remote Bundler would expand elsewhere (`~`, a `..`
+    component, a URL, an absolute path); a `PATH` source with any option besides `remote`
+    (such as `glob:`); a version mismatch; and a malformed lock. The lock parser is an
+    allowlist too: only the known headers, options at two spaces, the bare `specs:` marker,
+    specs at four with a RubyGems-valid version, and dependencies at six. Any other line, and
+    whitespace other than spaces (a tab, `\r`, U+2028, a BOM), fails the whole lock.
     bundler-audit and `gems.locked` stay with the advisor.
+  - **The confirmation names what matched:** a first-party advisory's exported reasoning said
+    "Cargo member" for every ecosystem. It now says `Cargo member`, `npm workspace package`,
+    `Python workspace package` or `Ruby path gem`.
 
   Every read spends #3634's shared ingest budget; fingerprints and reconcile keys are unchanged.
 
@@ -46,7 +54,6 @@
     releases, so the adapter reads 1.185.0's output as it read 1.183.0's.
   - The closure was re-resolved with `uv pip compile` for Python 3.12 on both linux architectures
     (identical results), and `bump_pins.py requirements --write` wrote the digests.
-
 - **A resume under a live host limit stays paused instead of erroring (#3646).** A run paused
   for a host outage (a Claude weekly limit, in the owner's run) was resumed while the limit still
   held. Its capability probe could not launch the write/read canary, so both guards read unknown,

@@ -2228,6 +2228,28 @@ class TestFirstPartyAdvisoryVerification(unittest.TestCase):
         self.assertIn("exact name and version", derived["reasoning"])
         self.assertIn("in-tree publishable Cargo member", derived["reasoning"])
 
+    def test_the_confirmation_names_the_ecosystem_that_matched(self):
+        # #3692 review item 6: it said "Cargo member" whatever the lock was.
+        for lock, form in (("Cargo.lock", "Cargo member"),
+                           ("crates/app/Cargo.lock", "Cargo member"),
+                           ("package-lock.json", "npm workspace package"),
+                           ("npm-shrinkwrap.json", "npm workspace package"),
+                           ("uv.lock", "Python workspace package"),
+                           ("poetry.lock", "Python workspace package"),
+                           ("pdm.lock", "Python workspace package"),
+                           ("Gemfile.lock", "Ruby path gem"),
+                           ("some.lock", "package"), (None, "package"), (7, "package")):
+            with self.subTest(lock=lock):
+                finding = self._finding("OS-001", "first_party")
+                finding["location"] = {"file": lock, "line_start": 1}
+                self.assertEqual(form, evidence.first_party_package_form(finding))
+                reasoning = evidence.derive_evidence(finding)["reasoning"]
+                self.assertEqual("Advisory database matched the exact name and version of "
+                                 "this project's in-tree publishable %s." % form, reasoning)
+        finding = self._finding("OS-001", "first_party")
+        del finding["location"]
+        self.assertEqual("package", evidence.first_party_package_form(finding))
+
     def test_registry_dependency_still_queues_and_needs_confirmation(self):
         finding = self._finding("OS-002")
         entries, cut = evidence.build_verify_queue([finding])

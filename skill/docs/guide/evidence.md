@@ -5,7 +5,8 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
 - `tool_reported` — a static-analysis tool emitted it (or a tool+agent same-locus merge did); no
   advisor has checked it. NOT gate-eligible.
 - `tool_confirmed` — a tool reported it and the claim was independently confirmed. Normally that
-  is an advisor verdict. A first-party Cargo advisory is the bounded exception (#3593): ingest
+  is an advisor verdict. A first-party advisory is the bounded exception (Cargo, #3593; npm,
+  Python and Ruby, #3623). For Cargo, ingest
   confirms an exact package/version match against both a sourceless workspace/path entry in
   Cargo.lock and one confined, in-tree member manifest publishable to crates.io (`publish` absent
   or true, or a registry list containing `crates-io`). The claim is therefore that this project's
@@ -34,15 +35,18 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
   main module, a go.work `use` module and a local `replace` target (whose version is the consumer's
   `require`, not the module's) stay with the advisor under every scanner. Ruby follows it too
   (#3623): an exact match against a `PATH` source gem in the review root's own `Gemfile.lock`, where
-  every lock entry with that identity is local, the source carries no option but `remote` and its
-  realpath is inside the review root, and its one `*.gemspec` proves the name and version with plain
-  string literals inside the `Gem::Specification.new` block (`x.name = "lit"`, `x.version = "lit"`;
-  `Foo::VERSION` and every form the allowlist reader does not know fail closed). A platform copy
-  such as `foo (1.0-java)` shares foo 1.0's identity, and an unknown lock header or whitespace other
-  than spaces fails the whole lock. Every `metadata` line must be a literal key and value; a literal
-  `allowed_push_host` other than rubygems.org is private-only, and any other mention of it fails
-  closed; only the review root is exempt. bundler-audit and `gems.locked` stay with the advisor.
-  Gate-eligible.
+  no other spec in the lock is the same name at a version RubyGems reads as equal (any source, any
+  platform), the source carries no option but `remote`, Bundler would read the remote where it is
+  written (no `~`, no `..`, not absolute, not a URL) and its realpath is inside the review root, and
+  the one gemspec Bundler's `{,*,*/*}.gemspec` glob finds proves the name and version with plain
+  string literals. Every line of that gemspec must be on an allowlist: blank lines and comments, the
+  `Gem::Specification.new do |x|` opener and its closer, and inside it `x.<field> = <literal>`,
+  `x.add_*dependency "lit", ...` and `x.metadata["key"] = "lit"`; `Foo::VERSION`, a `require`, a
+  conditional and every other line refuse the file. The lock is read the same way: known headers,
+  exact indents, the bare `specs:` marker and RubyGems-valid versions, with whitespace other than
+  spaces failing the whole lock. A literal `allowed_push_host` other than rubygems.org is
+  private-only, and that key may appear only as that metadata line; only the review root is exempt.
+  bundler-audit and `gems.locked` stay with the advisor. Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
   Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
   by one advisor: the adversarial backup round is summoned only for primary-CONFIRMED findings in
@@ -67,7 +71,8 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
 
 Grades and the CI gate count `tool_confirmed`/`advisor_confirmed` findings, plus
 `backup_scope_limited` (a primary CONFIRMED stands, #1638) — i.e. only claims an advisor verified,
-plus #3593's exact first-party Cargo advisory match. Run a verify phase (or pass
+plus the exact first-party advisory match (#3593, #3623: Cargo, npm, Python and Ruby). Run a verify
+phase (or pass
 `--gate-unverified`) or, absent that deterministic exception, the gate has nothing to fail on.
 
 **Two severity caps (#3231).** The active report caps two kinds of claim at MEDIUM, because nothing
@@ -102,7 +107,8 @@ with the findings.
 Every finding that needs an advisor queues for verification, tool claims included, so
 `--max-verify N` caps that combined set: each ordinary tool finding costs one advisor dispatch, and
 an unverified tool HIGH competes with an agent HIGH for the same capped budget. The exception is an
-ingest-confirmed first-party Cargo advisory (#3593), which is already `tool_confirmed` and spends no
+ingest-confirmed first-party advisory (#3593, #3623: Cargo, npm, Python or Ruby), which is already
+`tool_confirmed` and spends no
 advisor slot. Size N with that in mind — anything cut stays `unverified` or `tool_reported` and
 cannot gate. Citations (CWE/OWASP/CVE/EPSS) are audit metadata — they annotate findings but never
 decide truth.
