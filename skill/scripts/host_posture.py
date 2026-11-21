@@ -3,6 +3,7 @@ import os
 import sys
 
 from scripts import hosts
+from scripts.runners import outage
 import scripts.host_disclosure as host_disclosure
 import scripts.host_probes as host_probes
 import scripts.probes.common as probes_common
@@ -39,7 +40,7 @@ def _emit_posture_disclosure(envelope, since=None):
         sys.stderr.write("driver:   %s\n" % line)
 
 
-def _disclose_posture(review_root, manifest, fresh, namespace=None):
+def _disclose_posture(review_root, manifest, fresh, namespace=None, stamp=True):
     """Surface 1, in full once per posture and as a headline thereafter (#1596).
 
     `driver run` is a resumable loop and this runs on every invocation, so a
@@ -69,7 +70,9 @@ def _disclose_posture(review_root, manifest, fresh, namespace=None):
     digest = host_disclosure.disclosure_digest(fresh)
     since = run_manifest.posture_disclosed_at(manifest, digest)
     _emit_posture_disclosure(fresh, since=since)
-    if (since is None
+    # #3663 review: a host-limited resume measured nothing, so it stamps nothing --
+    # the pause leaves the run manifest as it found it, like host-capabilities.json.
+    if (since is None and stamp
             and os.path.isfile(run_manifest.manifest_path(review_root, namespace))):
         try:
             run_manifest.record_posture_disclosure(review_root, manifest, digest,
@@ -248,7 +251,12 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     path = os.path.join(persist.run_dir(review_root, namespace), runio.HOST_CAPABILITIES)
     stored = runio._load_json(path)
     _carry_output_schema_shape(fresh, manifest)
-    disclosure_refusal = _disclose_posture(review_root, manifest, fresh, namespace)
+    limited = None
+    if stored is not None and namespace is None:
+        limited = _host_limited(_gating_states(host_probes.capabilities_of(stored)),
+                                _gating_states(host_probes.capabilities_of(fresh)), fresh)
+    disclosure_refusal = _disclose_posture(review_root, manifest, fresh, namespace,
+                                           stamp=limited is None)
     if disclosure_refusal:                         # #1735: a planted staging path
         return disclosure_refusal
     # I6 / spec 5.2: evaluated on EVERY invocation, not only the first. When
@@ -277,6 +285,8 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
     was, now = host_probes.capabilities_of(stored), host_probes.capabilities_of(fresh)
     gating_was, gating_now = _gating_states(was), _gating_states(now)
     if gating_was != gating_now:
+        if limited:
+            return HostLimited(limited)
         return _posture_drift(gating_was, gating_now, manifest)
     # The GATING states agree, so the run continues. An operational
     # capability may still have moved (#1626 I1) and the write below records
@@ -375,6 +385,46 @@ def _gating_states(states):
     """
     return {name: state for name, state in states.items()
             if name not in hosts.OPERATIONAL_CAPABILITIES}
+
+
+class HostLimited(str):
+    """#3646: `_establish_host_posture`'s answer when the only capabilities that moved
+    went UNKNOWN because their probe could not LAUNCH -- a host-class failure, such as
+    a plan or rate limit. A message like any other refusal, but `driver.run` turns it
+    into a `paused` status, not an `error`: the run is resumable once the host is back,
+    and nothing about its posture was measured to have changed."""
+
+
+HOST_LIMITED_PAUSE = ("paused: this resume's capability probe could not launch because the "
+                      "host failed it with a host-class failure (auth, quota, a plan or session "
+                      "limit, a rate limit, or the provider itself), so %s read unknown without "
+                      "being measured%s; the stored posture is unchanged and nothing was "
+                      "dispatched; ")
+
+
+def _host_limited(was, now, fresh):
+    """The pause message when EVERY gating capability that moved went to UNKNOWN with
+    `hosts.HOST_LIMITED_LEAD` evidence -- its probe's launch failed host-class -- else None.
+
+    Every one, or the drift refusal stands: a capability that moved for any other
+    reason (a probe that ran and proved less, an UNKNOWN that is not host-limited, a
+    REFUTED) is a real posture change, and a host limit beside it does not excuse it."""
+    moved = sorted(name for name in set(was) | set(now) if was.get(name) != now.get(name))
+    caps = fresh.get("capabilities") if isinstance(fresh, dict) else None
+    caps = caps if isinstance(caps, dict) else {}
+
+    def limited(name):
+        body = caps.get(name)
+        detail = body.get("detail") if isinstance(body, dict) else None
+        return (now.get(name) == hosts.UNKNOWN and isinstance(detail, str)
+                and detail.startswith(hosts.HOST_LIMITED_LEAD))
+
+    if not moved or not all(limited(name) for name in moved):
+        return None
+    # #3663 review: the probe's own account (exit code and the host's redacted error).
+    said = caps[moved[0]]["detail"][len(hosts.HOST_LIMITED_LEAD):].strip()[:300]
+    return (HOST_LIMITED_PAUSE % (", ".join(moved), " -- probe: " + said if said else "")
+            + outage.RESUME_ADVICE)
 
 
 def _posture_drift(was, now, manifest):

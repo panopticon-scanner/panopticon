@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- **A resume under a live host limit stays paused instead of erroring (#3646).** A run paused
+  for a host outage (a Claude weekly limit, in the owner's run) was resumed while the limit still
+  held. Its capability probe could not launch the write/read canary, so both guards read unknown,
+  and the proven -> unknown move was refused as "host posture changed mid-run" -- an `error` for
+  a run that was only paused. The canary now classifies its own failed launch exactly as the loop
+  classifies a reviewer's (`runners.outage.classify_failure`, via `Runner.parse_envelope`). When
+  every moved guard is unknown for that host-class reason, the run stays `paused`, with the resume
+  advice, the host's own redacted error, and the run folder byte-for-byte unchanged (the posture
+  and the manifest's disclosure stamp included). A probe that ran and proved less is still drift.
+  Limits: the limit is recognised only in the CLI's JSON envelope, as in the loop, so a limit
+  printed as plain text or on stderr alone is still refused as drift. And a FIRST run under a
+  limit is refused with the unmeasured posture already recorded, so its refusal (and #3220's,
+  for a canary that measured nothing) now says to re-run with `--reset`: a plain re-run that
+  measures the guard was itself refused as a posture change.
+
 - **Python advisories against the project's own packages are first-party (#3623).** The Cargo
   and npm rule now has a Python twin. An osv-scanner or Trivy advisory naming an exact name
   (PEP 503 normalised) and version from the review root's own `uv.lock`, `poetry.lock` or

@@ -40,8 +40,10 @@ the peer's was not, so a CLI whose permission layer denies every granted Write c
 capability. Read proves only when the real CLI's `permission_denials` names the out-of-scope path;
 if its secret reaches the own file or reply, read confinement is refuted. A launch that measured
 nothing (no envelope, an error, or a requested tool not attempted) is retried once and then reads
-UNKNOWN, which still refuses the run. That refusal asks for a re-run first
-(the next run probes again) and names `--allow-unenforced` only after it (#3220).
+UNKNOWN, which still refuses the run. That refusal asks for a re-run with `--reset` first
+(a fresh run probes again; a plain re-run that measures the guard is refused as a posture change,
+because the unmeasured posture was already recorded) and names `--allow-unenforced` only after it
+(#3220). A launch the host rate-limited says the same, after waiting for the host (#3646).
 Bash-path writes belong to `tool_policy_enforced`.
 When that posture is REFUTED and the operator passes `--allow-unenforced`,
 `unenforced-ack.json` records the named gap rather than broadening the claim. In headless mode,
