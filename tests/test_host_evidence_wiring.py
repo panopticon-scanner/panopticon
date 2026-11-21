@@ -745,6 +745,28 @@ class TestAHostLimitedResumeStaysPaused(unittest.TestCase):
         self.assertEqual(stamped, after)
         self.assertIn("unchanged since", said)                 # the headline alone
 
+    def test_setup_is_recorded_not_compared_so_a_limit_there_still_stamps(self):
+        # `driver loop --setup` is not a run: its posture is recorded every time and
+        # never paused on, so the disclosure it printed is stamped even under a limit.
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        os.makedirs(runio._pano(review_root), exist_ok=True)
+        setup_path = run_manifest.manifest_path(review_root, "setup")
+        with open(setup_path, "w", encoding="utf-8") as fh:
+            json.dump({"run_id": "setup-id", "host": "claude"}, fh)
+        stamps = []
+        for overrides in ({}, {name: self._limited() for name in self.LIMITED}):
+            with open(setup_path, encoding="utf-8") as fh:
+                manifest = json.load(fh)
+            with mock.patch.object(host_probes, "run_probes",
+                                   return_value=self._posture(overrides)), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertIsNone(driver._establish_host_posture(
+                    review_root, manifest, self._args(), namespace="setup"))
+            with open(setup_path, encoding="utf-8") as fh:
+                stamps.append(json.load(fh)[run_manifest.POSTURE_DISCLOSED])
+        self.assertNotEqual(stamps[0], stamps[1])
+
     def test_a_first_run_under_a_limit_then_needs_reset_as_its_refusal_says(self):
         # #3663 review item 1: a FIRST run under a limit stores the unmeasured posture
         # and is refused; a plain re-run on a healthy host is then drift, whose remedy
