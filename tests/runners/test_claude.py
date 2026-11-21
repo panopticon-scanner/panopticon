@@ -600,12 +600,15 @@ class TestRunEntry(unittest.TestCase):
             r = claude_runner.Runner("claude", runner=boom); r.prepare(d, review_root=d)
             res = r.run_entry(_entry(True), {})
         self.assertFalse(res.ok); self.assertIn("timed out", res.error)
+        self.assertIs(True, res.launched)              # #3764: a launch that raised may have started a child
         def missing(cmd, **kw):
             raise FileNotFoundError("claude")
         with tempfile.TemporaryDirectory() as d:
             r = claude_runner.Runner("claude", runner=missing); r.prepare(d, review_root=d)
             res = r.run_entry(_entry(True), {})
         self.assertFalse(res.ok); self.assertIn("claude", res.error)
+        self.assertIn("could not launch", res.error)
+        self.assertIs(True, res.launched)
 
     def test_any_other_launch_exception_is_a_failed_result(self):
         def bad_args(cmd, **kw):
@@ -615,6 +618,7 @@ class TestRunEntry(unittest.TestCase):
             res = r.run_entry(_entry(True), {})
         self.assertFalse(res.ok)
         self.assertIn("ValueError", res.error)
+        self.assertIs(True, res.launched)
 
 
 class TestPrepare(unittest.TestCase):

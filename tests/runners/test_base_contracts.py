@@ -1,3 +1,4 @@
+import ast
 import copy
 import json
 import os
@@ -11,12 +12,59 @@ import scripts.runners.outage as outage
 import scripts.runners.schema as schema_rules
 import scripts._version as version
 import tests.strict_output_schema as strict_schema_rules
+from tests._test_helpers import REPO_ROOT
 
 
 def _published():
     """One of the schemas panopticon publishes under skill/reference/."""
     return os.path.abspath(version.reference_path("advisor-verdict-schema.json"))
 
+
+#: Where a refusal may be written, and the calls that launch there: every family's
+#: `run_entry`, and the batch worker that calls it (#3764).
+REFUSAL_SITES = (("claude.py", "run_entry", ("self.runner",)),
+                 ("codex.py", "run_entry", ("self.runner",)),
+                 ("kimi.py", "run_entry", ("launcher",)),
+                 ("agy.py", "run_entry", ("launcher",)),
+                 ("gemini.py", "run_entry", ("launcher",)),
+                 ("base.py", "iter_batch", ("self.run_entry",)))
+REFUSALS = ("refused", "refuse_unregistered_agent")
+
+
+def _refuses(node):
+    return isinstance(node, ast.Call) and ast.unparse(node.func).split(".")[-1] in REFUSALS
+
+
+def refusal_callers(source):
+    """The names of the functions in `source` that call a refusal, each the innermost
+    function around the call; `<module>` for a call outside any."""
+    names = set()
+
+    def visit(node, inside):
+        for child in ast.iter_child_nodes(node):
+            if _refuses(child):
+                names.add(inside)
+            visit(child, child.name if isinstance(
+                child, (ast.FunctionDef, ast.AsyncFunctionDef)) else inside)
+
+    visit(ast.parse(source), "<module>")
+    return sorted(names)
+
+
+def refusals_after_launch(source, function, launches):
+    """The lines in `function` where a refusal is called at or after the first launch
+    call, read from the AST. A function that is missing, defined twice, or holds no
+    launch call is reported too: a walk that found nothing to check has checked nothing."""
+    found = [node for node in ast.walk(ast.parse(source))
+             if isinstance(node, ast.FunctionDef) and node.name == function]
+    if len(found) != 1:
+        return ["%d definitions of %s, expected exactly one" % (len(found), function)]
+    calls = [node for node in ast.walk(found[0]) if isinstance(node, ast.Call)]
+    launched = [node.lineno for node in calls if ast.unparse(node.func) in launches]
+    if not launched:
+        return ["no launch call in %s" % function]
+    return sorted(node.lineno for node in calls
+                  if _refuses(node) and node.lineno >= min(launched))
 
 class TestTheOutputSchemaSeam(unittest.TestCase):
     """D10 ruling 3: ONE optional class attribute (docs/FAMILY-PR-GUARDRAILS.md
@@ -391,6 +439,92 @@ class TestTheRegisteredAgentAllowlist(unittest.TestCase):
         self.assertEqual("review-app-SEC", result.entry_id)
         self.assertIn("not a registered panopticon shell", result.error)
         self.assertIn(repr("../../tmp/evil"), result.error)
+
+    def test_no_refusal_follows_a_launch(self):
+        """#3706 seat review at 4d3ff8db. `refused` says an entry never launched, and
+        the ledger then leaves its row out of the unmeasured count. Used after the
+        launch call it would take a real unmeasured launch out of that count, and the
+        total would read exact. So in every family's `run_entry`, and in the batch
+        worker that calls it, each refusal comes before the launch."""
+        found = {}
+        for relative, function, launches in REFUSAL_SITES:
+            with open(os.path.join(REPO_ROOT, "skill", "scripts", "runners", relative),
+                      encoding="utf-8") as fh:
+                found[relative] = refusals_after_launch(fh.read(), function, launches)
+        self.assertEqual({relative: [] for relative, _function, _launches in REFUSAL_SITES},
+                         found, "a refusal at or after the launch call: use RunResult.failed "
+                                "there, which is counted as unmeasured")
+        # A helper `run_entry` calls after the launch (a family's envelope parser, say) is
+        # after the launch too, wherever its lines are. So a refusal is written in
+        # `run_entry` itself, or in the one shared refusal `run_entry` returns.
+        runners = os.path.join(REPO_ROOT, "skill", "scripts", "runners")
+        callers = {}
+        for name in sorted(os.listdir(runners)):
+            if name.endswith(".py"):
+                with open(os.path.join(runners, name), encoding="utf-8") as fh:
+                    callers[name] = refusal_callers(fh.read())
+        self.assertEqual(
+            dict({"base.py": ["refuse_unregistered_agent"]},
+                 **{relative: ["run_entry"] for relative, function, _launches in REFUSAL_SITES
+                    if function == "run_entry"}),
+            {name: where for name, where in callers.items() if where})
+
+    def test_only_refused_says_an_entry_never_launched(self):
+        """The rule above reads the calls to `refused`. It would be empty if any other
+        call could clear `launched`, so none does: in the runners package the keyword
+        appears once, inside `RunResult.refused`."""
+        runners = os.path.join(REPO_ROOT, "skill", "scripts", "runners")
+        found = []
+        for name in sorted(os.listdir(runners)):
+            if not name.endswith(".py"):
+                continue
+            with open(os.path.join(runners, name), encoding="utf-8") as fh:
+                tree = ast.parse(fh.read())
+            for function in ast.walk(tree):
+                if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    found += [(name, function.name) for node in ast.walk(function)
+                              if isinstance(node, ast.Call)
+                              and any(keyword.arg == "launched" or keyword.arg is None
+                                      and "launched" in ast.unparse(keyword.value)
+                                      for keyword in node.keywords)]
+                    # ...and nothing assigns it on a result it was handed.
+                    found += [(name, function.name) for node in ast.walk(function)
+                              if isinstance(node, ast.Attribute) and node.attr == "launched"
+                              and isinstance(node.ctx, ast.Store)]
+        self.assertEqual([("base.py", "refused")], found)
+        with self.assertRaises(TypeError):
+            base.RunResult.failed("e", "x", launched=False)
+
+    def test_the_refusal_detector_sees_one_after_a_launch(self):
+        before = ("class Runner:\n    def run_entry(self, entry, env):\n"
+                  "        if bad:\n            return base.RunResult.refused(1, 'x')\n"
+                  "        if worse:\n            return base.refuse_unregistered_agent(entry)\n"
+                  "        try:\n            proc = launcher(cmd)\n"
+                  "        except OSError as exc:\n            return base.RunResult.failed(1, exc)\n"
+                  "        return parse(proc)\n")
+        self.assertEqual([], refusals_after_launch(before, "run_entry", ("launcher",)))
+        for late in ("return base.RunResult.refused(1, exc)",
+                     "return RunResult.refused(1, exc)",
+                     "return base.refuse_unregistered_agent(entry)",
+                     "result = cls.refused(1, exc)"):
+            after = before.replace("return base.RunResult.failed(1, exc)", late)
+            self.assertEqual([10], refusals_after_launch(after, "run_entry", ("launcher",)), late)
+        # On the launch's own line counts as after it.
+        same_line = before.replace("proc = launcher(cmd)",
+                                   "proc = launcher(cmd) or base.RunResult.refused(1, 'x')")
+        self.assertEqual([8], refusals_after_launch(same_line, "run_entry", ("launcher",)))
+        # A function with no launch call, or no such function, is not a pass.
+        self.assertEqual(["no launch call in run_entry"],
+                         refusals_after_launch(before, "run_entry", ("self.runner",)))
+        self.assertEqual(["0 definitions of other, expected exactly one"],
+                         refusals_after_launch(before, "other", ("launcher",)))
+        self.assertEqual(["2 definitions of run_entry, expected exactly one"],
+                         refusals_after_launch(before + before, "run_entry", ("launcher",)))
+        self.assertEqual(["run_entry"], refusal_callers(before))
+        self.assertEqual(["<module>", "parse", "run_entry"], refusal_callers(
+            before + "    def parse(self, proc):\n        return base.RunResult.refused(1, 'x')\n"
+            "\nLATE = RunResult.refused(1, 'x')\n"))
+        self.assertEqual([], refusal_callers("def f():\n    return RunResult.failed(1, 'x')\n"))
 
     def test_a_refusal_before_launch_says_nothing_was_launched(self):
         """#3764: the ledger counts a row with no usage as a launch whose usage went

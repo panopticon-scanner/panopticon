@@ -314,6 +314,7 @@ def test_launch_exceptions_never_escape(tmp_path, error):
         result = runner.run_entry(entry(), bound_env(tmp_path))
     assert not result.ok
     assert ("timed out" if isinstance(error, subprocess.TimeoutExpired) else str(error)) in result.error
+    assert result.launched is True                     # #3764: a launch that raised may have started a child
 
 
 def test_command_construction_failure_never_executes(tmp_path):

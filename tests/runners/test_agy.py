@@ -1183,6 +1183,25 @@ class TestRunEntry(unittest.TestCase):
         self.assertIn("not registered", res.error)
         self.assertIs(False, res.launched)             # #3764: refused, never launched
 
+    def test_a_launch_that_raised_is_not_a_refusal(self):
+        """#3764: a launch that raised may have started a child, so its row is
+        counted as unmeasured. Only a return that precedes the launch is `refused`."""
+        for error, said in ((FileNotFoundError("agy"), "could not launch agy"),
+                            (ValueError("bad args"), "launch raised ValueError"),
+                            (subprocess.TimeoutExpired("agy", 1), "timed out after")):
+            def raising(cmd, error=error, **kw):
+                raise error
+            with tempfile.TemporaryDirectory() as d:
+                user_home, agents_dir = _fixture_user_home(d)
+                with mock.patch.dict(os.environ, {"HOME": user_home}):
+                    r = agy_runner.Runner("agy", runner=_answers_preflight(raising))
+                    r.prepare(d, os.path.join(d, "run"), registration_dir=agents_dir)
+                    self.addCleanup(r.teardown, "complete")
+                    res = r.run_entry(_entry(False), self._env())
+            self.assertFalse(res.ok)
+            self.assertIn(said, res.error)
+            self.assertIs(True, res.launched)
+
     def test_an_unprepared_runner_refuses_before_any_launch(self):
         launcher = mock.Mock(side_effect=AssertionError("nothing may launch"))
         res = agy_runner.Runner("agy", runner=launcher).run_entry(_entry(False), self._env())

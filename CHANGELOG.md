@@ -68,6 +68,8 @@
     either: an unregistered enforcement shell, a model the host does not list, an argv the
     Claude runner will not launch. Its ledger row carries `launched: false`. A failure that
     cannot say whether a child started (a timeout, a crash, a launch that raised) is counted.
+    So are Codex's own refusals before launch (a runner that was not prepared, an entry binding
+    that does not match), which are raised beside the launch and carry no such mark.
   - `meta.cost.tokens` is that document unchanged, so a reader that summed `total` or a
     `by_phase` value must now expect null there. No finding, gate or certification reads it.
 

@@ -347,6 +347,23 @@ class TestRunEntry(unittest.TestCase):
         self.assertEqual({}, res.usage)
         self.assertIs(True, res.launched)              # #3764: spent, and not measured
 
+    def test_a_launch_that_raised_is_not_a_refusal(self):
+        """#3764: a launch that raised may have started a child, so its row is
+        counted as unmeasured. Only a return that precedes the launch is `refused`."""
+        for error, said in ((FileNotFoundError("kimi"), "could not launch kimi"),
+                            (ValueError("bad args"), "launch raised ValueError")):
+            def raising(cmd, error=error, **kw):
+                raise error
+            with tempfile.TemporaryDirectory() as d, \
+                 mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi", runner=raising)
+                r.prepare(os.path.join(d, "run"), review_root=d)
+                self.addCleanup(r.teardown, "complete")
+                res = r.run_entry(_entry(False), {})
+            self.assertFalse(res.ok)
+            self.assertIn(said, res.error)
+            self.assertIs(True, res.launched)
+
     def test_a_timed_out_launch_carries_the_killed_childs_stderr(self):
         # #1732 fix round 2: the `TimeoutExpired` path kept the partial stream
         # and dropped stderr, so the failure that costs a whole entry timeout

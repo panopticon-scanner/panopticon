@@ -584,6 +584,25 @@ class TestRunEntry(unittest.TestCase):
         self.assertIn("not in gemini's known model catalogue", res.error)
         self.assertIs(False, res.launched)             # #3764: refused, never launched
 
+    def test_a_launch_that_raised_is_not_a_refusal(self):
+        """#3764: a launch that raised may have started a child, so its row is
+        counted as unmeasured. Only a return that precedes the launch is `refused`."""
+        for error, said in ((FileNotFoundError("gemini"), "could not launch gemini"),
+                            (ValueError("bad args"), "launch raised ValueError")):
+            def raising(cmd, error=error, **kw):
+                raise error
+            with tempfile.TemporaryDirectory() as d:
+                user_home, agents_dir = _fixture_user_home(d)
+                with mock.patch.dict(os.environ, {"HOME": user_home}):
+                    r = gemini_runner.Runner("gemini", runner=raising)
+                    r.prepare(os.path.join(d, "run"), review_root=d,
+                              registration_dir=agents_dir)
+                    self.addCleanup(r.teardown, "complete")
+                    res = r.run_entry(_entry(False), self._env())
+            self.assertFalse(res.ok)
+            self.assertIn(said, res.error)
+            self.assertIs(True, res.launched)
+
     def test_timeout_returns_failed_result_with_partial_output(self):
         def slow(cmd, **kw):
             raise subprocess.TimeoutExpired(
@@ -599,6 +618,7 @@ class TestRunEntry(unittest.TestCase):
                 res = r.run_entry(_entry(False), self._env())
         self.assertFalse(res.ok)
         self.assertIn("timed out after", res.error)
+        self.assertIs(True, res.launched)              # #3764: spent, and not measured
         self.assertEqual("partial reply", res.text)
         self.assertIn("timeout err", res.stderr)
         self.assertIsNone(res.model)

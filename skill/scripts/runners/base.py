@@ -196,7 +196,7 @@ class RunResult:
 
     @classmethod
     def failed(cls, entry_id, error, usage=None, text="", host_error=None,
-               failure_class=None, stderr=None, launched=True):
+               failure_class=None, stderr=None):
         """A failed entry, with whatever evidence the launch did produce.
 
         D10 ruling 5: a timed-out entry is often the most expensive one in a
@@ -210,8 +210,7 @@ class RunResult:
         """
         return cls(entry_id=entry_id, ok=False, text=text, usage=usage or {}, cost_usd=None,
                     model=None, session_id=None, denials=[], error=str(error),
-                    host_error=host_error, failure_class=failure_class, stderr=stderr,
-                    launched=launched)
+                    host_error=host_error, failure_class=failure_class, stderr=stderr)
 
     @classmethod
     def refused(cls, entry_id, error, host_error=None, failure_class=None):
@@ -223,9 +222,11 @@ class RunResult:
         and the total stays exact. Use it only where the return precedes the
         launch by construction. A timeout, a crash, a launch that raised: those
         are `failed`, and are counted as unmeasured, because nobody can say
-        what they spent."""
-        return cls.failed(entry_id, error, host_error=host_error,
-                          failure_class=failure_class, launched=False)
+        what they spent. This is the one place that clears `launched`: `failed`
+        takes no such argument, and a test reads every runner to hold that."""
+        return dataclasses.replace(
+            cls.failed(entry_id, error, host_error=host_error, failure_class=failure_class),
+            launched=False)
 
 
 class HostRunner(children.ChildProcesses):
