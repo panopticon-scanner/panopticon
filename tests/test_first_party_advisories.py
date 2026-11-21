@@ -1873,7 +1873,7 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
     def test_a_lock_name_that_is_not_a_pep_508_name_fails_the_lock(self):
         # #3686 review round 3, F3: `"acme-lib "` would not make `acme-lib` ambiguous.
         for name in ("acme-lib ", " acme-lib", "acme lib", "-acme", "acme-", "acme/lib",
-                     "acm\u00e9", "."):
+                     "acm\u00e9", ".", ""):
             with self.subTest(name=name):
                 _py_tree(self.root, lock=_uv_lock(
                     extra=_uv_entry(name, PY_MEMBER[1], _UV_REGISTRY)))
