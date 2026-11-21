@@ -37,7 +37,10 @@ projects, and nothing shows the pinned scanners report a sibling Maven reactor
 module; every pom.xml and Gradle advisory stays with the advisor.
 
 Every ecosystem (#3760): the parser is chosen by the lock's file name, so a finding
-that declares an ecosystem other than that lock's own is never classified.
+that declares an ecosystem other than that lock's own is never classified. Nor is
+an osv-scanner finding that declares none: osv-scanner always sets it, and only
+Trivy and the audit adapters, whose findings carry no ecosystem, are judged by the
+lock alone.
 
 The claim then changes from "a third-party dependency is used" to "this project
 version is affected" before the advisor queue is built. Ambiguity and unreadable
