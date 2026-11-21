@@ -619,6 +619,10 @@ class TestAnUnmeasuredCanaryAsksForARerunFirst(unittest.TestCase):
                       "again" + requests.RERUN_NEEDS_RESET, message)
         self.assertIn("a plain re-run that measures it is refused as a posture change",
                       requests.RERUN_NEEDS_RESET)
+        # #3663 round 2: the scan and the scouts HAVE run by this checkpoint.
+        self.assertIn("no review cell was dispatched; --reset repeats the scan and the scouts",
+                      requests.RERUN_NEEDS_RESET)
+        self.assertNotIn("discards nothing", requests.RERUN_NEEDS_RESET)
         self.assertLess(message.index("wait for the host to recover"),
                         message.index("--allow-unenforced"))
         self.assertIn("Only if it stays unknown on a healthy host", message)

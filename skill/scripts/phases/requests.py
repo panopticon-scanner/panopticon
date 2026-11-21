@@ -527,8 +527,8 @@ _ACK_DISCLOSURE = (hosts.TOOL_POLICY_ENFORCED, hosts.ARTIFACT_WRITE_GUARD, "tool
 
 # #3663 review: why "re-run" alone is the wrong advice after an unmeasured canary.
 RERUN_NEEDS_RESET = (" (this run recorded the unmeasured posture, so a plain re-run that "
-                     "measures it is refused as a posture change; nothing was dispatched, "
-                     "so --reset discards nothing)")
+                     "measures it is refused as a posture change; no review cell was "
+                     "dispatched; --reset repeats the scan and the scouts)")
 
 
 def require_unenforced_ack(review_root, manifest, entries):
@@ -620,7 +620,8 @@ def require_unenforced_ack(review_root, manifest, entries):
         # probe before it is worth accepting. #3663 review: that second probe needs
         # `--reset`. This refusal comes after the unmeasured posture was stored, so
         # a plain re-run that measures it moves unknown -> proven, which F3a refuses
-        # as posture drift; nothing has been dispatched, so a fresh run loses nothing.
+        # as posture drift. No review cell has been dispatched by this checkpoint, but
+        # the tool scan and the scouts have run, and --reset repeats them.
         detail = str(row.get("detail") or "")
         unknown = posture[hosts.ARTIFACT_WRITE_GUARD] == hosts.UNKNOWN
         unmeasured = unknown and detail.startswith(write_canary.NOT_MEASURED_LEAD)
