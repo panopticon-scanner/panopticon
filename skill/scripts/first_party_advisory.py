@@ -31,6 +31,17 @@ of its own module, so a main module, a go.work ``use`` module and a local
 module's) have no identity a manifest proves; every Go advisory stays with the
 advisor.
 
+Maven and Gradle (#3623, owner rulings J1 and J2): nothing is classified. A
+gradle.lockfile lists only resolved external modules, never the build's own
+projects, and nothing shows the pinned scanners report a sibling Maven reactor
+module; every pom.xml and Gradle advisory stays with the advisor.
+
+Every ecosystem (#3760): the parser is chosen by the lock's file name, so a finding
+that declares an ecosystem other than that lock's own is never classified. Nor is
+an osv-scanner finding that declares none: osv-scanner always sets it, and only
+Trivy and the audit adapters, whose findings carry no ecosystem, are judged by the
+lock alone.
+
 The claim then changes from "a third-party dependency is used" to "this project
 version is affected" before the advisor queue is built. Ambiguity and unreadable
 input fail closed onto the ordinary advisor path.
@@ -67,6 +78,18 @@ MAX_PYTHON_LOCK_BYTES = 16 * 1024 * 1024
 # PyPI refuses every `Private ::` classifier (#3686 review), not only Do Not Upload.
 PYTHON_PRIVATE_CLASSIFIER_PREFIX = "Private ::"
 _PEP503_SEPARATORS = re.compile(r"[-_.]+")
+# Every lock the marker reads, and (#3760) the OSV ecosystem each belongs to. A
+# finding that declares another one is not that lock's advisory, whatever its file
+# says. A lock in the tuple with no row here refuses every declared ecosystem, and a
+# test holds the two to the same names.
+FIRST_PARTY_LOCKS = ("Cargo.lock",) + NPM_LOCKS + PYTHON_LOCKS
+LOCK_ECOSYSTEMS = {"Cargo.lock": "crates.io",
+                   **{name: "npm" for name in NPM_LOCKS},
+                   **{name: "PyPI" for name in PYTHON_LOCKS}}
+# #3696 round 2: the adapters whose findings carry no ecosystem at all. Only theirs
+# may omit it; osv-scanner always sets one, so its absence is malformed input.
+ADAPTERS_WITHOUT_ECOSYSTEM = frozenset({"trivy", "pip-audit", "npm-audit", "bundler-audit",
+                                        "cargo-audit", "dependency-check"})
 _TRIVY_PACKAGE = re.compile(
     r"(?:^|\s)Package:\s*(\S+)\s+Installed Version:\s*(\S+)(?:\s|$)")
 _DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
@@ -859,6 +882,25 @@ def _python_package_origins(lock_path, target_root, cache: IngestCache):
     return origins
 
 
+def _ecosystem_agrees(tool, tool_evidence, lock_name):
+    """False when the finding's ecosystem is not the lock's own (#3760).
+
+    The parser is chosen by the lock's file name, so a record that says ``Maven`` at a
+    ``Cargo.lock`` would otherwise be matched against the crates. A declared ecosystem
+    must be exactly the lock's OSV ecosystem; anything else -- another ecosystem,
+    another case, a non-string (an explicit ``None`` included), or a lock with no row
+    in ``LOCK_ECOSYSTEMS`` -- stays on the advisor path, whichever adapter declared it.
+
+    An ABSENT ecosystem is accepted only from ``ADAPTERS_WITHOUT_ECOSYSTEM``, whose
+    findings never carry one, so the lock alone decides for them as before. osv-scanner
+    always sets it (and its adapter drops a JSON ``null``), so an osv finding without
+    one is malformed and is refused (#3696 round 2)."""
+    declared = tool_evidence.get("ecosystem", _MISSING)
+    if declared is _MISSING:
+        return tool in ADAPTERS_WITHOUT_ECOSYSTEM
+    return isinstance(declared, str) and declared == LOCK_ECOSYSTEMS.get(lock_name)
+
+
 def _advisory_package(finding):
     """Return the advisory's package/version, including Trivy's SARIF prose."""
     tool_evidence = finding.get("tool_evidence")
@@ -908,9 +950,11 @@ def _mark_finding(finding, target_root, cache):
     package = _advisory_package(finding)
     if package is None:
         return
-    lock_path = _lock_path(target_root, finding, ("Cargo.lock",) + NPM_LOCKS + PYTHON_LOCKS)
+    lock_path = _lock_path(target_root, finding, FIRST_PARTY_LOCKS)
     if lock_path is None:
         return
+    if not _ecosystem_agrees(tool, tool_evidence, os.path.basename(lock_path)):
+        return                         # #3760: decided before the lock is read
     if os.path.basename(lock_path) == "Cargo.lock":
         ecosystem, member = "Cargo", "workspace/path member"
         origins = _cargo_package_origins(lock_path, target_root, cache).get(package, set())

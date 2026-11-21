@@ -12,6 +12,11 @@ from .sarif_utils import CaptureCoverage, _norm_uri
 _DATABASE_SEVERITIES = {"CRITICAL": "CRITICAL", "HIGH": "HIGH",
                         "MEDIUM": "MEDIUM", "MODERATE": "MEDIUM", "LOW": "LOW"}
 
+# #3760: the file a record with no source path is reported at. A fixed placeholder:
+# the record's own ecosystem string used to stand in, so a record saying
+# `ecosystem: "Cargo.lock"` became a lock the first-party marker would read.
+NO_SOURCE_PATH = "manifest"
+
 # The config osv-scanner is pinned to, generated per scan into the adapter's own
 # scratch directory (#1839, run-14 SEC-1202454595). A CONSTANT with no ignore
 # entry in it, and nothing target-derived: the scan's ignore list is the
@@ -193,15 +198,12 @@ class OsvScannerAdapter:
                     if not isinstance(description, str):
                         description = "No description provided."
                     aliases = vuln.get("aliases")
-                    ecosystem = pkg.get("ecosystem")
                     out.append(make_finding(
                         self, n, group,
                         title=f"{pkg.get('name')} {pkg.get('version')}: {vuln.get('id', 'vulnerability')}",
                         severity=severity,
                         category="dependency_vulnerability",
-                        location={"file": src_path or (ecosystem if isinstance(ecosystem, str)
-                                                       else "manifest"),
-                                  "line_start": 1},
+                        location={"file": src_path or NO_SOURCE_PATH, "line_start": 1},
                         description=description if vuln.get("summary") else description[:500],
                         impact=f"Vulnerable dependency {pkg.get('name')}=={pkg.get('version')} is used.",
                         remediation="Upgrade to a patched version or see the OSV advisory.",
