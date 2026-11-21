@@ -80,7 +80,7 @@ class Resolved:
     ocrdb_coverage: dict | None
     verdict_stats: dict
     verify_matrix: dict
-    # Internal entry-attribution identities for #3641. The public matrix keeps
+    # Internal entry-attribution identities for #3753. The public matrix keeps
     # its existing schema; grading needs the actual engaged cells so a host
     # failure in a cell later answered by backup can be retired.
     verify_engaged_cells: tuple

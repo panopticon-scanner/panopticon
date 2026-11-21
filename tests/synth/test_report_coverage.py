@@ -755,6 +755,7 @@ class TestResumeDisclosure(unittest.TestCase):
         self.assertIn("1 verify entry of unknown shape", note)
         self.assertNotIn("verify cell", note)
         self.assertNotIn("tool-advisor", note)
+        self.assertNotIn("may overlap", note)
 
     def test_complete_run_stays_certified_with_an_unknown_host_entry(self):
         report = self._cell_report(

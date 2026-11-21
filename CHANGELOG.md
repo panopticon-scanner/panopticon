@@ -688,6 +688,7 @@ better.
   `--scope-files` on `discovery.py` itself) is unchanged, as are tool scans. This supersedes
   #1681 Task 7's
   grouping of the root config under Commons `Config` in full-repo scans.
+
 - **agy's `Individual quota reached` response now pauses as a host outage (#3640).** The
   free-text classifier recognizes that account-level sentence with or without agy's reset tail
   and a leading 429, so the failed launch is not charged to an entry. The match keeps agy's

@@ -205,7 +205,7 @@ class Ledger:
                 "phase": PHASE_OF_CHECKPOINT.get(checkpoint, "unattributed"),
                 "mode": mode, "host": host, "model": result.model,
                 "ok": result.ok and refusal is None,
-                # #3641: synthesis runs after the dispatch process and cannot
+                # #3753: synthesis runs after the dispatch process and cannot
                 # reconstruct the classifier's host_error input from the
                 # operator-facing error string. Persist the loop's verdict.
                 "failure_class": outage.landed_class(result, refusal),
