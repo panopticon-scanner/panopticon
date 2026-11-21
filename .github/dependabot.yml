@@ -33,13 +33,14 @@ updates:
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"
-      # Semgrep 1.183.0 (its requirements are 1.182.1's: 1.179.0's plus a
-      # floor, `certifi>=2026.10.19`, that the pinned certifi meets) pins these
+      # Semgrep 1.185.0 (its requirements are 1.183.0's plus
+      # `structlog~=26.1.0`, which 1.184.0 added) pins these
       # dependency families to the current major or minor line through its
       # transitive requirements. pyjwt is held to its major line alone since
       # 1.179.0 (`pyjwt[crypto]<3,>=2.15.0`), so its minor updates are offered
       # again (#2876). tomli is held to 2.4.x (`tomli~=2.4.0`), so only its
       # patch updates are offered (#3216 offered 2.5.0 and broke the build).
+      # structlog is held to 26.1.x the same way.
       - dependency-name: "boltons"
         update-types:
           - "version-update:semver-major"
@@ -50,6 +51,10 @@ updates:
       - dependency-name: "pyjwt"
         update-types:
           - "version-update:semver-major"
+      - dependency-name: "structlog"
+        update-types:
+          - "version-update:semver-major"
+          - "version-update:semver-minor"
       - dependency-name: "tomli"
         update-types:
           - "version-update:semver-major"

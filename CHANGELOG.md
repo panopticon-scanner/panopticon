@@ -29,6 +29,24 @@
 
   Every read spends #3634's shared ingest budget; fingerprints and reconcile keys are unchanged.
 
+- **Tools closure re-resolved: semgrep 1.185.0 (supersedes Dependabot #3751; #3619 not taken).**
+  - Taken as offered: semgrep 1.183.0 -> 1.185.0, with the Dockerfile `SEMGREP_VERSION` moved to
+    match; bracex 3.2.1 -> 3.2.2; filelock 4.2.9 -> 4.2.10; markdown-it-py 4.2.0 -> 4.3.0;
+    py-serializable 2.1.0 -> 2.2.0; pydantic 2.14.2 -> 2.14.3; sse-starlette 3.6.0 -> 3.7.0;
+    stevedore 5.9.1 -> 5.10.0. The pyproject ruff floor is now 0.17.5.
+  - Two pins moved that Dependabot did not offer. pydantic 2.14.3 requires exactly pydantic-core
+    2.50.4 (was 2.50.2). Semgrep requires `structlog~=26.1.0` since 1.184.0, so structlog 26.1.0
+    is new and the closure is 92 packages (was 91). Dependabot now offers only structlog's patch
+    updates.
+  - **Not taken: opentelemetry-api 1.37.0 -> 1.45.2 (#3619), a security update.** Semgrep 1.185.0
+    requires `opentelemetry-api~=1.37.0`, and so does 1.186.0, the latest release. The two
+    advisories it fixes stay open (GHSA-mf5v-w3w3-f6cg, GHSA-xcq7-p3pf-p88h), as do the mcp and
+    wcmatch ones, which Semgrep pins the same way (`mcp==1.29.0`, `wcmatch~=8.3`).
+  - Semgrep's SARIF writer, its error ids and its target selection are unchanged between the two
+    releases, so the adapter reads 1.185.0's output as it read 1.183.0's.
+  - The closure was re-resolved with `uv pip compile` for Python 3.12 on both linux architectures
+    (identical results), and `bump_pins.py requirements --write` wrote the digests.
+
 - **A resume under a live host limit stays paused instead of erroring (#3646).** A run paused
   for a host outage (a Claude weekly limit, in the owner's run) was resumed while the limit still
   held. Its capability probe could not launch the write/read canary, so both guards read unknown,
