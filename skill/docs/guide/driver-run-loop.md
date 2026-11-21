@@ -616,7 +616,10 @@ on Claude hooks, and always uses the return-persist path.
   `unmeasured_rows`, split in `unmeasured_by_host` and `unmeasured_by_phase`. It adds to no figure.
   When that count is not zero, `total_is_lower_bound` is true and `total` is a floor; when nothing
   at all was measured `total` is null, and so is a phase's figure when none of its launches was.
-  The rows an interrupt writes are not launches and are not counted.
+  The rows an interrupt writes are not launches and are not counted. Neither is an entry the
+  runner refused before it launched anything (an unregistered enforcement shell, a model the host
+  does not list): its row carries `launched: false`, written only then. A failure that cannot say
+  whether a child started, such as a timeout, is counted.
   In session mode `collect_usage.py` still runs from synthesize as before,
   and its `usage.json` discloses its own drops too: `sources` counts the transcripts it
   could not read, the lines JSON rejected and the non-integer usage fields it ignored, so a

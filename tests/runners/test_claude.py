@@ -115,6 +115,7 @@ class TestAnUnenforcedArgvWithoutItsToolControlsNeverLaunches(unittest.TestCase)
         result, launched = self.run_with(alter)
         self.assertEqual(launched, [])
         self.assertIn("refused before launch", str(result.error))
+        self.assertIs(False, result.launched)          # #3764: refused, never launched
 
     def test_dropping_the_allow_list_is_refused(self):
         self.assert_refused(lambda cmd: [a for a in cmd if not a.startswith("--tools=")])
@@ -188,6 +189,7 @@ class TestAnEnforcedLaunchIsGrantedExactlyItsOwnOutFile(unittest.TestCase):
                 result, launched = self.run_with(entry)
                 self.assertEqual(launched, [])
                 self.assertIn("refused before launch", str(result.error))
+                self.assertIs(False, result.launched)
                 self.assertIn(char, str(result.error))
                 self.assertIn("a%sb" % char, str(result.error).replace("\\\\", "\\"))
 

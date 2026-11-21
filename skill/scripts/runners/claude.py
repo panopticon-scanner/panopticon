@@ -468,10 +468,10 @@ class Runner(base.HostRunner):
         cmd = self.command(entry, self.settings_path, self.max_turns)
         problem = unenforced_argv_problem(cmd)
         if problem:                     # #2061: never launch an unenforced reviewer unconfined
-            return base.RunResult.failed(entry.get("id"), "refused before launch: %s (#2061)" % problem)
+            return base.RunResult.refused(entry.get("id"), "refused before launch: %s (#2061)" % problem)
         problem = enforced_argv_problem(entry, cmd)
         if problem:                     # #3218: never launch an enforced reviewer that cannot write
-            return base.RunResult.failed(entry.get("id"), "refused before launch: %s (#3218)" % problem)
+            return base.RunResult.refused(entry.get("id"), "refused before launch: %s (#3218)" % problem)
         try:
             proc = self.runner(cmd, cwd=self.review_root, env=run_env, capture_output=True,
                                 text=True, timeout=self.entry_timeout)

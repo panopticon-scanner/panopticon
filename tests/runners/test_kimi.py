@@ -305,8 +305,15 @@ class TestRunEntry(unittest.TestCase):
                 r.prepare(os.path.join(d, "run"), review_root=d)
                 self.addCleanup(r.teardown, "complete")
                 res = r.run_entry(_entry(True), self._env())
+                # The registered name resolving outside the registration directory is
+                # the same refusal one step earlier.
+                with mock.patch.object(r, "_shell_path", return_value=None):
+                    outside = r.run_entry(_entry(True), self._env())
         self.assertFalse(res.ok)
         self.assertIn("not registered", res.error)
+        self.assertIs(False, res.launched)             # #3764: refused, never launched
+        self.assertIn("resolves outside the registered shell directory", outside.error)
+        self.assertEqual((False, False), (outside.ok, outside.launched))
 
     def test_an_unresolvable_entry_model_fails_closed(self):
         with tempfile.TemporaryDirectory() as d, \
@@ -317,6 +324,7 @@ class TestRunEntry(unittest.TestCase):
             res = r.run_entry(_entry(False, model="bogus-tier"), self._env())
         self.assertFalse(res.ok)
         self.assertIn("does not resolve", res.error)
+        self.assertIs(False, res.launched)             # #3764: refused, never launched
 
     def test_a_timed_out_launch_keeps_the_stream_it_had_printed(self):
         # D10 ruling 5. Kimi's usage comes from the session wire file, not from
@@ -337,6 +345,7 @@ class TestRunEntry(unittest.TestCase):
         self.assertIn("timed out after", res.error)
         self.assertEqual(partial, res.text)
         self.assertEqual({}, res.usage)
+        self.assertIs(True, res.launched)              # #3764: spent, and not measured
 
     def test_a_timed_out_launch_carries_the_killed_childs_stderr(self):
         # #1732 fix round 2: the `TimeoutExpired` path kept the partial stream

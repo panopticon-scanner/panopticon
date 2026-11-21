@@ -7,6 +7,7 @@ import unittest
 from unittest import mock
 
 import scripts.runners.base as base
+import scripts.runners.outage as outage
 import scripts.runners.schema as schema_rules
 import scripts._version as version
 import tests.strict_output_schema as strict_schema_rules
@@ -390,6 +391,24 @@ class TestTheRegisteredAgentAllowlist(unittest.TestCase):
         self.assertEqual("review-app-SEC", result.entry_id)
         self.assertIn("not a registered panopticon shell", result.error)
         self.assertIn(repr("../../tmp/evil"), result.error)
+
+    def test_a_refusal_before_launch_says_nothing_was_launched(self):
+        """#3764: the ledger counts a row with no usage as a launch whose usage went
+        unmeasured. An entry refused before launch spent nothing, and says so."""
+        for kwargs in ({}, {"roles": ("advisor",)}):
+            result = base.refuse_unregistered_agent({"id": "e", "agent": "x"}, **kwargs)
+            self.assertEqual((False, False, {}), (result.ok, result.launched, result.usage))
+        refused = base.RunResult.refused("e", ValueError("no"), host_error="h",
+                                         failure_class=outage.HOST_FAILURE)
+        self.assertEqual(("e", False, "no", "h", outage.HOST_FAILURE, False, {}, None),
+                         (refused.entry_id, refused.ok, refused.error, refused.host_error,
+                          refused.failure_class, refused.launched, refused.usage,
+                          refused.cost_usd))
+        # Every other failure may have started a child: it does not claim otherwise.
+        self.assertIs(True, base.RunResult.failed("e", "timed out").launched)
+        self.assertIs(True, base.RunResult(entry_id="e", ok=True, text="", usage={},
+                                           cost_usd=None, model=None, session_id=None,
+                                           denials=[], error=None).launched)
 
     def test_the_refusal_neutralises_a_value_that_is_trying_to_write_the_log(self):
         # Fix round 1, item 6: the value is the TARGET's, and it lands in the

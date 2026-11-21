@@ -291,6 +291,11 @@ class Ledger:
             line["reply_via"] = result.reply_via
         if _self_write_failed(entry, result, refusal) and result.text:
             line["result_head"] = redact.redact(str(result.text))[:runners_base.STDERR_HEAD]
+        if getattr(result, "launched", True) is False:
+            # #3764: a refusal made before anything was launched. Written only when
+            # set, as the keys above are. `usage_document` leaves such a row out of
+            # its unmeasured count: nothing was spent, so nothing went unmeasured.
+            line["launched"] = False
         if status is not None:
             line["status"] = status
         if rolled_back:
@@ -441,7 +446,10 @@ class Ledger:
         never zero.
 
         An interrupt's marker rows are not launches and stay invisible here, as they
-        are to every other reader (`rollback_rows`)."""
+        are to every other reader (`rollback_rows`). Neither is a row the runner
+        marked as refused before launch (`launched: false`, `RunResult.refused`):
+        it spent nothing. A failure with no such mark is counted, whether or not a
+        child ever started, because the row cannot say."""
         by_phase: dict[str, int | None] = {p: 0 for p in PHASES}
         by_field: dict[str, int | None] = {k: 0 for k in USAGE_FIELDS}
         by_model_tokens: dict[str, dict[str, int]] = {}
@@ -473,7 +481,7 @@ class Ledger:
                 measured_phases.add(phase)
                 for k in USAGE_FIELDS:
                     by_field[k] = (by_field[k] or 0) + usage[k]
-            elif not row.get("rolled_back"):
+            elif not row.get("rolled_back") and row.get("launched") is not False:
                 host = row.get("host")
                 host = host if isinstance(host, str) and host else UNKNOWN_HOST
                 unmeasured_by_host[host] = unmeasured_by_host.get(host, 0) + 1

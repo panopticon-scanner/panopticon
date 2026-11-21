@@ -360,6 +360,20 @@ class TestUnder(unittest.TestCase):
         self.assertEqual("/d could not be listed: a\\x0ab",
                          str(safe_glob.Unlistable("/d", OSError("a\nb"))))
 
+    def test_two_names_are_never_printed_alike(self):
+        """#3706 seat review at eccba175, item 2: a newline was spelled `\\x0a` and a
+        backslash was left alone, so a directory named with a newline and one named
+        with those four characters printed the same line. A backslash is doubled."""
+        newline, four_characters = "a\nb", "a\\x0ab"
+        self.assertEqual(("a\\x0ab", "a\\\\x0ab"),
+                         (safe_glob.shown(newline), safe_glob.shown(four_characters)))
+        self.assertEqual("C:\\\\dir\\\\", safe_glob.shown("C:\\dir\\"))
+        self.assertEqual("plain/[x] *?", safe_glob.shown("plain/[x] *?"))
+        shown = {str(safe_glob.Unlistable(name, OSError(reason)))
+                 for name in (newline, four_characters) for reason in (newline, four_characters)}
+        self.assertEqual(4, len(shown))
+        self.assertEqual([], [line for line in shown if "\n" in line])
+
     def test_a_directory_under_a_wildcard_that_cannot_be_listed_raises(self):
         seen = self.make("home", "sessions", "d1", "s1", "wire.jsonl")
         locked = os.path.dirname(os.path.dirname(

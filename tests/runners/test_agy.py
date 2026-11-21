@@ -1066,6 +1066,7 @@ class TestTheKeyRoute(unittest.TestCase):
         self.assertIn("lists no model 'gemini-4-carbon-high'", res.error)
         self.assertEqual(outage.HOST_FAILURE, res.failure_class)
         self.assertEqual(1, len(seen))                          # only `agy models`
+        self.assertIs(False, res.launched)             # #3764: refused, never launched
 
     def test_the_preflight_turn_on_the_key_route_runs_its_default(self):
         turns = []
@@ -1180,6 +1181,15 @@ class TestRunEntry(unittest.TestCase):
                 res = r.run_entry(_entry(True), self._env())
         self.assertFalse(res.ok)
         self.assertIn("not registered", res.error)
+        self.assertIs(False, res.launched)             # #3764: refused, never launched
+
+    def test_an_unprepared_runner_refuses_before_any_launch(self):
+        launcher = mock.Mock(side_effect=AssertionError("nothing may launch"))
+        res = agy_runner.Runner("agy", runner=launcher).run_entry(_entry(False), self._env())
+        self.assertFalse(res.ok)
+        self.assertIn("was not prepared before run_entry", res.error)
+        launcher.assert_not_called()
+        self.assertIs(False, res.launched)             # #3764: refused, never launched
 
     def test_unresolvable_model_fails_closed(self):
         with tempfile.TemporaryDirectory() as d:
@@ -1191,6 +1201,7 @@ class TestRunEntry(unittest.TestCase):
                 res = r.run_entry(_entry(False, model="bogus-model"), self._env())
         self.assertFalse(res.ok)
         self.assertIn("not in agy's known model catalogue", res.error)
+        self.assertIs(False, res.launched)             # #3764: refused, never launched
 
     def test_a_bad_effort_fails_the_entry_before_any_launch(self):
         # #3564: refused by name in run_entry, not as a "launch raised" crash.
@@ -1208,6 +1219,7 @@ class TestRunEntry(unittest.TestCase):
                 self.assertIn(why, res.error)
                 self.assertNotIn("launch raised", res.error)
                 self.assertEqual({}, seen)
+                self.assertIs(False, res.launched)     # #3764: refused, never launched
 
     def test_run_entry_launches_carbon_with_its_effort(self):
         seen = {}

@@ -474,19 +474,19 @@ class Runner(base.HostRunner):
     def run_entry(self, entry, env):
         entry_id = entry.get("id")
         if self.gemini_home is None:
-            return base.RunResult.failed(
+            return base.RunResult.refused(
                 entry_id, "the gemini runner was not prepared before run_entry")
         if entry.get("enforced"):
             if base.registered_agent(entry, roles=self.roles) is None:
                 return base.refuse_unregistered_agent(entry, roles=self.roles)
             shell = self._shell_path(entry)
             if shell is None or not os.path.isfile(shell):
-                return base.RunResult.failed(
+                return base.RunResult.refused(
                     entry_id, "enforcement shell not registered for %r "
                     "(run dispatch.py --emit-host-agents gemini)" % entry.get("agent"))
         eff_model = entry.get("model")
         if eff_model is not None and eff_model not in KNOWN_MODELS:
-            return base.RunResult.failed(
+            return base.RunResult.refused(
                 entry_id, "entry model %r is not in gemini's known model catalogue"
                 % eff_model)
         launcher = (DEFAULT_RUNNER
@@ -501,7 +501,7 @@ class Runner(base.HostRunner):
             child_env = self.launch_env(env)
             hazard = gemini_home.auth_hazard(env=child_env, real_user_home=self.user_home)
             if hazard:
-                return base.RunResult.failed(
+                return base.RunResult.refused(
                     entry_id, hazard, host_error=hazard,
                     failure_class=outage.HOST_FAILURE)
             child_env[gemini_guard_hook.ENV_DENIAL_LOG] = denial_log

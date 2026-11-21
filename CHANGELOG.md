@@ -47,7 +47,8 @@
       over, as it cannot hold this session's transcripts. Our own stops the collection, closed
       to us or not.
   - Each of those lines is one line whatever the directory is named: a newline or an escape
-    sequence in the path is spelled out (`\x0a`, `\x1b`), not printed.
+    sequence in the path is spelled out (`\x0a`, `\x1b`), not printed. A backslash in the path
+    is doubled, so two different names never print alike.
   - The helper refuses a pattern that would leave its directory: an empty, absolute, `.` or
     `..` part, no pattern at all, or an empty directory is a `ValueError`. So is a part that
     holds a backslash or starts with a drive (`C:`), on every platform.
@@ -63,6 +64,10 @@
     was measured, `total` is null, not 0; the same holds for one phase's figure in `by_phase`.
   - A run that launched nothing still reads 0, and a launch that measured zero still counts as
     measured. The rows an interrupt writes are not launches and are not counted.
+  - An entry the runner refused before it launched anything spent nothing, so it is not counted
+    either: an unregistered enforcement shell, a model the host does not list, an argv the
+    Claude runner will not launch. Its ledger row carries `launched: false`. A failure that
+    cannot say whether a child started (a timeout, a crash, a launch that raised) is counted.
   - `meta.cost.tokens` is that document unchanged, so a reader that summed `total` or a
     `by_phase` value must now expect null there. No finding, gate or certification reads it.
 

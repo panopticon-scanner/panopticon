@@ -52,14 +52,19 @@ class Unlistable(Exception):
     def __init__(self, directory, error):
         self.directory = directory
         self.reason = getattr(error, "strerror", None) or str(error)
-        super().__init__("%s could not be listed: %s"
-                         % (shown(directory), inert.inert_spelling(self.reason)))
+        super().__init__("%s could not be listed: %s" % (shown(directory), _spelled(self.reason)))
 
 
 def shown(directory):
     """`directory` as a diagnostic prints it: each control character spelled out
-    (`scripts.inert`), so the path stays on its one line."""
-    return inert.inert_spelling(os.fspath(directory))
+    (`scripts.inert`), so the path stays on its one line. A backslash is doubled
+    first, so a name that holds the four characters `\\x0a` and a name that holds
+    a newline are not printed alike."""
+    return _spelled(os.fspath(directory))
+
+
+def _spelled(text):
+    return inert.inert_spelling(text.replace("\\", "\\\\"))
 
 
 def under(directory, *pattern):

@@ -602,25 +602,25 @@ class Runner(base.HostRunner):
     def run_entry(self, entry, env):
         entry_id = entry.get("id")
         if self.agy_home is None:
-            return base.RunResult.failed(
+            return base.RunResult.refused(
                 entry_id, "the agy runner was not prepared before run_entry")
         if entry.get("enforced"):
             if base.registered_agent(entry, roles=self.roles) is None:
                 return base.refuse_unregistered_agent(entry, roles=self.roles)
             shell = self._shell_path(entry)
             if shell is None or not os.path.isfile(shell):
-                return base.RunResult.failed(
+                return base.RunResult.refused(
                     entry_id, "enforcement shell not registered for %r "
                     "(run dispatch.py --emit-host-agents agy)" % entry.get("agent"))
         eff_model = entry.get("model")
         if eff_model is not None and eff_model not in KNOWN_MODELS:
-            return base.RunResult.failed(
+            return base.RunResult.refused(
                 entry_id, "entry model %r is not in agy's known model catalogue"
                 % eff_model)
         try:
             effort_argv(entry.get("effort"), eff_model)
         except ValueError as exc:
-            return base.RunResult.failed(entry_id, redact.redact(str(exc)))
+            return base.RunResult.refused(entry_id, redact.redact(str(exc)))
         launch_entry, launch_model, bound_model, substitution = entry, eff_model, None, None
         if self.auth_route == "key":
             # #3627 review 1: belt and braces -- a strict run walks no ladder even if an
@@ -632,8 +632,8 @@ class Runner(base.HostRunner):
                     explicit=bool(entry.get("model_override")),
                     ladder=(ladders.get("key") if isinstance(ladders, dict) else None) or ())
             except ValueError as exc:
-                return base.RunResult.failed(entry_id, str(exc), host_error=str(exc),
-                                             failure_class=outage.HOST_FAILURE)
+                return base.RunResult.refused(entry_id, str(exc), host_error=str(exc),
+                                              failure_class=outage.HOST_FAILURE)
             launch_entry = {k: v for k, v in entry.items() if k != "effort"}
             launch_model = bound_model
             if substitution is not None:

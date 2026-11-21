@@ -540,20 +540,20 @@ class Runner(base.HostRunner):
                 return base.refuse_unregistered_agent(entry, roles=self.roles)
             shell = self._shell_path(entry)
             if shell is None:
-                return base.RunResult.failed(
+                return base.RunResult.refused(
                     entry_id, "entry's enforcement shell resolves outside the registered "
                     "shell directory %s: %r"
                     % (hosts.spec(self.host).registration_dir,
                        redact.redact(str(entry.get("agent"))[:200])))
             if not os.path.isfile(shell):
-                return base.RunResult.failed(
+                return base.RunResult.refused(
                     entry_id, "enforcement shell not registered at %s "
                     "(run dispatch.py --emit-host-agents kimi)" % shell)
         alias = None
         if entry.get("model"):
             alias = resolve_cli_alias(entry["model"], self.configured or set())
             if alias is None:
-                return base.RunResult.failed(
+                return base.RunResult.refused(
                     entry_id, "entry model %r does not resolve to a model alias "
                     "the installed Kimi CLI has configured" % entry["model"])
         launcher = self.launcher(self.runner, DEFAULT_RUNNER)

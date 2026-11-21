@@ -385,6 +385,47 @@ class TestUnmeasuredUsage(LoopCase):
                          (doc["total"], doc["total_is_lower_bound"], doc["unmeasured_rows"],
                           doc["unmeasured_by_host"]))
 
+    def test_an_entry_refused_before_launch_spent_nothing(self):
+        """#3706 seat review at eccba175, item 1. The loop records every result, and a
+        refusal before launch ("enforcement shell not registered") has no usage. It was
+        counted as a launch that went unmeasured, so a run in which every token was
+        counted published a lower bound, or null."""
+        ledger = self._ledger()
+        ledger.record({"id": "review-a"}, "review",
+                      base.RunResult.refused("review-a", "enforcement shell not registered"),
+                      "headless", "kimi")
+        self.assertIs(False, ledger.lines()[0]["launched"])
+        doc = ledger.usage_document()
+        self.assertEqual((0, False, 0, {}, {}),
+                         (doc["total"], doc["total_is_lower_bound"], doc["unmeasured_rows"],
+                          doc["unmeasured_by_host"], doc["unmeasured_by_phase"]))
+        self.assertEqual({"scout": 0, "review": 0, "verify": 0, "unattributed": 0},
+                         doc["by_phase"])
+        self._record(ledger, "review-b", "review", "kimi", {"input_tokens": 9})
+        doc = ledger.usage_document()
+        self.assertEqual((9, False, 0), (doc["total"], doc["total_is_lower_bound"],
+                                         doc["unmeasured_rows"]))
+        # A failure that does not say it never launched may have spent tokens.
+        ledger.record({"id": "review-c"}, "review",
+                      base.RunResult.failed("review-c", "kimi -p timed out after 5s"),
+                      "headless", "kimi")
+        doc = ledger.usage_document()
+        self.assertEqual((9, True, 1, {"kimi": 1}),
+                         (doc["total"], doc["total_is_lower_bound"], doc["unmeasured_rows"],
+                          doc["unmeasured_by_host"]))
+        # Written only when set: no other row carries the key.
+        self.assertEqual([False, None, None],
+                         [row.get("launched", None) for row in ledger.lines()])
+        self.assertEqual([True, False, False], ["launched" in row for row in ledger.lines()])
+
+    def test_only_an_explicit_false_marks_a_row_as_never_launched(self):
+        ledger = self._ledger()
+        with open(ledger.path, "w", encoding="utf-8") as fh:
+            for launched in (False, True, None, 0, "false"):
+                fh.write(json.dumps({"phase": "review", "host": "kimi", "usage": {},
+                                     "launched": launched}) + "\n")
+        self.assertEqual(4, ledger.usage_document()["unmeasured_rows"])
+
     def test_rows_no_writer_of_ours_made(self):
         """A row with no host is counted under `unknown`. One whose usage is not an
         object, or holds none of the four fields, is unmeasured, not a crash."""

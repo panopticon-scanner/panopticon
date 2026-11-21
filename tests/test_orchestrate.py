@@ -303,6 +303,47 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         report = runio._load_json(runio._pano(d, "report.json"))
         self.assertEqual(report["meta"]["cost"]["tokens"]["total"], usage["total"])   # R-P6-4
 
+    def test_an_entry_refused_before_launch_leaves_the_total_exact(self):
+        """#3706 seat review at eccba175, item 1, through the loop. A refusal before
+        launch spent nothing: the usage document counts no unmeasured launch for it.
+        A failure that may have launched is counted, and the total becomes a floor."""
+        class Refusing(FakeRunner):
+            refuse_once = ()
+
+            def run_entry(self, entry, env):
+                if entry["id"] in self.refuse_once:
+                    self.refuse_once = ()
+                    return base.RunResult.refused(entry["id"], "enforcement shell not registered")
+                return super().run_entry(entry, env)
+
+        def run(**marks):
+            d, floor = self._repo()
+            runner = Refusing()
+            for name, value in marks.items():
+                setattr(runner, name, value)
+            self.assertEqual("complete", self._run(d, floor, runner)["status"])
+            with open(os.path.join(runner.run_dir, "dispatch-ledger.jsonl"),
+                      encoding="utf-8") as fh:
+                rows = [json.loads(line) for line in fh if line.strip()]
+            usage = runio._load_json(os.path.join(runner.run_dir, "usage.json"))
+            report = runio._load_json(runio._pano(d, "report.json"))
+            self.assertEqual(usage, report["meta"]["cost"]["tokens"])
+            return rows, usage
+
+        rows, usage = run(refuse_once=("review-app-SEC",))
+        self.assertEqual([False], [row["launched"] for row in rows if "launched" in row])
+        self.assertEqual(1, sum(1 for row in rows if not row["usage"]))
+        self.assertEqual((sum(sum(row["usage"].values()) for row in rows), False, 0, {}),
+                         (usage["total"], usage["total_is_lower_bound"],
+                          usage["unmeasured_rows"], usage["unmeasured_by_host"]))
+        rows, usage = run(drop_once={"review-app-SEC"})
+        self.assertEqual([], [row for row in rows if "launched" in row])
+        self.assertEqual((sum(sum(row["usage"].values()) for row in rows), True, 1,
+                          {"claude": 1}, {"review": 1}),
+                         (usage["total"], usage["total_is_lower_bound"],
+                          usage["unmeasured_rows"], usage["unmeasured_by_host"],
+                          usage["unmeasured_by_phase"]))
+
     def test_max_iterations_trips_to_error_naming_the_stuck_entries(self):
         d, floor = self._repo()
         runner = FakeRunner()
