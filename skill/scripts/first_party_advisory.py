@@ -13,6 +13,12 @@ root, and its own package.json proves the same name and version and is
 publishable: ``private: true`` is npm's ``publish = false``, except for the
 review root itself.
 
+Go (#3623, owner ruling G1): nothing is classified. A go.mod declares no version
+of its own module, so a main module, a go.work ``use`` module and a local
+``replace`` target (whose version is the consumer's require line, not the
+module's) have no identity a manifest proves; every Go advisory stays with the
+advisor.
+
 The claim then changes from "a third-party dependency is used" to "this project
 version is affected" before the advisor queue is built. Ambiguity and unreadable
 input fail closed onto the ordinary advisor path.
