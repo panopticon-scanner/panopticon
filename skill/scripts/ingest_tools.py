@@ -881,7 +881,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
             ingest_policy_cv.reset(policy_token)
         # #3593: before any finding can enter either synthesize pass, distinguish
         # an advisory against a sourceless Cargo workspace/path package (#3623: or
-        # a linked npm workspace/local package) whose
+        # a linked npm workspace/local package, or a local-path Python package) whose
         # exact identity also has one in-tree publishable manifest from an
         # ordinary registry dependency. Both the driver's recomputed tool queue
         # and synthesis ingest through this one point, so the marker and the

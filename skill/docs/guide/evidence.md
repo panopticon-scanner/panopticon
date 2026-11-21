@@ -18,10 +18,21 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
   `publish = false` (only the review root itself is exempt), and a `publishConfig.registry` other
   than the public one is private-only. Only osv-scanner and Trivy are classified, because they
   report the installed version; npm-audit's `vulnerable_versions` is a range, even when it
-  happens to name a single version, so its advisories stay with the advisor. Go classifies nothing
-  (#3623): a go.mod declares no version of its own module, so a main module, a go.work `use`
-  module and a local `replace` target (whose version is the consumer's `require`, not the
-  module's) stay with the advisor under every scanner. Gate-eligible.
+  happens to name a single version, so its advisories stay with the advisor. Python follows it
+  too (#3623): an exact match, under PEP 503 names, against the review root's own `uv.lock`,
+  `poetry.lock` or `pdm.lock` where every entry with that identity is a local-path package (a uv
+  `editable` / `directory` / `virtual` source, a Poetry `directory` source, a PDM `path`) whose
+  realpath is inside the review root and whose own `pyproject.toml` (`[project]`, else Poetry's
+  `[tool.poetry]`) has the same name and a static version and is publishable. A `Private ::`
+  classifier, `package-mode = false`, `[tool.uv] package = false`, `[tool.pdm] distribution = false`,
+  dynamic classifiers and a uv `virtual` source are unpublishable, except for the review root
+  itself. A dynamic version, another PEP 440-equal spelling of the same release (local or not) and
+  a lock entry whose name is not a PEP 508 name fail closed. A lock (any ecosystem) must resolve to
+  a file of the name the scanner reported. `Pipfile.lock` and `requirements.txt` carry no versioned
+  local identity and stay with the advisor, and so does pip-audit, which audits an environment, not
+  the lock. Go classifies nothing (#3623): a go.mod declares no version of its own module, so a
+  main module, a go.work `use` module and a local `replace` target (whose version is the consumer's
+  `require`, not the module's) stay with the advisor under every scanner. Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
   Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
   by one advisor: the adversarial backup round is summoned only for primary-CONFIRMED findings in

@@ -17,8 +17,34 @@
   for a canary that measured nothing) now says to re-run with `--reset`: a plain re-run that
   measures the guard was itself refused as a posture change.
 
-- **Go advisories always stay with the advisor (#3623, owner ruling).** Unlike Cargo and npm,
-  Go has no first-party marker: a go.mod declares `module M` but no version of its own
+- **Python advisories against the project's own packages are first-party (#3623).** The Cargo
+  and npm rule now has a Python twin. An osv-scanner or Trivy advisory naming an exact name
+  (PEP 503 normalised) and version from the review root's own `uv.lock`, `poetry.lock` or
+  `pdm.lock` is confirmed at ingest, without an advisor, when every lock entry with that identity
+  is a local-path package -- a uv `editable` / `directory` / `virtual` source, a Poetry
+  `directory` source, a PDM `path` -- whose realpath is inside the review root and whose own
+  `pyproject.toml` has the same name and a static version and is publishable. `[project]` comes
+  first; Poetry's legacy `[tool.poetry]` is read only without it.
+  - **Unpublishable:** any `Private ::` classifier (PyPI refuses them all), `package-mode =
+    false`, `[tool.uv] package = false`, `[tool.pdm] distribution = false`, a uv `virtual`
+    source, and `dynamic = ["classifiers"]` (a private classifier filled in at build time could
+    not be seen). The review root itself is exempt, as for npm's `private`; a member is not.
+  - **Fails closed onto the advisor path:** a dynamic version, a registry / git / url / archive
+    copy of the same identity (or of a PEP 440-equal spelling of it, such as `1.2.0-rc1` beside
+    `1.2.0rc1`; confirmation itself stays an exact match), a second local spelling of the same
+    release, an outside-tree package, a version mismatch, a lock entry whose name is not a PEP
+    508 name, a malformed lock or manifest, and an unread manifest.
+  - **Out of scope:** `Pipfile.lock` and `requirements.txt` (no versioned local identity), and
+    pip-audit, which audits an environment rather than the lock.
+
+  Every read spends #3634's shared ingest budget; fingerprints and reconcile keys are unchanged.
+  - **All ecosystems:** a lock that resolves to a file of another name (`poetry.lock` symlinked
+    to `pdm.lock`, `uv.lock` to `Cargo.lock`, `package-lock.json` to `npm-shrinkwrap.json`) is
+    no longer read. The parser and its cache follow the resolved name, so such a lock could be
+    parsed as a format no scanner read it as.
+
+- **Go advisories always stay with the advisor (#3623, owner ruling).** Unlike Cargo, npm and
+  Python, Go has no first-party marker: a go.mod declares `module M` but no version of its own
   (the main module's comes from VCS tags at build time), so there is no identity a manifest can
   prove. A main module, a go.work `use` module and a local `replace` target -- whose version is
   the consumer's `require` line, often a placeholder pseudo-version -- are all pinned to the

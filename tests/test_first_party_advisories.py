@@ -1227,6 +1227,14 @@ class TestNpmFirstPartyAdvisory(unittest.TestCase):
             with self.subTest(path=path):
                 self.assertIsNone(self._origin(NPM_MEMBER, path=path))
 
+    def test_a_lock_resolving_to_another_name_is_refused(self):
+        # #3686 review F1, which lives in the shared lock-path check: a package-lock.json
+        # symlinked to a shrinkwrap (or any other name) is not read.
+        _npm_tree(self.root, lock_name="npm-shrinkwrap.json")
+        os.symlink("npm-shrinkwrap.json", os.path.join(self.root, "package-lock.json"))
+        self.assertIsNone(self._origin(NPM_MEMBER))
+        self.assertEqual("first_party", self._origin(NPM_MEMBER, path="npm-shrinkwrap.json"))
+
     def test_npm_shrinkwrap_is_read_the_same_way(self):
         _npm_tree(self.root, lock_name="npm-shrinkwrap.json")
         self.assertEqual("first_party", self._origin(NPM_MEMBER, path="npm-shrinkwrap.json"))
@@ -1303,6 +1311,640 @@ class TestNpmFirstPartyAdvisory(unittest.TestCase):
         spent = sum(os.path.getsize(os.path.join(self.root, p)) for p in (
             "package-lock.json", "package.json", "packages/lib/package.json",
             "Cargo.lock", "Cargo.toml"))
+        self.assertEqual(first_party_advisory.MAX_CARGO_MANIFEST_INGEST_BYTES - spent,
+                         cache.manifest_bytes_remaining)
+
+
+PY_ROOT = ("acme-app", "0.3.0")
+PY_MEMBER = ("acme-lib", "1.2.0")
+PY_REGISTRY = ("requests", "2.0.0")
+_UV_REGISTRY = '{ registry = "https://pypi.org/simple" }'
+
+
+def _uv_entry(name, version, source):
+    version_line = "" if version is None else 'version = "%s"\n' % version
+    source_line = "" if source is None else "source = %s\n" % source
+    return '[[package]]\nname = "%s"\n%s%s\n' % (name, version_line, source_line)
+
+
+def _uv_lock(*, root='{ editable = "." }', member='{ editable = "packages/lib" }',
+             extra=""):
+    """A uv.lock: the editable root, one editable workspace member, one PyPI package."""
+    return ('version = 1\nrequires-python = ">=3.11"\n\n'
+            + (_uv_entry(*PY_ROOT, root) if root is not None else "")
+            + (_uv_entry(*PY_MEMBER, member) if member is not None else "")
+            + _uv_entry(*PY_REGISTRY, _UV_REGISTRY) + extra)
+
+
+def _pyproject(name, version, extra=""):
+    return '[project]\nname = "%s"\nversion = "%s"\n%s' % (name, version, extra)
+
+
+def _write_text(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        fh.write(text)
+
+
+def _py_tree(root, *, lock=None, lock_name="uv.lock", member=None, top=None):
+    """A fixture Python project: pyproject.toml, packages/lib/pyproject.toml, a lock."""
+    _write_text(os.path.join(root, "pyproject.toml"),
+                top if top is not None else _pyproject(*PY_ROOT))
+    if member is not False:
+        _write_text(os.path.join(root, "packages", "lib", "pyproject.toml"),
+                    member if member is not None else _pyproject("acme_lib", PY_MEMBER[1]))
+    _write_text(os.path.join(root, lock_name), lock if lock is not None else _uv_lock())
+
+
+def _poetry_lock(member_source='type = "directory"\nurl = "packages/lib"\n', extra=""):
+    return ('[[package]]\nname = "%s"\nversion = "%s"\ndevelop = true\n\n'
+            '[package.source]\n%s\n'
+            '[[package]]\nname = "%s"\nversion = "%s"\n\n%s'
+            '[metadata]\nlock-version = "2.0"\n'
+            % (PY_MEMBER + (member_source,) + PY_REGISTRY + (extra,)))
+
+
+def _pdm_lock(member_fields='path = "./packages/lib"\neditable = true\n', extra=""):
+    return ('[metadata]\nlock_version = "4.4"\n\n'
+            '[[package]]\nname = "%s"\nversion = "%s"\n%s\n'
+            '[[package]]\nname = "%s"\nversion = "%s"\n\n%s'
+            % (PY_MEMBER + (member_fields,) + PY_REGISTRY + (extra,)))
+
+
+class TestPythonFirstPartyAdvisory(unittest.TestCase):
+    """#3623 Python: uv.lock, poetry.lock and pdm.lock local-path packages, mirroring the
+    Cargo and npm markers under the three owner rulings (review-root exemption, a dynamic
+    version fails closed, Pipfile.lock / requirements.txt out of scope). Fixtures only."""
+
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.root = os.path.realpath(d.name)
+
+    def _mark(self, package, *, path="uv.lock", source="tool:osv-scanner", cache=None):
+        finding = _raw_advisory_finding(path=path, source=source, package=package[0],
+                                        version=package[1])
+        first_party_advisory.mark([finding], self.root,
+                                  cache or first_party_advisory.IngestCache())
+        return finding
+
+    def _origin(self, package, **kw):
+        return self._mark(package, **kw)["tool_evidence"].get("package_origin")
+
+    def test_a_uv_member_and_root_are_reframed_but_the_registry_package_is_not(self):
+        _py_tree(self.root)
+        member = self._mark(PY_MEMBER)
+        self.assertTrue(evidence.is_first_party_advisory(member))
+        self.assertIn("acme-lib 1.2.0 Python package", member["impact"])
+        self.assertIn("workspace/path package", member["remediation"])
+        self.assertNotIn("upgrade", member["remediation"].lower())
+        self.assertEqual("first_party", self._origin(PY_ROOT))
+        registry = self._mark(PY_REGISTRY)
+        self.assertNotIn("package_origin", registry["tool_evidence"])
+        self.assertFalse(evidence.is_first_party_advisory(registry))
+
+    def test_names_compare_under_pep_503(self):
+        # The lock says acme-lib, the manifest acme_lib, the scanner Acme.Lib.
+        _py_tree(self.root)
+        for name in ("Acme.Lib", "ACME_LIB", "acme--lib", "acme-lib"):
+            with self.subTest(name=name):
+                self.assertEqual("first_party", self._origin((name, PY_MEMBER[1])))
+        for name in ("acmelib", "acme-lib2"):
+            with self.subTest(name=name):
+                self.assertIsNone(self._origin((name, PY_MEMBER[1])))
+
+    def test_osv_ingest_of_a_poetry_lock_classifies_the_path_member(self):
+        _py_tree(self.root, lock=_poetry_lock(), lock_name="poetry.lock")
+        def package(name, version, advisory):
+            return {"package": {"name": name, "version": version, "ecosystem": "PyPI"},
+                    "vulnerabilities": [{"id": advisory, "summary": "affected package",
+                                         "database_specific": {"severity": "HIGH"}}],
+                    "groups": []}
+        doc = {"results": [{"source": {"path": "/src/poetry.lock"}, "packages": [
+            package(*PY_MEMBER, "PYSEC-2099-1"), package(*PY_REGISTRY, "PYSEC-2099-2")]}]}
+        findings = _ingest_document(self.root, "osv-scanner.json", doc)
+        by_package = {f["tool_evidence"]["package_name"]: f for f in findings}
+        self.assertTrue(evidence.is_first_party_advisory(by_package[PY_MEMBER[0]]))
+        self.assertFalse(evidence.is_first_party_advisory(by_package[PY_REGISTRY[0]]))
+
+    def test_trivy_uses_the_same_classification_without_changing_identity(self):
+        _py_tree(self.root)
+        doc = _trivy_document(*PY_MEMBER)
+        doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"][
+            "artifactLocation"]["uri"] = "uv.lock"
+        plain = _ingest_document(self.root, "trivy.sarif", doc, name_root=False)[0]
+        os.rename(os.path.join(self.root, "tools"), os.path.join(self.root, "tools-plain"))
+        marked = _ingest_document(self.root, "trivy.sarif", doc)[0]
+        self.assertTrue(evidence.is_first_party_advisory(marked))
+        self.assertEqual({"name": PY_MEMBER[0], "version": PY_MEMBER[1]},
+                         marked["tool_evidence"]["advisory_package"])
+        self.assertEqual(evidence.finding_fingerprint(marked), evidence.finding_fingerprint(plain))
+        self.assertEqual(evidence.reconcile_key(marked), evidence.reconcile_key(plain))
+
+    def test_pip_audit_is_never_classified(self):
+        _py_tree(self.root)
+        self.assertIsNone(self._origin(PY_MEMBER, source="tool:pip-audit"))
+        self.assertEqual("first_party", self._origin(PY_MEMBER, source="tool:trivy"))
+
+    # Ruling 1: the review-root exemption, and no exemption for a member.
+    _UNPUBLISHABLE = {
+        "classifier": 'classifiers = ["Private :: Do Not Upload"]\n',
+        "classifier, padded": 'classifiers = [" Private :: Do Not Upload "]\n',
+        "poetry package-mode": '\n[tool.poetry]\npackage-mode = false\n',
+        "uv package": '\n[tool.uv]\npackage = false\n',
+        # #3686 review: PyPI refuses every `Private ::` classifier, and PDM's
+        # `distribution = false` is its `package-mode = false`.
+        "another Private classifier": 'classifiers = ["Private :: Internal Only"]\n',
+        "pdm distribution": '\n[tool.pdm]\ndistribution = false\n',
+        # #3686 review round 3, F1: dynamic classifiers are filled in at build time, so
+        # a `Private ::` one cannot be seen. Unseen is unpublishable.
+        "dynamic classifiers": 'dynamic = ["classifiers"]\n',
+        "dynamic classifiers beside static ones":
+            'dynamic = ["readme", "classifiers"]\nclassifiers = ["Topic :: Software"]\n',
+    }
+
+    def test_an_unpublishable_review_root_is_still_first_party(self):
+        for label, extra in self._UNPUBLISHABLE.items():
+            with self.subTest(marker=label):
+                _py_tree(self.root, top=_pyproject(*PY_ROOT, extra))
+                self.assertEqual("first_party", self._origin(PY_ROOT))
+        _py_tree(self.root, lock=_uv_lock(root='{ virtual = "." }'))
+        self.assertEqual("first_party", self._origin(PY_ROOT))
+
+    def test_an_unpublishable_member_stays_on_the_advisor_path(self):
+        for label, extra in self._UNPUBLISHABLE.items():
+            with self.subTest(marker=label):
+                _py_tree(self.root, member=_pyproject(*PY_MEMBER, extra))
+                self.assertIsNone(self._origin(PY_MEMBER))
+                self.assertEqual("first_party", self._origin(PY_ROOT))
+        _py_tree(self.root, lock=_uv_lock(member='{ virtual = "packages/lib" }'))
+        self.assertIsNone(self._origin(PY_MEMBER))
+        # Explicitly publishable flags change nothing.
+        _py_tree(self.root, member=_pyproject(
+            *PY_MEMBER, '\n[tool.poetry]\npackage-mode = true\n[tool.uv]\npackage = true\n'
+            '[tool.pdm]\ndistribution = true\n'))
+        self.assertEqual("first_party", self._origin(PY_MEMBER))
+        # Another dynamic field hides no classifier.
+        _py_tree(self.root, member=_pyproject(*PY_MEMBER, 'dynamic = ["readme"]\n'))
+        self.assertEqual("first_party", self._origin(PY_MEMBER))
+        # `Private ::` is a prefix, not a substring.
+        _py_tree(self.root, member=_pyproject(
+            *PY_MEMBER, 'classifiers = ["Topic :: Private :: X", "Private::Tight"]\n'))
+        self.assertEqual("first_party", self._origin(PY_MEMBER))
+
+    def test_the_root_exemption_belongs_to_the_review_root_only(self):
+        # The same unpublishable project one level down is not the review root.
+        nested = os.path.join(self.root, "app")
+        _py_tree(nested, top=_pyproject(*PY_ROOT, self._UNPUBLISHABLE["classifier"]))
+        _py_tree(self.root, lock=_uv_lock(root='{ editable = "app" }'))
+        self.assertIsNone(self._origin(PY_ROOT))
+
+    # Ruling 2: a dynamic version fails closed.
+    def test_a_dynamic_or_missing_version_fails_closed(self):
+        manifests = {
+            "dynamic version": '[project]\nname = "acme-lib"\ndynamic = ["version"]\n'
+                               '\n[tool.poetry]\nversion = "1.2.0"\n',
+            "dynamic with a static twin": _pyproject(*PY_MEMBER, 'dynamic = ["version"]\n'),
+            "no version": '[project]\nname = "acme-lib"\n',
+            "poetry without version": '[tool.poetry]\nname = "acme-lib"\n',
+        }
+        for label, member in manifests.items():
+            with self.subTest(manifest=label):
+                _py_tree(self.root, member=member)
+                self.assertIsNone(self._origin(PY_MEMBER))
+        # Other dynamic fields are fine.
+        _py_tree(self.root, member=_pyproject(*PY_MEMBER, 'dynamic = ["readme"]\n'))
+        self.assertEqual("first_party", self._origin(PY_MEMBER))
+
+    def test_a_lock_entry_without_a_version_is_skipped_not_matched(self):
+        lock = _uv_lock(member=None, extra=_uv_entry(PY_MEMBER[0], None,
+                                                     '{ editable = "packages/lib" }'))
+        _py_tree(self.root, lock=lock)
+        self.assertIsNone(self._origin(PY_MEMBER))
+        self.assertEqual("first_party", self._origin(PY_ROOT))
+
+    # Ruling 3: Pipfile.lock and requirements.txt are out of scope.
+    def test_pipfile_lock_and_requirements_path_entries_never_classify(self):
+        _py_tree(self.root)
+        _write_text(os.path.join(self.root, "Pipfile.lock"), json.dumps({
+            "_meta": {}, "default": {"acme-lib": {"path": "./packages/lib",
+                                                   "editable": True,
+                                                   "version": "==1.2.0"}}}))
+        _write_text(os.path.join(self.root, "requirements.txt"),
+                    "-e ./packages/lib\n./packages/lib\nacme-lib @ file:./packages/lib\n")
+        for path in ("Pipfile.lock", "requirements.txt"):
+            for source in ("tool:osv-scanner", "tool:trivy", "tool:pip-audit"):
+                with self.subTest(path=path, source=source):
+                    self.assertIsNone(self._origin(PY_MEMBER, path=path, source=source))
+
+    def test_project_comes_before_legacy_poetry_metadata(self):
+        both = _pyproject(*PY_MEMBER, '\n[tool.poetry]\nname = "other"\nversion = "9.9.9"\n')
+        _py_tree(self.root, member=both)
+        self.assertEqual("first_party", self._origin(PY_MEMBER))
+        _py_tree(self.root, member=_pyproject("other", "9.9.9",
+                                              '\n[tool.poetry]\nname = "acme-lib"\n'
+                                              'version = "1.2.0"\n'))
+        self.assertIsNone(self._origin(PY_MEMBER))
+        _py_tree(self.root, member='[tool.poetry]\nname = "acme-lib"\nversion = "1.2.0"\n')
+        self.assertEqual("first_party", self._origin(PY_MEMBER))
+        # A legacy Poetry project with the private classifier is still unpublishable.
+        _py_tree(self.root, member='[tool.poetry]\nname = "acme-lib"\nversion = "1.2.0"\n'
+                                   'classifiers = ["Private :: Do Not Upload"]\n')
+        self.assertIsNone(self._origin(PY_MEMBER))
+
+    def test_malformed_manifest_fields_fail_closed(self):
+        for member in ('tool = 1\n' + _pyproject(*PY_MEMBER),
+                       'project = 1\n',
+                       _pyproject(*PY_MEMBER, 'dynamic = "version"\n'),
+                       _pyproject(*PY_MEMBER, 'dynamic = [1]\n'),
+                       _pyproject(*PY_MEMBER, 'classifiers = "x"\n'),
+                       _pyproject(*PY_MEMBER, 'classifiers = [1]\n'),
+                       _pyproject(*PY_MEMBER, '\n[tool.poetry]\npackage-mode = "no"\n'),
+                       _pyproject(*PY_MEMBER, '\n[tool.uv]\npackage = 0\n'),
+                       _pyproject(*PY_MEMBER, '[tool]\npoetry = 1\n'),
+                       _pyproject(*PY_MEMBER, '[tool]\nuv = 1\n'),
+                       _pyproject(*PY_MEMBER, '[tool]\npdm = 1\n'),
+                       _pyproject(*PY_MEMBER, '\n[tool.pdm]\ndistribution = "no"\n'),
+                       '[project]\nname = 1\nversion = "1.2.0"\n',
+                       '[project]\nname = "acme-lib"\nversion = ""\n',
+                       '[build-system]\nrequires = []\n',
+                       'not toml [\n'):
+            with self.subTest(member=member):
+                _py_tree(self.root, member=member)
+                self.assertIsNone(self._origin(PY_MEMBER))
+                # Only that identity: the root in the same lock is still proved.
+                self.assertEqual("first_party", self._origin(PY_ROOT))
+
+    def test_a_version_mismatch_stays_on_the_advisor_path(self):
+        _py_tree(self.root, member=_pyproject(PY_MEMBER[0], "1.2.1"))
+        self.assertIsNone(self._origin(PY_MEMBER))
+        self.assertIsNone(self._origin((PY_MEMBER[0], "1.2.1")))
+        _py_tree(self.root)
+        self.assertIsNone(self._origin((PY_MEMBER[0], "1.2.1")))
+        self.assertIsNone(self._origin((PY_MEMBER[0], "1.2")))     # no PEP 440 folding
+
+    def test_every_same_identity_entry_must_be_local(self):
+        for label, source in (("registry", _UV_REGISTRY),
+                              ("git", '{ git = "https://example.invalid/x.git#abc" }'),
+                              ("url", '{ url = "https://example.invalid/x.tar.gz" }'),
+                              ("archive", '{ path = "dist/acme_lib-1.2.0.whl" }'),
+                              ("no source", None)):
+            with self.subTest(copy=label):
+                _py_tree(self.root, lock=_uv_lock(extra=_uv_entry(*PY_MEMBER, source)))
+                self.assertIsNone(self._origin(PY_MEMBER))
+                self.assertEqual("first_party", self._origin(PY_ROOT))
+
+    def test_a_pep_440_equal_non_local_spelling_is_ambiguous(self):
+        # #3686 review: confirmation stays an exact match, but a registry copy spelled
+        # differently for the same release still makes the identity ambiguous.
+        local = _uv_entry(PY_MEMBER[0], "1.2.0rc1", '{ editable = "packages/lib" }')
+        for registry, expected in (("1.2.0-rc1", None), ("1.2rc1", None),
+                                   ("v1.2.0.RC1", None), ("0!1.2.0c1", None),
+                                   ("1.2.0rc2", "first_party"), ("1.2.0", "first_party"),
+                                   ("1.2.0rc1+local", "first_party")):
+            with self.subTest(registry=registry):
+                _py_tree(self.root, member=_pyproject(PY_MEMBER[0], "1.2.0rc1"),
+                         lock=_uv_lock(member=None, extra=local + _uv_entry(
+                             PY_MEMBER[0], registry, _UV_REGISTRY)))
+                self.assertEqual(expected, self._origin((PY_MEMBER[0], "1.2.0rc1")))
+        # An advisory naming another spelling of a proved local release is not confirmed.
+        _py_tree(self.root, member=_pyproject(PY_MEMBER[0], "1.2.0rc1"),
+                 lock=_uv_lock(member=None, extra=local))
+        self.assertEqual("first_party", self._origin((PY_MEMBER[0], "1.2.0rc1")))
+        self.assertIsNone(self._origin((PY_MEMBER[0], "1.2.0-rc1")))
+
+    def test_a_version_past_the_int_digit_limit_fails_closed_for_its_identity_only(self):
+        # #3686 review N1: int() refuses more than 4300 digits. Such a version keys as
+        # its own text, so the lock still parses and only that identity is affected.
+        huge = "1." + "9" * 5000
+        self.assertEqual(huge, first_party_advisory._pep440_key(" %s " % huge.upper()))
+        self.assertEqual("1!" + huge, first_party_advisory._pep440_key("1!" + huge))
+        _py_tree(self.root, lock=_uv_lock(extra=_uv_entry("other", huge, _UV_REGISTRY)))
+        self.assertEqual("first_party", self._origin(PY_MEMBER))
+        self.assertEqual("first_party", self._origin(PY_ROOT))
+        self.assertIsNone(self._origin(("other", huge)))
+
+    def test_the_pep_440_key_agrees_only_on_equal_releases(self):
+        key = first_party_advisory._pep440_key
+        for a, b in (("1.0", "1.0.0"), ("1.0a1", "1.0.alpha1"), ("1.0b2", "1.0-beta.2"),
+                     ("1.0rc1", "1.0c1"), ("1.0rc1", "1.0pre1"), ("1.0rc1", "1.0preview1"),
+                     ("1.0-1", "1.0.post1"), ("1.0.post1", "1.0r1"), ("1.0.post1", "1.0rev1"),
+                     ("1.0.dev", "1.0dev0"), ("1.0a", "1.0a0"), ("1.0.post", "1.0post0"),
+                     ("V1.0", " 1.0 "), ("0!1.0", "1.0"), ("00!1.0", "1.0"),
+                     ("1.0+Ubuntu.1", "1.0+ubuntu-1"), ("1.0+1", "1.0+01"),
+                     ("not a version", " NOT A VERSION")):
+            with self.subTest(equal=(a, b)):
+                self.assertEqual(key(a), key(b))
+        for a, b in (("1.0", "1.0.post0"), ("1.0a1", "1.0b1"), ("1.0", "1.0.dev0"),
+                     ("1.0", "1.0+local"), ("1!1.0", "1.0"), ("1.0rc1", "1.0rc2"),
+                     ("1.0", "1.1"), ("1.0.post1", "1.0.post2"), ("1.0.dev1", "1.0.dev2"),
+                     ("1.0+a", "1.0+b"), ("1.0-1", "1.0-2"),
+                     # Not versions: each keys as its own text.
+                     ("1.0.", "1.0"), ("1..0", "1.0"), (".1", "1"), ("1.0+", "1.0"),
+                     ("1!", "1"), ("x!1.0", "1.0"), ("1.0+a..b", "1.0+a.b"),
+                     ("1.0rc1x", "1.0rc1"), ("\u0661.0", "1.0"),
+                     # An invalid local label is not a version, so a `v` still differs.
+                     ("v1.0+a..b", "1.0+a..b")):
+            with self.subTest(different=(a, b)):
+                self.assertNotEqual(key(a), key(b))
+
+    def test_a_lock_symlinked_to_another_format_is_refused(self):
+        # #3686 review F1: the parser follows the resolved name, so a lock must resolve
+        # to a file of its own name. P2: poetry.lock -> pdm.lock, where PDM's `path`
+        # would read a PyPI package as local.
+        _write_text(os.path.join(self.root, "vend", "pyproject.toml"),
+                    _pyproject(*PY_REGISTRY))
+        _write_text(os.path.join(self.root, "pdm.lock"),
+                    '[[package]]\nname = "requests"\nversion = "2.0.0"\npath = "./vend"\n')
+        os.symlink("pdm.lock", os.path.join(self.root, "poetry.lock"))
+        cache = first_party_advisory.IngestCache()
+        self.assertIsNone(self._origin(PY_REGISTRY, path="poetry.lock", cache=cache))
+        # P10: a verdict cached for the real pdm.lock is never served to the symlink.
+        self.assertEqual("first_party", self._origin(PY_REGISTRY, path="pdm.lock",
+                                                     cache=cache))
+        self.assertIsNone(self._origin(PY_REGISTRY, path="poetry.lock", cache=cache))
+
+    def test_a_uv_lock_symlinked_to_pdm_or_cargo_is_refused(self):
+        # P1: uv.lock -> pdm.lock, where the PDM parser cannot see the registry source.
+        _py_tree(self.root, lock_name="pdm.lock", lock=(
+            '[[package]]\nname = "acme-lib"\nversion = "1.2.0"\npath = "./packages/lib"\n'
+            'source = { registry = "https://pypi.org/simple" }\n'))
+        os.symlink("pdm.lock", os.path.join(self.root, "uv.lock"))
+        self.assertIsNone(self._origin(PY_MEMBER))
+        # uv.lock -> Cargo.lock would reach the Cargo branch.
+        _write_lock(self.root)
+        _write_manifest(self.root)
+        os.remove(os.path.join(self.root, "uv.lock"))
+        os.symlink("Cargo.lock", os.path.join(self.root, "uv.lock"))
+        self.assertIsNone(self._origin((WORKSPACE_NAME, WORKSPACE_VERSION)))
+        self.assertEqual("first_party", self._origin((WORKSPACE_NAME, WORKSPACE_VERSION),
+                                                     path="Cargo.lock"))
+
+    def test_a_symlinked_python_lock_is_never_the_review_roots_own(self):
+        # Same name: it resolves into another directory, which is not the review root.
+        _py_tree(self.root, lock_name=os.path.join("locks", "uv.lock"))
+        os.symlink(os.path.join("locks", "uv.lock"), os.path.join(self.root, "uv.lock"))
+        self.assertIsNone(self._origin(PY_MEMBER))
+        # Root directory: it resolves to another name.
+        _py_tree(self.root, lock_name="real.lock")
+        os.remove(os.path.join(self.root, "uv.lock"))
+        os.symlink("real.lock", os.path.join(self.root, "uv.lock"))
+        self.assertIsNone(self._origin(PY_MEMBER))
+
+    def test_a_directory_source_is_local_too(self):
+        _py_tree(self.root, lock=_uv_lock(member='{ directory = "packages/lib" }'))
+        self.assertEqual("first_party", self._origin(PY_MEMBER))
+
+    def test_an_archive_source_is_never_local_even_when_it_names_a_project(self):
+        # uv's `path` and Poetry's `file` are archive sources; naming a directory that
+        # holds a matching pyproject.toml does not make them a local project.
+        _py_tree(self.root, lock=_uv_lock(member='{ path = "packages/lib" }'))
+        self.assertIsNone(self._origin(PY_MEMBER))
+        _py_tree(self.root, lock=_poetry_lock('type = "file"\nurl = "packages/lib"\n'),
+                 lock_name="poetry.lock")
+        self.assertIsNone(self._origin(PY_MEMBER, path="poetry.lock"))
+
+    def test_an_absolute_or_url_path_is_not_local(self):
+        # Both resolve to a real in-tree project: the absolute one directly, the URL one
+        # because a directory with that literal name exists. Neither is a lock's local path.
+        _write_text(os.path.join(self.root, "file:packages", "lib", "pyproject.toml"),
+                    _pyproject(*PY_MEMBER))
+        for path in (os.path.join(self.root, "packages", "lib"), "file:packages/lib"):
+            with self.subTest(path=path):
+                _py_tree(self.root, lock=_uv_lock(member='{ editable = %s }'
+                                                  % json.dumps(path)))
+                self.assertIsNone(self._origin(PY_MEMBER))
+                self.assertEqual("first_party", self._origin(PY_ROOT))
+
+    def test_a_member_outside_the_tree_stays_on_the_advisor_path(self):
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        _write_text(os.path.join(outside.name, "pyproject.toml"), _pyproject(*PY_MEMBER))
+        rel = os.path.relpath(outside.name, self.root)
+        _py_tree(self.root, lock=_uv_lock(member='{ editable = %s }' % json.dumps(rel)))
+        self.assertIsNone(self._origin(PY_MEMBER))
+
+    def test_a_member_symlinked_out_of_the_tree_stays_on_the_advisor_path(self):
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        _write_text(os.path.join(outside.name, "pyproject.toml"), _pyproject(*PY_MEMBER))
+        _py_tree(self.root, member=False)
+        os.makedirs(os.path.join(self.root, "packages"), exist_ok=True)
+        os.symlink(outside.name, os.path.join(self.root, "packages", "lib"))
+        self.assertIsNone(self._origin(PY_MEMBER))
+
+    def test_a_malformed_lock_classifies_nothing(self):
+        locks = {
+            "not toml": "[[package]\n",
+            "package not a list": 'package = "x"\n',
+            "entry not a table": 'package = [1]\n',
+            "entry not a table beside real ones": (
+                'package = [{ name = "acme-app", version = "0.3.0", '
+                'source = { editable = "." } }, 1]\n'),
+            "entry without a name": _uv_lock(extra='[[package]]\nversion = "1"\n'
+                                                   'source = %s\n\n' % _UV_REGISTRY),
+            "registry entry without a version": _uv_lock(
+                extra=_uv_entry("other", None, _UV_REGISTRY)),
+            "two source kinds": _uv_lock(
+                extra=_uv_entry("other", "1", '{ registry = "r", editable = "x" }')),
+            "unknown source kind": _uv_lock(extra=_uv_entry("other", "1", '{ svn = "x" }')),
+            "source not a table": _uv_lock(extra=_uv_entry("other", "1", '"pypi"')),
+            "source a list": _uv_lock(extra=_uv_entry("other", "1", '["editable", "."]')),
+            # #3686 review N2: a string or list naming a known kind is still not a table.
+            "source a registry string": _uv_lock(extra=_uv_entry("other", "1", '"registry"')),
+            "source a registry list": _uv_lock(extra=_uv_entry("other", "1", '["registry"]')),
+            "empty local path": _uv_lock(extra=_uv_entry("other", "1", '{ editable = "" }')),
+            "non-string local path": _uv_lock(extra=_uv_entry("other", "1",
+                                                              '{ directory = 1 }')),
+        }
+        for label, lock in locks.items():
+            with self.subTest(lock=label):
+                _py_tree(self.root, lock=lock)
+                self.assertIsNone(self._origin(PY_MEMBER))
+                self.assertIsNone(self._origin(PY_ROOT))
+
+    def test_poetry_sources(self):
+        _py_tree(self.root, lock=_poetry_lock(), lock_name="poetry.lock")
+        self.assertEqual("first_party", self._origin(PY_MEMBER, path="poetry.lock"))
+        self.assertIsNone(self._origin(PY_REGISTRY, path="poetry.lock"))
+        for label, source in (("file", 'type = "file"\nurl = "dist/a.whl"\n'),
+                              ("git", 'type = "git"\nurl = "https://example.invalid/x"\n'),
+                              ("legacy", 'type = "legacy"\nurl = "https://example.invalid"\n'),
+                              ("absolute", 'type = "directory"\nurl = %s\n'
+                               % json.dumps(os.path.join(self.root, "packages", "lib")))):
+            with self.subTest(source=label):
+                _py_tree(self.root, lock=_poetry_lock(source), lock_name="poetry.lock")
+                self.assertIsNone(self._origin(PY_MEMBER, path="poetry.lock"))
+        for label, source in (("no type", 'url = "packages/lib"\n'),
+                              ("directory without url", 'type = "directory"\n')):
+            with self.subTest(malformed=label):
+                _py_tree(self.root, lock=_poetry_lock(source), lock_name="poetry.lock")
+                self.assertIsNone(self._origin(PY_MEMBER, path="poetry.lock"))
+
+    def test_another_entrys_source_decides_the_whole_lock_only_when_malformed(self):
+        other = '[[package]]\nname = "other"\nversion = "1"\n%s\n'
+        for label, lock_name, lock, expected in (
+                ("poetry type not a string", "poetry.lock",
+                 _poetry_lock(extra=other % '\n[package.source]\ntype = 1\n'), None),
+                ("poetry source not a table", "poetry.lock",
+                 _poetry_lock(extra=other % 'source = "pypi"'), None),
+                ("poetry url source", "poetry.lock",
+                 _poetry_lock(extra=other % '\n[package.source]\ntype = "url"\n'
+                                            'url = "https://example.invalid/x.whl"\n'),
+                 "first_party"),
+                ("pdm url source", "pdm.lock",
+                 _pdm_lock(extra=other % 'url = "https://example.invalid/x.whl"'),
+                 "first_party"),
+                ("pdm git source", "pdm.lock",
+                 _pdm_lock(extra=other % 'git = "https://example.invalid/x"'), "first_party")):
+            with self.subTest(lock=label):
+                _py_tree(self.root, lock=lock, lock_name=lock_name)
+                self.assertEqual(expected, self._origin(PY_MEMBER, path=lock_name))
+
+    def test_poetry_registry_copy_of_a_path_member_is_ambiguous(self):
+        extra = '[[package]]\nname = "acme_lib"\nversion = "1.2.0"\n\n'
+        _py_tree(self.root, lock=_poetry_lock(extra=extra), lock_name="poetry.lock")
+        self.assertIsNone(self._origin(PY_MEMBER, path="poetry.lock"))
+
+    def test_pdm_sources(self):
+        _py_tree(self.root, lock=_pdm_lock(), lock_name="pdm.lock")
+        self.assertEqual("first_party", self._origin(PY_MEMBER, path="pdm.lock"))
+        self.assertIsNone(self._origin(PY_REGISTRY, path="pdm.lock"))
+        for label, fields in (("git", 'git = "https://example.invalid/x"\n'),
+                              ("url", 'url = "https://example.invalid/x.whl"\n'),
+                              ("wheel path", 'path = "./dist/acme_lib-1.2.0.whl"\n'),
+                              ("path and git", 'path = "./packages/lib"\n'
+                                               'git = "https://example.invalid/x"\n')):
+            with self.subTest(fields=label):
+                _py_tree(self.root, lock=_pdm_lock(fields), lock_name="pdm.lock")
+                self.assertIsNone(self._origin(PY_MEMBER, path="pdm.lock"))
+
+    def test_only_the_review_roots_own_lock_is_the_reviewed_project(self):
+        nested = os.path.join(self.root, "vendor", "y")
+        _py_tree(nested)
+        _py_tree(self.root)
+        self.assertIsNone(self._origin(PY_MEMBER, path="vendor/y/uv.lock"))
+        self.assertEqual("first_party", self._origin(PY_MEMBER))
+
+    def test_the_lock_path_must_be_confined_and_named_as_the_tools_read_it(self):
+        _py_tree(self.root)
+        for path in ("../uv.lock", "/uv.lock", "sub/../uv.lock", "pyproject.toml",
+                     "UV.lock", "Pipfile"):
+            with self.subTest(path=path):
+                self.assertIsNone(self._origin(PY_MEMBER, path=path))
+
+    def test_the_entry_and_local_caps_are_exact(self):
+        with mock.patch.object(first_party_advisory, "MAX_CARGO_MANIFESTS", 2):
+            # 2 local + 1 registry + 125 = 128 entries; one more is 129.
+            for count, expected in ((125, "first_party"), (126, None)):
+                with self.subTest(entries=count + 3):
+                    filler = "".join(_uv_entry("f%d" % i, "1.0.0", _UV_REGISTRY)
+                                     for i in range(count))
+                    _py_tree(self.root, lock=_uv_lock(extra=filler))
+                    self.assertEqual(expected, self._origin(PY_MEMBER))
+            _write_text(os.path.join(self.root, "packages", "util", "pyproject.toml"),
+                        _pyproject("acme-util", "0.1.0"))
+            _py_tree(self.root, lock=_uv_lock(extra=_uv_entry(
+                "acme-util", "0.1.0", '{ editable = "packages/util" }')))
+            self.assertIsNone(self._origin(PY_MEMBER))          # 3 local packages > 2
+
+    def test_lock_bytes_spend_the_shared_ingest_budget(self):
+        _py_tree(self.root)
+        lock_size = os.path.getsize(os.path.join(self.root, "uv.lock"))
+        with mock.patch.object(first_party_advisory, "MAX_CARGO_MANIFEST_INGEST_BYTES",
+                               lock_size):
+            cache = first_party_advisory.IngestCache()
+            self.assertIsNone(self._origin(PY_MEMBER, cache=cache))
+        self.assertTrue(cache.manifest_budget_exhausted)
+        self.assertEqual(0, cache.manifest_bytes_remaining)
+
+    def test_a_padded_manifest_identity_is_not_the_locks(self):
+        # #3686 review round 3, F4: the manifest's name and version are compared as
+        # written; nothing strips them.
+        for label, member in (("version", _pyproject(PY_MEMBER[0], " 1.2.0")),
+                              ("version, trailing", _pyproject(PY_MEMBER[0], "1.2.0 ")),
+                              ("name", _pyproject(" acme-lib", PY_MEMBER[1])),
+                              ("name, trailing", _pyproject("acme-lib ", PY_MEMBER[1]))):
+            with self.subTest(padded=label):
+                _py_tree(self.root, member=member)
+                self.assertIsNone(self._origin(PY_MEMBER))
+                self.assertEqual("first_party", self._origin(PY_ROOT))
+
+    def test_a_lock_name_that_is_not_a_pep_508_name_fails_the_lock(self):
+        # #3686 review round 3, F3: `"acme-lib "` would not make `acme-lib` ambiguous.
+        for name in ("acme-lib ", " acme-lib", "acme lib", "-acme", "acme-", "acme/lib",
+                     "acm\u00e9", ".", ""):
+            with self.subTest(name=name):
+                _py_tree(self.root, lock=_uv_lock(
+                    extra=_uv_entry(name, PY_MEMBER[1], _UV_REGISTRY)))
+                self.assertIsNone(self._origin(PY_MEMBER))
+                self.assertIsNone(self._origin(PY_ROOT))
+        for name in ("A", "a1", "Acme.Lib_x-1"):
+            with self.subTest(valid=name):
+                _py_tree(self.root, lock=_uv_lock(extra=_uv_entry(name, "9", _UV_REGISTRY)))
+                self.assertEqual("first_party", self._origin(PY_MEMBER))
+
+    def test_two_local_spellings_of_one_release_are_ambiguous(self):
+        # #3686 review round 3, F2: local `1.2.0` beside local `1.2` is one release
+        # declared twice, whichever of them a manifest proves.
+        twin = _uv_entry(PY_MEMBER[0], "1.2", '{ editable = "packages/twin" }')
+        _py_tree(self.root, lock=_uv_lock(extra=twin))
+        _write_text(os.path.join(self.root, "packages", "twin", "pyproject.toml"),
+                    _pyproject(PY_MEMBER[0], "1.2"))
+        self.assertIsNone(self._origin(PY_MEMBER))
+        self.assertIsNone(self._origin((PY_MEMBER[0], "1.2")))
+        self.assertEqual("first_party", self._origin(PY_ROOT))
+        # A different release of the same name is not a twin.
+        other = _uv_entry(PY_MEMBER[0], "1.3", '{ editable = "packages/twin" }')
+        _py_tree(self.root, lock=_uv_lock(extra=other))
+        self.assertEqual("first_party", self._origin(PY_MEMBER))
+
+    def test_the_lock_cap_is_16_mib(self):
+        self.assertEqual(16 * 1024 * 1024, first_party_advisory.MAX_PYTHON_LOCK_BYTES)
+
+    def test_an_oversized_lock_classifies_nothing(self):
+        _py_tree(self.root)
+        lock_size = os.path.getsize(os.path.join(self.root, "uv.lock"))
+        for limit, expected in ((lock_size, "first_party"), (lock_size - 1, None)):
+            with self.subTest(limit=limit), \
+                    mock.patch.object(first_party_advisory, "MAX_PYTHON_LOCK_BYTES", limit):
+                self.assertEqual(expected, self._origin(PY_MEMBER))
+
+    def test_exact_budget_refuses_an_unread_private_redeclaration(self):
+        # The budget covers the lock, the root and the member manifests exactly, so a
+        # private redeclaration of the member identity is never read -- and an unread
+        # declaration keeps the identity off the first-party path.
+        lock = _uv_lock(extra=_uv_entry(*PY_MEMBER, '{ editable = "private" }'))
+        _py_tree(self.root, lock=lock)
+        _write_text(os.path.join(self.root, "private", "pyproject.toml"),
+                    _pyproject(*PY_MEMBER, 'classifiers = ["Private :: Do Not Upload"]\n'))
+        budget = sum(os.path.getsize(os.path.join(self.root, p)) for p in (
+            "uv.lock", "pyproject.toml", "packages/lib/pyproject.toml"))
+        with mock.patch.object(first_party_advisory, "MAX_CARGO_MANIFEST_INGEST_BYTES",
+                               budget):
+            cache = first_party_advisory.IngestCache()
+            self.assertIsNone(self._origin(PY_MEMBER, cache=cache))
+        self.assertTrue(cache.manifest_budget_exhausted)
+        self.assertIsNone(cache.manifests[("toml", os.path.join(self.root, "private",
+                                                                "pyproject.toml"))])
+
+    def test_cargo_npm_and_python_share_one_budget_and_cache(self):
+        _py_tree(self.root)
+        _write_lock(self.root)
+        _write_manifest(self.root)
+        cache = first_party_advisory.IngestCache()
+        python = self._mark(PY_MEMBER, cache=cache)
+        cargo = _raw_advisory_finding()
+        first_party_advisory.mark([cargo], self.root, cache)
+        self.assertEqual("first_party", python["tool_evidence"]["package_origin"])
+        self.assertEqual("first_party", cargo["tool_evidence"]["package_origin"])
+        spent = sum(os.path.getsize(os.path.join(self.root, p)) for p in (
+            "uv.lock", "pyproject.toml", "packages/lib/pyproject.toml",
+            "Cargo.lock", "Cargo.toml"))
+        self.assertEqual(first_party_advisory.MAX_CARGO_MANIFEST_INGEST_BYTES - spent,
+                         cache.manifest_bytes_remaining)
+        # A second finding against the same lock reuses its origins.
+        self.assertEqual("first_party", self._origin(PY_ROOT, cache=cache))
         self.assertEqual(first_party_advisory.MAX_CARGO_MANIFEST_INGEST_BYTES - spent,
                          cache.manifest_bytes_remaining)
 
