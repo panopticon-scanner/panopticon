@@ -560,7 +560,7 @@ class TestDependencyAuditCoverage(unittest.TestCase):
     NOTE = "no SCA tool produced output on an applicable tree"
     TS = "2026-10-25T00:00:00Z"
 
-    def _report(self, receipt, selected, produced, dispositions):
+    def _report(self, receipt, selected, produced, dispositions, target="t", plan=None):
         manifest = {
             "schema_version": 1,
             "selected": list(selected),
@@ -570,10 +570,11 @@ class TestDependencyAuditCoverage(unittest.TestCase):
             "dependency_audit": receipt,
         }
         return report_mod.build_report(report_mod.ReportInputs(
-            run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
+            run=report_mod.RunConfig(target=target, fail_on="high", timestamp=self.TS),
             findings=findings_mod.FindingSet(findings=[]),
             tools=tool_axis_mod.ToolAxis(
                 tools_ran=set(produced), dispositions=dispositions, manifest=manifest),
+            **({"plan": plan} if plan is not None else {}),
         ))
 
     def test_applicable_tree_with_only_empty_trivy_is_visible_and_inconclusive(self):
@@ -679,6 +680,116 @@ class TestDependencyAuditCoverage(unittest.TestCase):
         self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
         self.assertEqual(report["summary"]["coverage_note"], self.NOTE)
         self.assertEqual([], validate_schema_mod.schema_errors(report))
+
+    # -- #3648: which ecosystem went unaudited, and why ---------------------------------
+
+    JS = ("javascript not audited: no npm-shrinkwrap.json, package-lock.json, yarn.lock or "
+          "pnpm-lock.yaml; npm-audit and osv-scanner need one")
+    TRIVY = {"trivy": {"status": "empty", "findings": 0}}
+
+    @staticmethod
+    def _but_the_note(report):
+        return {key: value for key, value in report["summary"].items() if key != "coverage_note"}
+
+    def test_a_js_tree_with_no_lockfile_names_the_reason_beside_the_gap(self):
+        receipt = {"applicable": ["javascript"], "selected": [], "produced": [],
+                   "unaudited": {"javascript": "no_auditable_file"}}
+        report = self._report(receipt, ["trivy"], ["trivy"], self.TRIVY)
+        summary = report["summary"]
+        self.assertEqual(receipt, report["meta"]["coverage"]["dependency_audit"])
+        self.assertEqual("%s; %s" % (self.NOTE, self.JS), summary["coverage_note"])
+        # Disclosure only: exactly what the receipt without the reason gives.
+        bare = self._report({key: receipt[key] for key in ("applicable", "selected", "produced")},
+                            ["trivy"], ["trivy"], self.TRIVY)["summary"]
+        self.assertEqual(self.NOTE, bare["coverage_note"])
+        self.assertEqual(("INCONCLUSIVE", False), (summary["gate"], summary["coverage_certified"]))
+        self.assertEqual({key: value for key, value in bare.items() if key != "coverage_note"},
+                         self._but_the_note(report))
+        self.assertIn(self.JS, render_mod.render_summary(report))
+        import html
+        import scripts.html_report as html_report
+        self.assertIn(self.JS, html.unescape(html_report.render(report)))
+        self.assertEqual([], validate_schema_mod.schema_errors(report))
+
+    def test_an_unaudited_ecosystem_is_named_on_a_tree_that_still_certifies(self):
+        # The mixed tree: osv-scanner answered for requirements.txt, and nothing read
+        # the package.json beside it. Certification is what it was; the note says so.
+        dispositions = {"osv-scanner": {"status": "empty", "findings": 0}}
+        receipt = {"applicable": ["javascript", "python"], "selected": ["osv-scanner"],
+                   "produced": ["osv-scanner"]}
+        groups = [{"name": "g1", "files": ["a.py"]}]
+        # Real files, so there is a letter to keep: a disclosure must not hold it back.
+        with _target_with_files(groups, lines=5000) as tgt:
+            plan = plan_mod.PlanInputs(groups_meta=groups)
+            before = self._report(dict(receipt), ["osv-scanner"], ["osv-scanner"], dispositions,
+                                  target=tgt, plan=plan)
+            after = self._report(dict(receipt, unaudited={"javascript": "no_auditable_file"}),
+                                 ["osv-scanner"], ["osv-scanner"], dispositions,
+                                 target=tgt, plan=plan)
+        self.assertEqual(("PASS", True, None), tuple(
+            before["summary"][key] for key in ("gate", "coverage_certified", "coverage_note")))
+        self.assertEqual(("PASS", True, self.JS), tuple(
+            after["summary"][key] for key in ("gate", "coverage_certified", "coverage_note")))
+        self.assertEqual(("S", None), (after["summary"]["overall_grade"],
+                                       after["summary"]["provisional_grade"]))
+        # Nothing else in the summary moved: not the gate, the letter or the health score.
+        self.assertEqual(self._but_the_note(before), self._but_the_note(after))
+        self.assertEqual({"javascript": "no_auditable_file"},
+                         after["meta"]["coverage"]["dependency_audit"]["unaudited"])
+        self.assertEqual([], validate_schema_mod.schema_errors(after))
+
+    def test_each_unaudited_ecosystem_is_named_once_in_ecosystem_order(self):
+        receipt = {"applicable": ["javascript", "python", "rust"], "selected": [], "produced": [],
+                   "unaudited": {"rust": "not_run", "python": "needs_online",
+                                 "javascript": "no_auditable_file"}}
+        note = self._report(receipt, ["trivy"], ["trivy"], self.TRIVY)["summary"]["coverage_note"]
+        self.assertEqual("; ".join([self.NOTE, self.JS,
+                                    "python not audited: pip-audit needs --online",
+                                    "rust not audited: no dependency auditor ran on it"]), note)
+
+    def test_the_notes_are_fixed_sentences_in_ecosystem_order(self):
+        import scripts.synth.grading as grading_mod
+        notes = grading_mod.unaudited_notes
+        self.assertEqual([self.JS, "rust not audited: no dependency auditor ran on it"],
+                         notes({"unaudited": {"rust": "not_run",
+                                              "javascript": "no_auditable_file"}}))
+        # Nothing the sentence table has no words for is said, and nothing is echoed.
+        self.assertEqual([], notes({"unaudited": {"unknown": "not_run", "rust": "<b>"}}))
+        for receipt in (None, {}, {"unaudited": None}, {"unaudited": ["rust"]}, "rust",
+                        {"applicable": ["rust"]}):
+            with self.subTest(receipt=receipt):
+                self.assertEqual([], notes(receipt))
+
+    def test_an_audited_tree_with_an_empty_record_says_nothing(self):
+        receipt = {"applicable": ["python"], "selected": ["pip-audit"],
+                   "produced": ["pip-audit"], "unaudited": {}}
+        report = self._report(receipt, ["pip-audit"], ["pip-audit"],
+                              {"pip-audit": {"status": "empty", "findings": 0}})
+        self.assertEqual(("PASS", True, None), tuple(
+            report["summary"][key] for key in ("gate", "coverage_certified", "coverage_note")))
+        self.assertEqual([], validate_schema_mod.schema_errors(report))
+
+    def test_a_forged_reason_reaches_no_surface(self):
+        receipt = {"applicable": ["javascript"], "selected": [], "produced": [],
+                   "unaudited": {"javascript": "<script>forged</script>"}}
+        report = self._report(receipt, ["trivy"], ["trivy"], self.TRIVY)
+        self.assertEqual({"applicable": ["unknown"], "selected": [], "produced": []},
+                         report["meta"]["coverage"]["dependency_audit"])
+        self.assertEqual(self.NOTE, report["summary"]["coverage_note"])
+        self.assertNotIn("forged", json.dumps(report))
+
+    def test_the_schema_holds_the_record_to_its_enums(self):
+        receipt = {"applicable": ["javascript"], "selected": [], "produced": [],
+                   "unaudited": {"javascript": "no_auditable_file"}}
+        report = self._report(receipt, ["trivy"], ["trivy"], self.TRIVY)
+        for label, unaudited in (("a reason outside the enum", {"javascript": "no lockfile"}),
+                                 ("an ecosystem outside the enum", {"cobol": "not_run"}),
+                                 ("the repair's fallback", {"unknown": "not_run"}),
+                                 ("not an object", ["javascript"])):
+            with self.subTest(label):
+                bad = json.loads(json.dumps(report))
+                bad["meta"]["coverage"]["dependency_audit"]["unaudited"] = unaudited
+                self.assertNotEqual([], validate_schema_mod.schema_errors(bad))
 
 
 class TestAWithheldTargetBuildIsDisclosedNotGated(unittest.TestCase):

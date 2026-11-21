@@ -72,9 +72,21 @@ def _staged_bytes(path: str) -> bytes | None:
 class NpmAuditAdapter:
     name = "npm-audit"
     prefix = "NA"
+    # #3648: the root files this adapter reads, by ecosystem. `is_applicable` reads
+    # it, and `tools_manifest` builds the "why was this ecosystem not audited"
+    # reason from the same tuple, so the two cannot disagree.
+    audit_files = {"javascript": LOCKFILES}
+
+    @staticmethod
+    def has_audit_file(target: str, name: str) -> bool:
+        """This adapter's own test for one of `audit_files` being in the tree. Read
+        by `is_applicable` and by `tools_manifest`'s reason, so "an auditor reads
+        this file" means the same in both (#3699 L1): a regular file at the root."""
+        return has_any_file(target, name)
 
     def is_applicable(self, target: str) -> bool:
-        return has_any_file(target, *LOCKFILES)
+        return any(self.has_audit_file(target, name)
+                   for name in self.audit_files["javascript"])
 
     def _manifest(self, target: str) -> str:
         """The manifest `npm audit` actually reads for *target*, target-relative.

@@ -25,39 +25,14 @@ every mode below (`driver run [target]` is the single-step primitive it calls) �
 - `-f <path>` / `--file <path>` — single-file scope.
 - `-d <dir>` / `--directory <dir>` — directory scope.
 - `-g <name>` / `--group <name>` — one committed group.
-- `-c` / `--changes` — delta vs base (`--base <ref|sha>`; default main→master); diffs the live
-  working tree, uncommitted changes included. An unresolvable base fails loudly — there is no
-  `HEAD~1` fallback.
-- `--pr <n>` — review a GitHub PR inside an isolated, disposable `git worktree` (never touches your
-  checkout); the driver resolves the worktree once and runs every phase natively inside it (no
-  separate staging step), releasing it on completion (`diff_map.release_worktree`) — a PR review is
-  committed-only. Both `-c` and `--pr` emit `.panopticon/runs/<tag>/diff-hunks.json`. The worktree holds
-  attacker-controlled PR content, so the review runs against **your** grouping, not the PR's: the
-  operator's `panopticon.yml` overwrites whatever the PR shipped under either name — a PR-shipped
-  config at `panopticon.yml` or `.panopticon.yml` (file *or* symlink) is removed with
-  `lstat`+`unlink`, never opened and never followed (CWE-59), before yours is copied in — and each
-  removal, refresh and overwrite is disclosed. The overwrite is excluded from the diff map, so the
-  on-diff gate never attributes it to the PR. **Acquisition runs no command the target authored**
-  (#2012), and the fetch — the exempt call — is refused, with the remedy, when this checkout's own
-  config (its `.git/config`, a file it includes, or its worktree config) sets a transport command
-  key such as `core.sshCommand` or `remote.origin.uploadpack` (#2041): of the six calls that build
-  the worktree, only `git fetch` keeps your environment, because a private repository's PR head is
-  fetchable only through your credential helper, which lives in the `HOME` and gitconfig
-  `safe_git`'s fresh allowlisted environment strips — and even that one carries
-  `core.fsmonitor=false`, the same pinned empty `core.hooksPath` every confined launch uses, and
-  `--no-recurse-submodules`, because a fetch writes a ref, `reference-transaction` fires from the
-  target's hooks directory on it, and git's default `fetch.recurseSubmodules = on-demand` would obey
-  a SUBMODULE's own config, which no read of this one can see. A config listing that lacks git's
-  scope-labelled shape refuses the same way, rather than passing as "nothing set". `worktree list`
-  and `rev-parse` go through `safe_git.probe`; `worktree add --detach`, `update-ref -d` and the
-  teardown's `worktree remove --force` through `safe_git.mutate`, the one entry point allowed to
-  write, which pins the same hooks directory and empties every repository-configured
-  `filter.*`/`diff.*` command (each disclosed as `panopticon --pr: suppressed <key> in <repo>`, by
-  key, never by value). That matters because `worktree add` is a **checkout**: on the old path the
-  target's `filter.*.smudge` ran on the PR's content and its output, not the committed bytes, was
-  what got reviewed, and a `post-checkout` hook ran from whatever `core.hooksPath` the repository
-  asked for. The gate is armed at CRITICAL unless `--fail-on` says otherwise — a delta run is
-  gate-first by intent, and only `--fail-on off` leaves it OFF.
+- **Delta review is withdrawn in 5.4 (#3735).** `-c` / `--changes`, `--pr <n>`, `--base <ref>` and
+  `--gate-scope` are refused at the command line, on every verb, before anything is launched or
+  written: exit 2, with one message. Reviewing a diff was never calibrated or stress-tested, and the
+  five-gate review found a `--pr` run that passed, certified, with a new finding on a changed line.
+  Panopticon 5.4 is a whole-repository audit; scope one with `-f`, `-d`, `-g` or `--files`. A run
+  folder that was started as a delta review is not resumed (`--reset` discards it and starts a
+  whole-repository run). The delta code is still in the tree, unreachable, and is deleted in 5.5
+  (#3736); delta review returns when it has been rebuilt and measured.
 - `driver setup [target] [--max-per-group N] [--max-groups N]` — one-time bootstrap: proposes
   `panopticon.yml.draft` at the repo root and writes `.panopticon/setup-report.md`. See Driver setup
   (5.2) below.
@@ -72,16 +47,13 @@ findings at or above the threshold), `--out PATH`, `--tools` (require tool scan)
 tool scan), `--reset` (discard the current run's working artifacts and start a NEW run — keeps every
 durable tag-named report on disk, only reclaims `.panopticon/runs/<tag>/` and the run-manifest, so
 it is safe to run on a finished review), `--epss` (enrich CVE citations), `--gate-unverified`
-(unverified findings drive grades/gate), `--max-verify N` (cap the verify queue; PR-scale delta
-reviews queue EVERY finding incl. tool claims -- a 25-file PR queued 108 advisors -- so size N ~ 2x
-the changed-file count unless you want the full sweep), `--max-per-group N` (files per review chunk
+(unverified findings drive grades/gate), `--max-verify N` (cap the verify queue; every finding is
+queued, tool claims included, unless you cap it), `--max-per-group N` (files per review chunk
 at run time, default 48; a positive integer, pinned in the run-manifest on the first run so a resume
 never repartitions cells that are already done; a full review at any other value reports its
 letter as provisional, since the group size changes how much a scan finds (#1495) — `driver
-setup` takes the same flag for the setup-time cap, see Driver setup), `--base <ref|sha>` (explicit delta base for
-`-c`/`--pr`/`--files`), `--diff-context N` (default 5; on-diff tolerance in lines),
-`--gate-scope {on-diff,all}` (default `on-diff` for delta reviews; scopes the gate to on-diff ×
-gate-eligible findings), `--include-fixtures` (keep tool findings under test-fixture corpora;
+setup` takes the same flag for the setup-time cap, see Driver setup), `--include-fixtures` (keep
+tool findings under test-fixture corpora;
 default prunes them in every mode — incl. redteam, #1055 — for parity with the review-side prune,
 though under redteam the prune is disclosed and the gate counts it anyway, #1740; pass to opt in),
 `--tools-exclude GLOB` (drop tool findings whose path matches GLOB; repeatable, for additional
@@ -91,8 +63,8 @@ severity, redteam bypasses entirely, and every downgrade is disclosed at
 `meta.coverage.doc_policy`). Only a path that names an existing regular file under `--root` (else
 `--target`), spelled with no `.`, `..` or empty component and reached through no symlink, is
 downgraded; a doc-glob match that names no such file keeps its severity and is counted in
-`doc_policy.not_a_doc_file` (#3207). `--base` on `--files` makes it an explicit delta request — plain
-`--files` (no `--base`) is a normal whole-file review and emits no delta artifact.
+`doc_policy.not_a_doc_file` (#3207). `--files` is a normal whole-file review of the files it names.
+`--base`, `--diff-context` and `--gate-scope` belonged to delta review and are refused (#3735).
 
 ## Contents
 

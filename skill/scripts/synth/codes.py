@@ -136,6 +136,30 @@ def _clamp_to_range(default, requested, override, bounds):
     return by_ordinal[allowed]
 
 
+def severity_after_discipline(finding, bundle):
+    """The severity `apply_verdict_quality` leaves on `finding`, without changing it.
+
+    #3727: this is decided by the finding's own content and the catalog, never by a
+    verdict, so it is known before findings at one line are merged. The merge ranks
+    by it (`corroborate.merge_rank`): ranked by the severity a reviewer CLAIMED, a
+    claim at CRITICAL with an empty `severity_override` won the merge over another
+    cell's confirmed CRITICAL and was then reset to its code's LOW default here.
+    `apply_verdict_quality` applies exactly this value, so the two cannot disagree."""
+    severity = finding.get("severity")
+    override = finding.get("severity_override")
+    default = ocrdb.default_severity(bundle, finding.get("code"))
+    bounds = ocrdb.severity_range(bundle, finding.get("code"))
+    ranged = bool(default and bounds and not evidence_mod.is_tool_sourced(finding))
+    if not isinstance(override, dict):
+        # #3330 r1 F1: an agent could omit the override object altogether and bypass
+        # every reason/rung check. Tool severities are an independent scanner/CVSS
+        # axis and must remain untouched.
+        return default if ranged else severity
+    if not override.get("reason"):
+        return default or severity
+    return _clamp_to_range(default, severity, override, bounds) if ranged else severity
+
+
 def apply_verdict_quality(findings, matched, bundle):
     """Apply the backup-corroboration flag and the severity-override discipline;
     return the counters merged into meta.coverage.ocrdb.
@@ -166,15 +190,11 @@ def apply_verdict_quality(findings, matched, bundle):
                 f["backup_confirmed"] = False
         ov = f.get("severity_override")
         default = ocrdb.default_severity(bundle, f.get("code"))
-        bounds = ocrdb.severity_range(bundle, f.get("code"))
+        # The one decision (#3727); what follows applies and discloses it.
+        requested, applied = f.get("severity"), severity_after_discipline(f, bundle)
         if not isinstance(ov, dict):
-            # #3330 r1 F1: an agent could omit the override object altogether
-            # and bypass every reason/rung check. Tool severities are an
-            # independent scanner/CVSS axis and must remain untouched.
-            if (default and bounds and not evidence_mod.is_tool_sourced(f)
-                    and f.get("severity") != default):
-                requested = f.get("severity")
-                f["severity"] = default
+            if applied != requested:
+                f["severity"] = applied
                 ov_missing += 1
                 print("synthesize: %s: agent severity %s without severity_override "
                       "reverted to OCRDb %s default %s"
@@ -182,25 +202,22 @@ def apply_verdict_quality(findings, matched, bundle):
                          default), file=sys.stderr)
             continue
         if not ov.get("reason"):
-            if default:
-                f["severity"] = default
+            if applied != requested:
+                f["severity"] = applied
             f.pop("severity_override", None)
             print("synthesize: severity_override without reason on %s dropped; "
                   "reverted to code default %r" % (f.get("id"), default),
                   file=sys.stderr)
         else:
             ov_count += 1
-            requested = f.get("severity")
-            if default and bounds and not evidence_mod.is_tool_sourced(f):
-                applied = _clamp_to_range(default, requested, ov, bounds)
-                if applied != requested:
-                    ov_clamped += 1
-                    f["severity"] = applied
-                    ov["to"] = applied
-                    print("synthesize: %s: severity override %s clamped to %s "
-                          "by OCRDb %s severity_range"
-                          % (f.get("id") or "?", requested, applied,
-                             f.get("code") or "?"), file=sys.stderr)
+            if applied != requested:
+                ov_clamped += 1
+                f["severity"] = applied
+                ov["to"] = applied
+                print("synthesize: %s: severity override %s clamped to %s "
+                      "by OCRDb %s severity_range"
+                      % (f.get("id") or "?", requested, applied,
+                         f.get("code") or "?"), file=sys.stderr)
             cur = _SEV_ORDINAL.get(f.get("severity"), 0)
             base = _SEV_ORDINAL.get(default, cur)
             if cur > base:

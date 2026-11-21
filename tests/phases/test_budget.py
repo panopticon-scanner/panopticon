@@ -162,6 +162,74 @@ class TestTheArithmeticItself(BudgetCase):
         self.assertEqual(budget.give_back(path, ["Web/SEC"], self.WHAT), [])
         self.assertFalse(os.path.exists(path))
 
+    def test_bump_many_records_set_values_in_the_same_write(self):
+        # #3679: a backup cell's part count lands beside its charge. A record SETS
+        # (a re-dispatch re-records the same count), it never adds.
+        path = self.plant(self.path(), {"G/SEC/backup/parts": 5, "Api/ARC": 1})
+        self.assertEqual(
+            budget.bump_many(path, ["G/SEC/backup"], self.WHAT,
+                             record={"G/SEC/backup/parts": 2}),
+            {"G/SEC/backup": 1})
+        self.assertEqual(self.read(path), {"Api/ARC": 1, "G/SEC/backup": 1,
+                                           "G/SEC/backup/parts": 2})
+
+    def test_a_recorded_list_of_ids_is_set_in_the_same_write(self):
+        # #3695: the claim ids a backup cell was handed, beside its charge and its part
+        # count. Set, never merged: a re-dispatch re-records the whole scope.
+        path = self.plant(self.path(), {"G/SEC/backup/claims": ["old", "ids"], "Api/ARC": 1})
+        self.assertEqual(
+            budget.bump_many(path, ["G/SEC/backup"], self.WHAT,
+                             record={"G/SEC/backup/parts": 1,
+                                     "G/SEC/backup/claims": ["SEC-2", "SEC-1"]}),
+            {"G/SEC/backup": 1})
+        self.assertEqual(self.read(path), {"Api/ARC": 1, "G/SEC/backup": 1,
+                                           "G/SEC/backup/parts": 1,
+                                           "G/SEC/backup/claims": ["SEC-2", "SEC-1"]})
+        # The charge beside it still counts as a charge.
+        self.assertEqual(1, budget.count(path, "G/SEC/backup", self.WHAT))
+
+    def test_a_recorded_value_is_a_count_or_a_list_of_ids_and_nothing_else(self):
+        path = self.path()
+        # An empty list too (#3697 N2): its reader takes it for no record at all.
+        for value in ([], [1], [""], ["a", ""], ["a", None], ["a", ["b"]], ("a",), {"a": 1},
+                      {"a"}, "a", b"a"):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError) as caught:
+                    budget.bump_many(path, ["G/SEC/backup"], self.WHAT,
+                                     record={"G/SEC/backup/claims": value})
+                self.assertIn("a count or a non-empty list of non-empty strings",
+                              str(caught.exception))
+                self.assertFalse(os.path.exists(path))
+
+    def test_a_planted_value_of_the_other_kind_refuses(self):
+        for key, planted, value, kind in (
+                ("G/SEC/backup/claims", 3, ["SEC-1"], "a list of ids"),
+                ("G/SEC/backup/claims", ["SEC-1", 2], ["SEC-1"], "a list of ids"),
+                ("G/SEC/backup/claims", "SEC-1", ["SEC-1"], "a list of ids"),
+                ("G/SEC/backup/claims", [], ["SEC-1"], "a list of ids"),
+                ("G/SEC/backup/parts", ["SEC-1"], 2, "a count")):
+            with self.subTest(key=key, planted=planted):
+                path = self.plant(self.path(), {key: planted})
+                with self.assertRaises(runio.DriverError) as caught:
+                    budget.bump_many(path, ["G/SEC/backup"], self.WHAT, record={key: value})
+                self.assertIn("key %s is not %s" % (key, kind), str(caught.exception))
+                self.assertEqual({key: planted}, self.read(path))
+
+    def test_a_recorded_value_must_be_a_count(self):
+        path = self.path()
+        for value in (True, -1, 1.0, "2", None):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    budget.bump_many(path, ["G/SEC/backup"], self.WHAT,
+                                     record={"G/SEC/backup/parts": value})
+                self.assertFalse(os.path.exists(path))
+
+    def test_a_planted_recorded_key_refuses_like_a_planted_charge(self):
+        path = self.plant(self.path(), {"G/SEC/backup/parts": "many"})
+        with self.assertRaises(runio.DriverError):
+            budget.bump_many(path, ["G/SEC/backup"], self.WHAT,
+                             record={"G/SEC/backup/parts": 2})
+
     def test_bump_many_with_no_keys_writes_nothing(self):
         path = self.path()
         self.assertEqual(budget.bump_many(path, [], self.WHAT), {})

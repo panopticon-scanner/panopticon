@@ -575,6 +575,9 @@ def reconcile(plan, tools, resolved, run=None):
             & EXECUTES_TARGET_BUILD),
         "tool_policy_mode": tools.policy_mode or "unknown",
         "tool_axis": resolved.tool_axis,
+        # #3676: summoned backup advisors and what came back, in cells; None when
+        # the run left no verify record.
+        "backups": getattr(plan, "backups", None),
         # #471: with scout_requested, lets consumers tell "no scouts
         # ran" (0) apart from "scouts ran and requested no tools"
         # (N>0 with scout_requested []).
@@ -644,6 +647,11 @@ def reconcile(plan, tools, resolved, run=None):
     if plan.sec_carve_out is not None:
         coverage["exclude_paths_sec_carve_out"] = repair_mod.repair_sec_carve_out(
             plan.sec_carve_out)
+    # #3708: the scanner's own root config, which a full scan does not review (#3642).
+    # Published only when one was left out, as the names discovery recorded.
+    scanner_config = getattr(run, "scanner_config_excluded", None)
+    if scanner_config:
+        coverage["scanner_config_excluded"] = list(scanner_config)
     # #3265: what the operator did not enable, published only when something was
     # withheld. The manifest is target-writable, so only a name this build knows
     # executes the target's build survives the read; the line printed for it is

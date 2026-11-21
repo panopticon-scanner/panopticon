@@ -187,7 +187,7 @@ def test_repo_scan_scope_changed_restricts_and_emits_diff_hunks(tmp_path):
     git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            str(repo), "--out", str(out)])
+                            str(repo), "--out", str(out)], refuse_delta=False)
     assert rc == 0
     groups = json.loads(out.read_text())["groups"]
     files = sorted(f for g in groups for f in g["files"])
@@ -208,7 +208,7 @@ def test_default_hunks_follow_selected_repo_not_caller(tmp_path, monkeypatch):
     monkeypatch.chdir(caller)
 
     assert orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-changed",
-                              "--base", "HEAD~1"]) == 0
+                              "--base", "HEAD~1"], refuse_delta=False) == 0
     target_hunks = repo / ".panopticon" / "diff-hunks.json"
     assert target_hunks.is_file()
     assert caller_hunks.read_text() == "caller-owned\n"
@@ -230,7 +230,7 @@ def test_explicit_out_keeps_hunks_adjacent_in_run_directory(tmp_path, monkeypatc
     out = run_dir / "groups.json"
 
     assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                              str(repo), "--out", str(out)]) == 0
+                              str(repo), "--out", str(out)], refuse_delta=False) == 0
     assert (run_dir / "diff-hunks.json").is_file()
     assert not (repo / ".panopticon" / "diff-hunks.json").exists()
 
@@ -238,7 +238,7 @@ def test_explicit_out_keeps_hunks_adjacent_in_run_directory(tmp_path, monkeypatc
 def test_repo_scan_scope_changed_bad_base_exits_2_no_artifact(tmp_path):
     repo = repo_with_matrix(tmp_path)
     out = repo / ".panopticon" / "groups.json"
-    assert orchestrator.main(["--repo-scan","--scope-changed","--base","nope", str(repo), "--out", str(out)]) == 2
+    assert orchestrator.main(["--repo-scan","--scope-changed","--base","nope", str(repo), "--out", str(out)], refuse_delta=False) == 2
     assert not (repo/".panopticon"/"diff-hunks.json").exists()
 
 
@@ -252,7 +252,7 @@ def test_repo_scan_scope_files_with_base_emits_diff_hunks(tmp_path):
     # convention as the existing --files tests).
     rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
                             "src/checkout/pay.py", "--base", "HEAD~1",
-                            "--out", str(out)])
+                            "--out", str(out)], refuse_delta=False)
     assert rc == 0
     groups = json.loads(out.read_text())["groups"]
     files = sorted(f for g in groups for f in g["files"])
@@ -301,7 +301,7 @@ def test_repo_scan_scope_changed_applies_exclude_paths(tmp_path):
     git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            str(repo), "--out", str(out)])
+                            str(repo), "--out", str(out)], refuse_delta=False)
     assert rc == 0
     doc = json.loads(out.read_text())
     files = sorted(f for g in doc["groups"] for f in g["files"])
@@ -425,7 +425,7 @@ def test_repo_scan_scope_changed_carves_the_sec_surface_out_of_the_exclusion(tmp
     git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            str(repo), "--out", str(out)])
+                            str(repo), "--out", str(out)], refuse_delta=False)
     assert rc == 0
     doc = json.loads(out.read_text())
     by_name = {g["name"]: g["files"] for g in doc["groups"]}
@@ -508,7 +508,7 @@ def test_repo_scan_scope_changed_pr_base_resolves_origin_only_base(tmp_path):
 
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed", "--pr-base", "main",
-                            str(repo), "--out", str(out)])
+                            str(repo), "--out", str(out)], refuse_delta=False)
     assert rc == 0                                              # did NOT return 2
     groups = json.loads(out.read_text())["groups"]
     files = sorted(f for g in groups for f in g["files"])
@@ -526,7 +526,7 @@ def test_repo_scan_scope_changed_explicit_base_ignores_pr_base(tmp_path):
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed",
                             "--base", "nope", "--pr-base", "main",
-                            str(repo), "--out", str(out)])
+                            str(repo), "--out", str(out)], refuse_delta=False)
     assert rc == 2
     assert not (repo/".panopticon"/"diff-hunks.json").exists()
 
@@ -544,7 +544,7 @@ def test_repo_scan_pr_worktree_excludes_root_config_from_diff_hunks(tmp_path):
             "commit", "-aqm", "pr ships its own config")
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            "--pr-worktree", str(repo), "--out", str(out)])
+                            "--pr-worktree", str(repo), "--out", str(out)], refuse_delta=False)
     assert rc == 0
     hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
     assert "panopticon.yml" not in hunks["hunks"]
@@ -561,7 +561,7 @@ def test_repo_scan_plain_delta_still_lists_a_changed_root_config(tmp_path):
             "commit", "-aqm", "a real config change")
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            str(repo), "--out", str(out)])
+                            str(repo), "--out", str(out)], refuse_delta=False)
     assert rc == 0
     hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
     assert "panopticon.yml" in hunks["hunks"]
@@ -583,7 +583,7 @@ def _pr_worktree_after_sync(tmp_path):
 def _hunks_for_pr_worktree(repo):
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            "--pr-worktree", str(repo), "--out", str(out)])
+                            "--pr-worktree", str(repo), "--out", str(out)], refuse_delta=False)
     assert rc == 0
     return json.loads((repo / ".panopticon" / "diff-hunks.json").read_text())
 
@@ -631,7 +631,7 @@ def test_repo_scan_pr_worktree_excludes_root_config_from_the_reviewed_set(tmp_pa
             "commit", "-aqm", "pr ships its own config")
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            "--pr-worktree", str(repo), "--out", str(out)])
+                            "--pr-worktree", str(repo), "--out", str(out)], refuse_delta=False)
     assert rc == 0
     assert "panopticon.yml" not in _reviewed_files(out)
 
@@ -647,7 +647,7 @@ def test_repo_scan_plain_delta_still_reviews_a_changed_root_config(tmp_path):
             "commit", "-aqm", "a real config change")
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            str(repo), "--out", str(out)])
+                            str(repo), "--out", str(out)], refuse_delta=False)
     assert rc == 0
     assert "panopticon.yml" in _reviewed_files(out)
 
@@ -1114,7 +1114,7 @@ def test_repo_scan_scope_changed_asks_the_dot_path_policy(tmp_path):
     _rewrite_and_commit(repo, tree)
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            str(repo), "--out", str(out)])
+                            str(repo), "--out", str(out)], refuse_delta=False)
     assert rc == 0
     assert _reviewed_files(out) == {"src/app.py", ".github/workflows/ci.yml"}
     # The changed set unions `ls-files --others`, and the run above left its own
@@ -1123,7 +1123,7 @@ def test_repo_scan_scope_changed_asks_the_dot_path_policy(tmp_path):
     # scout checkpoint for an "Ungrouped" cell holding nothing but run output);
     # the run's own artifact directory is a pruned dot-dir on both paths.
     assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                              str(repo), "--out", str(out)]) == 0
+                              str(repo), "--out", str(out)], refuse_delta=False) == 0
     assert _reviewed_files(out) == {"src/app.py", ".github/workflows/ci.yml"}
 
 
@@ -1154,7 +1154,7 @@ def test_scope_changed_and_repo_scan_agree_on_every_dot_path(tmp_path):
     delta = repo / ".panopticon" / "delta.json"
     whole = repo / ".panopticon" / "whole.json"
     assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                              str(repo), "--out", str(delta)]) == 0
+                              str(repo), "--out", str(delta)], refuse_delta=False) == 0
     assert orchestrator.main(["--repo-scan", str(repo), "--out", str(whole)]) == 0
     in_delta, in_whole = _reviewed_files(delta), _reviewed_files(whole)
     assert in_delta == in_whole & changed
@@ -1178,7 +1178,7 @@ def test_scope_changed_publishes_the_changed_surface_not_the_listing(tmp_path):
     _rewrite_and_commit(repo, ["src/app.py", "node_modules/x.js"])
     out = repo / ".panopticon" / "groups.json"
     assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                              str(repo), "--out", str(out)]) == 0
+                              str(repo), "--out", str(out)], refuse_delta=False) == 0
     block = json.loads(out.read_text())["discovery"]
     assert block["surface"] == "changed"
     assert block["files_seen"] == 1                   # the changed set, filtered
@@ -1220,7 +1220,7 @@ def test_scope_changed_fixture_disclosure_describes_the_changed_set(tmp_path, ca
     _rewrite_and_commit(repo, ["src/app.py"])
     out = repo / ".panopticon" / "groups.json"
     assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                              str(repo), "--out", str(out)]) == 0
+                              str(repo), "--out", str(out)], refuse_delta=False) == 0
     err = capsys.readouterr().err
     assert _reviewed_files(out) == {"src/app.py"}
     assert "excluded" not in json.loads(out.read_text())
@@ -1237,7 +1237,7 @@ def test_scope_changed_keeps_the_changed_sets_own_fixture_prune(tmp_path, capsys
     _rewrite_and_commit(repo, tree)
     out = repo / ".panopticon" / "groups.json"
     assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                              str(repo), "--out", str(out)]) == 0
+                              str(repo), "--out", str(out)], refuse_delta=False) == 0
     assert _reviewed_files(out) == {"src/app.py"}
     assert json.loads(out.read_text())["excluded"]["fixture_dirs"] == [
         "tests/fixtures"]
@@ -1270,7 +1270,7 @@ def test_scope_changed_is_bounded_by_the_discovery_cap(tmp_path, capsys):
     out = repo / ".panopticon" / "groups.json"
     with mock.patch.object(discovery_scope, "DISCOVERED_FILES_MAX", 2):
         rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                                str(repo), "--out", str(out)])
+                                str(repo), "--out", str(out)], refuse_delta=False)
     err = capsys.readouterr().err
     assert rc == 0
     assert len(_reviewed_files(out)) == 2
@@ -1290,7 +1290,7 @@ def test_the_pruned_disclosure_is_one_line_per_run(tmp_path, capsys):
     _rewrite_and_commit(repo, tree)
     out = repo / ".panopticon" / "groups.json"
     assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                              str(repo), "--out", str(out)]) == 0
+                              str(repo), "--out", str(out)], refuse_delta=False) == 0
     err = capsys.readouterr().err
     assert err.count("discovery pruned") == 1
     assert "changed surface" in err            # nit 6: the line names its surface
@@ -1328,7 +1328,7 @@ def test_repo_scan_scope_changed_without_a_changed_file_list_exits_2(tmp_path, c
     out = repo / ".panopticon" / "groups.json"
     with mock.patch.object(discovery_scope, "collect_changed_files", return_value=None):
         rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD",
-                                str(repo), "--out", str(out)])
+                                str(repo), "--out", str(out)], refuse_delta=False)
     assert rc == 2
     assert capsys.readouterr().err.endswith(
         "could not determine changed files; is %s a git repo?\n" % repo)
@@ -1339,7 +1339,7 @@ def test_repo_scan_scope_files_with_a_bad_base_exits_2_no_artifact(tmp_path):
     repo = repo_with_matrix(tmp_path)
     out = repo / ".panopticon" / "groups.json"
     rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
-                            "src/checkout/pay.py", "--base", "nope", "--out", str(out)])
+                            "src/checkout/pay.py", "--base", "nope", "--out", str(out)], refuse_delta=False)
     assert rc == 2
     assert not out.exists()
     assert not (repo / ".panopticon" / "diff-hunks.json").exists()

@@ -257,6 +257,25 @@ class TestCertify(unittest.TestCase):
                 self.assertFalse(r["coverage_certified"])
                 self.assertIn("partial scanner file coverage: semgrep",
                               r["coverage_note"])
+        # #3720: the listing's own exactness (#3603). A file named twice, or more files
+        # named than the capture counts, is not an exact listing: it certifies nothing,
+        # and its names are not published either.
+        doubled = self._syntax_only("templates/page.html", "templates/page.html")
+        over = self._syntax_only("templates/page.html", "templates/other.html")
+        over["semgrep"].update({"syntax_error_files": 1, "unparsed_files": 1})
+        for label, partial in (("a file named twice", doubled),
+                               ("more files named than counted", over)):
+            with self.subTest(case=label):
+                r = grading_mod.certify("A", [], "high", set(), [],
+                                        tools_file_partial=partial)
+                self.assertFalse(r["coverage_certified"])
+                self.assertEqual("partial scanner file coverage: semgrep", r["coverage_note"])
+                self.assertEqual({}, coverage_model.semgrep_syntax_disclosures(partial))
+        # ...where the same two files, counted as two, are an exact listing.
+        exact = self._syntax_only("templates/page.html", "templates/other.html")
+        self.assertTrue(grading_mod.certify("A", [], "high", set(), [],
+                                            tools_file_partial=exact)["coverage_certified"])
+        self.assertEqual(2, coverage_model.semgrep_syntax_disclosures(exact)["semgrep"]["count"])
 
     def test_malformed_or_mixed_semgrep_syntax_rows_fail_closed(self):
         base = self._syntax_only("templates/page.html")["semgrep"]["files"][0]

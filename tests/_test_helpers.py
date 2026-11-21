@@ -91,6 +91,30 @@ def plant_latest_link(root):
     return run
 
 
+def record_verify_scope(run_dir, group, domain, claim_ids, stage="primary"):
+    """#3702: what the verify phase records when it hands `claim_ids` to one cell and
+    stage's advisor: the charge, and beside it the claims, the part count and the part
+    size. Synthesis counts a bundle verdict only for a claim this record shows its
+    advisor was handed, so a fixture that writes a bundle by hand writes this too. One
+    part holds them all, as a fixture's one bundle file does. Merged into whatever
+    record `run_dir` already holds."""
+    import json
+    import scripts.synth.backups as backups
+    import scripts.synth.verdict_scope as verdict_scope
+    path = os.path.join(run_dir, backups.ATTEMPTS_FILE)
+    body = {}
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as fh:
+            body = json.load(fh)
+    ids = [str(claim) for claim in claim_ids]
+    key = "%s/%s/%s" % (group, domain, stage)
+    body.update({key: body.get(key, 0) + 1, key + backups.CLAIMS_SUFFIX: ids,
+                 key + backups.PARTS_SUFFIX: 1,
+                 key + verdict_scope.PART_SIZE_SUFFIX: max(len(ids), 1)})
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(body, fh)
+
+
 def adopt_panopticon(review_root):
     """#3271: make a fixture's `.panopticon/` OURS -- the stamped `owner.json`
     first contact writes into every directory a run of ours starts -- so the

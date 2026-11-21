@@ -273,25 +273,65 @@ def stamp(payload, listing, dockerfile_listing=None):
     properties[STAMP_KEY] = listing
     if dockerfile_listing is not None:
         properties[DOCKERFILE_STAMP_KEY] = dockerfile_listing
+    # #3718 N1: every capture passes through here, and only `note_declined`, after it,
+    # says a merge was declined. A value Semgrep's own output carries at that key (in
+    # either pass: the merge folds the second pass's properties in) is not ours.
+    properties.pop(MERGE_DECLINED_KEY, None)
     return json.dumps(doc).encode("utf-8")
 
 
+# #3713: why a Dockerfile-only pass was not folded into the capture, stamped on the
+# primary that is kept (`note_declined`) so an operator can tell a malformed record
+# from a pass that failed. Fixed words: nothing of the target's or the scanner's.
+MERGE_DECLINED_KEY = "panopticon_dockerfile_merge_declined"
+DECLINED_PASS_FAILED = "second_pass_failed"            # the pass itself did not complete
+DECLINED_PASS_UNREADABLE = "second_pass_unreadable"    # its output could not be read back
+DECLINED_RESULT_MALFORMED = "result_malformed"         # a result that cannot be compared
+DECLINED_NOT_MERGEABLE = "not_mergeable"               # not two SARIF documents that fold
+DECLINED_MERGE_ERROR = "merge_error"                   # anything the merge did not foresee
+DECLINED_OVER_LIMIT = "merged_over_limit"              # the merged capture is too large
+DECLINED_REASONS = (DECLINED_PASS_FAILED, DECLINED_PASS_UNREADABLE, DECLINED_RESULT_MALFORMED,
+                    DECLINED_NOT_MERGEABLE, DECLINED_MERGE_ERROR, DECLINED_OVER_LIMIT)
+
+# #3713: what `_result_identity` returns for a result it cannot compare: a field its
+# identity is made of has a type no SARIF result gives it. Not None, which is a
+# well-formed result with no location and is kept without deduplication.
+UNMERGEABLE = object()
+_REGION_FIELDS = ("startLine", "startColumn", "endLine", "endColumn")
+
+
 def _result_identity(result):
-    """A stable finding identity across the tree and Dockerfile-only passes."""
+    """A stable finding identity across the tree and Dockerfile-only passes: a
+    hashable tuple, None for a result with no location to compare (it is kept, never
+    deduplicated), or `UNMERGEABLE`.
+
+    #3713: the identity goes into a set, and a `ruleId`, `message.text` or region
+    field that was a list or an object raised `TypeError: unhashable` there, as a
+    `region` that was not an object raised `AttributeError` here. Either left
+    `merge_sarif`, then the capture, then `run_tools`: later scanners never ran and
+    no manifest was written. A result this cannot compare is now said to be so, and
+    the merge declines; nothing is coerced into an identity it does not have."""
     if not isinstance(result, dict):
         return None
     try:
         physical = result["locations"][0]["physicalLocation"]
         uri = physical["artifactLocation"]["uri"]
-        region = physical.get("region") or {}
+        region = physical.get("region")
     except (KeyError, IndexError, TypeError, AttributeError):
         return None
+    region = {} if region is None else region
+    if not isinstance(region, dict):
+        return UNMERGEABLE
     message = result.get("message")
     text = message.get("text") if isinstance(message, dict) else message
     path = str(uri).removeprefix("file://").removeprefix("/src/").lstrip("/")
-    return (result.get("ruleId"), path, region.get("startLine"),
-            region.get("startColumn"), region.get("endLine"),
-            region.get("endColumn"), text)
+    identity = ((result.get("ruleId"), path)
+                + tuple(region.get(field) for field in _REGION_FIELDS) + (text,))
+    # A value that can be compared: text, a number, or absent. A list or an object
+    # where one of these belongs is not a spelling of any of them.
+    if not all(part is None or isinstance(part, (str, int, float)) for part in identity):
+        return UNMERGEABLE
+    return identity
 
 
 def _run_list(run, field):
@@ -322,7 +362,8 @@ def _run_rules(run):
 
 
 def _merge_run(target, source, seen):
-    """Fold one Semgrep run into ``target`` without losing its evidence."""
+    """Fold one Semgrep run into ``target`` without losing its evidence. None when it
+    is folded, else the `DECLINED_*` word for why it cannot be."""
     target_rules, source_rules = _run_rules(target), _run_rules(source)
     target_results = _run_list(target, "results")
     source_results = _run_list(source, "results")
@@ -331,7 +372,7 @@ def _merge_run(target, source, seen):
     if any(value is None for value in (
             target_rules, source_rules, target_results, source_results,
             target_invocations, source_invocations)):
-        return False
+        return DECLINED_NOT_MERGEABLE
 
     # A result may carry a numeric ruleIndex as well as ruleId. Preserve the
     # primary config's rule order, append genuinely new rule descriptors, and
@@ -349,13 +390,15 @@ def _merge_run(target, source, seen):
 
     for result in source_results:
         if not isinstance(result, dict):
-            return False
+            return DECLINED_NOT_MERGEABLE
         rule_index = result.get("ruleIndex")
         if rule_index is not None:
             if type(rule_index) is not int or rule_index not in source_indexes:
-                return False
+                return DECLINED_NOT_MERGEABLE
             result["ruleIndex"] = source_indexes[rule_index]
         identity = _result_identity(result)
+        if identity is UNMERGEABLE:
+            return DECLINED_RESULT_MALFORMED
         if identity is not None and identity in seen:
             continue
         target_results.append(result)
@@ -373,18 +416,25 @@ def _merge_run(target, source, seen):
     if source_properties is None:
         source_properties = {}
     if not isinstance(target_properties, dict) or not isinstance(source_properties, dict):
-        return False
+        return DECLINED_NOT_MERGEABLE
     for key, value in source_properties.items():
         if key == SCANNED_FILES_KEY:
             continue
         if key in target_properties and target_properties[key] != value:
-            return False
+            return DECLINED_NOT_MERGEABLE
         target_properties[key] = value
-    return True
+    return None
 
 
 def merge_sarif(primary, dockerfile):
-    """Fold two Semgrep SARIF documents into one upload-compatible run.
+    """`merge_sarif_detailed`'s merged document alone: bytes, or None when the two
+    passes cannot be folded."""
+    return merge_sarif_detailed(primary, dockerfile)[0]
+
+
+def merge_sarif_detailed(primary, dockerfile):
+    """Fold two Semgrep SARIF documents into one upload-compatible run:
+    (merged bytes, None), or (None, the `DECLINED_*` word for why not).
 
     GitHub code scanning rejects multiple runs with the same category in one
     uploaded SARIF file. Rule descriptors are therefore combined (with numeric
@@ -393,6 +443,10 @@ def merge_sarif(primary, dockerfile):
     A genuinely different finding is never folded away. The per-pass scanned-
     file witness is summed when every source run carries one, otherwise removed
     rather than publishing a lower bound as an exact count.
+
+    Never raises. It declines a document that is not SARIF with runs, and (#3713)
+    a result in either pass whose identity cannot be compared. The caller then
+    keeps the primary capture as it is, which reads as partial.
     """
     try:
         doc = json.loads(depth_checked(primary))
@@ -403,9 +457,9 @@ def merge_sarif(primary, dockerfile):
                 and isinstance(runs, list) and runs
                 and isinstance(extra_runs, list) and extra_runs
                 and all(isinstance(run, dict) for run in runs + extra_runs)):
-            return None
+            return None, DECLINED_NOT_MERGEABLE
     except (ValueError, KeyError, TypeError):
-        return None
+        return None, DECLINED_NOT_MERGEABLE
 
     all_runs = runs + extra_runs
     counts: list[int] = []
@@ -422,23 +476,48 @@ def merge_sarif(primary, dockerfile):
     target_results = _run_list(target, "results")
     if target_results is None or not all(isinstance(result, dict)
                                          for result in target_results):
-        return None
-    seen = {_result_identity(result) for result in target_results}
+        return None, DECLINED_NOT_MERGEABLE
+    identities = [_result_identity(result) for result in target_results]
+    if any(identity is UNMERGEABLE for identity in identities):
+        return None, DECLINED_RESULT_MALFORMED
+    seen = set(identities)
     seen.discard(None)
     for source in runs[1:] + extra_runs:
-        if not _merge_run(target, source, seen):
-            return None
+        declined = _merge_run(target, source, seen)
+        if declined is not None:
+            return None, declined
     doc["runs"] = [target]
 
     first_properties = target.get("properties")
     if first_properties is None:
         first_properties = target["properties"] = {}
     if not isinstance(first_properties, dict):
-        return None
+        return None, DECLINED_NOT_MERGEABLE
     if counts_complete:
         first_properties[SCANNED_FILES_KEY] = sum(counts)
     else:
         first_properties.pop(SCANNED_FILES_KEY, None)
+    return json.dumps(doc).encode("utf-8"), None
+
+
+def note_declined(payload, reason):
+    """`payload` (the primary capture that is kept) with `reason` at
+    runs[0].properties[MERGE_DECLINED_KEY] (#3713). Returned untouched when it is not
+    a SARIF document with a run object, or `reason` is not one of `DECLINED_REASONS`:
+    only a fixed word is ever written."""
+    if reason not in DECLINED_REASONS:
+        return payload
+    try:
+        doc = json.loads(depth_checked(payload))
+        run = doc["runs"][0]
+        if not isinstance(run, dict):
+            return payload
+    except (ValueError, KeyError, IndexError, TypeError):
+        return payload
+    properties = run.get("properties")
+    if not isinstance(properties, dict):
+        properties = run["properties"] = {}
+    properties[MERGE_DECLINED_KEY] = reason
     return json.dumps(doc).encode("utf-8")
 
 
