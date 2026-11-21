@@ -51,7 +51,10 @@ CLASSIFIER_CASES = (
     *(("#3640", s, E, None) for s in (
         "kimi stderr: mypy: quota reached while checking src/billing.py",
         "codex stderr: pytest: quota reached in the fixture output",
-        "codex stderr: Individual quota reached handling is untested")),
+        "codex stderr: Individual quota reached handling is untested",
+        # #3641 review nit: dropping #3640's scope word must not make a tool's
+        # terminal sentence look like the provider's account-level prose.
+        "codex stderr: quota reached.")),
     # #1623: real entry-class failures whose text merely MENTIONS the vocabulary
     *(("#1623", s, E, None) for s in (
         'claude -p exited 1: {"findings": [{"title": "Missing authentication on /admin"}]}',

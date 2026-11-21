@@ -26,6 +26,7 @@ import scripts.phases.persist as persist
 import scripts.phases.runio as runio
 import scripts.redact as redact
 import scripts.runners.base as runners_base
+import scripts.runners.outage as outage
 import scripts.runners.gemini_home as gemini_home
 from scripts.collect_usage import PHASES, USAGE_FIELDS
 
@@ -204,6 +205,10 @@ class Ledger:
                 "phase": PHASE_OF_CHECKPOINT.get(checkpoint, "unattributed"),
                 "mode": mode, "host": host, "model": result.model,
                 "ok": result.ok and refusal is None,
+                # #3753: synthesis runs after the dispatch process and cannot
+                # reconstruct the classifier's host_error input from the
+                # operator-facing error string. Persist the loop's verdict.
+                "failure_class": outage.landed_class(result, refusal),
                 "usage": {k: int(result.usage.get(k, 0) or 0) for k in USAGE_FIELDS} if result.usage else {},
                 "cost_usd": result.cost_usd, "duration_ms": duration_ms,
                 "started_at": timing.get("started_at"), "finished_at": timing.get("finished_at"),

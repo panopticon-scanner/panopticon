@@ -10,6 +10,16 @@
   case; it is revisited only if a real run shows one. A reactor parent, a module, a Gradle
   project and a registry artifact are all pinned to the ordinary tool-advisor path under
   osv-scanner and Trivy, and nothing is read from the ingest budget. No behaviour changes.
+- **A host-cut-short verify phase now names the host and resume path (#3753).** The dispatch
+  ledger preserves the loop's host/entry failure class, and synthesis joins each verify entry's
+  latest result to the exact unresolved cell or tool claim before counting the never-launched
+  tail. The JSON summary, HTML header and terminal grade line name those counts, the host class,
+  and the same-command resume path; an unreadable/oversize ledger names its class as unknown
+  instead of hiding the gap. A completed retry retires the old outage, entry-class failures do
+  not trigger the reason, and the shared undone-work policy controls certification, gate, and
+  provisional-grade posture. Unknown-shape entries are a conservative count and can overlap
+  named pending work. A bare tool-stderr `quota reached.` sentence remains entry-class.
+
 ## 5.4.0 — Verdict integrity and the whole-repository audit
 
 Cut after a five-gate review of everything since 5.3.0 (security, correctness, robustness,

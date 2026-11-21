@@ -10,8 +10,24 @@ import scripts.runners.base as runners_base
 import scripts.safe_write as safe_write
 import scripts.tolerant_json as tolerant_json
 import scripts.tools.base as tool_base
+import scripts.runners.outage as outage_mod
 from . import artifacts as artifacts_mod
 from . import plan as plan_mod
+
+
+@dataclass(frozen=True)
+class VerifyLedger:
+    """Durable verify-launch state used only to attribute a shortfall (#3641).
+
+    ``launched_entries`` names every verify entry with a latest, non-rollback
+    row whose ``ok`` value is an actual boolean. ``host_failure_entries`` is
+    the subset whose latest row explicitly persisted the host class. A legacy
+    failure with no class remains launched but unknown; synthesis must never
+    reclassify its operator-facing ``error`` text.
+    """
+    launched_entries: tuple = ()
+    host_failure_entries: tuple = ()
+    unreadable: bool = False
 
 
 @dataclass(frozen=True)
@@ -24,16 +40,19 @@ class CostInputs:
     run_usage: dict | None = None
     ledger_models: tuple = ()
     ledger_substitutions: tuple = ()     # #3582: entries that ran on a fallback rung
+    verify_ledger: VerifyLedger = VerifyLedger()
 
     @classmethod
     def load(cls, run_dir, verdicts_dir, tools_produced):
         """meta.cost's inputs from the run folder (WS-0 S3). #21: the driver
         plan and the verdicts resolve under `run_dir` like every other run
         artifact -- reading them flat left driver_cost None on every 5.1 run."""
+        ledger_rows, ledger_unreadable = _read_ledger(run_dir)
         return cls(driver_cost=driver_cost_counts(run_dir, verdicts_dir, tools_produced),
                    run_usage=load_run_usage(run_dir),
-                   ledger_models=load_ledger_models(run_dir),
-                   ledger_substitutions=load_ledger_substitutions(run_dir))
+                   ledger_models=_ledger_models(ledger_rows),
+                   ledger_substitutions=_ledger_substitutions(ledger_rows),
+                   verify_ledger=_verify_ledger(ledger_rows, ledger_unreadable))
 
 
 def load_run_usage(run_dir):
@@ -91,20 +110,24 @@ def _model_name(value):
     return tool_base.inert_text(value, limit=_MODEL_NAME_MAX) or None
 
 
-def _ledger_rows(run_dir):
-    """The run's ledger rows that parse as objects; nothing when there is no ledger. A line
-    that cannot be read is skipped, as `Ledger.lines` does."""
+def _read_ledger(run_dir):
+    """Return ``(rows, unreadable)`` for the run's bounded dispatch ledger.
+
+    A missing ledger is ordinary (legacy/session paths) and distinct from a
+    ledger that exists but cannot be read. Individual malformed lines remain
+    skippable, as ``Ledger.lines`` has always made them.
+    """
     if not run_dir:
-        return []
+        return [], False
     path = os.path.join(run_dir, runners_base.LEDGER_FILE)
     try:
         raw = safe_write.read_regular_bytes(path, artifacts_mod.MAX_JSON_BYTES)
     except FileNotFoundError:
-        return []
+        return [], False
     except (OSError, ValueError) as exc:
         print("synthesize: artifact %r could not be read (%s); ignoring" % (path, exc),
               file=sys.stderr)
-        return []
+        return [], True
     rows = []
     for line in raw.decode("utf-8", "replace").split("\n"):
         try:
@@ -113,7 +136,51 @@ def _ledger_rows(run_dir):
             continue
         if isinstance(row, dict):
             rows.append(row)
-    return rows
+    return rows, False
+
+
+def _ledger_rows(run_dir):
+    """The run's parseable ledger rows; retained for narrow reader callers."""
+    return _read_ledger(run_dir)[0]
+
+
+def _verify_ledger(rows, unreadable=False):
+    """Latest durable verify state, retaining entry identity for attribution.
+
+    Rollback marker rows describe an interrupted batch, not a landed attempt,
+    and cannot retire the attempt before them. Likewise, only the exact JSON
+    boolean ``true`` is success and only ``false`` is a failed launch; a
+    malformed row with ``ok`` absent (or another type) is ignored rather than
+    silently retiring an earlier host failure. A successful later retry does
+    retire it. Legacy failed rows without ``failure_class`` are deliberately
+    unknown: ``error`` contains agent-authored text on some runner families.
+    """
+    latest = {}
+    for row in rows:
+        entry_id = row.get("entry_id")
+        landed = row.get("ok") is True or row.get("ok") is False
+        if (row.get("phase") == "verify" and isinstance(entry_id, str) and entry_id
+                and not row.get("rolled_back") and landed):
+            latest[entry_id] = row
+    host = tuple(entry_id for entry_id, row in latest.items()
+                 if row.get("ok") is False
+                 and row.get("failure_class") == outage_mod.HOST_FAILURE)
+    return VerifyLedger(tuple(latest), host, unreadable)
+
+
+def load_verify_ledger(run_dir):
+    """Load #3641's bounded verification-attribution view of the ledger."""
+    rows, unreadable = _read_ledger(run_dir)
+    return _verify_ledger(rows, unreadable)
+
+
+def _ledger_models(rows):
+    pairs = {}
+    for row in rows:
+        model = _model_name(row.get("model"))
+        if model:
+            pairs[(_role_of_entry(row.get("entry_id")), model)] = True
+    return tuple(pairs)
 
 
 def load_ledger_models(run_dir):
@@ -123,23 +190,15 @@ def load_ledger_models(run_dir):
     requested, and it is None on a host with no model policy. A session-mode run has no ledger
     rows, so this is empty there.
     """
-    pairs = {}
-    for row in _ledger_rows(run_dir):
-        model = _model_name(row.get("model"))
-        if model:
-            pairs[(_role_of_entry(row.get("entry_id")), model)] = True
-    return tuple(pairs)
+    return _ledger_models(_ledger_rows(run_dir))
 
 
 _SUBSTITUTION_TEXT = ("requested", "bound", "route", "reason")
 
 
-def load_ledger_substitutions(run_dir):
-    """Every ledger row whose entry ran on a fallback rung, as `meta.model_substitutions`
-    publishes it (#3582): entry, role, requested, bound, route, rung, reason. The ledger sits
-    in the reviewed tree, so every string is made inert and a malformed record is skipped."""
+def _ledger_substitutions(rows):
     out, seen = [], set()
-    for row in _ledger_rows(run_dir):
+    for row in rows:
         sub = row.get("model_substitution")
         entry = _model_name(row.get("entry_id"))
         if not isinstance(sub, dict) or not entry or entry in seen:
@@ -152,6 +211,13 @@ def load_ledger_substitutions(run_dir):
         seen.add(entry)
         out.append(dict(entry=entry, role=_role_of_entry(entry), rung=rung, **fields))
     return tuple(out)
+
+
+def load_ledger_substitutions(run_dir):
+    """Every ledger row whose entry ran on a fallback rung, as `meta.model_substitutions`
+    publishes it (#3582): entry, role, requested, bound, route, rung, reason. The ledger sits
+    in the reviewed tree, so every string is made inert and a malformed record is skipped."""
+    return _ledger_substitutions(_ledger_rows(run_dir))
 
 
 def model_substitutions(cost):

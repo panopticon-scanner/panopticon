@@ -22,6 +22,7 @@ import scripts.ledger as ledger_mod
 import scripts.money as money
 import scripts.runners.base as base
 import scripts.runners.claude as claude_runner
+import scripts.runners.outage as outage
 import scripts.synth.cost as cost_mod
 from tests.orchestrate_helpers import LoopCase
 
@@ -121,6 +122,25 @@ class TestLedgerMoney(LoopCase):
     def _result(self, cost, error=None):
         return base.RunResult(entry_id="e", ok=True, text="", usage={}, cost_usd=cost,
                               model=None, session_id=None, denials=[], error=error)
+
+    def test_rows_persist_the_loop_failure_class_not_the_display_error(self):
+        ledger = self._ledger()
+        host = base.RunResult.failed(
+            "host", "agy exited 1", host_error="Individual quota reached")
+        own = base.RunResult.failed(
+            "entry", "codex stderr: quota reached.",
+            host_error="codex stderr: quota reached.")
+        ok = base.RunResult(
+            entry_id="ok", ok=True, text="", usage={}, cost_usd=0,
+            model=None, session_id=None, denials=[], error=None)
+        for result, refusal in ((host, None), (own, None), (ok, None),
+                                (host, "reply refused")):
+            ledger.record({"id": result.entry_id}, "verify", result,
+                          "headless", "agy", refusal=refusal)
+        self.assertEqual(
+            [outage.HOST_FAILURE, outage.ENTRY_FAILURE, None, outage.ENTRY_FAILURE],
+            [row["failure_class"] for row in ledger.lines()],
+        )
 
     def test_claude_models_reach_usage_and_meta_cost_without_changing_aggregates(self):
         run_dir, _floor = self._repo()
