@@ -44,6 +44,7 @@ version is affected" before the advisor queue is built. Ambiguity and unreadable
 input fail closed onto the ordinary advisor path.
 """
 import fnmatch
+import itertools
 import json
 import os
 import re
@@ -1175,12 +1176,14 @@ def _gemspec_path(real_dir, target_root):
     def matches(name):
         return name == ".gemspec" or (name.endswith(".gemspec") and not name.startswith("."))
 
-    found, seen = [], 0
+    found: list[str] = []
     try:
         with os.scandir(real_dir) as top:
-            entries = sorted(top, key=lambda entry: entry.name)
-        for entry in entries:
-            seen += 1
+            entries = list(itertools.islice(top, MAX_GEMSPEC_SCAN_ENTRIES + 1))
+        seen = len(entries)
+        if seen > MAX_GEMSPEC_SCAN_ENTRIES:
+            return None
+        for entry in sorted(entries, key=lambda entry: entry.name):
             if matches(entry.name):
                 found.append(entry.path)
             if entry.name.startswith(".") or not entry.is_dir():
@@ -1194,8 +1197,6 @@ def _gemspec_path(real_dir, target_root):
                         return None
                     if child.name != ".gemspec" and matches(child.name):
                         found.append(child.path)
-            if seen > MAX_GEMSPEC_SCAN_ENTRIES:
-                return None
     except OSError:
         return None
     return found[0] if len(found) == 1 else None

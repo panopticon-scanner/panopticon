@@ -778,6 +778,9 @@ class TestTheSecondReview(TestTheReviewProbes):
                 # Survivors of the first mutation pass.
                 ("a block that never closes", hidden.replace("end\n", "")),
                 ("adjacent literals", self._spec(lit + '  s.summary = "a" "b"\n')),
+                ("adjacent literals in an array", self._spec(lit + '  s.files = ["a" "b"]\n')),
+                ("adjacent literals in a dependency",
+                 self._spec(lit + '  s.add_dependency "rack" "~> 2"\n')),
                 ("a trailing comma, so the statement continues",
                  self._spec(lit + '  s.add_dependency "rack",\n')),
                 ("a trailing comma in an array", self._spec(lit + '  s.files = ["a",]\n')),
@@ -869,6 +872,14 @@ class TestTheSecondReview(TestTheReviewProbes):
                     mock.patch.object(first_party_advisory, "MAX_GEMSPEC_SCAN_ENTRIES", cap):
                 self.assertEqual(expected, self._origin(self.FOO))
         self.assertEqual(65536, first_party_advisory.MAX_GEMSPEC_SCAN_ENTRIES)
+        # The cap holds for a flat directory too, with no subdirectory to count in.
+        shutil.rmtree(os.path.join(base, "lib"))
+        for extra in range(3):
+            _write(os.path.join(base, "f%d.rb" % extra), "x")
+        for cap, expected in ((4, "first_party"), (3, None)):
+            with self.subTest(flat_cap=cap), \
+                    mock.patch.object(first_party_advisory, "MAX_GEMSPEC_SCAN_ENTRIES", cap):
+                self.assertEqual(expected, self._origin(self.FOO))
 
     def test_the_lock_holds_exact_indents_markers_and_versions(self):
         good = ("PATH\n  remote: gems/foo\n  specs:\n    foo (1.0)\n      rack (~> 2.2)\n"
