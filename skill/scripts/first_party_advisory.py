@@ -652,6 +652,13 @@ def _pep440_key(version):
     return text if parts is None else parts
 
 
+def _pep508_name(name):
+    """True for a PEP 508 project name: ASCII letters, digits, ``.``, ``_`` and ``-``,
+    starting and ending with a letter or digit."""
+    return (bool(name) and name.isascii() and name[0].isalnum() and name[-1].isalnum()
+            and all(ch.isalnum() or ch in "._-" for ch in name))
+
+
 def _local_path(value):
     """A lock's relative local path, else None; a non-string or empty path raises."""
     if not isinstance(value, str) or not value:
@@ -724,7 +731,8 @@ def _python_manifest_fact(package_dir, target_root, cache: IngestCache, *, virtu
     ``[project]`` comes first; Poetry's legacy ``[tool.poetry]`` only without it. A
     dynamic or missing version is None (#3623 ruling: fail closed). A ``Private ::``
     classifier, ``package-mode = false``, ``[tool.uv] package = false``,
-    ``[tool.pdm] distribution = false`` and a uv virtual source are unpublishable, except
+    ``[tool.pdm] distribution = false``, ``dynamic = ["classifiers"]`` (a private
+    classifier could not be seen) and a uv virtual source are unpublishable, except
     for the review root itself (#3623 ruling, as npm's ``private``). Anything malformed
     is None."""
     real_dir = os.path.realpath(package_dir)
@@ -754,7 +762,10 @@ def _python_manifest_fact(package_dir, target_root, cache: IngestCache, *, virtu
     name, version = declared.get("name"), declared.get("version")
     if not (isinstance(name, str) and name and isinstance(version, str) and version):
         return None
-    publishable = not virtual
+    # #3686 review round 3: dynamic classifiers are filled in at build time, so a
+    # `Private ::` one cannot be seen here; unseen is unpublishable.
+    publishable = not virtual and not (
+        project is not _MISSING and "classifiers" in project.get("dynamic", []))
     for table in (project, poetry):
         if table is _MISSING:
             continue
@@ -779,8 +790,10 @@ def _python_package_origins(lock_path, target_root, cache: IngestCache):
     Every ``[[package]]`` entry is classified by its lock's source record. A local
     entry is first-party only when its in-tree pyproject.toml proves the exact
     identity and is publishable; registry, git and url entries are external, and
-    anything else is unknown. A malformed lock, or an entry whose name or (non-local)
-    version cannot be read, classifies nothing."""
+    anything else is unknown. A malformed lock, or an entry whose name is not a PEP
+    508 name or whose (non-local) version cannot be read, classifies nothing. Two
+    spellings of one PEP 440 release under one name, local or not, make a local
+    identity ambiguous."""
     if lock_path in cache.package_origins:
         return cache.package_origins[lock_path]
     origins: PackageOrigins = {}
@@ -798,15 +811,16 @@ def _python_package_origins(lock_path, target_root, cache: IngestCache):
     classify = _PYTHON_SOURCES[os.path.basename(lock_path)]
     lock_dir = os.path.dirname(lock_path)
     found: PackageOrigins = {}
-    # #3686 review: a registry `1.2.0-rc1` is the same release as a local `1.2.0rc1`.
-    loose: dict[tuple[str, object], set[str]] = {}
+    # #3686 review: a registry `1.2.0-rc1` is the same release as a local `1.2.0rc1`,
+    # and so is a second local `1.2.0.rc1`.
+    spellings: dict[tuple[str, object], set[str]] = {}
     local = []
     try:
         for entry in packages:
             if not isinstance(entry, dict):
                 return origins
             name, version = entry.get("name"), entry.get("version", _MISSING)
-            if not (isinstance(name, str) and name):
+            if not (isinstance(name, str) and _pep508_name(name)):
                 return origins
             kind, path = classify(entry)
             if version is _MISSING and kind in ("local", "virtual"):
@@ -815,11 +829,11 @@ def _python_package_origins(lock_path, target_root, cache: IngestCache):
             if not (isinstance(version, str) and version):
                 return origins
             identity = (_pep503(name), version)
+            spellings.setdefault((identity[0], _pep440_key(version)), set()).add(version)
             if kind in ("local", "virtual"):
                 local.append((identity, kind, path))
             else:
                 found.setdefault(identity, set()).add(kind)
-                loose.setdefault((identity[0], _pep440_key(version)), set()).add(kind)
     except ValueError:
         return origins
     if len(local) > MAX_CARGO_MANIFESTS:
@@ -830,9 +844,10 @@ def _python_package_origins(lock_path, target_root, cache: IngestCache):
         origin = (evidence.FIRST_PARTY_PACKAGE_ORIGIN if fact == (identity, True)
                   else "unknown")
         found.setdefault(identity, set()).add(origin)
-        # Confirmation stays an exact match; a PEP 440-equal non-local spelling only
-        # makes the identity ambiguous.
-        found[identity] |= loose.get((identity[0], _pep440_key(identity[1])), set())
+        # Confirmation stays an exact match; another spelling of the same release
+        # only makes the identity ambiguous.
+        if len(spellings[(identity[0], _pep440_key(identity[1]))]) > 1:
+            found[identity].add("unknown")
     origins.update(found)
     return origins
 

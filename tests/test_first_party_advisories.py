@@ -1456,6 +1456,11 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
         # `distribution = false` is its `package-mode = false`.
         "another Private classifier": 'classifiers = ["Private :: Internal Only"]\n',
         "pdm distribution": '\n[tool.pdm]\ndistribution = false\n',
+        # #3686 review round 3, F1: dynamic classifiers are filled in at build time, so
+        # a `Private ::` one cannot be seen. Unseen is unpublishable.
+        "dynamic classifiers": 'dynamic = ["classifiers"]\n',
+        "dynamic classifiers beside static ones":
+            'dynamic = ["readme", "classifiers"]\nclassifiers = ["Topic :: Software"]\n',
     }
 
     def test_an_unpublishable_review_root_is_still_first_party(self):
@@ -1478,6 +1483,9 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
         _py_tree(self.root, member=_pyproject(
             *PY_MEMBER, '\n[tool.poetry]\npackage-mode = true\n[tool.uv]\npackage = true\n'
             '[tool.pdm]\ndistribution = true\n'))
+        self.assertEqual("first_party", self._origin(PY_MEMBER))
+        # Another dynamic field hides no classifier.
+        _py_tree(self.root, member=_pyproject(*PY_MEMBER, 'dynamic = ["readme"]\n'))
         self.assertEqual("first_party", self._origin(PY_MEMBER))
         # `Private ::` is a prefix, not a substring.
         _py_tree(self.root, member=_pyproject(
@@ -1849,6 +1857,50 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
             self.assertIsNone(self._origin(PY_MEMBER, cache=cache))
         self.assertTrue(cache.manifest_budget_exhausted)
         self.assertEqual(0, cache.manifest_bytes_remaining)
+
+    def test_a_padded_manifest_identity_is_not_the_locks(self):
+        # #3686 review round 3, F4: the manifest's name and version are compared as
+        # written; nothing strips them.
+        for label, member in (("version", _pyproject(PY_MEMBER[0], " 1.2.0")),
+                              ("version, trailing", _pyproject(PY_MEMBER[0], "1.2.0 ")),
+                              ("name", _pyproject(" acme-lib", PY_MEMBER[1])),
+                              ("name, trailing", _pyproject("acme-lib ", PY_MEMBER[1]))):
+            with self.subTest(padded=label):
+                _py_tree(self.root, member=member)
+                self.assertIsNone(self._origin(PY_MEMBER))
+                self.assertEqual("first_party", self._origin(PY_ROOT))
+
+    def test_a_lock_name_that_is_not_a_pep_508_name_fails_the_lock(self):
+        # #3686 review round 3, F3: `"acme-lib "` would not make `acme-lib` ambiguous.
+        for name in ("acme-lib ", " acme-lib", "acme lib", "-acme", "acme-", "acme/lib",
+                     "acm\u00e9", "."):
+            with self.subTest(name=name):
+                _py_tree(self.root, lock=_uv_lock(
+                    extra=_uv_entry(name, PY_MEMBER[1], _UV_REGISTRY)))
+                self.assertIsNone(self._origin(PY_MEMBER))
+                self.assertIsNone(self._origin(PY_ROOT))
+        for name in ("A", "a1", "Acme.Lib_x-1"):
+            with self.subTest(valid=name):
+                _py_tree(self.root, lock=_uv_lock(extra=_uv_entry(name, "9", _UV_REGISTRY)))
+                self.assertEqual("first_party", self._origin(PY_MEMBER))
+
+    def test_two_local_spellings_of_one_release_are_ambiguous(self):
+        # #3686 review round 3, F2: local `1.2.0` beside local `1.2` is one release
+        # declared twice, whichever of them a manifest proves.
+        twin = _uv_entry(PY_MEMBER[0], "1.2", '{ editable = "packages/twin" }')
+        _py_tree(self.root, lock=_uv_lock(extra=twin))
+        _write_text(os.path.join(self.root, "packages", "twin", "pyproject.toml"),
+                    _pyproject(PY_MEMBER[0], "1.2"))
+        self.assertIsNone(self._origin(PY_MEMBER))
+        self.assertIsNone(self._origin((PY_MEMBER[0], "1.2")))
+        self.assertEqual("first_party", self._origin(PY_ROOT))
+        # A different release of the same name is not a twin.
+        other = _uv_entry(PY_MEMBER[0], "1.3", '{ editable = "packages/twin" }')
+        _py_tree(self.root, lock=_uv_lock(extra=other))
+        self.assertEqual("first_party", self._origin(PY_MEMBER))
+
+    def test_the_lock_cap_is_16_mib(self):
+        self.assertEqual(16 * 1024 * 1024, first_party_advisory.MAX_PYTHON_LOCK_BYTES)
 
     def test_an_oversized_lock_classifies_nothing(self):
         _py_tree(self.root)
