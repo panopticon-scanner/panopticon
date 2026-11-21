@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- **Go advisories always stay with the advisor (#3623, owner ruling).** Unlike Cargo, npm and
-  Python, Go has no first-party marker: a go.mod declares `module M` but no version of its own
+- **Go advisories always stay with the advisor (#3623, owner ruling).** Unlike Cargo and npm,
+  Go has no first-party marker: a go.mod declares `module M` but no version of its own
   (the main module's comes from VCS tags at build time), so there is no identity a manifest can
   prove. A main module, a go.work `use` module and a local `replace` target -- whose version is
   the consumer's `require` line, often a placeholder pseudo-version -- are all pinned to the

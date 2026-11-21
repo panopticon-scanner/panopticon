@@ -16,12 +16,18 @@ import unittest
 import scripts.evidence as evidence
 import scripts.first_party_advisory as first_party_advisory
 import scripts.ingest_tools as ingest_tools
+import scripts.tools as tools
 
 
 APP = ("example.com/app", "v0.0.0-00010101000000-000000000000")
 LIB = ("example.com/lib", "v1.2.3")
 TOOLS = ("example.com/tools", "v0.1.0")
 REGISTRY = ("golang.org/x/text", "v0.3.7")
+
+# Every adapter the marker accepts, not just the two that report Go today (#3691 review).
+SOURCES = tuple("tool:" + name for name in sorted(tools.ADVISORY_ADAPTERS | {"trivy"}))
+PATHS = ("go.mod", "go.sum", "go.work", "lib/go.mod", "tools/go.mod", "vendor/modules.txt",
+         "main.go")
 
 
 def _write(path, text):
@@ -41,6 +47,10 @@ def _go_tree(root):
     _write(os.path.join(root, "lib", "go.mod"), "module example.com/lib\n\ngo 1.22\n")
     _write(os.path.join(root, "tools", "go.mod"), "module example.com/tools\n\ngo 1.22\n")
     _write(os.path.join(root, "go.work"), "go 1.22\n\nuse (\n\t.\n\t./lib\n\t./tools\n)\n")
+    _write(os.path.join(root, "vendor", "modules.txt"),
+           "# example.com/lib v1.2.3 => ./lib\n## explicit; go 1.22\n"
+           "# golang.org/x/text v0.3.7\n## explicit\n")
+    _write(os.path.join(root, "main.go"), "package main\n\nfunc main() {}\n")
 
 
 def _finding(package, *, path, source):
@@ -102,12 +112,13 @@ class TestGoAdvisoriesStayWithTheAdvisor(unittest.TestCase):
 
     def test_no_go_identity_is_classified_from_any_manifest(self):
         # The main module, the local replace target, a go.work `use` module and a
-        # registry module, against every Go manifest a scanner might name, with every
-        # version a scanner might report for an unversioned module.
+        # registry module, against every Go manifest a scanner might name (and a vendor
+        # listing and a source file), under every adapter the marker accepts, with
+        # every version a scanner might report for an unversioned module.
         packages = (APP, ("example.com/app", ""), ("example.com/app", "(devel)"),
                     LIB, TOOLS, REGISTRY)
-        for path in ("go.mod", "go.sum", "go.work", "lib/go.mod", "tools/go.mod"):
-            for source in ("tool:osv-scanner", "tool:trivy"):
+        for path in PATHS:
+            for source in SOURCES:
                 for package in packages:
                     with self.subTest(path=path, source=source, package=package):
                         finding = _finding(package, path=path, source=source)
@@ -134,8 +145,9 @@ class TestGoAdvisoriesStayWithTheAdvisor(unittest.TestCase):
     def test_go_manifests_read_nothing_from_the_ingest_budget(self):
         # Nothing is classified, so nothing is read: the shared budget is untouched.
         cache = first_party_advisory.IngestCache()
-        findings = [_finding(LIB, path="go.mod", source="tool:osv-scanner"),
-                    _finding(TOOLS, path="go.work", source="tool:trivy")]
+        findings = [_finding(package, path=path, source=source)
+                    for path in PATHS for source in SOURCES for package in (APP, LIB, TOOLS)]
+        self.assertIn("tool:dependency-check", SOURCES)
         first_party_advisory.mark(findings, self.root, cache)
         self.assertEqual(first_party_advisory.MAX_CARGO_MANIFEST_INGEST_BYTES,
                          cache.manifest_bytes_remaining)
