@@ -19,6 +19,7 @@ import unittest
 import scripts.evidence as evidence
 import scripts.first_party_advisory as first_party_advisory
 import scripts.ingest_tools as ingest_tools
+import scripts.tools as tools
 
 
 PARENT = ("com.acme:acme-parent", "1.2.0")
@@ -26,6 +27,9 @@ CORE = ("com.acme:acme-core", "1.2.0")
 APP = ("com.acme:acme-app", "1.2.0")
 LIB = ("com.acme:acme-lib", "1.2.0")
 REGISTRY = ("org.apache.commons:commons-text", "1.9")
+
+# Every adapter the marker accepts, not just the two that report Maven today (#3696 review).
+SOURCES = tuple("tool:" + name for name in sorted(tools.ADVISORY_ADAPTERS | {"trivy"}))
 
 MANIFESTS = ("pom.xml", "core/pom.xml", "app/pom.xml", "gradle.lockfile",
              "lib/gradle.lockfile", "buildscript-gradle.lockfile",
@@ -146,11 +150,12 @@ class TestJvmAdvisoriesStayWithTheAdvisor(unittest.TestCase):
     def test_no_jvm_identity_is_classified_from_any_manifest(self):
         # The reactor parent, a reactor module, the module depending on it, a Gradle
         # project and a registry artifact, against every Maven and Gradle manifest a
-        # scanner might name, under both name spellings a scanner might report.
+        # scanner might name, under every adapter the marker accepts and both name
+        # spellings a scanner might report.
         packages = (PARENT, CORE, APP, LIB, REGISTRY, ("acme-core", "1.2.0"),
                     ("com.acme:acme-core", "1.2.0-SNAPSHOT"))
         for path in MANIFESTS:
-            for source in ("tool:osv-scanner", "tool:trivy"):
+            for source in SOURCES:
                 for package in packages:
                     with self.subTest(path=path, source=source, package=package):
                         finding = _finding(package, path=path, source=source)
@@ -159,7 +164,8 @@ class TestJvmAdvisoriesStayWithTheAdvisor(unittest.TestCase):
                         self.assert_advisor_path(finding)
 
     def test_osv_ingest_keeps_every_artifact_on_the_advisor_path(self):
-        for path in ("pom.xml", "app/pom.xml", "gradle.lockfile", "lib/gradle.lockfile"):
+        for path in ("pom.xml", "core/pom.xml", "app/pom.xml", "gradle.lockfile",
+                     "lib/gradle.lockfile"):
             with self.subTest(path=path):
                 findings = self._ingest("osv-scanner.json", _osv_document(path))
                 self.assertEqual(5, len(findings))
@@ -175,11 +181,36 @@ class TestJvmAdvisoriesStayWithTheAdvisor(unittest.TestCase):
                 self.assertEqual(1, len(findings))
                 self.assert_advisor_path(findings[0])
 
+    def test_a_maven_record_at_another_ecosystems_lock_is_not_first_party(self):
+        # #3760, the case that made this file's headline false: an OSV record that says
+        # Maven, pointed at a Cargo.lock whose own package has the same name and version.
+        with open(os.path.join(self.root, "Cargo.lock"), "w", encoding="utf-8") as fh:
+            fh.write('version = 3\n\n[[package]]\nname = "acme-core"\nversion = "1.2.0"\n')
+        with open(os.path.join(self.root, "Cargo.toml"), "w", encoding="utf-8") as fh:
+            fh.write('[package]\nname = "acme-core"\nversion = "1.2.0"\n')
+        crate = ("acme-core", "1.2.0")
+        for ecosystem, expected in (("Maven", None), ("maven", None), ("MAVEN", None),
+                                    ("crates.io", "first_party")):
+            with self.subTest(ecosystem=ecosystem):
+                finding = _finding(crate, path="Cargo.lock", source="tool:osv-scanner")
+                finding["tool_evidence"]["ecosystem"] = ecosystem
+                cache = first_party_advisory.IngestCache()
+                first_party_advisory.mark([finding], self.root, cache)
+                self.assertEqual(expected, finding["tool_evidence"].get("package_origin"))
+                if expected is None:
+                    self.assertEqual(first_party_advisory.MAX_CARGO_MANIFEST_INGEST_BYTES,
+                                     cache.manifest_bytes_remaining)
+                    self.assertEqual({}, cache.package_origins)
+
     def test_jvm_manifests_read_nothing_from_the_ingest_budget(self):
         # Nothing is classified, so nothing is read: the shared budget is untouched.
         cache = first_party_advisory.IngestCache()
-        findings = [_finding(CORE, path="app/pom.xml", source="tool:osv-scanner"),
-                    _finding(LIB, path="gradle.lockfile", source="tool:trivy")]
+        # Every identity against every manifest path under every adapter (#3696 review:
+        # two paths left a pom.xml read unnoticed).
+        findings = [_finding(package, path=path, source=source)
+                    for path in MANIFESTS for source in SOURCES
+                    for package in (PARENT, CORE, APP, LIB, REGISTRY)]
+        self.assertIn("tool:dependency-check", SOURCES)
         first_party_advisory.mark(findings, self.root, cache)
         self.assertEqual(first_party_advisory.MAX_CARGO_MANIFEST_INGEST_BYTES,
                          cache.manifest_bytes_remaining)

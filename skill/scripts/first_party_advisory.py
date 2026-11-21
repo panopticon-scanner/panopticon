@@ -36,6 +36,9 @@ gradle.lockfile lists only resolved external modules, never the build's own
 projects, and nothing shows the pinned scanners report a sibling Maven reactor
 module; every pom.xml and Gradle advisory stays with the advisor.
 
+Every ecosystem (#3760): the parser is chosen by the lock's file name, so a finding
+that declares an ecosystem other than that lock's own is never classified.
+
 The claim then changes from "a third-party dependency is used" to "this project
 version is affected" before the advisor queue is built. Ambiguity and unreadable
 input fail closed onto the ordinary advisor path.
@@ -72,6 +75,11 @@ MAX_PYTHON_LOCK_BYTES = 16 * 1024 * 1024
 # PyPI refuses every `Private ::` classifier (#3686 review), not only Do Not Upload.
 PYTHON_PRIVATE_CLASSIFIER_PREFIX = "Private ::"
 _PEP503_SEPARATORS = re.compile(r"[-_.]+")
+# #3760: the OSV ecosystem each lock this marker reads belongs to. A finding that
+# declares another one is not that lock's advisory, whatever its file says.
+LOCK_ECOSYSTEMS = {"Cargo.lock": "crates.io",
+                   **{name: "npm" for name in NPM_LOCKS},
+                   **{name: "PyPI" for name in PYTHON_LOCKS}}
 _TRIVY_PACKAGE = re.compile(
     r"(?:^|\s)Package:\s*(\S+)\s+Installed Version:\s*(\S+)(?:\s|$)")
 _DEPENDENCY_TABLES = ("dependencies", "dev-dependencies", "build-dependencies")
@@ -864,6 +872,21 @@ def _python_package_origins(lock_path, target_root, cache: IngestCache):
     return origins
 
 
+def _ecosystem_agrees(tool_evidence, lock_name):
+    """False when the finding declares an ecosystem other than the lock's own (#3760).
+
+    The parser is chosen by the lock's file name, so a record that says ``Maven`` at a
+    ``Cargo.lock`` would otherwise be matched against the crates. A declared ecosystem
+    must be exactly the lock's OSV ecosystem; anything else -- another ecosystem,
+    another case, a non-string, or a lock with no row in ``LOCK_ECOSYSTEMS`` -- stays
+    on the advisor path. An ABSENT ecosystem says nothing against the lock (Trivy's
+    SARIF and the audit adapters carry none), so the lock alone decides, as before."""
+    declared = tool_evidence.get("ecosystem", _MISSING)
+    if declared is _MISSING:
+        return True
+    return isinstance(declared, str) and declared == LOCK_ECOSYSTEMS.get(lock_name)
+
+
 def _advisory_package(finding):
     """Return the advisory's package/version, including Trivy's SARIF prose."""
     tool_evidence = finding.get("tool_evidence")
@@ -916,6 +939,8 @@ def _mark_finding(finding, target_root, cache):
     lock_path = _lock_path(target_root, finding, ("Cargo.lock",) + NPM_LOCKS + PYTHON_LOCKS)
     if lock_path is None:
         return
+    if not _ecosystem_agrees(tool_evidence, os.path.basename(lock_path)):
+        return                         # #3760: decided before the lock is read
     if os.path.basename(lock_path) == "Cargo.lock":
         ecosystem, member = "Cargo", "workspace/path member"
         origins = _cargo_package_origins(lock_path, target_root, cache).get(package, set())

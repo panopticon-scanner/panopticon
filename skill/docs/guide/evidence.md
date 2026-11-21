@@ -35,7 +35,9 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
   `require`, not the module's) stay with the advisor under every scanner. Maven and Gradle classify
   nothing (#3623): a gradle.lockfile lists only external modules, never the build's own projects,
   and nothing shows the pinned scanners report a sibling Maven reactor module, so every pom.xml and
-  Gradle advisory stays with the advisor under every scanner. Gate-eligible.
+  Gradle advisory stays with the advisor under every scanner. In every ecosystem, a finding that
+  declares an ecosystem other than its lock's own (`Maven` at a `Cargo.lock`) stays with the
+  advisor (#3760). Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
   Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
   by one advisor: the adversarial backup round is summoned only for primary-CONFIRMED findings in

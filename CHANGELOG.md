@@ -8,8 +8,18 @@
   reactor module's pom.xml can state literal coordinates, but nothing shows the pinned scanners
   ever report a sibling module, so the owner ruled against building a marker for an unseen
   case; it is revisited only if a real run shows one. A reactor parent, a module, a Gradle
-  project and a registry artifact are all pinned to the ordinary tool-advisor path under
-  osv-scanner and Trivy, and nothing is read from the ingest budget. No behaviour changes.
+  project and a registry artifact are all pinned to the ordinary tool-advisor path under every
+  advisory adapter, and nothing is read from the ingest budget.
+
+- **An advisory's ecosystem must agree with its lock (#3760).** The first-party marker chose its
+  parser from the lock's file name alone and never read the advisory's own ecosystem. A scanner
+  record that said `Maven` (or `Go`) but named a `Cargo.lock`, an npm lock or a Python lock, with
+  the name and version of a local package, was classified first-party and confirmed without an
+  advisor. A declared ecosystem must now be exactly the lock's (`crates.io`, `npm`, `PyPI`), or
+  the finding stays with the advisor, decided before the lock is read. A finding that declares
+  none (Trivy's SARIF carries none) is judged by the lock alone, as before. The osv-scanner
+  adapter also no longer uses a record's ecosystem as its file when the record has no source
+  path: it reports the fixed placeholder `manifest`, which is never a lock name.
 
 - **Tools closure re-resolved: semgrep 1.185.0 (supersedes Dependabot #3751; #3619 not taken).**
   - Taken as offered: semgrep 1.183.0 -> 1.185.0, with the Dockerfile `SEMGREP_VERSION` moved to

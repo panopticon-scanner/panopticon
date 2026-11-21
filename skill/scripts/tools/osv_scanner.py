@@ -24,6 +24,10 @@ _DATABASE_SEVERITIES = {"CRITICAL": "CRITICAL", "HIGH": "HIGH",
 # (v1.8.2: "set/override config file") replaces that per-directory lookup for
 # every package in the scan. Same shape as `bundler_audit.py`, `brakeman.py`
 # and `cargo_audit.py`, which answer the same problem the same way.
+# #3760: the file a record with no source path is reported at. A fixed placeholder:
+# the record's own ecosystem string used to stand in, so a record saying
+# `ecosystem: "Cargo.lock"` became a lock the first-party marker would read.
+NO_SOURCE_PATH = "manifest"
 OWNED_CONFIG_NAME = "osv-scanner.toml"
 OWNED_CONFIG_TEXT = ("# panopticon: the scan's ignore list is the scanner's,\n"
                      "# not the reviewed repository's (#1839). Deliberately an\n"
@@ -193,15 +197,12 @@ class OsvScannerAdapter:
                     if not isinstance(description, str):
                         description = "No description provided."
                     aliases = vuln.get("aliases")
-                    ecosystem = pkg.get("ecosystem")
                     out.append(make_finding(
                         self, n, group,
                         title=f"{pkg.get('name')} {pkg.get('version')}: {vuln.get('id', 'vulnerability')}",
                         severity=severity,
                         category="dependency_vulnerability",
-                        location={"file": src_path or (ecosystem if isinstance(ecosystem, str)
-                                                       else "manifest"),
-                                  "line_start": 1},
+                        location={"file": src_path or NO_SOURCE_PATH, "line_start": 1},
                         description=description if vuln.get("summary") else description[:500],
                         impact=f"Vulnerable dependency {pkg.get('name')}=={pkg.get('version')} is used.",
                         remediation="Upgrade to a patched version or see the OSV advisory.",
