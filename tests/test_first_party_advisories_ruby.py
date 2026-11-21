@@ -10,6 +10,7 @@ ordinary advisor path. bundler-audit and gems.locked are out. Fixtures only.
 
 import json
 import os
+import shutil
 import tempfile
 import unittest
 from unittest import mock
@@ -17,6 +18,7 @@ from unittest import mock
 import scripts.evidence as evidence
 import scripts.first_party_advisory as first_party_advisory
 import scripts.ingest_tools as ingest_tools
+import scripts.tools as tools
 
 
 ROOT = ("acme-app", "0.3.0")
@@ -690,18 +692,322 @@ class TestTheReviewProbes(_RubyCase):
                           "  s.metadata['allowed_push_host'] = 'https://rubygems.org'\n")),
                 ("prose mentioning the variable", self._spec(
                     lit + '  s.description = "s is a gem\'s spec; it == s"\n')),
-                ("other fields", self._spec(lit + '  s.files = Dir["lib/**/*.rb"]\n'
-                                                  '  s.required_ruby_version = ">= 3.0"\n')),
-                ("nested in a module", "module Foo\n  Gem::Specification.new do |s|\n"
-                                       "    s.name = \"foo\"\n    s.version = \"1.0\"\n"
-                                       "  end\nend\n"),
-                ("brace block", "Gem::Specification.new { |s|\n" + lit + "}\n"),
-                ("other receivers named like the variable", self._spec(
-                    lit + '  s.require_paths = [Foo::s, @s, $s, :s, x.s, s!, s?, "s#{1}"]\n')),
-                ("comparisons naming the fields", self._spec(
-                    lit + '  s.summary = "a" if version == "1" || name =~ /x/\n'))):
+                ("other fields", self._spec(lit + '  s.required_ruby_version = ">= 3.0"\n')),
+                ("brace block", "Gem::Specification.new { |s|\n" + lit + "}\n")):
             with self.subTest(gemspec=label):
                 self.assertEqual("first_party", self._probe(self.PATH, gemspec=gemspec))
+
+
+class TestTheSecondReview(TestTheReviewProbes):
+    """#3692 review at 98993a71: the gemspec reader allowlists EVERY line, not only the
+    lines that mention the block variable; the lock parser holds exact indents, the exact
+    `specs:` marker and RubyGems-valid versions; and the path, the gemspec set and the
+    version equality are Bundler's and RubyGems' own."""
+
+    LIT = '  s.name = "foo"\n  s.version = "1.0"\n'
+
+    # Not inherited: the parent's cases stay the parent's.
+    for _name in [n for n in dir(TestTheReviewProbes) if n.startswith("test_")]:
+        locals()[_name] = None
+    del _name
+
+    def test_every_line_of_a_gemspec_is_on_the_allowlist(self):
+        lit = self.LIT
+        hidden = 'Gem::Specification.new do |s|\n  s.name = "foo"\n  s.version = "1.0"\nend\n'
+        for label, gemspec in (
+                # Item 1's demonstrations.
+                ("version in a conditional",
+                 self._spec('  s.name = "foo"\n  if false\n    s.version = "1.0"\n  end\n')),
+                ("version after unless",
+                 self._spec('  s.name = "foo"\n  unless true\n  s.version = "1.0"\n  end\n')),
+                ("a second specification from split strings",
+                 hidden + 'Object.const_get("G" "em")::const_get("Spec" "ification")'
+                          '.new { |t| t.send("ver" "sion=", "9.9") }\n'),
+                ("a hidden second mention in a percent literal",
+                 self._spec(lit + "  y = %q(\n  s.name = 1\n)\n")),
+                ("a character literal", self._spec(lit + '  y = ?"\n')),
+                ("load on the right-hand side", self._spec(lit + '  s.files = load("x.rb")\n')),
+                ("require on the right-hand side",
+                 self._spec(lit + '  s.summary = require("x")\n')),
+                ("a require line before the block", 'require "x"\n' + hidden),
+                ("a require_relative line", 'require_relative "lib/foo/version"\n' + hidden),
+                ("the whole block in a conditional", "if false\n" + hidden + "end\n"),
+                ("the block in a module", "module Foo\n" + hidden + "end\n"),
+                ("code after the block", hidden + "puts 1\n"),
+                ("newdo", hidden.replace(".new do |s|", ".newdo |s|")),
+                ("a numeric block variable", hidden.replace("|s|", "|1|").replace("s.", "1.")),
+                ("an upper-case block variable",
+                 hidden.replace("|s|", "|S|").replace("  s.", "  S.")),
+                ("a keyword block variable",
+                 hidden.replace("|s|", "|if|").replace("  s.", "  if.")),
+                # Every line inside is a literal assignment, a dependency or metadata.
+                ("a bare call inside", self._spec(lit + "  puts 1\n")),
+                ("a local assignment inside", self._spec(lit + "  x = 1\n")),
+                ("a glob", self._spec(lit + '  s.files = Dir["lib/**/*.rb"]\n')),
+                ("a constant", self._spec(lit + "  s.platform = Gem::Platform::RUBY\n")),
+                ("a method call", self._spec(lit + '  s.summary = "a".upcase\n')),
+                ("frozen", self._spec(lit + '  s.summary = "a".freeze\n')),
+                ("a trailing comment", self._spec(lit + '  s.summary = "a" # note\n')),
+                ("a trailing modifier", self._spec(lit + '  s.summary = "a" if true\n')),
+                ("two statements", self._spec(lit + '  s.summary = "a"; s.license = "MIT"\n')),
+                ("an array holding code", self._spec(lit + '  s.files = ["a", x]\n')),
+                ("an unclosed array", self._spec(lit + '  s.files = ["a",\n')),
+                ("a hash", self._spec(lit + '  s.summary = {"a" => "b"}\n')),
+                ("a symbol", self._spec(lit + "  s.summary = :a\n")),
+                ("a float", self._spec(lit + "  s.summary = 1.5\n")),
+                ("an array for the version",
+                 self._spec('  s.name = "foo"\n  s.version = ["1.0"]\n')),
+                ("a number for the version", self._spec('  s.name = "foo"\n  s.version = 1\n')),
+                ("the version twice", self._spec(lit + '  s.version = "1.0"\n')),
+                ("the name twice", self._spec(lit + '  s.name = "foo"\n')),
+                ("metadata assigned whole", self._spec(lit + '  s.metadata = "x"\n')),
+                ("a setter with a capital", self._spec(lit + '  s.Summary = "a"\n')),
+                ("a dependency with a variable",
+                 self._spec(lit + '  s.add_dependency "rack", constraint\n')),
+                ("a dependency with nothing", self._spec(lit + "  s.add_dependency\n")),
+                ("a dependency with an unclosed paren",
+                 self._spec(lit + '  s.add_dependency("rack"\n')),
+                ("another add_ method", self._spec(lit + '  s.add_bindir "x"\n')),
+                ("an encoding the reader does not read as",
+                 "# encoding: Shift_JIS\n" + hidden),
+                ("an encoding comment inside", self._spec("  # coding: big5\n" + lit)),
+                ("a block comment", "=begin\n=end\n" + hidden),
+                ("an opener with trailing code", hidden.replace("|s|\n", "|s| # x\n"))):
+            with self.subTest(gemspec=label):
+                self.assertIsNone(self._probe(self.PATH, gemspec=gemspec))
+
+    def test_the_allowlisted_shapes_still_prove_the_identity(self):
+        lit = self.LIT
+        for label, gemspec in (
+                ("plain", self._spec(lit)),
+                ("crlf", self._spec(lit).replace("\n", "\r\n")),
+                ("comments and blank lines everywhere",
+                 "#!/usr/bin/env ruby\n# frozen_string_literal: true\n\n   \n"
+                 "# a gem's spec: s.version = 9, Gem::Specification.new, if false\n"
+                 + self._spec("  # s.summary = 1\n\n" + lit) + "\n# the end\n"),
+                ("a utf-8 encoding comment", "# -*- encoding: utf-8 -*-\n" + self._spec(lit)),
+                ("a UTF-8 coding comment", "# coding: UTF-8\n" + self._spec(lit)),
+                ("literal fields", self._spec(
+                    lit + '  s.summary = "s is a gem\'s spec; it == s if false"\n'
+                          "  s.description = 'say \"hi\"; # not a comment'\n"
+                          '  s.authors = ["A", \'B\']\n  s.files = []\n'
+                          '  s.require_paths = [ "lib" ]\n  s.bindir = "exe"\n'
+                          "  s.rubygems_version = 4\n  s.has_rdoc = false\n"
+                          "  s.cert_chain = nil\n  s.required_ruby_version = \">= 3.0\"\n")),
+                ("dependencies", self._spec(lit + '  s.add_dependency "rack", "~> 2.2"\n'
+                                                  '  s.add_runtime_dependency("rake")\n'
+                                                  '  s.add_development_dependency "rspec", '
+                                                  '">= 3", "< 4"\n'
+                                                  "  s.add_dependency( 'json' , '>= 1' )\n")),
+                ("literal metadata", self._spec(
+                    lit + '  s.metadata["homepage_uri"] = "https://example.invalid"\n'
+                          "  s.metadata['allowed_push_host'] = 'https://rubygems.org'\n")),
+                ("brace block", "Gem::Specification.new { |s|\n" + lit + "}\n"),
+                ("brace block, tight", "Gem::Specification.new{|s|\n" + lit + "}\n"),
+                ("do with no space before the pipe",
+                 "Gem::Specification.new do|spec_1|\n" + lit.replace("s.", "spec_1.") + "end\n"),
+                ("an indented block",
+                 "  Gem::Specification.new do |s|\n" + lit + "  end\n"),
+                ("an underscore variable",
+                 "Gem::Specification.new do |_s|\n" + lit.replace("s.", "_s.") + "end\n")):
+            with self.subTest(gemspec=label):
+                self.assertEqual("first_party", self._probe(self.PATH, gemspec=gemspec))
+
+    def test_the_lock_holds_exact_indents_markers_and_versions(self):
+        good = ("PATH\n  remote: gems/foo\n  specs:\n    foo (1.0)\n      rack (~> 2.2)\n"
+                "      json\n\n" + self._gem("    rack (2.2.3)\n      webrick\n    json (2.0)\n"))
+        self.assertEqual("first_party", self._probe(good))
+        for label, lock in (
+                ("a seven-space dependency",
+                 good.replace("      webrick\n", "       webrick\n")),
+                ("a seven-space spec hiding a copy",
+                 good.replace("      webrick\n", "       foo (1.0)\n")),
+                ("an eight-space line", good.replace("      json\n", "        json\n")),
+                ("a five-space line", good.replace("      json\n", "     json\n")),
+                ("a three-space line", good.replace("  specs:\n    foo", "   specs:\n    foo")),
+                ("a dependency with trailing text",
+                 good.replace("      rack (~> 2.2)\n", "      rack (~> 2.2) x\n")),
+                ("a dependency with two names",
+                 good.replace("      json\n\n", "      json rpc\n\n")),
+                ("an unclosed dependency constraint",
+                 good.replace("      rack (~> 2.2)\n", "      rack (~> 2.2\n")),
+                ("specs with a value", good.replace("  specs:\n    foo", "  specs: junk\n    foo")),
+                ("specs with a trailing space",
+                 good.replace("  specs:\n    foo", "  specs: \n    foo")),
+                ("a GEM specs with a value",
+                 good.replace("  specs:\n    rack", "  specs: x\n    rack"))):
+            with self.subTest(lock=label):
+                self.assertNotEqual(good, lock)
+                self.assertIsNone(self._probe(lock))
+        # A version RubyGems rejects, on an unrelated spec, fails the whole lock.
+        for version in ("x", ".1", "1.", "1..0", "a.1", "1.0!", "1.0_1", "1.0-", "-java",
+                        "1.0-x86 64", "v1.0", "1.0+1", "1,0"):
+            with self.subTest(version=version):
+                self.assertIsNone(self._probe(
+                    good.replace("    json (2.0)\n", "    json (%s)\n" % version)))
+        for version in ("0", "2", "1.0.0.pre.1", "1.0a", "1.0.0.rc1", "1.0-java",
+                        "1.0-x86_64-linux-musl", "1.0.0.beta-arm64-darwin-23",
+                        "1.0-x64-mingw-ucrt"):
+            with self.subTest(valid=version):
+                self.assertEqual("first_party", self._probe(
+                    good.replace("    json (2.0)\n", "    json (%s)\n" % version)))
+
+    def test_a_copy_rubygems_reads_as_the_same_version_is_ambiguous(self):
+        # Item 3: RubyGems satisfies `= 1.2.0` with 1.2, so they are one release.
+        path = "PATH\n  remote: gems/foo\n  specs:\n    foo (1.2.0)\n\n"
+        gemspec = _gemspec("foo", "1.2.0")
+        package = ("foo", "1.2.0")
+        for copy, expected in (("1.2", None), ("1.2.0.0", None), ("1.2.0", None),
+                               ("1.2.0-java", None), ("1.2-java", None),
+                               ("1.2.0.0-x86_64-linux", None),
+                               ("1.2.1", "first_party"), ("1.20", "first_party"),
+                               ("1.2.0.1", "first_party"), ("1.2.0.pre", "first_party"),
+                               ("1.2.a", "first_party"), ("10.2.0", "first_party")):
+            with self.subTest(copy=copy):
+                self.assertEqual(expected, self._probe(
+                    path + self._gem("    foo (%s)\n" % copy), gemspec=gemspec,
+                    package=package))
+        # Prerelease twins: 1.2.0.pre is 1.2.pre, and 1.0.a.0 is 1.0.a.
+        for local, copy in (("1.2.0.pre", "1.2.pre"), ("1.0.a", "1.0.a.0"),
+                            ("1.0.0.rc1", "1.rc1")):
+            with self.subTest(local=local, copy=copy):
+                lock = path.replace("foo (1.2.0)", "foo (%s)" % local)
+                self.assertEqual("first_party", self._probe(
+                    lock + self._gem("    rack (2.0)\n"), gemspec=_gemspec("foo", local),
+                    package=("foo", local)))
+                self.assertIsNone(self._probe(
+                    lock + self._gem("    foo (%s)\n" % copy), gemspec=_gemspec("foo", local),
+                    package=("foo", local)))
+        # A second local spelling of the release is ambiguous too.
+        twin = "PATH\n  remote: gems/twin\n  specs:\n    foo (1.2)\n\n"
+        _write(os.path.join(self.root, "gems", "twin", "foo.gemspec"), _gemspec("foo", "1.2"))
+        self.assertIsNone(self._probe(path + twin, gemspec=gemspec, package=package))
+        self.assertIsNone(self._probe(path + twin, gemspec=gemspec, package=("foo", "1.2")))
+
+    def test_a_remote_bundler_expands_elsewhere_is_refused(self):
+        # Item 4: Bundler expands the remote, so `~` is $HOME and `..` is lexical. A
+        # literal `~` directory in the tree, or a path through `..`, is not what it reads.
+        for remote in ("~/gems/foo", "~", "~root/gems/foo", "gems/../gems/foo", "./../x/gems/foo",
+                       "gems/foo/..", "..", "gems/foo/../foo"):
+            with self.subTest(remote=remote):
+                target = os.path.normpath(os.path.join(self.root, remote))
+                if target.startswith(self.root + os.sep):
+                    _write(os.path.join(target, "foo.gemspec"), _gemspec(*self.FOO))
+                _write(os.path.join(self.root, "~", "gems", "foo", "foo.gemspec"),
+                       _gemspec(*self.FOO))
+                lock = self.PATH.replace("remote: gems/foo", "remote: " + remote)
+                self.assertIsNone(self._probe(lock))
+        self.assertEqual("first_party", self._probe(
+            self.PATH.replace("remote: gems/foo", "remote: ./gems/foo")))
+
+    def test_the_gemspec_set_is_bundlers_glob(self):
+        # Item 5: Bundler globs `{,*,*/*}.gemspec` with no dot-matching.
+        base = os.path.join(self.root, "gems", "foo")
+        private = _gemspec(*self.FOO, extra='  s.metadata["allowed_push_host"] = '
+                                            '"https://gems.example.internal"\n')
+
+        def reset(**files):
+            shutil.rmtree(base, ignore_errors=True)
+            for rel, text in files.items():
+                _write(os.path.join(base, rel), text)
+            with open(os.path.join(self.root, "Gemfile.lock"), "w", encoding="utf-8") as fh:
+                fh.write(self.PATH)
+            _write(os.path.join(self.root, "app.gemspec"), _gemspec("app", "0.1"))
+            return self._origin(self.FOO)
+
+        good = _gemspec(*self.FOO)
+        self.assertEqual("first_party", reset(**{"foo.gemspec": good}))
+        # One level down is in the glob: a second manifest there is ambiguous.
+        self.assertIsNone(reset(**{"foo.gemspec": good, "real/foo.gemspec": private}))
+        self.assertIsNone(reset(**{"foo.gemspec": good, "real/other.gemspec": good}))
+        # ...and a sole one there is the manifest Bundler uses.
+        self.assertEqual("first_party", reset(**{"real/foo.gemspec": good}))
+        self.assertIsNone(reset(**{"real/foo.gemspec": private}))
+        # Two levels down is not in the glob.
+        self.assertEqual("first_party",
+                         reset(**{"foo.gemspec": good, "a/b/foo.gemspec": private}))
+        self.assertIsNone(reset(**{"a/b/foo.gemspec": good}))
+        # Dot-prefixed names and directories are not matched...
+        self.assertEqual("first_party",
+                         reset(**{"foo.gemspec": good, ".hidden.gemspec": private,
+                                  ".git/foo.gemspec": private, "real/.x.gemspec": private}))
+        self.assertIsNone(reset(**{".hidden.gemspec": good}))
+        self.assertIsNone(reset(**{".git/foo.gemspec": good}))
+        # ...except the literal `.gemspec`, which the glob's empty alternative names.
+        self.assertIsNone(reset(**{"foo.gemspec": good, ".gemspec": private}))
+        self.assertEqual("first_party", reset(**{".gemspec": good}))
+        # A file that only ends like one, and a directory named like one.
+        self.assertEqual("first_party",
+                         reset(**{"foo.gemspec": good, "foo.gemspec.bak": private,
+                                  "x.gemspec/readme": "x"}))
+        # A subdirectory that resolves out of the tree is never listed.
+        outside = tempfile.mkdtemp(prefix="outside-")
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        _write(os.path.join(outside, "x.txt"), "x")
+        reset(**{"foo.gemspec": good})
+        os.symlink(outside, os.path.join(base, "linked"))
+        self.assertIsNone(self._origin(self.FOO))
+
+    def test_one_trailing_slash_and_no_more(self):
+        # Item 8.
+        for host, expected in (("https://rubygems.org", "first_party"),
+                               ("https://rubygems.org/", "first_party"),
+                               ("https://rubygems.org//", None),
+                               ("https://rubygems.org///", None),
+                               ("https://rubygems.org/ ", None),
+                               ("/https://rubygems.org", None)):
+            with self.subTest(host=host):
+                gemspec = self._spec(self.LIT + '  s.metadata["allowed_push_host"] = "%s"\n'
+                                     % host)
+                self.assertEqual(expected, self._probe(self.PATH, gemspec=gemspec))
+
+    def test_only_osv_scanner_and_trivy_classify(self):
+        # Item 9: the whole adapter set, not one member of it.
+        self._probe(self.PATH)
+        marking = {name for name in sorted(tools.ADVISORY_ADAPTERS | {"trivy"})
+                   if self._origin(self.FOO, source="tool:" + name) == "first_party"}
+        self.assertEqual({"osv-scanner", "trivy"}, marking)
+
+    def test_a_url_remote_is_not_a_directory_of_that_name(self):
+        # Item 9: `https://x/gems/foo` normalises to an in-tree `https:/x/gems/foo`.
+        for remote in ("https://example.invalid/gems/foo", "https:/example.invalid/gems/foo",
+                       "file:gems/foo", "git+ssh://example.invalid/foo"):
+            with self.subTest(remote=remote):
+                _write(os.path.join(self.root, os.path.normpath(remote), "foo.gemspec"),
+                       _gemspec(*self.FOO))
+                self.assertIsNone(self._probe(
+                    self.PATH.replace("remote: gems/foo", "remote: " + remote)))
+
+    def test_odd_whitespace_fails_the_lock_wherever_it_sits(self):
+        # Item 9: in a section the parser otherwise skips, where no header or spec
+        # rule could be what refuses it.
+        skipped = "PLATFORMS\n  ruby%s\n\nDEPENDENCIES\n  foo!\n"
+        self.assertEqual("first_party", self._probe(self.PATH + skipped % ""))
+        for label, char in (("tab", "\t"), ("bom", chr(0xFEFF)), ("form feed", "\x0c"),
+                            ("carriage return", "\r"), ("nbsp", chr(0xA0)),
+                            ("line separator", chr(0x2028))):
+            with self.subTest(char=label):
+                self.assertIsNone(self._probe(self.PATH + skipped % (char + "x")))
+                self.assertIsNone(self._probe(self.PATH + skipped % char))
+
+    def test_a_plugin_source_copy_is_external(self):
+        # Item 9: PLUGIN SOURCE is never local, even with a relative in-tree remote.
+        plugin = "PLUGIN SOURCE\n  remote: gems/foo\n  type: path\n  specs:\n    foo (1.0)\n\n"
+        self.assertIsNone(self._probe(self.PATH + plugin))
+        self.assertIsNone(self._probe(plugin))
+        self.assertEqual("first_party", self._probe(
+            self.PATH + plugin.replace("foo (1.0)", "bar (1.0)")))
+
+    def test_the_confirmation_names_ruby_not_cargo(self):
+        # Item 6: the exported reasoning named Cargo for every ecosystem.
+        self._probe(self.PATH)
+        for source in ("tool:osv-scanner", "tool:trivy"):
+            with self.subTest(source=source):
+                finding = self._mark(self.FOO, source=source)
+                self.assertTrue(evidence.is_first_party_advisory(finding))
+                reasoning = evidence.derive_evidence(finding)["reasoning"]
+                self.assertIn("in-tree publishable Ruby path gem", reasoning)
+                self.assertNotIn("Cargo", reasoning)
 
 
 if __name__ == "__main__":
