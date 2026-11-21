@@ -9,8 +9,8 @@
   it said only "NOT CERTIFIED — incomplete". `--reset` cleared nothing there, and said nothing.
   - Every such lookup now takes the directory as it is spelled: the findings files, dispatch
     plans, scout replies and coverage files of a run, the dispatch counts in `meta.cost`, the
-    `--reset` sweep, the report parts surfaced from a `--pr` worktree, and the host transcripts
-    read for token usage.
+    `--reset` sweep, the report parts surfaced from a `--pr` worktree (code no run reaches while
+    delta review is withdrawn, #3735), and the host transcripts read for token usage.
   - pip-audit had the same fault in the other direction: an empty `repo[x]/` beside
     `repox/requirements-dev.txt` read as a Python tree, and the sibling's file was reported as a
     rejected requirements path. It now matches `requirements*.txt` under the target itself.
