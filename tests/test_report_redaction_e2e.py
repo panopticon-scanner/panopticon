@@ -30,6 +30,7 @@ import os
 import tempfile
 import unittest
 
+from tests._test_helpers import record_verify_scope
 from tests.synth.helpers import _chdir
 
 import scripts.redact as redact
@@ -164,6 +165,8 @@ def _run(tmpdir, max_bytes=None):
                       encoding="utf-8") as fh:
                 json.dump(_verdicts_doc(loaded[0]["id"], loaded[1]["id"],
                                         queue_run_id), fh)
+            # #3702: what the verify phase records it handed that advisor.
+            record_verify_scope(run_dir, "app", "SEC", [loaded[0]["id"], loaded[1]["id"]])
             if max_bytes is not None:
                 render_mod.write_report = _small_write
             with contextlib.redirect_stdout(buf), \

@@ -267,11 +267,16 @@ class TestVerifyPrimary(unittest.TestCase):
         self.assertTrue(verify._verify_cell_done(
             self.root, self.manifest, "app", "SEC", "primary"))
 
-    def test_extra_unknown_verdict_does_not_block_done(self):
-        # A phantom extra verdict (surfaces as unknown at synthesis) must not force
-        # re-dispatch as long as every finding IS covered.
+    def test_a_verdict_for_a_claim_the_cell_was_not_handed_blocks_done(self):
+        # #3702: this used to read done ("a phantom extra verdict must not force
+        # re-dispatch"). Verdicts are matched to findings by id across the run, so
+        # an id this advisor was not handed is another claim's verdict if it names
+        # one. The bundle is asked for again, whatever the id names.
         cell = self._two_finding_cell()
         self._write_primary_bundle([cell[0]["id"], cell[1]["id"], "phantom"])
+        self.assertFalse(verify._verify_cell_done(
+            self.root, self.manifest, "app", "SEC", "primary"))
+        self._write_primary_bundle([cell[0]["id"], cell[1]["id"]])
         self.assertTrue(verify._verify_cell_done(
             self.root, self.manifest, "app", "SEC", "primary"))
 

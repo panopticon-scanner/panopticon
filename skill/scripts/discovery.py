@@ -28,6 +28,7 @@ import sys
 if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
     import runpy
     runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
+from scripts import delta_withdrawn
 from scripts import diff_map
 # #1740 fix round 2: ONE module object, so the glob compiler this module and
 # the TOOL side share is one cache and one disclosure ledger, not two.
@@ -890,21 +891,24 @@ def _committed_exclude_paths(repo, doc=None):
 
 
 
-def main(argv=None):
+def main(argv=None, refuse_delta=True):
     """The CLI entry point, and the ONE place a refused target tree becomes an
     operator-readable exit rather than a traceback (#2006 fix round 1).
 
     Discovery touches the target's git from several depths -- the changed-file
     diff, the repo listing, the uncommitted-work probe -- and a `RepositoryRefused`
-    from any of them means the same thing and deserves the same sentence."""
+    from any of them means the same thing and deserves the same sentence.
+
+    #3735: the delta flags are refused (`delta_withdrawn`). `refuse_delta` is for the
+    tests of the delta code that is still in the tree; no command line can pass it."""
     try:
-        return _repo_scan(argv)
+        return _repo_scan(argv, refuse_delta)
     except safe_git.RepositoryRefused as exc:
         print(_refused(exc), file=sys.stderr)
         return 2
 
 
-def _repo_scan_args(argv):
+def _repo_scan_args(argv, refuse_delta=True):
     """--repo-scan's parser and argument checks: (args, repo), or the exit code (#3395)."""
     ap = argparse.ArgumentParser(description="panopticon repo-scan discovery/matrix resolver",
                                  allow_abbrev=False)
@@ -917,13 +921,13 @@ def _repo_scan_args(argv):
     ap.add_argument("--security", choices=["standard", "redteam"], default="standard",
                     help="Security review mode")
     ap.add_argument("--base", default=None,
-                    help="Base ref/sha for --scope-changed delta review")
+                    help="Withdrawn in 5.4 and refused (#3735): the base of a delta review")
     ap.add_argument("--pr-base", default=None,
                     help="PR base branch (gh-detected) for --repo-scan "
                          "--scope-changed; resolved with origin/<base> "
                          "preference (#947).")
     ap.add_argument("--diff-context", type=int, default=5,
-                    help="Lines of tolerance for on-diff classification (default 5)")
+                    help="Withdrawn in 5.4 and refused (#3735): the on-diff tolerance")
     ap.add_argument("--pr-worktree", action="store_true",
                     help="`target`/`--repo` is a --pr worktree the driver just "
                          "synced with the operator's root config (#1681): "
@@ -939,6 +943,13 @@ def _repo_scan_args(argv):
     scope.add_argument("--scope-changed", action="store_true")
     scope.add_argument("--scope-files", nargs="+", metavar="PATH", default=None)
     args = ap.parse_args(argv)
+    if refuse_delta:
+        withdrawn = delta_withdrawn.refusal(
+            delta_withdrawn.typed(ap, argv, delta_withdrawn.DISCOVERY_FLAGS),
+            delta_withdrawn.DISCOVERY_FLAGS)
+        if withdrawn:
+            print("panopticon: %s" % withdrawn, file=sys.stderr)
+            return 2
     if args.max_per_group < 1:
         print("panopticon: --max-per-group must be >= 1", file=sys.stderr)
         return 2
@@ -1004,10 +1015,10 @@ def _write_result(result, args):
         emit(result)
 
 
-def _repo_scan(argv=None):
+def _repo_scan(argv=None, refuse_delta=True):
     """Resolve --repo-scan discovery/matrix targets to grouped file lists and
     emit as JSON. The sole mode the 5.0 driver invokes."""
-    parsed = _repo_scan_args(argv)
+    parsed = _repo_scan_args(argv, refuse_delta)
     if isinstance(parsed, int):
         return parsed
     args, repo = parsed
@@ -1041,12 +1052,17 @@ def _repo_scan(argv=None):
 
     allf, excluded_files, carved_files = _apply_exclude(allf)
     # #3642 (owner ruling 2026-11-14): a full-repo scan does not review the scanner's
-    # own ROOT config -- the one setup-scan just wrote -- the same names pr-worktree
-    # mode drops (`repo_config.CONFIG_NAMES`, #1681). Only the whole-repo surface:
+    # own ROOT config -- the one setup-scan just wrote. Only the whole-repo surface:
     # `allf` stays whole for an explicit --scope-* request, and a nested
     # config of the same name in a subdirectory is not the scanner's and is still reviewed.
-    root_config = sorted(f for f in allf if f in repo_config.CONFIG_NAMES)
-    whole_repo = [f for f in allf if f not in repo_config.CONFIG_NAMES]
+    # #3708: and only the file that was LOADED (`repo_config.resolve`, through the one
+    # document seam above). Both of `repo_config.CONFIG_NAMES` used to be dropped
+    # whichever was in use, so a repo configured by the first could carry anything in a
+    # file named as the second and no review agent read it. The name that was not
+    # loaded is an ordinary file.
+    loaded_config = os.path.basename(committed_doc.path) if committed_doc.path else None
+    root_config = sorted(f for f in allf if f == loaded_config)
+    whole_repo = [f for f in allf if f != loaded_config]
     impl, tests = partition_test_files(whole_repo)
     # Group impl AND real test sources so tests aren't silently dropped (only
     # their __pycache__ artifacts used to reach a group); counts stay impl-only.
@@ -1097,7 +1113,8 @@ def _repo_scan(argv=None):
         if root_config:
             result.setdefault("excluded", {})["scanner_config"] = root_config
             print("scanner config: not reviewed: %s -- panopticon's own matrix config "
-                  "(#3642); name it with --scope-files to review it"
+                  "(#3642); name it with --files (the driver) or --scope-files "
+                  "(discovery.py) to review it"
                   % ", ".join(root_config), file=sys.stderr)
     _say_pruned(result["discovery"]["pruned"], result["discovery"]["surface"])
     writes = [w for w in (args.out, _delta and _hunks_path_for(args.out, repo)) if w]

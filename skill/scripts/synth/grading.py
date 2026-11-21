@@ -6,11 +6,13 @@ import stat
 
 import scripts.coverage_model as coverage_model
 import scripts.evidence as evidence_mod
+import scripts.tools_manifest as tools_manifest
 from . import backups as backups_mod
 from . import coverage_io
 from . import health_basis
 from . import delta as delta_mod
 from . import findings as findings_mod
+from . import verdict_scope as verdict_scope_mod
 
 
 @dataclass(frozen=True)
@@ -95,6 +97,18 @@ _SUPPRESSED_DRIVER_EFFECT = ("paths under a suppressed driver compare as "
 NO_SCA_COVERAGE_NOTE = "no SCA tool produced output on an applicable tree"
 
 
+def unaudited_notes(dependency_audit):
+    """#3648: one fixed sentence per ecosystem the repaired SCA receipt records as
+    unaudited, in ecosystem order; [] for a receipt without the record. Disclosure
+    only: nothing here moves the gate or certification."""
+    rows = (dependency_audit or {}).get("unaudited") if isinstance(dependency_audit, dict) else None
+    if not isinstance(rows, dict):
+        return []
+    sentences = (tools_manifest.unaudited_sentence(ecosystem, rows[ecosystem])
+                 for ecosystem in sorted(rows))
+    return [sentence for sentence in sentences if sentence]
+
+
 # What NOT CERTIFIED says when a gate-relevant gap names no reason of its own.
 GATE_GAP_NOTE = "gate-relevant coverage did not complete"
 PROVISIONAL_PREFIX = "grade provisional: "
@@ -115,7 +129,9 @@ def grade_shortfalls(resolved, backups=None):
     launch fails nothing is confirmed, health reads 100 and the letter S stood
     beside an INCONCLUSIVE gate -- the same undone work, the same rule.
     Summoned backup advisors that never answered, or answered unloadably
-    (#3676, `meta.coverage.backups`), are the third."""
+    (#3676, `meta.coverage.backups`), are the third. Advisor verdicts that were
+    not counted, because they named a claim their advisor was not handed or came
+    with no record of what it was handed (#3702), are the fourth."""
     reasons = []
     unanswered_tools = getattr(resolved, "unanswered_tools", 0) or 0
     unanswered_claims = max((getattr(resolved, "unanswered_gate", 0) or 0) - unanswered_tools, 0)
@@ -124,7 +140,10 @@ def grade_shortfalls(resolved, backups=None):
             reasons.append("%d %s%s unanswered by %s %sadvisor%s" % (
                 count, kind, "" if count == 1 else "s", "its" if count == 1 else "their",
                 "" if kind == "tool finding" else "verify ", "" if count == 1 else "s"))
-    return reasons + backups_mod.shortfall_reasons(backups)
+    # #3702: verdicts an advisor wrote that were not counted are undone work too:
+    # whatever they said, nobody the controller asked has said it.
+    return (reasons + backups_mod.shortfall_reasons(backups)
+            + verdict_scope_mod.reasons(getattr(resolved, "verdict_stats", None)))
 
 
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
@@ -132,7 +151,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
             missing_floor=0, tools_manifest_invalid=None, tools_network_excluded=None,
             delta_scope_suppressed_git_drivers=None, tools_file_partial=None,
             delta_zero_hunks=None, dependency_audit_gap=False, custom_profile=None,
-            config_notes=None, native_unparsed_gap=None, shortfalls=()):
+            config_notes=None, native_unparsed_gap=None, shortfalls=(),
+            dependency_unaudited=()):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
     (+ requested-absent tools + artifact integrity + verdict loadability +
     missing FLOOR review cells); grade is holistic (provisional on ANY gap).
@@ -257,7 +277,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     if shortfalls:
         note = "; ".join(filter(None, (note, *shortfalls)))
     if dependency_audit_gap:
-        note = "; ".join(filter(None, (note, NO_SCA_COVERAGE_NOTE)))
+        # #3648: which ecosystem, and why, beside the bare "no SCA output".
+        note = "; ".join(filter(None, (note, NO_SCA_COVERAGE_NOTE, *dependency_unaudited)))
     if delta_zero_hunks:
         # Directly after the manifest note and before every other caveat: an
         # empty gate scope invalidates the gate WHOLESALE, where a missing online
@@ -317,6 +338,10 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
             gap += "; %d additional file(s) omitted" % disclosure["files_omitted"]
         note = "%s; %s" % (note, gap) if note else gap
     note = coverage_model.with_asset_skip_note(note, asset_skips)     # #3283: disclosed, not counted
+    if not dependency_audit_gap:
+        # #3648 (ruling b): an ecosystem no auditor read is named even when another
+        # ecosystem's auditor answered and the tree certifies. It moves nothing.
+        note = "; ".join(filter(None, (note, *dependency_unaudited))) or None
     # #3548: config disclosures that move nothing (a scout-only exclude, `exclude_paths:`).
     note = "; ".join(filter(None, (note, *(config_notes or ())))) or None
 
@@ -343,8 +368,19 @@ SPAN_CAP = 50
 
 def _loc_span(finding):
     """Lines a finding spans: line_end - line_start + 1, floored at 1 and capped at
-    SPAN_CAP. Missing/None/non-int/inverted ranges count as 1."""
-    loc = finding.get("location") or {}
+    SPAN_CAP. Missing/None/non-int/inverted ranges count as 1.
+
+    #3732: for a scanner rule's hits collapsed into one finding, the widest hit, not
+    the shown one's (the lowest line). Only a scanner finding's own hits count: a claim that absorbed one carries its other
+    lines for the reader, and what a reviewer writes there is not read at all."""
+    loci = [finding.get("location") or {}]
+    if evidence_mod.is_tool_sourced(finding):
+        loci += [locus for locus in finding.get("additional_loci") or ()
+                 if isinstance(locus, dict)]
+    return max(_span(loc) for loc in loci)
+
+
+def _span(loc):
     start = loc.get("line_start")
     if not isinstance(start, int):
         return 1
@@ -353,14 +389,32 @@ def _loc_span(finding):
         end = start
     return min(SPAN_CAP, max(1, end - start + 1))
 
+# #3731: (merge group, weight) on each row of a merge group whose weight is not simply the
+# sum of its rows' own: the group is counted once, at its heaviest counted finding
+# (`verdicts._weigh_the_group`). Private: an agent cannot write a `_` key.
+GROUP_WEIGHT = "_group_weight"
+
+
+def own_weight(finding, severity=None):
+    """What one finding weighs by itself: weight[severity] * the lines it spans (span
+    capped, #3230). `severity`: the one it will be published at, when the finding
+    does not carry it yet. INFO weighs nothing."""
+    weight = HEALTH_WEIGHTS.get(str(severity or finding.get("severity", "INFO")).upper(), 0)
+    return weight * _loc_span(finding) if weight else 0
+
+
 def weighted_defect(findings):
-    """Severity-weighted defect footprint: sum over `findings` of
-    weight[severity] * _loc_span(finding) (span capped, #3230). INFO adds nothing."""
-    total = 0
+    """Severity-weighted defect footprint: the sum over `findings` of each one's own
+    weight (`own_weight`), with every merge group among them counted once, at its
+    stamped weight (`GROUP_WEIGHT`, #3731)."""
+    total, counted = 0, set()
     for f in findings:
-        weight = HEALTH_WEIGHTS.get(str(f.get("severity", "INFO")).upper(), 0)
-        if weight:
-            total += weight * _loc_span(f)
+        stamp = f.get(GROUP_WEIGHT)
+        if not isinstance(stamp, tuple):
+            total += own_weight(f)
+        elif stamp[0] not in counted:
+            counted.add(stamp[0])
+            total += stamp[1]
     return total
 
 MAX_LOC_FILE_BYTES = 8 * 1024 * 1024
@@ -815,7 +869,9 @@ def grade_report(run, resolved, reconciled, delta=None):
                    native_unparsed_gap=getattr(reconciled, "native_unparsed_gap", None),
                    custom_profile=health_basis.custom_profile_reasons(run, coverages),
                    config_notes=health_basis.config_notes(run, coverages),
-                   shortfalls=shortfalls)
+                   shortfalls=shortfalls,
+                   dependency_unaudited=unaudited_notes(
+                       (getattr(reconciled, "coverage", None) or {}).get("dependency_audit")))
     summary = {
         "overall_grade": cert["overall_grade"],
         "provisional_grade": cert["provisional_grade"],

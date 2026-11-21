@@ -684,7 +684,8 @@ class TestSkillMd(unittest.TestCase):
         # I6 (fix round 3): `driver persist` grew `--pr`/`--base` because a PR
         # run's review root is the worktree; a session host that does not pass
         # them gets "no entry in the current dispatch request" and no clue why.
-        self.assertIn("pass the same `--pr`/`--base` to **both**", loop)
+        # (#3735: withdrawn in 5.4, and the guide says both verbs refuse them.)
+        self.assertIn("`--pr` and `--base` are refused on both", " ".join(loop.split()))
         # I8: same for the guide -- the documented default names the condition.
         self.assertIn("default: headless when the host has a headless runner, "
                       "otherwise session", loop)

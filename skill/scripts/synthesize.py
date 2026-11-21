@@ -18,6 +18,7 @@ if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
     runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
 
 import scripts.config_schema as config_schema
+import scripts.delta_withdrawn as delta_withdrawn
 import scripts.executable as executable
 import scripts.first_contact as first_contact
 import scripts.html_report as html_report
@@ -81,7 +82,7 @@ def build_parser():
     scope.add_argument("--repo", action="store_true",
                        help="Explicitly declare a repository-wide review type")
     scope.add_argument("--changes", "-c", action="store_true",
-                       help="Explicitly declare a changes/diff review type")
+                       help="Withdrawn in 5.4 and refused (#3735): a changes/diff review type")
     ap.add_argument("--out", default=None)
     ap.add_argument("--run-id", default=None,
                     help="driver run-manifest run_id -> X0X generated_by.run_id")
@@ -173,8 +174,8 @@ def build_parser():
                     help="Cap the verify queue at the top-priority N entries "
                          "(pass the same value to both passes)")
     ap.add_argument("--diff-hunks", metavar="PATH", default=None,
-                    help="Path to the orchestrator's diff-hunks.json (#449); "
-                         "stamps each finding with finding.delta")
+                    help="Withdrawn in 5.4 and refused (#3735): the delta review's "
+                         "diff-hunks.json (#449)")
     ap.add_argument("--diff-hunks-run-id", metavar="ID", default=None,
                     help="The run generation --diff-hunks must carry (#2107): a "
                          "foreign or absent run_id rejects the payload, so the "
@@ -182,9 +183,9 @@ def build_parser():
                          "Omitted, it defaults to the run_id on the --groups "
                          "inventory this run read -- the other half of the pair")
     ap.add_argument("--diff-context", type=int, default=5, metavar="N",
-                    help="Lines of tolerance for on-diff classification (default 5)")
+                    help="Withdrawn in 5.4 and refused (#3735): the on-diff tolerance")
     ap.add_argument("--gate-scope", choices=["on-diff", "all"], default="on-diff",
-                    help="Scope the gate/grade to on-diff findings, or all (default on-diff)")
+                    help="Withdrawn in 5.4 and refused (#3735): the delta review's gate scope")
     ap.add_argument("files", nargs="*")
     return ap
 
@@ -341,9 +342,20 @@ def _backup_run_id(queue_run_id, driver_run_id):
     return queue_run_id or driver_run_id
 
 
-def main(argv=None):
-    """Main entry point: load findings, enrich citations, build and validate report."""
-    args = build_parser().parse_args(argv)
+def main(argv=None, refuse_delta=True):
+    """Main entry point: load findings, enrich citations, build and validate report.
+
+    #3735: the delta flags are refused (`delta_withdrawn`). `refuse_delta` is for the
+    tests of the delta code that is still in the tree; no command line can pass it."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    if refuse_delta:
+        withdrawn = delta_withdrawn.refusal(
+            delta_withdrawn.typed(parser, argv, delta_withdrawn.SYNTHESIZE_FLAGS),
+            delta_withdrawn.SYNTHESIZE_FLAGS)
+        if withdrawn:
+            print("synthesize: %s" % withdrawn, file=sys.stderr)
+            return 2
 
     if args.compare:
         return _compare(args)
@@ -497,7 +509,7 @@ def main(argv=None):
     queue = integrity_mod.load_verify_queue(run_dir)
     fs = findings_mod.FindingSet.load(args, tool_findings, run.security_mode,
                                       verdict_run_id=(queue[0] or {}).get("run_id"),
-                                      prepared=prepared)
+                                      prepared=prepared, run_dir=run_dir)
     plan = plan_mod.PlanInputs.load(run_dir, args.files, args.verdicts_dir, groups_meta,
                                     plans, queue, fs.verdicts,
                                     git_drivers_suppressed=getattr(
