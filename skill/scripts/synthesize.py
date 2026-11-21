@@ -9,6 +9,7 @@ schemas, and `synth/validate_schema.py` does that with `jsonschema` and fails
 CLOSED when the import does not resolve. See SKILL.md, Dependencies.
 """
 import argparse
+import functools
 import json
 import os
 import sys
@@ -25,6 +26,7 @@ import scripts.html_report as html_report
 import scripts.ingest_tools as ingest_tools
 import scripts.matrix_identity as matrix_identity
 import scripts.ocrdb as ocrdb
+import scripts.safe_glob as safe_glob
 import scripts.plan_contract as plan_contract
 import scripts.redact as redact
 import scripts.safe_write as safe_write
@@ -342,6 +344,21 @@ def _backup_run_id(queue_run_id, driver_run_id):
     return queue_run_id or driver_run_id
 
 
+def _listing_refused(run):
+    """`run`, with a run folder that is there and could not be listed reported in one
+    line and as exit 3, invalid input (#3706). This script is the driver's child, and
+    the driver shows the head of its stderr: that was the top of a traceback."""
+    @functools.wraps(run)
+    def refusing(*args, **kwargs):
+        try:
+            return run(*args, **kwargs)
+        except safe_glob.Unlistable as exc:
+            print("synthesize: %s" % exc, file=sys.stderr)
+            return 3
+    return refusing
+
+
+@_listing_refused
 def main(argv=None, refuse_delta=True):
     """Main entry point: load findings, enrich citations, build and validate report.
 

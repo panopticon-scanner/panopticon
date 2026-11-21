@@ -644,8 +644,14 @@ def main(argv=None):
     elif until is not None and until.lower() == "none":
         until = None
 
-    doc = collect(args.run_dir, args.project_dir, args.transcript,
-                  args.tasks_dir, since, until)
+    try:
+        doc = collect(args.run_dir, args.project_dir, args.transcript,
+                      args.tasks_dir, since, until)
+    except safe_glob.Unlistable as exc:
+        # #3706: a transcript directory that is there and could not be listed is not
+        # "no transcript" (rc 1, below). The driver relays this line.
+        print("collect-usage: %s; usage was not collected" % exc, file=sys.stderr)
+        return 2
     if doc is None:
         # Deliberately not an error, and deliberately not a zero: the channel is
         # optional, and a usage.json full of zeros would be a false ledger.

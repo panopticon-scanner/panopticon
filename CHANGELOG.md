@@ -34,11 +34,17 @@
       `unsafe reset cleanup: <directory> could not be listed: <reason>; nothing was cleared`
       and a non-zero exit, before removing anything;
     - a run folder: its findings files, plans, scout replies, coverage files and verdict
-      bundles read as none. The run now stops with the reason;
+      bundles read as none. The run now stops with one line,
+      `synthesize: <directory> could not be listed: <reason>`;
     - `readiness`: a sub-skill row past such a directory says
       `not found (<directory> could not be listed)`, and its JSON row carries `unlistable`;
-    - token usage: this session's transcript directories stop the collection. Another user's
-      `claude-<uid>` directory under the temp root is passed over, as it cannot hold them.
+    - token usage: a failed listing costs the token count and never the review. The
+      collector stops with `collect-usage: <directory> could not be listed: <reason>; usage
+      was not collected`, the driver relays that line (it used to print the "wrong
+      directory?" advice for every failure), and `meta.cost.tokens` stays null. A Kimi reply
+      whose wire directory cannot be listed is kept, with its usage unknown and the reason on
+      stderr. Another user's `claude-<uid>` directory under the temp root is passed over, as
+      it cannot hold this session's transcripts.
   - The helper refuses a pattern that would leave its directory: an empty, absolute, `.` or
     `..` part, no pattern at all, or an empty directory is a `ValueError`.
 

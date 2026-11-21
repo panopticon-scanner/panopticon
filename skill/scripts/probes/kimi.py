@@ -22,7 +22,7 @@ import tempfile
 import tomllib
 
 from scripts import (dispatch, hosts, kimi_toml, model_resolver, read_guard_hook,
-                     write_guard_hook)
+                     safe_glob, write_guard_hook)
 from scripts.runners import children, kimi_home
 
 from . import common
@@ -658,7 +658,7 @@ def probe_kimi_usage_wire(host):
                     fh.write(json.dumps(record) + "\n")
             resolved = kimi_runner.wire_path(run_home, session_id)
             usage, model = kimi_runner.parse_wire(resolved) if resolved else ({}, None)
-    except OSError as exc:
+    except (OSError, safe_glob.Unlistable) as exc:
         return (hosts.UNKNOWN, KIMI_USAGE_WIRE, common.failure_detail(
             exc, "the per-run wire round-trip could not run"))
     if resolved is None:

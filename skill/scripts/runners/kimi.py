@@ -586,7 +586,15 @@ class Runner(base.HostRunner):
             return parsed
         text, session_id = parsed
         usage, model = {}, None
-        wire = wire_path(self.kimi_home, session_id)
+        try:
+            wire = wire_path(self.kimi_home, session_id)
+        except safe_glob.Unlistable as exc:
+            # #3706: the reply is in hand. A wire directory that cannot be listed costs
+            # the token count, never the review: usage stays unknown (empty, not zero),
+            # and the reason is said once. `run_entry` never raises (spec 4.4).
+            print("kimi: %s; the reply is kept and its token usage is unknown" % exc,
+                  file=sys.stderr, flush=True)
+            wire = None
         if wire:
             usage, model = parse_wire(wire)
         return base.RunResult(entry_id=entry_id, ok=True, text=text,

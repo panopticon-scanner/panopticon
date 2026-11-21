@@ -16,11 +16,13 @@ matches nothing; one that is there and cannot be listed raises `Unlistable`,
 and each caller says what that means for it (an audit that is owed and was not
 produced, a reset that cleared nothing, a report that was not surfaced).
 
-This is the one module in the package that matches names against a pattern in a
-directory, and it does not call `glob`. `tests/test_safe_glob.py` fails if any
-module here calls `glob.glob` or `glob.iglob`, with one exception it names:
-`guard_rules.py`, which is loaded with the standard library alone, cannot
-import this module, and escapes its directory itself.
+No module in the package calls `glob`, this one included. That is what
+`tests/test_safe_glob.py` checks: it fails if any module here calls `glob.glob`
+or `glob.iglob`, with one exception it names, `guard_rules.py`, which is loaded
+with the standard library alone, cannot import this module, and escapes its
+directory itself. (Matching a NAME against a pattern with `fnmatch`, as
+`first_party_advisory.py` and `codex_read_tools.py` do, lists no directory and
+is not this module's business.)
 """
 import fnmatch
 import os

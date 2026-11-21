@@ -36,6 +36,7 @@ import scripts.phases.validate as validate_phase
 import scripts.run_manifest as run_manifest
 import scripts.runners.kimi as kimi_runner
 import scripts.safe_glob as safe_glob
+import scripts.synthesize as synthesize_script
 import scripts.synth.cost as cost_mod
 import scripts.synth.coverage_io as coverage_io
 import scripts.synth.plan as plan_mod
@@ -372,6 +373,24 @@ class TestUnder(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     safe_glob.iter_under(directory, *pattern)
 
+    def test_the_iterator_checks_its_arguments_at_the_call(self):
+        """#3706 review round 2, item 3: an iterator that checked at its first `next`
+        would hand a caller that never iterates a pattern outside the directory."""
+        inside = os.path.dirname(self.make("d", "a.json"))
+        refused = []
+        for directory, pattern in ((inside, ("..", "a.json")), (inside, ("",)), (inside, ()),
+                                   (inside, ("/etc/*",)), ("", ("*",))):
+            try:
+                safe_glob.iter_under(directory, *pattern)            # never iterated
+            except ValueError:
+                refused.append((directory, pattern))
+        # No `subTest`: one plain assertion, for a harness that does not count subtests.
+        self.assertEqual(5, len(refused), "nothing was checked until the first match")
+        # A good call returns an iterator and has listed nothing yet.
+        with mock.patch.object(os, "scandir", side_effect=AssertionError("listed")):
+            found = safe_glob.iter_under(inside, "*.json")
+        self.assertEqual([os.path.join(inside, "a.json")], list(found))
+
     def test_a_part_may_hold_separators(self):
         mine = self.make("home", "vendor", "skills", "leaf", "SKILL.md")
         self.assertEqual([mine], safe_glob.under(os.path.join(self.base, "home"),
@@ -611,8 +630,12 @@ class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
     def test_reset_clears_nothing_and_says_why(self):
         """`--reset` left `findings-*.json` in place and printed nothing."""
         pano = os.path.join(self.target, ".panopticon")
+        # `groups.json` and `tools-ran.json` are literal names: they are found without a
+        # listing, ahead of the first pattern that needs one. A reset that removed each
+        # path as it found it would have taken them before it stopped.
         stale = [self.write(pano, name, "stale")
-                 for name in ("findings-app-SEC.json", "scout-app.json", "verify-attempts.json")]
+                 for name in ("groups.json", "tools-ran.json", "findings-app-SEC.json",
+                              "scout-app.json", "verify-attempts.json")]
         kept = [self.write(pano, os.path.join(sub, "x.json"), "stale")
                 for sub in ("tools", "verdicts")]
         with unlistable(pano):
@@ -671,6 +694,35 @@ class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
                     read()
                 self.assertEqual(locked, caught.exception.directory)
 
+    def test_synthesis_stops_with_the_directory_and_the_reason(self):
+        """#3706 review round 2, item 4: the readers above raise out of the synthesize
+        child, and the driver shows the first 400 characters of its stderr. That was
+        the top of a traceback. It is one line now, with exit 3 (invalid input)."""
+        run = os.path.join(self.base, "run")
+        tools = os.path.join(run, "tools")
+        os.makedirs(tools)
+        self.write(run, "scout-g1.json", {"group": "g1", "tools": ["semgrep"], "domains": []})
+        findings = self.write(run, "findings-g1-COD.json", {"findings": []})
+        out = os.path.join(self.base, "r.json")
+        argv = ["--repo", "--target", "src", "--run-dir", run, "--tools-dir", tools,
+                "--fail-on", "critical", "--out", out, findings]
+
+        def synthesize():
+            err = io.StringIO()
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                return synthesize_script.main(argv), err.getvalue()
+
+        rc, err = synthesize()
+        self.assertTrue(os.path.exists(out), err)
+        os.remove(out)
+        with unlistable(run):
+            rc, err = synthesize()
+        self.assertEqual(3, rc, err)
+        self.assertEqual("synthesize: %s could not be listed: Permission denied" % run,
+                         err.strip().splitlines()[-1])
+        self.assertNotIn("Traceback", err)
+        self.assertFalse(os.path.exists(out))
+
     def test_the_findings_of_a_run_are_not_none(self):
         """The synthesize and verify phases both ask for the run's findings files. A
         `DriverError` is the phase failure the driver reports as `status: error`."""
@@ -720,6 +772,25 @@ class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
                     read()
                 self.assertEqual(locked, caught.exception.directory)
 
+    def test_usage_collection_says_which_directory_it_could_not_list(self):
+        """#3706 review round 2, item 4: the collector is a child of the driver too, and
+        it ended in a traceback. One line, exit 2, and nothing written."""
+        project, _home, controller, tasks = self.transcripts()
+        run = os.path.join(self.base, "run")
+        os.makedirs(run)
+        argv = ["--run-dir", run, "--project-dir", project, "--transcript", controller,
+                "--since", "none", "--until", "none"]
+        err = io.StringIO()
+        with unlistable(tasks), contextlib.redirect_stderr(err):
+            rc = collect_usage.main(argv)
+        self.assertEqual(2, rc, err.getvalue())
+        self.assertEqual("collect-usage: %s could not be listed: Permission denied; usage "
+                         "was not collected\n" % tasks, err.getvalue())
+        self.assertEqual([], os.listdir(run))
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(0, collect_usage.main(argv))
+        self.assertEqual(["usage.json"], os.listdir(run))
+
     @unittest.skipIf(not hasattr(os, "geteuid") or os.geteuid() == 0,
                      "root reads another user's directory")
     def test_another_users_temp_directory_is_not_ours_to_list(self):
@@ -759,8 +830,9 @@ class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
         sessions = os.path.join(home, "sessions")
         self.assertEqual(wire, kimi_runner.wire_path(home, "s1"))
         with unlistable(sessions):
-            with self.assertRaises(safe_glob.Unlistable):
-                kimi_runner.wire_path(home, "s1")
+            # The snapshot reader says it could not look. The runner keeps the reply and
+            # reports its usage as unknown: `tests/runners/test_kimi.py` holds that
+            # (`test_a_reply_survives_a_wire_directory_that_cannot_be_listed`).
             self.assertEqual(([], "the per-run home's wire files could not be listed: %s could "
                               "not be listed: Permission denied" % sessions),
                              kimi_snapshot._kimi_wire_snapshots(home))

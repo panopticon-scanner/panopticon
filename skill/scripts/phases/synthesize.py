@@ -225,7 +225,13 @@ def _collect_host_usage(review_root, manifest):
     if proc.returncode == 0 and proc.stderr:
         print(proc.stderr, file=sys.stderr,
               end="" if proc.stderr.endswith("\n") else "\n", flush=True)
-    if proc.returncode != 0:
+    if proc.returncode not in (0, 1):
+        # #3706: any other exit is the collector's own refusal, and it said why. The
+        # advice below is for "no transcript found" and would be the wrong remedy.
+        print("driver: usage collection failed (rc %d): %s; meta.cost.tokens stays null"
+              % (proc.returncode, redact.redact_diagnostic(str(proc.stderr or "").strip(), 400)),
+              file=sys.stderr, flush=True)
+    elif proc.returncode != 0:
         # rc 1 is the documented "no transcript found, wrote nothing" path. Name
         # the directory that was searched and the flag that changes it: the most
         # likely cause is that it is the scanned repo rather than the session,
