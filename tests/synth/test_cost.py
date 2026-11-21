@@ -16,6 +16,7 @@ import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.cost as cost_mod
 import scripts.synth.report as report_mod
+import scripts.runners.outage as outage_mod
 
 
 class TestCostLedgerDriver(unittest.TestCase):
@@ -321,3 +322,96 @@ class CostLoaderTest(unittest.TestCase):
             ci = cost_mod.CostInputs.load(d, None, None)
             self.assertEqual(ci.driver_cost, cost_mod.driver_cost_counts(d, None, None))
             self.assertIsNotNone(ci.driver_cost)
+
+    def test_verify_ledger_keeps_latest_host_entry_identity_and_ignores_markers(self):
+        with tempfile.TemporaryDirectory() as d:
+            rows = [
+                {"entry_id": "review-app-SEC", "phase": "review", "ok": False,
+                 "failure_class": outage_mod.HOST_FAILURE},
+                {"entry_id": "verify-app-SEC-primary", "phase": "verify", "ok": False,
+                 "failure_class": outage_mod.HOST_FAILURE},
+                {"entry_id": "verify-app-ACC-primary", "phase": "verify", "ok": False,
+                 "failure_class": outage_mod.HOST_FAILURE},
+                {"entry_id": "verify-tool-deadbeef", "phase": "verify", "ok": False,
+                 "error": "Individual quota reached"},  # legacy: class unknown
+                {"entry_id": "verify-tool-cafebabe", "phase": "verify", "ok": False,
+                 "failure_class": outage_mod.ENTRY_FAILURE,
+                 "error": "codex stderr: quota reached."},
+            ]
+            with open(os.path.join(d, "dispatch-ledger.jsonl"), "w", encoding="utf-8") as fh:
+                for row in rows:
+                    fh.write(json.dumps(row) + "\n")
+
+            ci = cost_mod.CostInputs.load(d, None, None)
+            self.assertEqual(
+                ci.verify_ledger.launched_entries,
+                ("verify-app-SEC-primary", "verify-app-ACC-primary",
+                 "verify-tool-deadbeef", "verify-tool-cafebabe"),
+            )
+            self.assertEqual(
+                ci.verify_ledger.host_failure_entries,
+                ("verify-app-SEC-primary", "verify-app-ACC-primary"),
+            )
+            self.assertFalse(ci.verify_ledger.unreadable)
+
+            # Neither a Ctrl-C rollback marker nor a malformed row with no
+            # boolean `ok` retires the host result immediately before it.
+            with open(os.path.join(d, "dispatch-ledger.jsonl"), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "entry_id": "verify-app-SEC-primary", "phase": "verify",
+                    "ok": False, "failure_class": outage_mod.ENTRY_FAILURE,
+                    "rolled_back": True,
+                }) + "\n")
+                fh.write(json.dumps({
+                    "entry_id": "verify-app-ACC-primary", "phase": "verify",
+                    "failure_class": outage_mod.ENTRY_FAILURE,
+                }) + "\n")
+            self.assertEqual(
+                cost_mod.load_verify_ledger(d).host_failure_entries,
+                ("verify-app-SEC-primary", "verify-app-ACC-primary"),
+            )
+
+            # A successful retry retires that entry's old host failure. It
+            # cannot taint an unrelated entry-class shortfall on a later run.
+            with open(os.path.join(d, "dispatch-ledger.jsonl"), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "entry_id": "verify-app-SEC-primary", "phase": "verify",
+                    "ok": True, "error": None,
+                }) + "\n")
+            ci = cost_mod.CostInputs.load(d, None, None)
+            self.assertEqual(
+                ci.verify_ledger.host_failure_entries,
+                ("verify-app-ACC-primary",),
+            )
+
+            # A later legacy failure is landed but unknown. In particular, its
+            # agent-bearing display error is never fed back through outage's
+            # classifier, and it replaces the older host result.
+            with open(os.path.join(d, "dispatch-ledger.jsonl"), "a", encoding="utf-8") as fh:
+                fh.write(json.dumps({
+                    "entry_id": "verify-app-ACC-primary", "phase": "verify",
+                    "ok": False, "error": "Individual quota reached",
+                }) + "\n")
+            ci = cost_mod.CostInputs.load(d, None, None)
+            self.assertEqual(ci.verify_ledger.host_failure_entries, ())
+            self.assertIn("verify-app-ACC-primary", ci.verify_ledger.launched_entries)
+
+    def test_missing_and_unreadable_ledgers_are_distinct(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(cost_mod.load_verify_ledger(d), cost_mod.VerifyLedger())
+            read_regular_bytes = cost_mod.safe_write.read_regular_bytes
+            for exc in (OSError("permission denied"), ValueError("over 16 MiB")):
+                def fail_ledger(path, limit, failure=exc):
+                    if os.path.basename(path) == "dispatch-ledger.jsonl":
+                        raise failure
+                    return read_regular_bytes(path, limit)
+
+                with self.subTest(exc=type(exc).__name__), \
+                        mock.patch("scripts.synth.cost.safe_write.read_regular_bytes",
+                                   side_effect=fail_ledger), \
+                        contextlib.redirect_stderr(io.StringIO()) as err:
+                    ledger = cost_mod.CostInputs.load(d, None, None).verify_ledger
+                self.assertEqual(ledger.launched_entries, ())
+                self.assertEqual(ledger.host_failure_entries, ())
+                self.assertTrue(ledger.unreadable)
+                self.assertEqual(err.getvalue().count("could not be read"), 1)
