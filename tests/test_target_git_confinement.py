@@ -422,7 +422,7 @@ class ASuppressionIsDisclosedNotARefusal(unittest.TestCase):
         repo, marker = self._hostile_repo()
         err = io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
-            rc = discovery.main(["--repo", repo, "--repo-scan", "--scope-changed"])
+            rc = discovery.main(["--repo", repo, "--repo-scan", "--scope-changed"], refuse_delta=False)
         self.assertEqual(rc, 0, err.getvalue())
         self.assertNotIn("fails closed", err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())

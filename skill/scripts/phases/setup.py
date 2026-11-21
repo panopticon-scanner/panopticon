@@ -542,12 +542,12 @@ def _clear_setup_artifacts(review_root):
     # partially initialized while this module's body runs (test_layout rule 1).
     names = _SETUP_ARTIFACTS + (setup_ack.SETUP_UNENFORCED_ACK,)
     # #3647: BEFORE the manifest goes -- its run_id names the rotated pair. Review F1: not
-    # under a LIVE `driver loop --setup` -- its `--budget` check reads this ledger's total,
+    # under a LIVE `driver loop --setup` -- its `--max-budget-usd` check reads this ledger's total,
     # and rotating it away mid-run would read $0 and keep spending.
     live, _stale = _batch_records(setup_dir)
     if live:
         print("driver setup: not rotating the setup ledger or usage -- a `driver loop "
-              "--setup` is still running here (pid %s) and its --budget reads them"
+              "--setup` is still running here (pid %s) and its --max-budget-usd reads them"
               % ", ".join(repr(pid) for _name, pid in live), file=sys.stderr, flush=True)
     else:
         _rotate_setup_spend(setup_dir)

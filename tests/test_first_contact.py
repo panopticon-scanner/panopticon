@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import tempfile
 import threading
 import unittest
@@ -33,6 +34,9 @@ from tests.tools.git_repo import make_git_repo, plant_fsmonitor_command
 H1 = (".panopticon/ is tracked in the target's git index; panopticon never commits its "
       "artifact directory -- remove it from the index (git rm -r --cached .panopticon) or "
       "review a clean clone")
+H1_AS = ('"%s" is tracked in the target\'s git index, and a filesystem that ignores case reads '
+         'it as .panopticon/; panopticon never commits its artifact directory -- remove it from '
+         'the index (git rm -r --cached "%s") or review a clean clone')
 H2 = (".panopticon/ was not created by a panopticon run on this machine (its run stamp does "
       "not verify); move it aside (mv .panopticon .panopticon.old) or pass --reset, and re-run")
 H3 = (".panopticon/%s is a symlink, and the artifact directory holds none but the run's own "
@@ -49,6 +53,7 @@ class TestTheReasonsAreFixed(unittest.TestCase):
         self.assertEqual((H1, H2, H3, H4, H5, H6),
                          (first_contact.H1, first_contact.H2, first_contact.H3,
                           first_contact.H4, first_contact.H5, first_contact.H6))
+        self.assertEqual(H1_AS, first_contact.H1_AS)
 
 
 class _Trees(unittest.TestCase):
@@ -87,6 +92,81 @@ class TestATrackedPanopticonHalts(_Trees):
         self._halts(root, H1, "--reset")
         with open(os.path.join(root, ".panopticon", "groups.json"), encoding="utf-8") as fh:
             self.assertEqual("{}\n", fh.read())          # a tracked file is never touched
+
+    def test_a_directory_committed_under_another_case_halts_and_reset_does_not_lift_it(self):
+        # #3684. A git pathspec is case-sensitive whatever the filesystem is. On one that
+        # ignores case, `.Panopticon/` IS `.panopticon/`: asked for the exact spelling, git
+        # listed nothing, H1 passed, and `--reset` then moved the tracked directory aside.
+        # On a case-sensitive filesystem the same question listed nothing either, and the
+        # run went on; so this holds on both, and fails on both without the fix.
+        for spelled in (".Panopticon", ".PANOPTICON"):
+            with self.subTest(spelled=spelled):
+                root = make_git_repo(test_case=self, files={"src/a.py": "x = 1\n",
+                                                            spelled + "/groups.json": "{}\n"})
+                before = sorted(os.listdir(root))
+                self.assertIn(spelled, before)
+                self._halts(root, H1_AS % (spelled, spelled))
+                self._halts(root, H1_AS % (spelled, spelled), "--reset")
+                self.assertEqual(before, sorted(os.listdir(root)))   # nothing made, nothing moved
+                with open(os.path.join(root, spelled, "groups.json"), encoding="utf-8") as fh:
+                    self.assertEqual("{}\n", fh.read())
+
+    def test_a_file_committed_under_another_case_inside_it_halts(self):
+        # The file-case variant. The directory is spelled exactly, so this one was always
+        # listed; it is pinned beside the directory-case variant, which was not.
+        for name in ("RUN-MANIFEST.json", "Owner.JSON"):
+            with self.subTest(name=name):
+                root = make_git_repo(test_case=self, files={"src/a.py": "x = 1\n",
+                                                            ".panopticon/" + name: "{}\n"})
+                self._halts(root, H1)
+                self._halts(root, H1, "--reset")
+
+    def test_the_exact_spelling_is_named_when_the_index_holds_both(self):
+        # An index can hold both spellings whatever the filesystem. `.Panopticon` sorts
+        # first; the remedy that names `.panopticon` is the one that works on it.
+        root = make_git_repo(test_case=self, files={"src/a.py": "x = 1\n",
+                                                    ".panopticon/groups.json": "{}\n"})
+        blob = subprocess.run(["git", "-C", root, "rev-parse", "HEAD:src/a.py"], check=True,
+                              capture_output=True, text=True).stdout.strip()
+        subprocess.run(["git", "-C", root, "update-index", "--add", "--cacheinfo",
+                        "100644,%s,.Panopticon/other.json" % blob], check=True, capture_output=True)
+        listed = subprocess.run(["git", "-C", root, "ls-files", "--", ":(icase).panopticon"],
+                                check=True, capture_output=True, text=True).stdout.split()
+        self.assertEqual([".Panopticon/other.json", ".panopticon/groups.json"], listed)
+        self._halts(root, H1)
+
+    def test_the_first_spelling_listed_is_named_when_none_is_exact(self):
+        root = make_git_repo(test_case=self, files={"src/a.py": "x = 1\n",
+                                                    ".Panopticon/groups.json": "{}\n"})
+        blob = subprocess.run(["git", "-C", root, "rev-parse", "HEAD:src/a.py"], check=True,
+                              capture_output=True, text=True).stdout.strip()
+        subprocess.run(["git", "-C", root, "update-index", "--add", "--cacheinfo",
+                        "100644,%s,.PANOPTICON/other.json" % blob], check=True, capture_output=True)
+        self._halts(root, H1_AS % (".PANOPTICON", ".PANOPTICON"))
+
+    def test_the_question_git_is_asked_ignores_case(self):
+        root = self._tree(True)
+        asked = []
+        real = first_contact.safe_git.probe
+
+        def probe(target, args, **kw):
+            asked.append(list(args))
+            return real(target, args, **kw)
+
+        with mock.patch.object(first_contact.safe_git, "probe", side_effect=probe):
+            self.assertEqual((True, None), first_contact._tracked(root, None))
+        self.assertEqual([["ls-files", "-z", "--", ":(icase).panopticon"]], asked)
+
+    def test_a_spelling_git_reports_is_quoted_and_bounded_in_the_halt(self):
+        # The module's rule for every target-authored name, whatever git's folding lets by.
+        root = self._tree(True)
+        odd = '.pan"\n' + "x" * 400
+        with mock.patch.object(first_contact, "_tracked", return_value=(True, odd)):
+            status = self._run(root)
+        self.assertEqual("error", status["status"])
+        self.assertNotIn("\n", status["message"])
+        self.assertIn('"%s" is tracked' % json.dumps(odd)[1:-1][:200], status["message"])
+        self.assertLess(len(status["message"]), 2 * 200 + len(H1_AS))
 
 
 class TestAPrePlantedPanopticonHalts(_Trees):

@@ -490,17 +490,21 @@ UNBUILT_REASON = ("pip-audit audited nothing: a requirement has no wheel, and pa
 class PipAuditAdapter:
     name = "pip-audit"
     prefix = "PA"
+    # #3648: the root files this adapter reads, by ecosystem. `is_applicable` reads
+    # it, and `tools_manifest` builds the "why was this ecosystem not audited"
+    # reason from the same tuple, so the two cannot disagree.
+    audit_files = {"python": ("requirements.txt", "requirements*.txt", "pyproject.toml")}
+
+    @staticmethod
+    def has_audit_file(target: str, name: str) -> bool:
+        """This adapter's own test for one of `audit_files` being in the tree. Read
+        by `is_applicable` and by `tools_manifest`'s reason, so "an auditor reads
+        this file" means the same in both (#3699 L1): the path exists, or the pattern matches something."""
+        path = os.path.join(target, name)
+        return bool(glob.glob(path)) if "*" in name else os.path.exists(path)
 
     def is_applicable(self, target: str) -> bool:
-        patterns = ["requirements.txt", "requirements*.txt", "pyproject.toml"]
-        for pat in patterns:
-            path = os.path.join(target, pat)
-            if "*" in pat:
-                if glob.glob(path):
-                    return True
-            elif os.path.exists(path):
-                return True
-        return False
+        return any(self.has_audit_file(target, name) for name in self.audit_files["python"])
 
     def invoke(self, target: str) -> tuple[bytes, int]:
         # --desc takes an optional value; the bare form swallows a following

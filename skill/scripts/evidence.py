@@ -87,6 +87,21 @@ FIRST_PARTY_PACKAGE_ORIGIN = "first_party"
 # confers a round.
 CONTROLLER_STAMPED = ("stage",)
 
+# #3707: which CELL a finding or a verdict belongs to, as the controller knows it.
+# A finding's is the findings file it was loaded from (`_group` and this), never the
+# `domain` its reviewer wrote: filing under another domain's code is allowed. A
+# bundle verdict's is its bundle's controller stamp. Both are `_`-prefixed carriers,
+# so an agent that writes one has it stripped at the door.
+CELL_DOMAIN_FIELD = "_cell_domain"
+CELL_FIELD = "_cell"
+
+
+def finding_cell(finding):
+    """(group, domain) of the review cell `finding` was loaded from, or None for one
+    that came from no cell (a tool finding, a hand-collected file)."""
+    group, domain = finding.get("_group"), finding.get(CELL_DOMAIN_FIELD)
+    return (group, domain) if group and domain else None
+
 
 def _agent_verdict(raw):
     """THE trust boundary for an agent-written verdict. One sanitizer, used by
@@ -100,7 +115,7 @@ def _agent_verdict(raw):
         findings -- so an advisor that plants one is asserting a controller
         decision (round 1 F1: a backup REJECTION laundered into a retained
         primary CONFIRMED, out of the gate -> in it; round 2 N1: a cell's whole
-        backup scope emptied through `phases/verify._cell_verdicts`);
+        backup scope emptied through `phases/verify._part_verdicts`);
 
     (b) drop `CONTROLLER_STAMPED` (`stage`), which is round 2 N2: an advisor may
         say what it concluded, never which ROUND it was.
@@ -691,7 +706,7 @@ def _bundle_entry_defect(raw):
     return findings_contract.schema_version_defect(raw)   # #2104: this entry only
 
 
-def load_verdict_bundles(verdicts_dir, accepted=None):
+def load_verdict_bundles(verdicts_dir, accepted=None, scope=None):
     """Load per-cell verdict BUNDLES ({"verdicts": [...], "_panopticon": {...}})
     into a finding_id -> list of candidate verdicts map.
 
@@ -710,10 +725,23 @@ def load_verdict_bundles(verdicts_dir, accepted=None):
     valid same-run primary before run_id was ever consulted.
 
     #3676: `accepted`, when a dict, is filled per loadable bundle FILE with
-    {"run_id", "stage", "kept": entries that passed the sanitizer} -- the
-    controller stamps and the count, never agent text -- so `synth.backups` can
-    tell an answered backup cell from one that never answered without reading a
-    verdict file of its own.
+    {"run_id", "stage", "kept": entries that passed the sanitizer, "finding_ids":
+    the ids those entries echoed} -- the controller stamps, the count and the ids,
+    never agent prose -- so `synth.backups` can tell an answered backup cell from
+    one that never answered without reading a verdict file of its own. The ids are
+    what the advisor wrote: `claims_unanswered` counts one only when the
+    controller handed that claim out (#3695).
+
+    #3702: `scope`, when given, is `(file name, the bundle's controller stamp) ->
+    the claim ids that part was handed`, from the controller's own dispatch record
+    (`synth.verdict_scope`). A verdict counts only for an id in that set: any
+    other is dropped here, at the one bundle loader, so it reaches no matcher and
+    no count. `None` from `scope` means the record holds no scope for that bundle,
+    and then nothing in it counts. Both are tallied per file in `accepted`
+    (`out_of_scope`, `scope_not_recorded`), and `kept` / `finding_ids` there cover
+    only what counted. Synthesis always passes one; without it every sanitized
+    entry is kept, which is for a caller that is not deciding what a verdict binds
+    to.
     """
     by_fid: dict[str, list[dict[str, Any]]] = {}
     unloadable = []
@@ -733,7 +761,14 @@ def load_verdict_bundles(verdicts_dir, accepted=None):
             pano = {}
         run_id = pano.get("run_id")
         stage_default = pano.get("stage") or "primary"
-        kept = 0
+        kept = outside = unrecorded = 0
+        kept_ids: set[str] = set()
+        group, domain = pano.get("group"), pano.get("domain")
+        cell = ((group, domain) if isinstance(group, str) and group
+                and isinstance(domain, str) and domain else None)
+        handed = (scope(name, {"group": pano.get("group"), "domain": pano.get("domain"),
+                               "stage": stage_default})
+                  if scope is not None else None)
         for index, raw in enumerate(data["verdicts"]):
             reason = _bundle_entry_defect(raw)
             if reason:
@@ -746,6 +781,12 @@ def load_verdict_bundles(verdicts_dir, accepted=None):
                 unloadable.append({"file": name, "entry": index, "reason": reason})
                 continue
             v = _agent_verdict(raw)
+            if scope is not None and handed is None:
+                unrecorded += 1      # #3702: no record of what this part was handed
+                continue
+            if scope is not None and claims_out_of_scope(handed, [v["finding_id"]]):
+                outside += 1         # #3702: a claim this part was not handed
+                continue
             # Assigned, not setdefault'ed (fix round 2, N2): the CONTROLLER
             # stamp is the only authority for either. The sanitizer has already
             # dropped any declared `stage`; `run_id` is overwritten here for the
@@ -753,10 +794,16 @@ def load_verdict_bundles(verdicts_dir, accepted=None):
             # "primary" -- fail closed, since there is no authority for "backup"
             # and persist refuses such a bundle anyway.
             v["run_id"], v["stage"] = run_id, stage_default
+            # #3707: and which cell's advisor this is. A verdict speaks for its
+            # own cell's instance of a claim only (`across_cells`).
+            v[CELL_FIELD] = cell
             by_fid.setdefault(str(v["finding_id"]), []).append(v)
             kept += 1
+            kept_ids.add(str(v["finding_id"]))
         if isinstance(accepted, dict):
-            accepted[name] = {"run_id": run_id, "stage": stage_default, "kept": kept}
+            accepted[name] = {"run_id": run_id, "stage": stage_default, "kept": kept,
+                              "finding_ids": sorted(kept_ids),
+                              "out_of_scope": outside, "scope_not_recorded": unrecorded}
     return by_fid, unloadable
 
 
@@ -845,6 +892,80 @@ def by_finding_id(verdicts, stage="primary"):
         if fid is not None:
             pools.setdefault(str(fid), []).append(v)
     return {fid: resolve_duplicates(pool, stage) for fid, pool in pools.items()}
+
+
+def claims_unanswered(claim_ids, verdict_ids):
+    """THE rule for "did every claim an advisor was handed come back" (#3695): the
+    ids in `claim_ids` that have no verdict in `verdict_ids`, in the order handed,
+    each once. [] means every claim was answered.
+
+    One definition, for the verify phase (`verify._chunk_answered`: is this part
+    done, and `persist`: is this reply acceptable) and for synthesis
+    (`synth.backups`: which scoped claims a backup advisor left unanswered). A
+    backup part used to be done once its bundle was labelled, and a backup cell
+    answered once a bundle kept ONE verdict, so an advisor that answered 1 of its
+    20 claims read as answered in both places.
+
+    `claim_ids` is the controller's list. `verdict_ids` comes from an advisor's
+    file, so only an id the controller handed out can answer anything: an id
+    nobody was asked about, or one id said twice, changes nothing here."""
+    got = {str(i) for i in verdict_ids if i is not None}
+    return [claim for claim in dict.fromkeys(map(str, claim_ids)) if claim not in got]
+
+
+def claims_out_of_scope(claim_ids, verdict_ids):
+    """THE rule for "did an advisor speak only of what it was handed" (#3702): the
+    ids in `verdict_ids` that are not in `claim_ids`, in the order written, each
+    once. [] means every verdict is for a claim that advisor was handed.
+
+    The other half of `claims_unanswered`, and one definition for the same three
+    readers. An advisor's verdict used to count for any claim in the run whose id
+    it named: verdicts are pooled by finding id, so a backup advisor handed one
+    claim could REJECT two claims no primary had answered, which discarded them
+    and certified the run, and a primary could do the same to another cell's.
+
+    `claim_ids` is the controller's list and `verdict_ids` an advisor's, so an id
+    that names no claim anywhere is outside the scope like any other."""
+    handed = {str(i) for i in claim_ids if i is not None}
+    return [said for said in dict.fromkeys(str(i) for i in verdict_ids if i is not None)
+            if said not in handed]
+
+
+def _favour(verdict):
+    """How favourable to the finding one cell's verdict is, for `across_cells`: the
+    scepticism order read the other way, with a value nobody defined as a bare
+    NEEDS_MORE_INFO (which is how `apply_verdict` records it)."""
+    known = str(verdict.get("verdict", "")).upper() in _VERDICT_SCEPTICISM
+    return _scepticism(verdict) if known else _VERDICT_SCEPTICISM["NEEDS_MORE_INFO"]
+
+
+def across_cells(by_cell, own):
+    """THE rule for a claim id that more than one cell holds (#3707): one verdict from
+    what each holding cell's advisors said of ITS OWN instance, or None.
+
+    `by_cell` is {cell: that cell's verdict, or None when it gave none}; `own` is the
+    cell of the finding being decided. A claim id is derived from what a reviewer
+    wrote -- domain, category, file, title, line, and no group -- so a reviewer can
+    emit a copy of another cell's claim, and its cell's advisor is then handed that id
+    as its own. Pooled by id, that advisor's REJECTED discarded a CRITICAL claim the
+    other cell's own advisor had CONFIRMED: gate PASS, certified, no shortfall.
+
+    - Any CONFIRMED keeps the claim: one cell's advisor found it real.
+    - Otherwise a cell that gave no verdict leaves it unverified (None): a dismissal
+      needs every holding cell, and that one has not dismissed it.
+    - Otherwise the verdict most favourable to the finding stands, so only every
+      cell saying REJECTED rejects it.
+
+    Among equals the finding's own cell speaks, then the first cell by name. With one
+    holding cell this is that cell's verdict, unchanged."""
+    order = sorted(by_cell, key=lambda cell: (cell != own, cell is None, cell or ()))
+    given = [by_cell[cell] for cell in order if by_cell[cell] is not None]
+    confirmed = [v for v in given if str(v.get("verdict", "")).upper() == "CONFIRMED"]
+    if confirmed:
+        return confirmed[0]
+    if len(given) < len(order) or not given:
+        return None
+    return max(given, key=_favour)      # `max` keeps the first of equals: `order`
 
 
 def match_verdict_by_id(finding, by_fid, run_id=None):

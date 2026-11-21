@@ -120,6 +120,10 @@ class RunConfig:
     # #3548: what the target's committed `exclude_paths:` removed, off discovery's own
     # record. None when the run committed none (or predates the record).
     exclude_paths: dict | None = None
+    # #3708: the scanner's own root config that discovery left out of review, off the
+    # same record. None when it left none out (a scoped run, or a tree with no config).
+    # Published in `meta.coverage` only; it is no coverage note.
+    scanner_config_excluded: list | None = None
     # #3560: the scanned tree's HEAD and dirtiness, off the driver's run manifest. None when no
     # manifest recorded them (a direct invocation): absent from the report, never clean.
     target_commit: str | None = None
@@ -188,6 +192,7 @@ class RunConfig:
                    max_groups=health_basis_mod.effective_size(
                        groups_json, config, "max_groups"),
                    exclude_paths=health_basis_mod.exclude_paths_record(groups_json),
+                   scanner_config_excluded=health_basis_mod.scanner_config_record(groups_json),
                    target_commit=_target_commit(getattr(args, "target_commit", None)),
                    target_dirty=_target_dirty(getattr(args, "target_dirty", None)),
                    model_strict=_target_dirty(getattr(args, "model_strict", None)),
@@ -339,6 +344,8 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=(), model_subs
     order is part of the artifact (write_report dumps insertion order)."""
     for f in resolved.findings:
         f.pop("_group", None)
+        f.pop(grading_mod.GROUP_WEIGHT, None)
+        f.pop(evidence_mod.CELL_DOMAIN_FIELD, None)
         f.pop("_repo_root", None)
         if "cvss" in f and f["cvss"] in (None, "", {}):
             del f["cvss"]          # #3162: an empty score is no score -- unscored, not malformed

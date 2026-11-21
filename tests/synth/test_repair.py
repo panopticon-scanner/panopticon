@@ -313,6 +313,54 @@ class TestRepairDependencyAudit(unittest.TestCase):
         self.assertEqual(got["applicable"], ["unknown"])
         self.assertEqual(got["produced"], [])
 
+    def test_a_three_key_receipt_written_before_the_reasons_loads_as_it_did(self):
+        # #3648: `unaudited` is optional. A receipt without it is not repaired, not
+        # warned about, and gains no key.
+        old = {"applicable": ["javascript"], "selected": [], "produced": []}
+        got, err = self._repair(dict(old))
+        self.assertEqual((old, ""), (got, err))
+        self.assertNotIn("unaudited", got)
+
+    def test_a_receipt_with_reasons_passes_in_ecosystem_order(self):
+        got, err = self._repair({
+            "applicable": ["python", "javascript"], "selected": [], "produced": [],
+            "unaudited": {"python": "needs_online", "javascript": "no_auditable_file"}})
+        self.assertEqual({"applicable": ["javascript", "python"], "selected": [], "produced": [],
+                          "unaudited": {"javascript": "no_auditable_file",
+                                        "python": "needs_online"}}, got)
+        self.assertEqual(["javascript", "python"], list(got["unaudited"]))
+        self.assertEqual("", err)
+        got, err = self._repair({"applicable": ["python"], "selected": ["pip-audit"],
+                                 "produced": ["pip-audit"], "unaudited": {}})
+        self.assertEqual(({}, ""), (got["unaudited"], err))
+
+    def test_reasons_outside_the_closed_enums_fail_closed(self):
+        base = {"applicable": ["javascript"], "selected": [], "produced": []}
+        for unaudited in ({"javascript": "<script>forged</script>"},
+                          {"javascript": "no lockfile"},
+                          {"javascript": None}, {"javascript": ["not_run"]},
+                          {"python": "not_run"},               # not an applicable ecosystem
+                          {"<forged>": "not_run"},
+                          ["javascript"], "javascript", None, 3):
+            with self.subTest(unaudited=unaudited):
+                got, err = self._repair(dict(base, unaudited=unaudited))
+                self.assertEqual({"applicable": ["unknown"], "selected": [], "produced": []}, got)
+                self.assertNotIn("forged", repr(got))
+                self.assertIn("dependency_audit.unaudited", err)
+        # `unknown` is the repair's own fallback, never a measured ecosystem.
+        got, _err = self._repair({"applicable": ["unknown"], "selected": [], "produced": [],
+                                  "unaudited": {"unknown": "not_run"}})
+        self.assertNotIn("unaudited", got)
+
+    def test_any_other_extra_key_still_fails_closed(self):
+        got, err = self._repair({"applicable": ["javascript"], "selected": [], "produced": [],
+                                 "unaudited": {}, "note": "x"})
+        self.assertEqual({"applicable": ["unknown"], "selected": [], "produced": []}, got)
+        self.assertIn("dependency_audit", err)
+        got, _err = self._repair({"applicable": ["javascript"], "selected": [],
+                                  "unaudited": {}})
+        self.assertEqual(["unknown"], got["applicable"])
+
     def test_unknown_applicability_cannot_carry_claimed_scanner_output(self):
         got, _err = self._repair({
             "applicable": ["unknown"],

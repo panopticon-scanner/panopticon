@@ -68,26 +68,44 @@ def _verify_out_file(review_root, group, domain, stage, part=0):
                                  % (group, domain, suffix, part_suffix)))
 
 
-def _cell_verdicts(review_root, group, domain, stage, parts=1):
-    """Every verdict on disk for this cell/stage, merged across its parts."""
-    merged: list[dict[str, Any]] = []
-    for part in range(max(1, parts)):
-        data = runio._load_json(
-            _verify_out_file(review_root, group, domain, stage, part))
-        if isinstance(data, dict) and isinstance(data.get("verdicts"), list):
-            # #1638 P16 fix round 2, N1: the DRIVER's own reader of an
-            # agent-written bundle, and the third of three -- it was the one the
-            # F1 strip missed. `_cell_backup_findings` derives evidence from
-            # what this returns and keeps only `advisor_confirmed`, so a primary
-            # advisor planting `_backup_missing_evidence` on its own verdicts
-            # emptied its cell's backup scope and no adversarial round was
-            # dispatched at all. One sanitizer, every read path
-            # (tests/test_agent_verdict_guard.py).
-            mine = [evidence._agent_verdict(v) for v in data["verdicts"]
-                    if isinstance(v, dict)]
-            if not findings_contract.bundle_version_defect(data, mine):   # #2104
-                merged.extend(mine)
-    return merged
+def _part_verdicts(review_root, group, domain, stage, part):
+    """The verdicts in ONE part's bundle on disk, sanitized; [] when it is absent
+    or not a loadable bundle."""
+    data = runio._load_json(
+        _verify_out_file(review_root, group, domain, stage, part))
+    if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):
+        return []
+    # #1638 P16 fix round 2, N1: the DRIVER's own reader of an
+    # agent-written bundle, and the third of three -- it was the one the
+    # F1 strip missed. `_cell_backup_findings` derives evidence from
+    # what this returns and keeps only `advisor_confirmed`, so a primary
+    # advisor planting `_backup_missing_evidence` on its own verdicts
+    # emptied its cell's backup scope and no adversarial round was
+    # dispatched at all. One sanitizer, every read path
+    # (tests/test_agent_verdict_guard.py).
+    mine = [evidence._agent_verdict(v) for v in data["verdicts"]
+            if isinstance(v, dict)]
+    if findings_contract.bundle_version_defect(data, mine):   # #2104
+        return []
+    return mine
+
+
+def _verdict_ids(verdicts):
+    return [v.get("finding_id") for v in verdicts if isinstance(v, dict)]
+
+
+def _scoped_verdicts(review_root, group, domain, stage, chunks):
+    """#3702: the verdicts on disk for this cell/stage that COUNT: each part's
+    bundle read alone, and only its verdicts for the claims that part was handed.
+    A bundle that also names another part's claim, another cell's, or nothing's,
+    is never done (`_part_done`), but it stays on disk once the budget is spent;
+    what it says of claims it was not handed must decide nothing here either."""
+    kept: list[dict[str, Any]] = []
+    for part, chunk in enumerate(chunks):
+        handed = {str(f["id"]) for f in chunk}
+        kept.extend(v for v in _part_verdicts(review_root, group, domain, stage, part)
+                    if str(v.get("finding_id")) in handed)
+    return kept
 
 
 def _chunk_answered(chunk, verdicts):
@@ -97,21 +115,36 @@ def _chunk_answered(chunk, verdicts):
     to a bundle that is not on disk yet -- the reply a return-persist advisor
     just handed back (spec 4.5). Two copies of one rule drift; this is the one
     copy, and `persist` reads it by module attribute."""
-    got = {str(v.get("finding_id")) for v in verdicts
-           if isinstance(v, dict) and v.get("finding_id") is not None}
-    return {str(f["id"]) for f in chunk}.issubset(got)
+    return not evidence.claims_unanswered([f["id"] for f in chunk], _verdict_ids(verdicts))
+
+
+def _chunk_exceeded(chunk, verdicts):
+    """#3702: the ids `verdicts` names that this slice did not hand out, by the
+    shared rule (`evidence.claims_out_of_scope`). `persist` reads it by module
+    attribute, as it reads `_chunk_answered`."""
+    return evidence.claims_out_of_scope([f["id"] for f in chunk], _verdict_ids(verdicts))
 
 
 def _part_done(review_root, manifest, group, domain, stage, part, chunk):
-    """One chunk's advisor answered it: bundle labeled, and (primary) every
-    claim in THIS slice adjudicated somewhere in the cell's bundles."""
+    """One chunk's advisor answered it: bundle labeled, every claim in THIS slice
+    adjudicated in THIS part's bundle, and nothing else named there.
+
+    #3695: for a backup part too. It used to be done once its bundle was labeled,
+    so a backup that answered 1 of its 20 scoped claims was never asked again and
+    the other 19 silently went without a second opinion. `chunk` is a slice of the
+    backup round's OWN scope there (`_cell_backup_findings`), never the review
+    cell.
+
+    #3702: a bundle that names a claim its part was not handed is not an answer:
+    it is asked again, as a reply that does the same is refused (`persist`). And
+    a claim is answered by its own part alone. Parts 0..part used to be merged
+    here, so an earlier part could answer a later part's claim, which is one
+    advisor speaking of a claim another was handed."""
     if not _verify_bundle_labeled(review_root, manifest, group, domain,
                                   stage, part):
         return False
-    if stage != "primary":
-        return True
-    return _chunk_answered(
-        chunk, _cell_verdicts(review_root, group, domain, stage, part + 1))
+    mine = _part_verdicts(review_root, group, domain, stage, part)
+    return not _chunk_exceeded(chunk, mine) and _chunk_answered(chunk, mine)
 
 
 def _cell_parts_complete(review_root, manifest, group, domain, stage, cell):
@@ -135,12 +168,39 @@ def _verify_key(group, domain, stage):
     contract a resumed run reads back, so it is spelled here, once."""
     return "%s/%s/%s" % (group, domain, stage)
 
-def _backup_parts_key(group, domain):
-    """#3679 review: how many parts a backup cell was dispatched in, recorded beside
+def _parts_key(group, domain, stage):
+    """#3679 review: how many parts a cell/stage was dispatched in, recorded beside
     its attempt count. A chunked cell's parts are answered separately, and synth
-    cannot infer the part count from what came back, so a cell reads as answered
-    only when EVERY recorded part did (`synth/backups.py`)."""
-    return _verify_key(group, domain, "backup") + "/parts"
+    cannot infer the part count from what came back, so a backup cell reads as
+    answered only when EVERY recorded part did (`synth/backups.py`)."""
+    return _verify_key(group, domain, stage) + "/parts"
+
+def _claims_key(group, domain, stage):
+    """#3695: the claim ids a cell/stage was handed -- its whole scope, in order --
+    recorded beside its attempt and part counts. Synth cannot derive the scope
+    (the backup's is `_cell_backup_findings`, and synth may not import phases), so
+    it reads this to count the scoped claims that got no backup verdict."""
+    return _verify_key(group, domain, stage) + "/claims"
+
+def _part_size_key(group, domain, stage):
+    """#3702: how many claims one part of this cell/stage holds, recorded beside
+    its claims and part count, so a reader can tell which part was handed which
+    claim without knowing `_CELL_CLAIMS_CAP`."""
+    return _verify_key(group, domain, stage) + "/part_size"
+
+def _scope_record(group, domain, stage, scope):
+    """#3702: what one cell/stage hands its advisors, for `_charge_verify_dispatch`
+    to record in the same write as the charge: the claim ids of its WHOLE scope in
+    order, the number of parts, and the part size. Part N was handed
+    `claims[N * part_size:(N + 1) * part_size]`.
+
+    For the primary round as for the backup (#3679, #3695). Synthesis counts a
+    bundle verdict only when this record shows that part was handed that claim
+    (`synth/verdict_scope.py`): verdicts are matched to findings by id across the
+    run, so without it any advisor could speak for any claim."""
+    return {_parts_key(group, domain, stage): len(_cell_chunks(scope)),
+            _claims_key(group, domain, stage): [str(f["id"]) for f in scope],
+            _part_size_key(group, domain, stage): _CELL_CLAIMS_CAP}
 
 def _verify_budget(review_root, group, domain, stage):
     """This budget's (path, key) for the one owner of the arithmetic."""
@@ -168,8 +228,9 @@ def _charge_verify_dispatch(review_root, entries, record=None):
     AT DISPATCH -- review's rule (`review._record_attempts`). Charging only when a
     labeled bundle came back short left every other return uncapped: nothing
     written, a garbage bundle, one nested past the depth bound, a refused reply.
-    `record` (#3679: backup part counts) lands in the same write, so a charged
-    backup cell always carries its part count."""
+    `record` (`_scope_record`: the claim ids each cell/stage was handed, in how many
+    parts of what size) lands in the same write, so a charged cell always carries
+    its scope."""
     budget.bump_many(runio._pano(review_root, _VERIFY_ATTEMPTS_FILE),
                      _dispatch_keys(entries), _VERIFY_ATTEMPTS_WHAT, record=record)
 
@@ -360,6 +421,7 @@ def verify_execute(review_root, manifest):
     # BACKUP and TOOL rounds below stay sequential -- they depend on the primary
     # verdicts being complete first (verify_done gates them on all-primary-done).
     all_entries: list[dict[str, Any]] = []
+    record: dict[str, Any] = {}
     ngroups = 0
     for group, files in coverage._discovered_groups(review_root):
         pending: list[tuple[str, list[dict[str, Any]], int]] = []
@@ -371,11 +433,14 @@ def verify_execute(review_root, manifest):
                 continue
             # #1521: an oversized cell is chunked; re-dispatch only the parts
             # that are still unanswered.
-            pending.extend(
-                (domain, chunk, part)
-                for part, chunk in enumerate(_cell_chunks(cell))
-                if not _part_done(review_root, manifest, group, domain,
-                                  "primary", part, chunk))
+            cell_pending = [(domain, chunk, part)
+                            for part, chunk in enumerate(_cell_chunks(cell))
+                            if not _part_done(review_root, manifest, group, domain,
+                                              "primary", part, chunk)]
+            if cell_pending:
+                # #3702: the WHOLE cell's scope, not just the parts re-sent now.
+                record.update(_scope_record(group, domain, "primary", cell))
+            pending.extend(cell_pending)
         if pending:
             ngroups += 1
             all_entries.extend(
@@ -384,7 +449,7 @@ def verify_execute(review_root, manifest):
                               guide_path=guide_path)
                 for d, c, part in pending)
     if all_entries:
-        _charge_verify_dispatch(review_root, all_entries)
+        _charge_verify_dispatch(review_root, all_entries, record=record)
         req, sha = requests.write_dispatch_request_bound(
             review_root, manifest["run_id"], "verify", None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group=None,
@@ -424,8 +489,10 @@ def _cell_backup_findings(review_root, manifest, group, domain):
     # #1521: merged across the primary round's parts -- a chunked cell keeps its
     # later parts' verdicts in sibling files, and reading only part 0 would
     # silently narrow the backup's scope to the first slice.
-    verdicts = _cell_verdicts(review_root, group, domain, "primary",
-                              parts=len(_cell_chunks(cell)))
+    # #3702: and each part's verdicts only for the claims that part was handed,
+    # which is what synthesis counts too.
+    verdicts = _scoped_verdicts(review_root, group, domain, "primary",
+                                _cell_chunks(cell))
     if not verdicts:
         return []
     # #1638 P16 fix round 3, D1: the SHARED duplicate rule, not a dict
@@ -528,10 +595,10 @@ def _verify_backup_execute(review_root, manifest, host, bundle, guide_path=None)
     # independent -- streaming one group per checkpoint just serialized 19 round
     # trips against a 20-wide host (run-7).
     all_entries, ngroups = [], 0
-    parts: dict[str, int] = {}
+    record: dict[str, Any] = {}
     for group, files in coverage._discovered_groups(review_root):
         pending: list[tuple[str, list[dict[str, Any]], int]] = []
-        group_parts: dict[str, int] = {}
+        group_record: dict[str, Any] = {}
         for domain in coverage._effective_domains(review_root, group):
             scope = _cell_backup_findings(review_root, manifest, group, domain)
             if not scope:
@@ -545,7 +612,8 @@ def _verify_backup_execute(review_root, manifest, host, bundle, guide_path=None)
                                               "backup", part, chunk)]
             if cell_pending:
                 # #3679: the WHOLE cell's part count, not just the parts re-sent now.
-                group_parts[_backup_parts_key(group, domain)] = len(chunks)
+                # #3695: and its whole scope, for the same reason.
+                group_record.update(_scope_record(group, domain, "backup", scope))
             pending.extend(cell_pending)
         if pending and not files:
             # Fix round 4, N2: `grant()` keeps the grant non-empty by falling
@@ -560,7 +628,7 @@ def _verify_backup_execute(review_root, manifest, host, bundle, guide_path=None)
             continue
         if pending:
             ngroups += 1
-            parts.update(group_parts)
+            record.update(group_record)
             # #1029/#1638 P16: the backup reads its scoped claims' BOUNDED
             # EVIDENCE CLOSURE -- their files, the producers those claims name,
             # and a one-hop import neighbourhood -- not the whole group, and the
@@ -574,7 +642,7 @@ def _verify_backup_execute(review_root, manifest, host, bundle, guide_path=None)
                                   part, grant=grant, ambiguous=ambiguous,
                                   guide_path=guide_path))
     if all_entries:
-        _charge_verify_dispatch(review_root, all_entries, record=parts)
+        _charge_verify_dispatch(review_root, all_entries, record=record)
         req, sha = requests.write_dispatch_request_bound(
             review_root, manifest["run_id"], "verify", None, all_entries)
         return engine.PhaseResult(kind="checkpoint", checkpoint="verify", group=None,

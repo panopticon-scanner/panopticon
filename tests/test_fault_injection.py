@@ -33,7 +33,9 @@ import pytest
 
 from scripts import evidence
 import scripts.loop_progress as loop_progress
+import scripts.phases.review as review
 import scripts.phases.runio as runio
+import scripts.phases.verify as verify
 import scripts.run_manifest as run_manifest
 import scripts.runners.outage as outage
 from tests import fault_harness as fh
@@ -240,6 +242,8 @@ CERTIFIED, LETTER = "3.certified", "3.letter"
 JSON_SAYS, JSON_COUNTS = "5.json.says", "5.json.counts"
 TERMINAL_SAYS, TERMINAL_NAMES = "5.terminal.says", "5.terminal.names"
 HTML_SAYS, HTML_NAMES = "5.html.says", "5.html.names"
+# #3677: beside naming the kind of work, the HTML names each review cell that went unanswered.
+HTML_CELLS = "5.html.cells"
 
 def no_silent_loss(control, outcome):
     """1. Every tool finding ingested, and every agent claim a cell persisted, is in the
@@ -406,7 +410,16 @@ def shortfall_is_disclosed(control, outcome):
             elif _unnamed(text, [phase]):
                 wrong.append((names, phase, "%s does not name the undone %s work beside NOT "
                               "CERTIFIED (it says %r)" % (where, phase, text[:120])))
+    unnamed = [cell for cell in _cells(outcome.unanswered_in(fh.REVIEW)) if cell not in page]
+    if unnamed and "NOT CERTIFIED" in page:
+        wrong.append((HTML_CELLS, fh.REVIEW, "HTML does not name the unanswered review cell(s) "
+                      "%s beside NOT CERTIFIED (it says %r)" % (", ".join(unnamed), page[:160])))
     return wrong
+
+
+def _cells(entries):
+    """Review entries as the cells a reader is told about: `review-app-COD` -> `app/COD`."""
+    return sorted("/".join(entry.split("-")[1:]) for entry in entries)
 
 
 INVARIANTS = (no_silent_loss, counts_reconcile, no_false_certification, gate_fails_closed,
@@ -441,12 +454,6 @@ def expected_status(plan):
 
 # --- what is known to fail today ---------------------------------------------------------
 
-def _some_cells_answered(outcome):
-    """With every cell gone the report says "no review cell answered" on every surface."""
-    return len(outcome.unanswered_in(fh.REVIEW)) < sum(
-        1 for e in set(outcome.launched) if fh.phase_of(e) == fh.REVIEW)
-
-
 @dataclasses.dataclass(frozen=True)
 class Gap:
     """One check known not to hold for one kind of undone work, and the issue that owns it.
@@ -457,12 +464,11 @@ class Gap:
     when: object = None       # outcome -> bool: the runs this gap shows in; None means all
 
 
-#: #3677: the HTML report does not name an exhausted review cell; the terminal does.
 KNOWN_GAPS = (
     # #3641 and #3667's rows are closed by #3667's shared `grading.grade_shortfalls` rule:
     # unanswered verify and tool advisors hold the letter back and are named on every surface.
     # #3676's rows are closed by `meta.coverage.backups` and its `grade_shortfalls` reasons.
-    Gap("#3677", fh.REVIEW, HTML_NAMES, _some_cells_answered),
+    # #3677's row is closed: the HTML report names each review cell that returned no answer.
 )
 
 
@@ -501,7 +507,7 @@ def test_the_known_gap_table_can_neither_hide_a_problem_nor_outlive_its_fix():
     assert triage([], []) == ([], [])
     # Every row names a real check and a phase that can leave work undone.
     checks = {LOSS, COUNTS, GATE, CERTIFIED, LETTER, JSON_SAYS, JSON_COUNTS, TERMINAL_SAYS,
-              TERMINAL_NAMES, HTML_SAYS, HTML_NAMES}
+              TERMINAL_NAMES, HTML_SAYS, HTML_NAMES, HTML_CELLS}
     for row in KNOWN_GAPS:
         assert row.check in checks and row.phase in fh.PHASES and row.issue.startswith("#")
     assert len({(row.phase, row.check, row.when) for row in KNOWN_GAPS}) == len(KNOWN_GAPS)
@@ -515,6 +521,9 @@ def test_the_control_certifies_and_shows_every_state(lab):
     assert {fh.phase_of(e) for e in control.launched} == set(fh.PHASES)
     summary, coverage = control.report["summary"], control.report["meta"]["coverage"]
     assert summary["coverage_certified"] is True and summary["coverage_note"] is None
+    # #3708: the target is configured by `panopticon.yml`, which a full scan does not hand to
+    # review. `meta` names it; a clean run's coverage note stays empty.
+    assert coverage["scanner_config_excluded"] == ["panopticon.yml"]
     assert summary["overall_grade"] is not None and summary["provisional_grade"] is None
     # The default gate: no `--fail-on` was passed and none is committed (#3673).
     assert summary["gate_severities"]["fail_on"] == "CRITICAL" and summary["gate_disabled"] is None
@@ -605,6 +614,563 @@ def test_a_host_failure_is_never_silent(lab, plan, request):
         request.applymarker(pytest.mark.xfail(
             strict=True, reason=", ".join(sorted({gap.issue for gap in expected}))))
         pytest.fail("known: " + "; ".join(sentence for _check, _phase, sentence in found))
+
+
+# --- a backup that answers part of what it was handed (#3695) -----------------------------
+
+@pytest.fixture(scope="module")
+def partial(lab):
+    """(whole, short): the three-claim target with its backup answering every claim, and
+    with it answering one of the three on every attempt."""
+    return (fh.drive(lab, replies=fh.PartialBackup(whole=True)),
+            fh.drive(lab, replies=fh.PartialBackup()))
+
+
+def _backup_charges(outcome):
+    with open(runio._pano(outcome.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        return json.load(fh_)[verify._verify_key(*fh.PartialBackup.CELL, "backup")]
+
+
+def _cell_claims(outcome):
+    return [f for f in outcome.report["findings"]
+            if (f.get("title") or "").startswith("%s/%s defect" % fh.PartialBackup.CELL)]
+
+
+def test_a_backup_that_answers_one_of_its_three_claims_holds_every_invariant(lab, partial):
+    """The partial-backup row. Nothing failed to launch, so no plan is involved: the entry
+    answered, and left two of its three claims without a verdict. That is undone backup
+    work, and the five invariants are asked of it as of any other."""
+    whole, short = partial
+    assert (whole.status, short.status) == ("complete", "complete")
+    assert whole.unanswered == [] and short.unanswered == [fh.PartialBackup.SHORT]
+    assert problems(whole, whole) == []
+    assert problems(whole, short) == []
+    # Asked again, on the budget a short primary advisor has: every dispatch is charged
+    # until the cell has spent its three. #3698: and every charge is a launch. The third
+    # used to buy none, because the short bundle on disk read as done once the budget
+    # was spent.
+    assert _backup_charges(whole) == 1 == whole.launched.count(fh.PartialBackup.SHORT)
+    assert _backup_charges(short) == verify._MAX_VERIFY_ATTEMPTS == 3
+    assert short.launched.count(fh.PartialBackup.SHORT) == 3
+
+
+def test_the_two_claims_a_partial_backup_left_are_counted_and_named(partial):
+    whole, short = partial
+    before, after = (o.report["meta"]["coverage"]["backups"] for o in (whole, short))
+    assert before["summoned"] == before["answered"] and before["claims_unanswered"] == 0
+    assert before["claims_scoped"] >= fh.PartialBackup.CLAIMS
+    assert after == dict(before, answered=before["answered"] - 1, unanswered=1,
+                         claims_unanswered=2)
+    reasons = ["1 backup advisor unanswered", "2 findings unanswered by their backup advisors"]
+    assert whole.report["summary"]["grade_shortfalls"] == []
+    assert short.report["summary"]["grade_shortfalls"] == reasons
+    # The same three findings either way; the two the backup skipped carry no backup verdict.
+    assert [f["title"] for f in _cell_claims(short)] == [f["title"] for f in _cell_claims(whole)]
+    assert [f.get("backup_confirmed") for f in _cell_claims(whole)] == [True, True, True]
+    assert sorted(str(f.get("backup_confirmed")) for f in _cell_claims(short)) == [
+        "None", "None", "True"]
+    # Each surface says how many findings, beside how many advisors.
+    summary = short.report["summary"]
+    assert (summary["overall_grade"], summary["coverage_certified"]) == (None, False)
+    assert summary["provisional_grade"] == whole.report["summary"]["overall_grade"]
+    terminal, page = _not_certified_text(short)
+    for surface in (summary["coverage_note"], terminal, page):
+        for reason in reasons:
+            assert reason in surface, (reason, surface)
+
+
+# --- every charged dispatch is a launch (#3698) ---------------------------------------------
+
+def _charges(outcome):
+    """{`<group>/<domain>/<stage>`: dispatches charged} off the run's verify record."""
+    with open(runio._pano(outcome.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        return {key: count for key, count in json.load(fh_).items()
+                if key.endswith(("/primary", "/backup"))}
+
+
+def _launches(outcome):
+    """The same keys, counted off what the runner was asked to launch."""
+    counts: dict[str, int] = {}
+    for entry in outcome.launched:
+        if fh.phase_of(entry) in (fh.ADVISOR, fh.BACKUP):
+            _verify, group, domain, stage = entry.split("-")[:4]
+            counts["%s/%s/%s" % (group, domain, stage)] = counts.get(
+                "%s/%s/%s" % (group, domain, stage), 0) + 1
+    return counts
+
+
+def test_a_short_primary_advisor_is_launched_for_each_dispatch_it_is_charged(lab, partial):
+    """The short-primary row: the advisor for one cell answers one of its three claims,
+    every time. Charged three dispatches and launched three times, and the run ends."""
+    short = "verify-%s-%s-primary" % fh.PartialBackup.CELL
+    outcome = fh.drive(lab, replies=fh.PartialBackup(short=short))
+    assert outcome.status == "complete" and len(outcome.statuses) == 1
+    assert outcome.unanswered == [short]
+    assert problems(partial[0], outcome) == []
+    key = verify._verify_key(*fh.PartialBackup.CELL, "primary")
+    assert _charges(outcome)[key] == _launches(outcome)[key] == verify._MAX_VERIFY_ATTEMPTS == 3
+    assert _charges(outcome) == _launches(outcome)
+    # The two claims with no verdict are the verify advisor's shortfall, named as such.
+    assert outcome.report["summary"]["grade_shortfalls"] == [
+        "2 findings unanswered by their verify advisors"]
+    assert outcome.report["summary"]["coverage_certified"] is False
+
+
+def test_an_unloadable_bundle_on_disk_is_launched_for_each_dispatch_it_is_charged(lab):
+    """The unloadable row: every primary advisor is cut off and leaves the cut-off file,
+    every time. With a file on disk the third dispatch launched nothing; with none (an
+    exit) it always launched. Both are three and three now."""
+    for mode in (FAULT_MALFORMED, FAULT_EXIT):
+        outcome = lab.outcome(fh.Plan(mode, (fh.ADVISOR,), 100))
+        assert outcome.status == "complete", mode
+        charged = {key: count for key, count in _charges(outcome).items()
+                   if key.endswith("/primary")}
+        assert charged and set(charged.values()) == {verify._MAX_VERIFY_ATTEMPTS}, mode
+        assert {key: _launches(outcome)[key] for key in charged} == charged, mode
+
+
+def test_in_a_run_with_nothing_wrong_every_charge_is_one_launch(lab, partial):
+    for outcome in (lab.control, partial[0]):
+        assert _charges(outcome) == _launches(outcome)
+        assert set(_charges(outcome).values()) == {1}
+
+
+# --- a reviewer that owes the targeted_review echo (#3709) ---------------------------------
+
+#: Semgrep reports it could not parse this file, so `app/SEC` is handed it to read (#3614).
+UNPARSED = ("src/app.py",)
+OWES_ECHO = "review-app-SEC"
+
+
+def _review_charges(outcome):
+    with open(runio._pano(outcome.root, review._ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        return json.load(fh_)
+
+
+def _review_launches(outcome):
+    counts: dict[str, int] = {}
+    for entry in outcome.launched:
+        if fh.phase_of(entry) == fh.REVIEW:
+            _review, group, domain = entry.split("-")
+            counts["%s/%s" % (group, domain)] = counts.get("%s/%s" % (group, domain), 0) + 1
+    return counts
+
+
+@pytest.fixture(scope="module")
+def echoing(lab):
+    """The control for these rows: the same target and the same unparsed file, with a
+    reviewer that echoes what it was handed."""
+    return fh.drive(lab, unparsed=UNPARSED)
+
+
+def test_a_reviewer_that_echoes_its_targets_is_dispatched_once_and_certifies(lab, echoing):
+    assert echoing.status == "complete" and len(echoing.statuses) == 1
+    assert _review_charges(echoing) == _review_launches(echoing)
+    assert set(_review_charges(echoing).values()) == {1}
+    targeted = echoing.report["meta"]["coverage"]["targeted_review"]
+    assert [(row["file"], row["covered_by"]) for row in targeted["files"]] == [
+        ("src/app.py", [["app", "SEC"]])]
+    assert echoing.report["summary"]["coverage_certified"] is True
+    # Beside the note about the file, the run is the plain control's.
+    plain, with_file = _comparable(lab.control), _comparable(echoing)
+    assert with_file["findings"] == plain["findings"] and with_file["cells"] == plain["cells"]
+
+
+@pytest.mark.parametrize("echo", [None, ["lib/util.py"], []], ids=["none", "wrong", "empty"])
+def test_a_reviewer_that_never_echoes_is_launched_for_each_dispatch_it_is_charged(echoing, lab,
+                                                                                 echo):
+    """The cell was charged three dispatches and launched once: its file had findings and
+    no echo, which the phase called not done and the loop called done. The run then said
+    the cell had spent its retry budget, on one launch."""
+    outcome = fh.drive(lab, replies=fh.NoEcho(echo), unparsed=UNPARSED)
+    assert outcome.status == "complete" and len(outcome.statuses) == 1      # it terminates
+    charged, launched = _review_charges(outcome), _review_launches(outcome)
+    assert charged["app/SEC"] == launched["app/SEC"] == review.MAX_CELL_ATTEMPTS == 3
+    assert charged == launched
+    assert {key: count for key, count in charged.items() if key != "app/SEC"} == {
+        key: 1 for key in charged if key != "app/SEC"}
+    # "Spent its retry budget" is true now: three dispatches, three launches.
+    final = outcome.statuses[-1]
+    assert final["cells_exhausted"] == 1 and "(app/SEC)" in final["message"]
+    assert "spent their retry budget" in final["message"]
+    # ...and the report says what was not read.
+    summary = outcome.report["summary"]
+    assert summary["coverage_certified"] is False and summary["overall_grade"] is None
+    targeted = outcome.report["meta"]["coverage"]["targeted_review"]
+    assert [(row["file"], row["covered_by"]) for row in targeted["files"]] == [("src/app.py", [])]
+    assert "src/app.py" in summary["coverage_note"]
+    assert echoing.launched.count(OWES_ECHO) == 1 and "cells_exhausted" not in echoing.statuses[-1]
+
+
+# --- an advisor that speaks of claims it was not handed (#3702) ---------------------------
+
+_COD, _LIB, _SEC = ("app", "COD"), ("lib", "COD"), ("app", "SEC")
+#: name -> (the scene, what one advisor volunteers in it, how many verdicts that is). Each row
+#: is run twice: with the advisor silent about the claims it was not handed, and with it
+#: speaking. On main every one of these changed a claim's disposition, and the first and the
+#: third certified a run with claims no advisor of theirs had answered.
+HOSTILE_ROWS = {
+    # The issue's case. The primary answers one claim of three, so the backup is handed that
+    # one. The backup rejects the two no primary answered: they were discarded.
+    "backup-rejects-what-no-primary-answered": (
+        dict(triple=_COD, answers={"verify-app-COD-primary": 1}),
+        dict(speaker="verify-app-COD-backup", about=_COD, says="REJECTED"), 2),
+    # The primary rejected a claim, so the backup was not handed it. The backup confirms it:
+    # it came back out of the discarded claims, confirmed twice.
+    "backup-confirms-what-its-primary-rejected": (
+        dict(), dict(speaker="verify-app-SEC-backup", about=_SEC, says="CONFIRMED",
+                     only=fh.REFUTED_CLAIM), 1),
+    # Another cell's primary never answers. This cell's primary rejects that cell's claim.
+    "primary-rejects-another-cells-unanswered-claim": (
+        dict(answers={"verify-lib-COD-primary": 0}),
+        dict(speaker="verify-app-COD-primary", about=_LIB, says="REJECTED"), 1),
+    # Every advisor answers what it was handed. One primary also rejects another cell's
+    # claim, which that cell's own primary confirmed; HIGH, so no backup stands over it. The
+    # first verdict file by name used to win: `verdicts-app-COD` before `verdicts-lib-COD`.
+    "primary-rejects-what-another-cells-primary-confirmed": (
+        dict(severity={_LIB: "HIGH"}),
+        dict(speaker="verify-app-COD-primary", about=_LIB, says="REJECTED"), 1),
+    # ...and the other way: it confirms a claim another cell's own primary rejected.
+    "primary-confirms-what-another-cells-primary-rejected": (
+        dict(), dict(speaker="verify-app-COD-primary", about=_SEC, says="CONFIRMED",
+                     only=fh.REFUTED_CLAIM), 1),
+}
+#: The rows whose silent run certifies: the advisor answers all it was handed and adds to it.
+CERTIFIED_WHEN_SILENT = {"backup-confirms-what-its-primary-rejected",
+                         "primary-rejects-what-another-cells-primary-confirmed",
+                         "primary-confirms-what-another-cells-primary-rejected"}
+
+
+@pytest.fixture(scope="module")
+def hostile(lab):
+    """{row: (silent, speaking)}, each driven once."""
+    return {name: (fh.drive(lab, replies=fh.OutOfScope(**scene)),
+                   fh.drive(lab, replies=fh.OutOfScope(**scene, **voice)))
+            for name, (scene, voice, _count) in HOSTILE_ROWS.items()}
+
+
+def _dispositions(outcome):
+    """Where every claim ended up and on whose word: (title, id, in the report or discarded,
+    evidence status, severity, backup_confirmed, confirmation status)."""
+    report = outcome.report
+    return sorted(
+        (str(f.get("title")), f["id"], where, _status(f), f["severity"],
+         str(f.get("backup_confirmed")), str((f.get("provenance") or {}).get("confirmation_status")))
+        for where, claims in (("report", report["findings"]),
+                              ("discarded", report["discarded_claims"]))
+        for f in claims)
+
+
+def _out_of_scope_reason(count):
+    return "%d advisor verdict%s outside %s handed scope" % (
+        count, "" if count == 1 else "s", "its" if count == 1 else "their")
+
+
+@pytest.mark.parametrize("row", sorted(HOSTILE_ROWS))
+def test_an_advisor_cannot_speak_for_a_claim_it_was_not_handed(hostile, row):
+    _scene, voice, count = HOSTILE_ROWS[row]
+    silent, speaking = hostile[row]
+    assert (silent.status, speaking.status) == ("complete", "complete")
+    # The five invariants hold for the silent run, and 1, 2 and 4 for the speaking one as
+    # they stand. 3 and 5 read "no launch failed" as "certifies as the control does", and
+    # this row is the case where that is not so: the pins below ask what they would.
+    assert problems(silent, silent) == []
+    for invariant in (no_silent_loss, counts_reconcile, gate_fails_closed):
+        assert invariant(silent, speaking) == []
+    before, after = silent.report["summary"], speaking.report["summary"]
+    # 1. Every claim is where the silent run left it, on the same advisor's word.
+    assert _dispositions(speaking) == _dispositions(silent)
+    assert after["gate"] == before["gate"]
+    # 2. The run is not certified, whatever the silent run was: the verdicts nobody asked
+    #    for are a shortfall of their own, and the only one added.
+    assert before["coverage_certified"] is (row in CERTIFIED_WHEN_SILENT)
+    assert after["grade_shortfalls"] == before["grade_shortfalls"] + [_out_of_scope_reason(count)]
+    assert (after["coverage_certified"], after["overall_grade"]) == (False, None)
+    assert after["provisional_grade"] == (before["overall_grade"] or before["provisional_grade"])
+    # 3. They are counted, and named on every surface beside NOT CERTIFIED.
+    counted = [o.report["meta"]["coverage"]["verdicts"] for o in (silent, speaking)]
+    assert [(v["out_of_scope"], v["scope_not_recorded"]) for v in counted] == [(0, 0), (count, 0)]
+    terminal, page = _not_certified_text(speaking)
+    for surface in (after["coverage_note"], terminal, page):
+        assert _out_of_scope_reason(count) in surface, surface
+    # 4. The advisor was asked again, on the budget of any advisor that did not answer.
+    group, domain, stage = voice["speaker"].split("-")[1:]
+    with open(runio._pano(speaking.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        charged = json.load(fh_)[verify._verify_key(group, domain, stage)]
+    assert charged == verify._MAX_VERIFY_ATTEMPTS == speaking.launched.count(voice["speaker"])
+    assert silent.launched.count(voice["speaker"]) == 1
+
+
+def test_the_hostile_rows_cover_both_stages_both_verdicts_and_a_certified_run(hostile):
+    """The table itself: a backup and a primary, a REJECTED and a CONFIRMED, and for each
+    stage a row whose silent run certifies, so the count alone is what holds the letter."""
+    voices = {name: voice for name, (_scene, voice, _count) in HOSTILE_ROWS.items()}
+    stages = {name: fh.phase_of(voice["speaker"]) for name, voice in voices.items()}
+    assert set(stages.values()) == {fh.ADVISOR, fh.BACKUP}
+    assert {(stages[name], voices[name]["says"]) for name in voices} == {
+        (stage, said) for stage in (fh.ADVISOR, fh.BACKUP) for said in ("REJECTED", "CONFIRMED")}
+    assert {stages[name] for name in CERTIFIED_WHEN_SILENT} == {fh.ADVISOR, fh.BACKUP}
+    for name in CERTIFIED_WHEN_SILENT:
+        assert hostile[name][0].report["summary"]["grade_shortfalls"] == []
+
+
+def test_the_fake_backup_answers_what_it_was_handed_and_no_more(lab):
+    """The shared runner's backup used to give a verdict on its whole review cell: on the
+    claim the primary rejected too, which no backup is shown. It hid every row above."""
+    control = lab.control
+    with open(runio._pano(control.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        record = json.load(fh_)
+    with open(runio._pano(control.root, "verdicts", "verdicts-app-SEC-backup.json"),
+              encoding="utf-8") as fh_:
+        said = [v["finding_id"] for v in json.load(fh_)["verdicts"]]
+    refuted = [f["id"] for f in control.report["discarded_claims"]
+               if f.get("title") == fh.REFUTED_CLAIM]
+    assert len(refuted) == 1 and refuted[0] not in said
+    assert said == record[verify._verify_key("app", "SEC", "backup") + "/claims"]
+    assert refuted[0] in record[verify._verify_key("app", "SEC", "primary") + "/claims"]
+    assert control.report["meta"]["coverage"]["verdicts"]["out_of_scope"] == 0
+
+
+# --- a reviewer that copies another cell's claim (#3707) -----------------------------------
+
+#: name -> (what the copying cell's advisors say of the copy, what the owner's say of the
+#: claim, the claim's severity). A claim id holds no group, so the copy has the owner's id
+#: and the copying cell's advisors are handed it as their own. On main the first two
+#: discarded a claim the owner's advisors had confirmed, with no shortfall: through the
+#: copier's primary (whose verdict file sorts first; HIGH, so no backup stands over it) and
+#: through the copier's backup (a backup won over every primary).
+COPIED_ROWS = {
+    "primary-rejects-its-copy-of-a-confirmed-claim": ({"primary": "REJECTED"}, "CONFIRMED", "HIGH"),
+    "backup-rejects-its-copy-of-a-confirmed-claim": ({"backup": "REJECTED"}, "CONFIRMED",
+                                                     "CRITICAL"),
+    "primary-confirms-its-copy-of-a-rejected-claim": ({"primary": "CONFIRMED"}, "REJECTED", "HIGH"),
+    "backup-confirms-its-copy-of-a-rejected-claim": ({"backup": "CONFIRMED"}, "REJECTED",
+                                                     "CRITICAL"),
+    "both-cells-confirm": ({}, "CONFIRMED", "CRITICAL"),
+    "both-cells-reject": ({"primary": "REJECTED"}, "REJECTED", "CRITICAL"),
+}
+
+
+@pytest.fixture(scope="module")
+def copied(lab):
+    """({(owner's verdict, severity): the run with no copy}, {row: the run with one}), each
+    driven once."""
+    silent = {(said, severity): fh.drive(lab, replies=fh.CopiedClaim(
+                  copy=False, owner_says=said, severity=severity))
+              for said in ("CONFIRMED", "REJECTED") for severity in ("CRITICAL", "HIGH")}
+    return silent, {name: fh.drive(lab, replies=fh.CopiedClaim(says=says, owner_says=owner,
+                                                               severity=severity))
+                    for name, (says, owner, severity) in COPIED_ROWS.items()}
+
+
+def _the_claim(outcome):
+    """Where the copied claim ended up: (in the report or discarded, status, severity)."""
+    report = outcome.report
+    return [(where, _status(f), f["severity"])
+            for where, claims in (("report", report["findings"]),
+                                  ("discarded", report["discarded_claims"]))
+            for f in claims if f.get("title") == fh.CopiedClaim.CLAIM]
+
+
+def _verdict_of(outcome):
+    summary = outcome.report["summary"]
+    return {key: summary[key] for key in ("gate", "coverage_certified", "overall_grade",
+                                          "provisional_grade", "grade_shortfalls")}
+
+
+@pytest.mark.parametrize("row", sorted(COPIED_ROWS))
+def test_a_copied_claim_is_decided_by_every_cell_that_holds_it(copied, row):
+    says, owner, severity = COPIED_ROWS[row]
+    silent, speaking = copied[0][owner, severity], copied[1][row]
+    assert (silent.status, speaking.status) == ("complete", "complete")
+    assert problems(silent, silent) == []
+    counted = [o.report["meta"]["coverage"]["verdicts"] for o in (silent, speaking)]
+    assert [v["ids_in_several_cells"] for v in counted] == [0, 1]
+    assert [v["out_of_scope"] for v in counted] == [0, 0]       # every verdict was in scope
+    copier_says = list(says.values()) or ["CONFIRMED"]
+    if owner == "CONFIRMED" or copier_says == ["REJECTED"]:
+        # The copy changes nothing: the claim is where the run with no copy left it, with
+        # the same gate, certification and letter. That is the owner's confirmation
+        # standing against the copier's rejection, and two cells agreeing.
+        assert problems(silent, speaking) == []
+        assert _the_claim(speaking) == _the_claim(silent)
+        assert _dispositions(speaking) == _dispositions(silent)
+        assert _verdict_of(speaking) == _verdict_of(silent)
+    else:
+        # The copier confirms what the owner rejected: no better than the run with no
+        # copy. The claim is reported, where that run discarded it, so it is one more
+        # gate-eligible finding (which invariant 4 would call a fault's doing).
+        for invariant in (no_silent_loss, counts_reconcile):
+            assert invariant(silent, speaking) == []
+        assert _the_claim(silent) == [("discarded", "rejected", severity)]
+        assert _the_claim(speaking) == [("report", "advisor_confirmed", severity)]
+        assert speaking.report["summary"]["gate"] == "FAIL"
+
+
+def _record_of(outcome, cell):
+    """The dispatch record's entries for one review cell."""
+    with open(runio._pano(outcome.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        return sorted(key for key in json.load(fh_) if key.startswith("%s/%s/" % cell))
+
+
+def test_an_instance_in_a_cell_below_the_verify_gate_stays_where_it_would_be_alone(lab):
+    """Ruling 1, revised (the seat's F2). The copying cell rates everything INFO, so it is
+    never dispatched for verification: it was never asked about the claim. The owner's
+    advisor rejects the owner's instance, and that one is discarded. The copier's stays in
+    the report, unverified at INFO, as in a run where only that cell held it; it used to
+    move to the discarded claims on the owner's word. An unverified INFO is no shortfall:
+    the run certifies as it does with no copy."""
+    silent = fh.drive(lab, replies=fh.CopiedClaim(copy=False, owner_says="REJECTED",
+                                                  below_gate=True))
+    held = fh.drive(lab, replies=fh.CopiedClaim(owner_says="REJECTED", below_gate=True))
+    copier = "verify-%s-%s-primary" % fh.CopiedClaim.COPIER
+    assert copier not in silent.launched and copier not in held.launched
+    assert _record_of(held, fh.CopiedClaim.COPIER) == []
+    assert problems(silent, silent) == [] and problems(silent, held) == []
+    assert _the_claim(silent) == [("discarded", "rejected", "CRITICAL")]
+    assert _the_claim(held) == [("report", "unverified", "INFO"),
+                                ("discarded", "rejected", "CRITICAL")]
+    assert _verdict_of(held) == _verdict_of(silent)
+    assert held.report["summary"]["coverage_certified"] is True
+    counted = [o.report["meta"]["coverage"]["verdicts"] for o in (silent, held)]
+    assert [v["ids_in_several_cells"] for v in counted] == [0, 1]
+
+
+def _both_stages(said):
+    return {"primary": said, "backup": said}
+
+
+@pytest.fixture(scope="module")
+def refused_owner(lab):
+    """The run with no copy: the owner's reviewer returns its CRITICAL and a `null`."""
+    return fh.drive(lab, replies=fh.CopiedClaim(copy=False, bad_owner=True))
+
+
+@pytest.mark.parametrize("said", ["REJECTED", "NEEDS_MORE_INFO"])
+def test_an_instance_whose_cell_was_never_asked_is_not_another_cells_to_decide(
+        lab, refused_owner, said):
+    """Ruling 1, revised (the seat's `BadOwner` rows: F1 with REJECTED, N1 with
+    NEEDS_MORE_INFO). The owner's reviewer returns its CRITICAL and a `null` beside it,
+    every time. The driver refuses the file until the review budget is spent, so the
+    owner's cell has no entry in the dispatch record, and synthesis still reads the
+    CRITICAL out of the file. The copier was asked, and says `said` of its copy at both
+    stages. The copy is loaded first and as severe, so dedupe keeps it.
+
+    The run was: the claim discarded (REJECTED), or reported as unsure with the owner's
+    instance merged under it (NEEDS_MORE_INFO), and nothing owed. It is the run with no
+    copy: the owner's instance unverified, one finding unanswered, not certified."""
+    silent = refused_owner
+    copied = fh.drive(lab, replies=fh.CopiedClaim(says=_both_stages(said), bad_owner=True))
+    owner = "review-%s-%s" % fh.CopiedClaim.OWNER
+    for outcome in (silent, copied):
+        assert outcome.launched.count(owner) == review.MAX_CELL_ATTEMPTS
+        assert _record_of(outcome, fh.CopiedClaim.OWNER) == []
+    assert _record_of(copied, fh.CopiedClaim.COPIER)       # ...and the copier was asked
+    assert _the_claim(silent) == [("report", "unverified", "CRITICAL")]
+    copy = (("discarded", "rejected", "CRITICAL") if said == "REJECTED"
+            else ("report", "needs_more_info", "CRITICAL"))
+    assert sorted(_the_claim(copied)) == sorted([("report", "unverified", "CRITICAL"), copy])
+    assert _verdict_of(copied) == _verdict_of(silent)
+    summary = copied.report["summary"]
+    assert summary["coverage_certified"] is False
+    assert "1 finding unanswered by its verify advisor" in summary["grade_shortfalls"]
+    for invariant in (no_silent_loss, counts_reconcile):
+        assert invariant(silent, copied) == []
+
+
+@pytest.fixture(scope="module")
+def silent_owner(lab):
+    """The run with no decoy: the owner's advisors were asked about its CRITICAL and
+    said nothing."""
+    return fh.drive(lab, replies=fh.CopiedClaim(copy=False, owner_says=None))
+
+
+@pytest.mark.parametrize("said", ["REJECTED", "NEEDS_MORE_INFO"])
+def test_a_claim_at_another_cells_line_does_not_take_what_that_cell_is_owed(
+        lab, silent_owner, said):
+    """#3716, and the seat's N2. The copier emits a decoy at the owner's line: its
+    category, another title. Dedupe keeps the decoy, the first loaded, and merges the
+    owner's CRITICAL under it. The copier's advisors say `said` of the decoy. The
+    owner's advisors were asked about the CRITICAL and said nothing.
+
+    It was in neither list (REJECTED), or merged under an unsure claim
+    (NEEDS_MORE_INFO), and nothing was owed for it. It is in the report, unverified
+    and unanswered, as in the run with no decoy."""
+    silent = silent_owner
+    decoyed = fh.drive(lab, replies=fh.CopiedClaim(says=_both_stages(said), owner_says=None,
+                                                   decoy=True))
+    assert _the_claim(decoyed) == _the_claim(silent) == [("report", "unverified", "CRITICAL")]
+    where = "discarded_claims" if said == "REJECTED" else "findings"
+    assert [_status(f) for f in decoyed.report[where]
+            if f["title"] == fh.CopiedClaim.DECOY] == [said.lower()]
+    assert _verdict_of(decoyed) == _verdict_of(silent)
+    summary = decoyed.report["summary"]
+    assert summary["coverage_certified"] is False
+    assert "1 finding unanswered by its verify advisor" in summary["grade_shortfalls"]
+    for invariant in (no_silent_loss, counts_reconcile):
+        assert invariant(silent, decoyed) == []
+
+
+def test_a_confirmation_of_the_copy_does_not_answer_for_the_cell_that_was_refused(
+        lab, refused_owner):
+    """What is shown and what is owed are separate. The copier CONFIRMS its copy, so the
+    claim is reported confirmed. The owner's cell was owed an answer and has none: one
+    finding is still unanswered and the run is still not certified, as with no copy."""
+    confirmed = fh.drive(lab, replies=fh.CopiedClaim(says=_both_stages("CONFIRMED"),
+                                                     bad_owner=True))
+    assert _the_claim(confirmed) == [("report", "advisor_confirmed", "CRITICAL")]
+    summary, silent = confirmed.report["summary"], refused_owner.report["summary"]
+    assert summary["coverage_certified"] is False
+    assert summary["grade_shortfalls"] == silent["grade_shortfalls"]
+    assert "1 finding unanswered by its verify advisor" in summary["grade_shortfalls"]
+
+
+@pytest.mark.parametrize("decoy", [False, True], ids=["a-copy", "a-decoy"])
+def test_a_claim_that_will_be_demoted_does_not_take_the_merge_from_a_confirmed_one(
+        lab, copied, decoy):
+    """#3727, routes A and B. The copier claims CRITICAL and CERTAIN at the owner's
+    confirmed CRITICAL: a copy of it (the same id), or a decoy at its line. Either
+    carries a code whose default is LOW and an empty `severity_override`, and the
+    copier's advisors CONFIRM it. Ranked as claimed it won the merge, took the claim's
+    row, and was then reset to LOW: the owner's CRITICAL was shown at LOW, or was in
+    neither list. The owner's claim is the row, CONFIRMED at CRITICAL, as in the run
+    with no copy."""
+    silent = copied[0]["CONFIRMED", "CRITICAL"]
+    demoted = fh.drive(lab, replies=fh.CopiedClaim(decoy=decoy, demoted=True))
+    assert demoted.status == "complete"
+    assert _the_claim(demoted) == _the_claim(silent) == [
+        ("report", "advisor_confirmed", "CRITICAL")]
+    assert _verdict_of(demoted) == _verdict_of(silent)
+    # The decoy itself is merged under the confirmed claim, as any second claim of one
+    # category at one line is. Invariant 1 asks for every persisted title in a list (the
+    # fixture's own claims never share a line), so it names the decoy and nothing else.
+    lost = [sentence for check, _phase, sentence in problems(silent, demoted) if check == LOSS]
+    assert [check for check, _phase, _sentence in problems(silent, demoted) if check != LOSS] == []
+    assert len(lost) == int(decoy) and all(fh.CopiedClaim.DECOY in sentence for sentence in lost)
+
+
+def test_the_copied_rows_cover_both_stages_and_both_directions():
+    kinds = {(stage, said, owner) for says, owner, _severity in COPIED_ROWS.values()
+             for stage, said in says.items()}
+    assert kinds >= {("primary", "REJECTED", "CONFIRMED"), ("backup", "REJECTED", "CONFIRMED"),
+                     ("primary", "CONFIRMED", "REJECTED"), ("backup", "CONFIRMED", "REJECTED")}
+
+
+def test_the_copy_reaches_the_copying_cells_advisors_as_their_own_claim(copied):
+    """What makes the rows mean something: the controller really did hand the copier's
+    advisors the owner's id, at both stages, and they really did answer for it."""
+    speaking = copied[1]["backup-rejects-its-copy-of-a-confirmed-claim"]
+    with open(runio._pano(speaking.root, verify._VERIFY_ATTEMPTS_FILE), encoding="utf-8") as fh_:
+        record = json.load(fh_)
+    (claim_id,) = {f["id"] for f in speaking.report["findings"]
+                   if f.get("title") == fh.CopiedClaim.CLAIM}
+    for cell in (fh.CopiedClaim.COPIER, fh.CopiedClaim.OWNER):
+        for stage in ("primary", "backup"):
+            assert claim_id in record[verify._verify_key(*cell, stage) + "/claims"], (cell, stage)
+    with open(runio._pano(speaking.root, "verdicts", "verdicts-app-COD-backup.json"),
+              encoding="utf-8") as fh_:
+        said = {v["finding_id"]: v["verdict"] for v in json.load(fh_)["verdicts"]}
+    assert said[claim_id] == "REJECTED"
 
 
 SPLIT_BYTES = 9000
