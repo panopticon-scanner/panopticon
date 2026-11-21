@@ -80,7 +80,16 @@ class Resolved:
     ocrdb_coverage: dict | None
     verdict_stats: dict
     verify_matrix: dict
+    # Internal entry-attribution identities for #3753. The public matrix keeps
+    # its existing schema; grading needs the actual engaged cells so a host
+    # failure in a cell later answered by backup can be retired.
+    verify_engaged_cells: tuple
     tool_axis: dict
+    # Tool queue identities before and after verdict matching. These exclude
+    # findings cut by --max-verify, because the driver never owed those a
+    # launch, and let grading tie a ledger entry to the exact stranded claim.
+    tool_advisor_queue_ids: tuple
+    tool_advisor_pending_ids: tuple
     tool_names: set
     delta_mode: bool
     delta_meta: dict | None
@@ -941,6 +950,12 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     pre_verdict_fps = {id(f): evidence_mod.finding_fingerprint(f) for f in findings}
     matches = _bind_verdicts(fs, findings, queue, holders, merged, owed)
     verify_matrix_cov = _verify_matrix(findings, matches)
+    tool_entries = [entry for entry in queue
+                    if evidence_mod.is_tool_sourced(entry["finding"])]
+    tool_advisor_queue_ids = tuple(entry["queue_id"] for entry in tool_entries)
+    tool_advisor_pending_ids = tuple(
+        entry["queue_id"] for entry in tool_entries
+        if matches.matched.get(id(entry["finding"])) is None)
     if ocrdb_coverage is not None:
         ocrdb_coverage.update(codes_mod.apply_verdict_quality(findings, matches.matched, ocrdb_bundle))
     verdict_stats = _verdict_stats(fs, findings, queue, cut, matches, held)
@@ -960,7 +975,11 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
                     integration_findings=integration_findings,
                     ocrdb_bundle=ocrdb_bundle, ocrdb_coverage=ocrdb_coverage,
                     verdict_stats=verdict_stats, verify_matrix=verify_matrix_cov,
-                    tool_axis=tool_axis, tool_names=tool_names,
+                    verify_engaged_cells=tuple(sorted(matches.engaged_cells)),
+                    tool_axis=tool_axis,
+                    tool_advisor_queue_ids=tool_advisor_queue_ids,
+                    tool_advisor_pending_ids=tool_advisor_pending_ids,
+                    tool_names=tool_names,
                     delta_mode=delta.active, delta_meta=_delta_meta(delta, partitions),
                     # #2169: emitted for an INACTIVE context too, whenever a file
                     # was read -- the one carrier a rejected payload has.
