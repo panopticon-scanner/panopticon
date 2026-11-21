@@ -16,10 +16,13 @@
   record that said `Maven` (or `Go`) but named a `Cargo.lock`, an npm lock or a Python lock, with
   the name and version of a local package, was classified first-party and confirmed without an
   advisor. A declared ecosystem must now be exactly the lock's (`crates.io`, `npm`, `PyPI`), or
-  the finding stays with the advisor, decided before the lock is read. A finding that declares
-  none (Trivy's SARIF carries none) is judged by the lock alone, as before. The osv-scanner
-  adapter also no longer uses a record's ecosystem as its file when the record has no source
-  path: it reports the fixed placeholder `manifest`, which is never a lock name.
+  the finding stays with the advisor, decided before the lock is read. osv-scanner always
+  declares one, so an osv finding with none (or a JSON `null`) is refused too; only Trivy and
+  the audit adapters, whose findings carry no ecosystem, are judged by the lock alone, as
+  before. The osv-scanner adapter also no longer uses a record's ecosystem as its file when
+  the record has no source path: it reports the fixed placeholder `manifest`, which is never a
+  lock name. `location.file` is part of the finding fingerprint, so such a sourceless record's
+  fingerprint and reconcile key change once.
 
 - **Tools closure re-resolved: semgrep 1.185.0 (supersedes Dependabot #3751; #3619 not taken).**
   - Taken as offered: semgrep 1.183.0 -> 1.185.0, with the Dockerfile `SEMGREP_VERSION` moved to
