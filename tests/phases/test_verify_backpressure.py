@@ -147,13 +147,25 @@ class TestVerdictsMergeAcrossParts(unittest.TestCase):
         self.assertTrue(verify._cell_parts_complete(
             self.root, self.manifest, "G", "SEC", "primary", cell))
 
-    def test_merged_verdicts_span_every_part(self):
+    def test_the_verdicts_that_count_span_every_part(self):
         cell = [_finding(i) for i in range(verify._CELL_CLAIMS_CAP + 2)]
         self._write_part(0, [f["id"] for f in cell[:verify._CELL_CLAIMS_CAP]])
         self._write_part(1, [f["id"] for f in cell[verify._CELL_CLAIMS_CAP:]])
-        merged = verify._cell_verdicts(self.root, "G", "SEC", "primary",
-                                       parts=2)
-        self.assertEqual(len(merged), len(cell))
+        counted = verify._scoped_verdicts(self.root, "G", "SEC", "primary",
+                                          verify._cell_chunks(cell))
+        self.assertEqual([f["id"] for f in cell], [v["finding_id"] for v in counted])
+
+    def test_a_part_counts_only_for_the_claims_it_was_handed(self):
+        # #3702: part 1 also speaks of one of part 0's claims, and of no claim at all.
+        cell = [_finding(i) for i in range(verify._CELL_CLAIMS_CAP + 2)]
+        ids = [f["id"] for f in cell]
+        self._write_part(0, ids[:verify._CELL_CLAIMS_CAP])
+        self._write_part(1, ids[verify._CELL_CLAIMS_CAP:] + ids[:1] + ["SEC-0"])
+        counted = verify._scoped_verdicts(self.root, "G", "SEC", "primary",
+                                          verify._cell_chunks(cell))
+        self.assertEqual(ids, [v["finding_id"] for v in counted])
+        self.assertFalse(verify._cell_parts_complete(
+            self.root, self.manifest, "G", "SEC", "primary", cell))
 
     def test_a_single_part_cell_reads_exactly_as_before(self):
         cell = [_finding(i) for i in range(3)]

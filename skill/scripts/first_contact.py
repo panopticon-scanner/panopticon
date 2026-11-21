@@ -7,7 +7,7 @@ that tracks or pre-plants `.panopticon/`: on a non-git target a planted
 own prior run, flags and all. This sweep halts, loudly and with a fixed
 reason, on clear hostility:
 
-  H1  `.panopticon/` is tracked in the target's git index;
+  H1  `.panopticon/` is tracked in the target's git index, under any case;
   H2  `.panopticon/` holds anything but no `owner.json` carrying this
       machine's stamp (`run_stamp`) -- planted, copied from elsewhere, or
       left by a pre-stamp run (owner ruling D1: move it aside or `--reset`).
@@ -53,6 +53,11 @@ PANO = plan_contract.ARTIFACT_DIR
 H1 = ("%s/ is tracked in the target's git index; panopticon never commits its "
       "artifact directory -- remove it from the index (git rm -r --cached %s) or "
       "review a clean clone" % (PANO, PANO))
+# #3684: the same halt when the index spells the directory another way. The plain remedy
+# names a path git does not have there, so this one names the spelling it does.
+H1_AS = ("\"%%s\" is tracked in the target's git index, and a filesystem that ignores case reads "
+         "it as %s/; panopticon never commits its artifact directory -- remove it from the index "
+         "(git rm -r --cached \"%%s\") or review a clean clone" % PANO)
 H2 = ("%s/ was not created by a panopticon run on this machine (its run stamp does "
       "not verify); move it aside (mv %s %s.old) or pass --reset, and re-run"
       % (PANO, PANO, PANO))
@@ -84,19 +89,29 @@ def _quote(rel):
 
 
 def _tracked(review_root, runner):
-    """(a git work tree?, any path under `.panopticon/` in its index?). Through
+    """(a git work tree?, how its index spells a tracked `.panopticon`, or None). Through
     `safe_git.probe`: a trusted git, with the target's own config (fsmonitor,
     hooks) suppressed. No trusted git, or a launch that fails, halts H5 on one
-    line -- never a traceback, and never a stderr the target wrote."""
+    line -- never a traceback, and never a stderr the target wrote.
+
+    #3684: asked whatever its case. A git pathspec is case-sensitive whatever the
+    filesystem is, so on one that ignores case (APFS, NTFS) a committed
+    `.Panopticon/` is the directory every later read opens, and the exact spelling
+    found nothing tracked. `:(icase)` folds ASCII only, which is all there is to
+    fold here: no other code point reads as a character of `.panopticon`, or as
+    two of them (measured on APFS; it does fold a long s and the `st` ligatures,
+    which this name has no use for). The exact spelling is preferred when the
+    index has both."""
     try:
-        proc = safe_git.probe(review_root, ["ls-files", "-z", "--", PANO],
+        proc = safe_git.probe(review_root, ["ls-files", "-z", "--", ":(icase)" + PANO],
                               runner=runner or subprocess.run, timeout=30)
     except (OSError, subprocess.SubprocessError) as exc:
         raise FirstContactHalt(H5 % ("git ls-files", type(exc).__name__)) from None
     if proc.returncode == 0:
-        return True, bool((proc.stdout or "").strip("\0"))
+        spelled = [path.split("/", 1)[0] for path in (proc.stdout or "").split("\0") if path]
+        return True, (PANO if PANO in spelled else spelled[0]) if spelled else None
     if proc.returncode == 128 and "not a git repository" in (proc.stderr or ""):
-        return False, False
+        return False, None
     raise FirstContactHalt(H5 % ("git ls-files", "exit %s" % proc.returncode))
 
 
@@ -233,7 +248,7 @@ def assess_artifacts(review_root, *, reset=False, runner=None, read_only=False):
         return {"git": None}      # no launch: an absent or empty directory vouches for nothing
     git, tracked = _tracked(review_root, runner)
     if tracked:
-        raise FirstContactHalt(H1)
+        raise FirstContactHalt(H1 if tracked == PANO else H1_AS % ((_quote(tracked),) * 2))
     if os.path.lexists(pano) and (os.path.islink(pano) or not os.path.isdir(pano)):
         if not reset:
             raise FirstContactHalt(H3 % "" if os.path.islink(pano)

@@ -9,11 +9,13 @@ from unittest import mock
 from tests._test_helpers import fake_pem, pem_begin
 import scripts.phases.persist as persist
 import scripts.phases.rejected_replies as rejected_replies
+import scripts.phases.requests as requests
 import scripts.phases.review as review
 import scripts.phases.runio as runio
 import scripts.redact as redact
 import scripts.phases.verify as verify
 import scripts.ocrdb as ocrdb
+from tests.phases.test_verify import TestBackupCellFixture
 
 
 def _entry(out_file, delivery="return_json", **extra):
@@ -551,6 +553,329 @@ class TestVerifyCellCompleteness(unittest.TestCase):
                            "_panopticon": {"run_id": "RID", "group": "app",
                                            "domain": "SEC", "stage": "primary"}})
         self.assertFalse(persist.is_done(entry))
+
+
+def _spend(review_root, group, domain, stage):
+    """Charge the cell's every dispatch: its budget is spent."""
+    for _ in range(verify._MAX_VERIFY_ATTEMPTS):
+        verify._bump_verify_attempts(review_root, group, domain, stage)
+    assert verify._verify_exhausted(review_root, verify._verify_key(group, domain, stage))
+
+
+class TestDoneIsAboutTheArtifactNotTheBudget(unittest.TestCase):
+    """#3698. `is_done` asked the verify phase's cell predicate, which is also true once
+    the cell's dispatches are spent. The phase charges a dispatch and THEN the loop asks
+    `is_done`, so on the third dispatch a short bundle on disk read as done and nothing
+    was launched: charged 3, launched 2. `is_done` is about this entry's part alone now;
+    whether a cell may be dispatched again stays the phase's question."""
+
+    def setUp(self):
+        self.d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.d, ignore_errors=True))
+        self.env = _verify_cell(self.d, findings=2)
+        self.entry = self.env["entry"]
+
+    def _on_disk(self, ids, entry=None):
+        runio._write_json((entry or self.entry)["out_file"],
+                          {"verdicts": self.env["verdicts"](ids),
+                           "_panopticon": {"run_id": "RID", "group": "app",
+                                           "domain": "SEC", "stage": "primary"}})
+
+    def _reply(self, ids):
+        return json.dumps({"verdicts": self.env["verdicts"](ids),
+                           "_panopticon": {"run_id": "RID", "group": "app",
+                                           "domain": "SEC", "stage": "primary"}})
+
+    def test_a_short_bundle_is_not_done_however_much_was_spent(self):
+        self._on_disk(self.env["ids"][:1])
+        self.assertFalse(persist.is_done(self.entry))
+        _spend(self.d, "app", "SEC", "primary")
+        # The phase has given the cell up, and the bundle is no better for it.
+        self.assertTrue(verify._verify_cell_done(self.d, {"run_id": "RID"}, "app", "SEC",
+                                                 "primary", cell=self.env["cell"]))
+        self.assertFalse(persist.is_done(self.entry))
+
+    def test_an_unloadable_file_is_not_done_however_much_was_spent(self):
+        os.makedirs(os.path.dirname(self.entry["out_file"]), exist_ok=True)
+        with open(self.entry["out_file"], "w", encoding="utf-8") as fh:
+            fh.write('{"verdicts": [')
+        _spend(self.d, "app", "SEC", "primary")
+        self.assertFalse(persist.is_done(self.entry))
+
+    def test_a_complete_bundle_is_done_spent_or_not(self):
+        self._on_disk(self.env["ids"])
+        self.assertTrue(persist.is_done(self.entry))
+        _spend(self.d, "app", "SEC", "primary")
+        self.assertTrue(persist.is_done(self.entry))
+
+    def test_a_short_reply_to_a_spent_part_is_judged_on_what_it_says(self):
+        # `write_reply` refuses an entry that is already done. A spent budget used to
+        # make a short bundle "done", so a reply was turned away unread, and the short
+        # bundle stood. It is read now: a short one is refused for being short and
+        # changes nothing; a whole one replaces the short bundle.
+        self._on_disk(self.env["ids"][:1])
+        _spend(self.d, "app", "SEC", "primary")
+        with open(self.entry["out_file"], "rb") as fh:
+            before = fh.read()
+        ok, reason = persist.write_reply(self.entry, self._reply(self.env["ids"][:1]))
+        self.assertFalse(ok)
+        self.assertIn("does not adjudicate every claim it was handed", reason)
+        self.assertNotIn("already done", reason)
+        with open(self.entry["out_file"], "rb") as fh:
+            self.assertEqual(before, fh.read())
+        self.assertFalse(persist.is_done(self.entry))
+        ok, reason = persist.write_reply(self.entry, self._reply(self.env["ids"]))
+        self.assertTrue(ok, reason)
+        self.assertTrue(persist.is_done(self.entry))
+        # And a part that IS answered still refuses a second reply, spent or not.
+        ok, reason = persist.write_reply(self.entry, self._reply(self.env["ids"]))
+        self.assertFalse(ok)
+        self.assertIn("already done", reason)
+
+
+class TestDoneIsAboutThisEntrysOwnPart(unittest.TestCase):
+    """#3698, ruling 2: per part. A chunked cell's parts are separate entries, and each
+    is done when its own slice of the claims is answered, whatever its siblings did."""
+
+    def setUp(self):
+        self.d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.d, ignore_errors=True))
+        patch = mock.patch.object(verify, "_CELL_CLAIMS_CAP", 2)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.env = _verify_cell(self.d, findings=3)
+        manifest = {"run_id": "RID", "host": "claude", "security_mode": "standard", "flags": {}}
+        self.chunks = verify._cell_chunks(self.env["cell"])
+        self.assertEqual([2, 1], [len(chunk) for chunk in self.chunks])
+        self.entries = [verify._verify_entry(self.d, manifest, "app", "SEC", ["src/pay.py"],
+                                             chunk, "claude", ocrdb.load_bundle(), "primary",
+                                             part) for part, chunk in enumerate(self.chunks)]
+
+    def _on_disk(self, part, ids):
+        runio._write_json(self.entries[part]["out_file"],
+                          {"verdicts": self.env["verdicts"](ids),
+                           "_panopticon": {"run_id": "RID", "group": "app",
+                                           "domain": "SEC", "stage": "primary"}})
+
+    def _done(self):
+        return [persist.is_done(entry) for entry in self.entries]
+
+    def test_each_part_is_done_by_its_own_claims(self):
+        ids = [[f["id"] for f in chunk] for chunk in self.chunks]
+        self.assertEqual([False, False], self._done())
+        self._on_disk(1, ids[1])                       # the second part answers first
+        self.assertEqual([False, True], self._done())
+        self._on_disk(0, ids[0][:1])                   # the first is short
+        self.assertEqual([False, True], self._done())
+        self._on_disk(0, ids[0])
+        self.assertEqual([True, True], self._done())
+        self._on_disk(1, [])                           # ...and one going short again
+        self.assertEqual([True, False], self._done())  # does not undo its sibling
+
+    def test_a_part_the_cell_no_longer_has_is_never_done(self):
+        ids = [f["id"] for f in self.env["cell"]]
+        extra = dict(self.entries[1], out_file=self.entries[1]["out_file"].replace(
+            "-part1.json", "-part7.json"))
+        runio._write_json(extra["out_file"],
+                          {"verdicts": self.env["verdicts"](ids),
+                           "_panopticon": {"run_id": "RID", "group": "app",
+                                           "domain": "SEC", "stage": "primary"}})
+        self.assertFalse(persist.is_done(extra))
+        # ...even with every real part answered: it is not taken for the last one.
+        for part, chunk in enumerate(self.chunks):
+            self._on_disk(part, [f["id"] for f in chunk])
+        self.assertEqual([True, True], self._done())
+        self.assertFalse(persist.is_done(extra))
+
+    def test_the_first_part_past_the_last_is_not_done_and_does_not_raise(self):
+        """#3703 review N1: the boundary. The cell has parts 0 and 1, so `-part2` is the
+        first it does not have; read as a part, it would index past the chunks and
+        take `loop_batch._pending` down with it."""
+        ids = [f["id"] for f in self.env["cell"]]
+        for part, chunk in enumerate(self.chunks):
+            self._on_disk(part, [f["id"] for f in chunk])
+        first_past = dict(self.entries[1], out_file=self.entries[1]["out_file"].replace(
+            "-part1.json", "-part%d.json" % len(self.chunks)))
+        runio._write_json(first_past["out_file"],
+                          {"verdicts": self.env["verdicts"](ids),
+                           "_panopticon": {"run_id": "RID", "group": "app",
+                                           "domain": "SEC", "stage": "primary"}})
+        self.assertFalse(persist.is_done(first_past))
+        self.assertEqual([True, True], self._done())
+
+    def test_an_entry_that_cannot_be_placed_is_never_done(self):
+        """#3703 review N2: fail closed. A verify entry with no cell to its name, or one
+        whose file is under no review root, has a whole bundle on disk and is not done."""
+        for part, chunk in enumerate(self.chunks):
+            self._on_disk(part, [f["id"] for f in chunk])
+        whole = self.entries[1]
+        self.assertTrue(persist.is_done(whole))
+        elsewhere = os.path.join(self.d, "verdicts", os.path.basename(whole["out_file"]))
+        os.makedirs(os.path.dirname(elsewhere))
+        shutil.copy(whole["out_file"], elsewhere)
+        for label, entry in (("no group", {k: v for k, v in whole.items() if k != "group"}),
+                             ("no domain", {k: v for k, v in whole.items() if k != "domain"}),
+                             ("an empty group", dict(whole, group="")),
+                             ("a file under no review root", dict(whole, out_file=elsewhere))):
+            with self.subTest(label):
+                self.assertEqual("verify-cell", persist.role_of(entry))
+                self.assertIsNone(persist._verify_cell_of(entry))
+                self.assertFalse(persist.is_done(entry))
+
+
+class TestAReplyNamesOnlyTheClaimsItWasHanded(unittest.TestCase):
+    """#3702. Verdicts are matched to findings by id across the whole run, so a
+    reply that also named a claim it was not handed spoke for that claim: another
+    cell's, another part's. It answered everything it was asked, so it was
+    accepted. It is refused whole, and the advisor is asked again."""
+
+    def setUp(self):
+        self.d = os.path.realpath(tempfile.mkdtemp())
+        self.addCleanup(lambda: shutil.rmtree(self.d, ignore_errors=True))
+    def _reply(self, ids):
+        return json.dumps({"verdicts": [_advisor_verdict(i, "REJECTED") for i in ids],
+                           "_panopticon": {"run_id": "RID", "group": "app",
+                                           "domain": "SEC", "stage": "primary"}})
+
+    def test_a_reply_that_also_names_another_claim_is_refused_and_nothing_is_written(self):
+        env = _verify_cell(self.d, findings=2)
+        entry = env["entry"]
+        for extra, count in ((["SEC-999"], 1), (["SEC-999", "COD-1", "SEC-999"], 2),
+                             (["no such claim"], 1)):
+            with self.subTest(extra=extra):
+                ok, reason = persist.write_reply(entry, self._reply(env["ids"] + extra))
+                self.assertFalse(ok)
+                self.assertIn("names %d claim(s) it was not handed in part 0" % count, reason)
+                self.assertFalse(os.path.exists(entry["out_file"]))
+                self.assertFalse(persist.is_done(entry))
+
+    def test_the_reason_gives_a_count_and_never_the_advisors_ids(self):
+        env = _verify_cell(self.d, findings=2)
+        planted = "ghp_" + "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8"
+        ok, reason = persist.write_reply(env["entry"], self._reply(env["ids"] + [planted]))
+        self.assertFalse(ok)
+        self.assertNotIn(planted, reason)
+        self.assertNotIn("ghp_", reason)
+
+    def test_a_reply_short_of_its_own_claims_that_names_another_is_refused_for_the_other(self):
+        """The outside id is the reason given: it is the one that must not be missed."""
+        env = _verify_cell(self.d, findings=2)
+        ok, reason = persist.write_reply(env["entry"], self._reply(env["ids"][:1] + ["SEC-999"]))
+        self.assertFalse(ok)
+        self.assertIn("it was not handed", reason)
+
+    def test_the_same_reply_without_the_other_claim_is_accepted(self):
+        env = _verify_cell(self.d, findings=2)
+        ok, reason = persist.write_reply(env["entry"], self._reply(env["ids"]))
+        self.assertTrue(ok, reason)
+        self.assertTrue(persist.is_done(env["entry"]))
+
+    def test_a_part_is_held_to_its_own_slice_of_the_cell(self):
+        """One advisor per part: part 0 may not speak of part 1's claim, and part 1's
+        reply is not helped by what part 0's bundle says of its claims."""
+        manifest = {"run_id": "RID", "host": "claude", "security_mode": "standard", "flags": {}}
+        with mock.patch.object(verify, "_CELL_CLAIMS_CAP", 2):
+            env = _verify_cell(self.d, findings=3)
+            first, second = (verify._verify_entry(
+                self.d, manifest, "app", "SEC", ["src/pay.py"], chunk, "claude",
+                ocrdb.load_bundle(), "primary", part)
+                for part, chunk in enumerate(verify._cell_chunks(env["cell"])))
+            ok, reason = persist.write_reply(first, self._reply(env["ids"]))
+            self.assertFalse(ok)
+            self.assertIn("names 1 claim(s) it was not handed in part 0", reason)
+            # Part 0 on disk, self-written, speaking of part 1's claim as well:
+            runio._write_json(first["out_file"], json.loads(self._reply(env["ids"])))
+            ok, reason = persist.write_reply(second, self._reply([]))
+            self.assertFalse(ok)
+            self.assertIn("does not adjudicate every claim it was handed", reason)
+            ok, reason = persist.write_reply(second, self._reply(env["ids"][:2]))
+            self.assertFalse(ok)
+            self.assertIn("names 2 claim(s) it was not handed in part 1", reason)
+            ok, reason = persist.write_reply(second, self._reply(env["ids"][2:]))
+            self.assertTrue(ok, reason)
+
+
+class TestABackupReplyMustAnswerEveryScopedClaim(TestBackupCellFixture):
+    """#3695: the same rule for a backup reply. It used to be accepted once it was
+    stamped for its cell, so a backup that answered 1 of its 3 scoped claims was
+    written, read back done, and never asked again."""
+
+    def setUp(self):
+        super().setUp()
+        self._cell()
+        self.assertIsNotNone(verify._verify_backup_execute(
+            self.root, self.manifest, "claude", ocrdb.load_bundle()))
+        (self.entry,) = requests.load_dispatch_request(self.root)["entries"]
+        self.assertEqual(("verify-G-SEC-backup", "backup"),
+                         (self.entry["id"], self.entry["stage"]))
+        self.ids = [f["id"] for f in verify._cell_backup_findings(
+            self.root, self.manifest, "G", "SEC")]
+        self.assertEqual(3, len(self.ids))
+
+    def _bundle(self, ids):
+        return {"verdicts": [_advisor_verdict(i) for i in ids],
+                "_panopticon": {"run_id": self.RUN_ID, "group": "G", "domain": "SEC",
+                                "role": "domain_advisor", "stage": "backup"}}
+
+    def test_a_reply_that_leaves_a_scoped_claim_unanswered_is_refused(self):
+        for ids in ([], self.ids[:1], self.ids[:2], [self.ids[0]] * 3):
+            with self.subTest(ids=ids):
+                ok, reason = persist.write_reply(self.entry, json.dumps(self._bundle(ids)))
+                self.assertFalse(ok)
+                self.assertIn("does not adjudicate every claim it was handed", reason)
+                self.assertFalse(os.path.exists(self.entry["out_file"]))
+
+    def test_a_reply_that_answers_every_scoped_claim_is_accepted_and_reads_back_done(self):
+        self.assertFalse(persist.is_done(self.entry))
+        ok, reason = persist.write_reply(
+            self.entry, json.dumps(self._bundle(list(reversed(self.ids)))))
+        self.assertTrue(ok, reason)
+        self.assertTrue(persist.is_done(self.entry))
+
+    def test_a_short_backup_bundle_on_disk_does_not_read_back_done(self):
+        # The self-write path: `write_reply` never saw this bundle.
+        runio._write_json(self.entry["out_file"], self._bundle(self.ids[:1]))
+        self.assertFalse(persist.is_done(self.entry))
+        runio._write_json(self.entry["out_file"], self._bundle(self.ids))
+        self.assertTrue(persist.is_done(self.entry))
+
+
+class TestABackupReplyIsHeldToTheBackupRoundsOwnScope(TestBackupCellFixture):
+    """The claims a backup reply must answer are the ones the backup was handed, not the
+    review cell: the primary rejected one of the three here, so two are owed."""
+
+    def test_the_two_scoped_claims_are_all_a_backup_reply_owes(self):
+        seen = []
+
+        def verdicts(fid):
+            seen.append(fid)
+            return [_advisor_verdict(fid, "REJECTED" if len(seen) == 1 else "CONFIRMED")]
+
+        cell = self._cell(verdicts_for=verdicts)
+        self.assertIsNotNone(verify._verify_backup_execute(
+            self.root, self.manifest, "claude", ocrdb.load_bundle()))
+        (entry,) = requests.load_dispatch_request(self.root)["entries"]
+        scoped = [f["id"] for f in cell[1:]]
+
+        def reply(ids):
+            return json.dumps({"verdicts": [_advisor_verdict(i) for i in ids],
+                               "_panopticon": {"run_id": self.RUN_ID, "group": "G",
+                                               "domain": "SEC", "role": "domain_advisor",
+                                               "stage": "backup"}})
+
+        # One scoped claim: one claim still owed. (Held to the review cell, two would be.)
+        ok, reason = persist.write_reply(entry, reply(scoped[:1]))
+        self.assertFalse(ok)
+        self.assertIn("1 verdict(s) for 2 claim(s)", reason)
+        # #3702: the claim the primary rejected is not the backup's to speak of at all,
+        # even beside a verdict on everything it was handed.
+        ok, reason = persist.write_reply(entry, reply([cell[0]["id"]] + scoped))
+        self.assertFalse(ok)
+        self.assertIn("names 1 claim(s) it was not handed", reason)
+        self.assertFalse(os.path.exists(entry["out_file"]))
+        ok, reason = persist.write_reply(entry, reply(scoped))
+        self.assertTrue(ok, reason)
+        self.assertTrue(persist.is_done(entry))
 
 
 class TestRetainRejected(unittest.TestCase):

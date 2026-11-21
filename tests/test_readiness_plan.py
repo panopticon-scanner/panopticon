@@ -30,7 +30,7 @@ FILES = {"src/app.py": "def f():\n    return 1\n", "src/util.py": "def g():\n   
          "tests/test_app.py": "def test_f():\n    assert True\n", "README.md": "# x\n"}
 MATRIX = "version: 1\ngroups:\n  Core:\n    match: ['src/**']\n    panels: [COD]\n"
 EVERY_FLAG = ["--host", "claude", "--security", "redteam", "--fail-on", "high", "--severity", "all",
-              "--gate-scope", "all", "--diff-context", "3", "--tools", "--online",
+              "--tools", "--online",
               "--allow-target-build", "--include-fixtures", "--allow-unenforced",
               "--max-per-group", "10", "--max-verify", "5", "-d", "src", "--mode", "headless",
               "--concurrency", "2", "--max-iterations", "3", "--max-budget-usd", "1",
@@ -117,8 +117,9 @@ class ItChangesNothingTest(_Case):
 
     def test_a_populated_run_folder_is_byte_identical_with_every_flag(self):
         self._populate_a_run()
-        for argv in (EVERY_FLAG, ["--pr", "7", "--setup", "--discard-batch", "1"], ["-c"],
-                     ["--base", "main", "--no-tools"]):
+        # (#3735: the delta flags are refused before readiness looks at anything.)
+        for argv in (EVERY_FLAG, ["--setup", "--discard-batch", "1"], ["--files", "src/app.py"],
+                     ["--no-tools"]):
             with self.subTest(argv=argv[:4]):
                 before, shells = _snapshot(self.root), _snapshot(self.shells)
                 (code, _out), spawned = self._guarded(*argv)
@@ -184,9 +185,11 @@ class GroupsTest(_Case):
         self.assertFalse([name for name in row["derived"] if name.startswith("Core")])
 
     def test_a_delta_scope_is_not_counted(self):
-        for argv in (["-c"], ["--base", "main"], ["--pr", "3"]):
-            with self.subTest(argv=argv), mock.patch.object(discovery, "main") as main:
-                row = self._plan(*argv)["groups"]
+        # #3735: no command line reaches this in 5.4 (`readiness -c` is refused); the row
+        # is asked directly for the plan a delta run would have had.
+        for plan in ({"scope": {"mode": "changed", "target": None}}, {"base": "main"}, {"pr": 3}):
+            with self.subTest(plan=plan), mock.patch.object(discovery, "main") as main:
+                row = readiness_plan.groups_row(self.root, plan)
                 self.assertIsNone(row["committed"])
                 self.assertIn("delta scope", row["detail"])
                 main.assert_not_called()

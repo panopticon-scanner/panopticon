@@ -834,7 +834,7 @@ class TestTheHandRunPairIsBoundToo(unittest.TestCase):
                     contextlib.redirect_stderr(io.StringIO()):
                 rc = syn.main(["--target", "t", "--fail-on", "high",
                                "--gate-unverified", "--diff-hunks", hp,
-                               "--out", out, *argv, fp])
+                               "--out", out, *argv, fp], refuse_delta=False)
             with open(out, encoding="utf-8") as fh:
                 return rc, json.load(fh)
 

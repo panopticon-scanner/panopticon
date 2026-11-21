@@ -7,7 +7,7 @@ spec/plan docs. It records architecture, the design decisions that are settled, 
 history. The live backlog is the issue tracker: every self-scan finding is filed with `severity:*`,
 `evidence:*` and `panel:*` labels (`.github/labels.yml`), and nothing in this file is a to-do list.
 
-**Current version: 5.3.0** (semver — see Versioning below).
+**Current version: 5.4.0** (semver — see Versioning below).
 
 ## What it is
 A **discovery → scout → fan-out → synthesis** pipeline. It profiles a target with a
@@ -31,7 +31,7 @@ summary + JSON artifact) with standards citations and CI gating.
 - `skill/` — the installable skill surface (symlink target); everything an agent loads lives here.
 - `skill/SKILL.md` — driver run-loop spec (modes, driver verbs, flags). Instructions
   the host follows to drive the driver; not a runnable script.
-- `skill/scripts/discovery.py` — resolve a target (`-f/-d/-g/-c/--pr`/repo) to cohesive
+- `skill/scripts/discovery.py` — resolve a target (`-f/-d/-g/--files`/repo) to cohesive
   ≤15-file groups (`groups.json`); extracted from the retired `orchestrator.py` (5.0 Slice A).
   Language-neutral, stdlib only.
 - `skill/scripts/driver.py` — the resumable driver: a table-driven phase state machine
@@ -406,9 +406,10 @@ characters, and matching consumes the whole path.
   in one toolchain cannot invalidate the others' layers.
 
 ## Running
-Fresh session → `/panopticon` (`-f file`, `-d dir`, `-g <name>` one committed group, `-c`
-changes, `--pr N`, or whole repo — see `docs/PANOPTICON.md` "Modes" for the authoritative
-flag list). `--epss` enables EPSS lookups; `--fail-on high`
+Fresh session → `/panopticon` (`-f file`, `-d dir`, `-g <name>` one committed group, `--files`,
+or whole repo — see `docs/PANOPTICON.md` "Modes" for the authoritative flag list; delta review,
+`-c` and `--pr N`, is withdrawn in 5.4 and refused at the command line, #3735; its code is in the
+tree, unreachable, and its tests reach it below the refusal with `refuse_delta=False`). `--epss` enables EPSS lookups; `--fail-on high`
 gates CI (keys off `summary.gate` in the JSON). Tool layer: build the image once (above);
 normal runs require Docker and the tools image at readiness, or `--no-tools` to
 skip the layer explicitly. `driver readiness` prints a read-only preflight.
@@ -854,12 +855,28 @@ the actionlint/zizmor CI change is maintained separately from this test-only rul
 
 ## Versioning
 Scheme: a **minor** bump (2.x.0) per release round; **major** (x.0.0) reserved for breaking
-changes to the report schema, CLI, or grade contract. Bump `SKILL.md` `metadata.version`,
-`synth.report.build_report`'s `meta.version`, and `evidence.write_verify_queue`'s payload
-`version` together.
+changes to the report schema, CLI, or grade contract. The version is set in one place,
+`skill/scripts/_version.py` (`__version__`): `synth.report.build_report`'s `meta.version` and
+`evidence.write_verify_queue`'s payload `version` read it. A bump edits that file and the three
+places that state the same value by hand, which `tests/test_version.py` holds to it:
+`pyproject.toml`, the "Current version" line above, and `SKILL.md`'s `metadata.version`.
+The same test wants a CHANGELOG section for the version: rename `## Unreleased` to
+`## <version> — <title>`, leave an empty `## Unreleased` above it, and add the entry to the
+History list below.
+
+One exception, by owner ruling (2026-11-17): 5.4.0 is a minor release that withdraws delta
+review (`--pr`, `--changes`, `--base`, `--gate-scope`, `--diff-context`; #3735), a breaking
+CLI change. The mode had never been calibrated or stress-tested, so it was withdrawn where it
+was found instead of waiting for a major. The rule above stands for everything else.
 
 History:
-- **5.3.0** (current) — red-team hardening and the armor audit. 191 pull requests, 119
+- **5.4.0** (current) — verdict integrity and the whole-repository audit. A reviewer's
+  verdict binds only to its own cell's findings, and no cell can make a run read better by
+  what it adds (#3707, #3727, #3731, #3732). Delta review is withdrawn (#3735). Setup
+  proposes the matrix once and a committed matrix is what a repeatable run needs (#3651).
+  Model fallback ladders are disclosed per run (#3582). The release was held to a five-gate
+  review: security, correctness, robustness, evidence, contract.
+- **5.3.0** — red-team hardening and the armor audit. 191 pull requests, 119
   issues. Every MEDIUM and LOW from the 5.2 red-team triage is fixed or measured below its
   rating. First contact becomes the single trust check on `.panopticon/`. The #3173 audit
   retires armor that only guarded our own code or duplicated a stronger layer, and CI drops

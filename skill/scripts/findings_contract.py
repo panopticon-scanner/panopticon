@@ -115,6 +115,31 @@ def targeted_review_paths(data):
     return tuple(value)
 
 
+def echoes_targeted_review(data, expected):
+    """THE rule for a review cell's `targeted_review` echo (#3614, #3709): the reply
+    lists exactly the paths the controller handed that cell, in the same order, or
+    lists none when it was handed none.
+
+    A SEC cell is handed the files Semgrep could not parse and must say it read
+    them. One definition for the three places that ask: the review phase
+    (`review._cell_done`: is this cell answered), the loop
+    (`group_runner.entry_is_done`: is this entry's file already good) and the
+    receipt of a returned reply (`persist.accepts`). The phase alone used to ask.
+    A reply with valid findings and no echo was then "not done" to the phase, which
+    charged another dispatch, and "done" to the loop, which launched nothing: three
+    charges, one launch, and a cell reported as having spent its retries.
+
+    `expected` is the controller's list (an entry's `targeted_review`, absent or
+    empty for a cell that was handed none). An echo that is not a well-formed list
+    of repository paths matches nothing, and neither does an `expected` that is not
+    a list: a string would otherwise be taken apart into its characters (#3712 N2)."""
+    if expected is None:
+        expected = ()
+    if not isinstance(expected, (list, tuple)):
+        return False
+    return targeted_review_paths(data) == tuple(expected)
+
+
 def is_acceptable(data):
     """True when `data` satisfies the findings contract."""
     return not payload_defects(data)

@@ -13,7 +13,6 @@ import scripts.phases.runio as runio
 import scripts.phases.engine as engine
 import scripts.phases.requests as requests
 import scripts.phases.discovery as discovery
-import scripts.phases.coverage as coverage
 import scripts.phases.review as review
 import scripts.phases.verify as verify
 import scripts.phases.synthesize as synthesize
@@ -167,98 +166,20 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
             "_panopticon": {"run_id": self.RUN_ID, "role": "domain_advisor",
                             "domain": "SEC", "group": "Checkout", "stage": "primary"}})
 
-    def test_changed_scope_restricts_matrix_emits_diff_hunks_and_report_has_delta(self):
+    def test_a_delta_manifest_gets_no_further_than_the_discovery_child(self):
+        """#3735: delta review is withdrawn in 5.4. No command line writes or resumes a
+        delta manifest; handed one below the command line, the driver's first child
+        refuses the delta flags, and neither the inventory nor a hunk map is written.
+        (This was the end-to-end delta run through the real children: a `changed`
+        scope restricting the matrix, `diff-hunks.json`, and a report with a delta
+        block. That path is unreachable now and is deleted in 5.5, #3736.)"""
         d, base_sha = self._repo_with_changed_file()
-        manifest = self._manifest(base_sha)
-
-        # discovery: the real discovery.py --repo-scan --scope-changed
-        # --base subprocess -- restricts groups.json to the one changed file.
-        result = discovery.discovery_execute(d, manifest)
-        self.assertEqual(result.kind, "advanced")
-        groups_json = runio._load_json(runio._pano(d, "groups.json"))
-        names = {g["name"] for g in groups_json["groups"]}
-        files = sorted(f for g in groups_json["groups"] for f in g["files"])
-        self.assertEqual(names, {"Checkout"})            # Auth excluded entirely
-        self.assertEqual(files, ["src/checkout/pay.py"])  # cart.py unchanged, excluded
-
-        # discovery.py's on-diff hunk map, alongside groups.json.
-        hunks_path = runio._pano(d, "diff-hunks.json")
-        self.assertTrue(os.path.isfile(hunks_path))
-        hunks = runio._load_json(hunks_path)
-        self.assertEqual(hunks["base"], base_sha)
-        self.assertEqual(hunks["base_commit"], base_sha)
-        self.assertTrue(hunks["includes_uncommitted"])
-        self.assertIn("src/checkout/pay.py", hunks["hunks"])
-
-        # coverage: scout checkpoint then floor+scout (SEC as committed, plus
-        # #5.0-11's GLOBAL_FLOOR ARC/COD/DAT/TST on every group)
-        cov = coverage.coverage_execute(d, manifest)
-        self.assertEqual(cov.checkpoint, "scout")
-        self.assertIsNone(cov.group)                 # #1056: scouts batched, group=None
-        req = requests.load_dispatch_request(d)
-        for e in req["entries"]:
-            self._self_write_scout(e)
-        self.assertEqual(coverage.coverage_execute(d, manifest).kind, "advanced")
-        self.assertTrue(coverage.coverage_done(d, manifest))
-
-        # review checkpoint -- 2 cells (Checkout/SEC committed + universal COD).
-        # #5.0-19: pay.py is a single, surfaceless file, so the global floor's
-        # ARC/DAT/TST are surface-gated off; self-write both findings into SEC
-        # (scoped to pay.py) and an empty cell into COD.
-        r = review.review_execute(d, manifest)
-        self.assertEqual(r.checkpoint, "review")
-        req = requests.load_dispatch_request(d)
-        self.assertEqual(len(req["entries"]), 2)
-        self._self_write_review_two_findings(req["entries"])
-        self.assertTrue(review.review_done(d, manifest))
-
-        # verify checkpoint -- primary only (combined score < F_b, no backup)
-        v = verify.verify_execute(d, manifest)
-        self.assertEqual(v.checkpoint, "verify")
-        req = requests.load_dispatch_request(d)
-        self.assertEqual(len(req["entries"]), 1)
-        self._self_write_verify_all(d, manifest, req["entries"][0])
-        self.assertEqual(verify.verify_execute(d, manifest).kind, "advanced")
-        self.assertTrue(verify.verify_done(d, manifest))
-
-        # synthesize -> a graded report with a populated delta block.
-        self.assertEqual(synthesize.synthesize_execute(d, manifest).kind, "advanced")
-        report = runio._load_json(runio._pano(d, "report.json"))
-
-        delta_meta = report["meta"]["coverage"]["delta"]
-        self.assertIsNotNone(delta_meta)
-        self.assertEqual(delta_meta["base"], base_sha)
-        self.assertTrue(delta_meta["includes_uncommitted"])
-        self.assertEqual(delta_meta["files_changed"], 1)
-        self.assertEqual(delta_meta["on_diff_total"], 1)
-        self.assertEqual(delta_meta["pre_existing_total"], 1)
-
-        delta_summary = report["summary"]["delta"]
-        self.assertIsNotNone(delta_summary)
-        self.assertEqual(delta_summary["on_diff"]["low"], 1)
-        self.assertEqual(delta_summary["pre_existing"]["high"], 1)
-
-        on_diff_f = next(f for f in report["findings"] if f["severity"] == "LOW")
-        pre_existing_f = next(f for f in report["findings"] if f["severity"] == "HIGH")
-        self.assertTrue(on_diff_f["delta"]["on_diff"])
-        self.assertFalse(pre_existing_f["delta"]["on_diff"])
-        self.assertEqual(on_diff_f["evidence"]["status"], "advisor_confirmed")
-        self.assertEqual(pre_existing_f["evidence"]["status"], "advisor_confirmed")
-
-        # gate scoped on-diff (the default --gate-scope): fail_on=high WOULD
-        # FAIL on the pre-existing HIGH if it leaked into the gate -- it
-        # doesn't, only the on-diff LOW is gate-eligible, so the gate stays
-        # clean of it.
-        self.assertEqual(report["summary"]["gate"], "PASS")
-
-        # Item 7 (load-bearing proof): flip --gate-scope to "all" on the SAME
-        # artifacts and the pre-existing off-diff HIGH now reaches the gate ->
-        # FAIL. This proves the default on-diff scoping is what produced the PASS
-        # (not a vacuous pass), i.e. gate scope actually changes the outcome.
-        manifest["flags"]["gate_scope"] = "all"
-        self.assertEqual(synthesize.synthesize_execute(d, manifest).kind, "advanced")
-        report_all = runio._load_json(runio._pano(d, "report.json"))
-        self.assertEqual(report_all["summary"]["gate"], "FAIL")
+        with self.assertRaises(runio.DriverError) as refused:
+            discovery.discovery_execute(d, self._manifest(base_sha))
+        self.assertIn("delta review is withdrawn in 5.4 (#3735): --scope-changed, --base are "
+                      "refused", str(refused.exception))
+        self.assertFalse(os.path.exists(runio._pano(d, "groups.json")))
+        self.assertFalse(os.path.exists(runio._pano(d, "diff-hunks.json")))
 
     def test_changed_scope_without_committed_groups_yml_raises_loud_setup_error(self):
         d = os.path.realpath(tempfile.mkdtemp())

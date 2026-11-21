@@ -964,7 +964,7 @@ class TestSynthesizePhase(unittest.TestCase):
                 synthesize.synthesize_execute(self.root, self.manifest)
 
     def test_diff_context_forwarded_when_set(self):
-        manifest = dict(self.manifest,
+        manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
                         flags={"fail_on": "high", "diff_context": 5})
         captured = {}
         def fake_run(cmd, **kw):
@@ -1692,8 +1692,11 @@ class TestTheDiffHunksGenerationGate(unittest.TestCase):
         self.root = os.path.realpath(self._t.name)
         os.makedirs(runio._pano(self.root))
         self.addCleanup(self._t.cleanup)
+        # A delta run's manifest (#3735: the hunk map is handed over for no other, and
+        # no command line can write or resume one in 5.4).
         self.manifest = {"run_id": "R", "security_mode": "standard",
-                         "flags": {"fail_on": "high"}}
+                         "flags": {"fail_on": "high"},
+                         "scope": {"mode": "changed", "target": None}}
 
     PAYLOAD = {"schema_version": 1, "base": "main", "hunks": {"a.py": [[1, 5]]}}
 
@@ -1759,7 +1762,8 @@ class TestTheDiffHunksGenerationGate(unittest.TestCase):
         # is not a binding, it is two absences -- and there is no expectation to
         # hand the loader, so the path is withheld instead.
         cmd, err = self._run(dict(self.PAYLOAD),
-                             manifest={"security_mode": "standard", "flags": {}})
+                             manifest={"security_mode": "standard", "flags": {},
+                                       "scope": {"mode": "changed", "target": None}})
         self.assertNotIn("--diff-hunks", cmd)
         self.assertNotIn("--diff-hunks-run-id", cmd)
         self.assertIn(self.NOT_PASSED % ("None", "None"), err)
@@ -1784,7 +1788,8 @@ class TestTheDiffHunksGenerationGate(unittest.TestCase):
         tests/test_run_manifest.py::TestManifestRejectsANonStringRunId."""
         cmd, err = self._run(dict(self.PAYLOAD, run_id=7),
                              manifest={"run_id": 7, "security_mode": "standard",
-                                       "flags": {}})
+                                       "flags": {},
+                                       "scope": {"mode": "changed", "target": None}})
         self.assertNotIn("--diff-hunks", cmd)
         self.assertIn(self.NOT_PASSED % ("7", "7"), err)
         # The defect this guards: a non-string argv token cannot be launched at

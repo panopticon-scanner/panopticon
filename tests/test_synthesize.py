@@ -31,7 +31,7 @@ import scripts.html_report as html_report_mod
 
 import pytest
 
-from tests._test_helpers import adopt_panopticon, only
+from tests._test_helpers import adopt_panopticon, only, record_verify_scope
 from tests.synth.helpers import (
     _chdir, _agentic,
     _isolate_cwd_from_stale_panopticon as _isolate_cwd_from_stale_panopticon,
@@ -2179,6 +2179,7 @@ def test_an_advisor_verdict_with_mistyped_prose_cannot_end_the_run(tmp_path):
              "_panopticon": {"run_id": queue["run_id"], "role": "domain_advisor",
                              "domain": "SEC", "group": "g1", "stage": "primary"}}),
             encoding="utf-8")
+        record_verify_scope(str(run_dir), "g1", "SEC", [fid])   # #3702: what it was handed
         rc = syn.main(["--repo", "--target", "src", "--run-dir", str(run_dir),
                        "--verdicts-dir", str(vdir), "--out", str(out), str(fp)])
     assert rc == 0, err.getvalue()

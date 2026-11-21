@@ -164,7 +164,7 @@ def _get_valid_cell_data(review_root, manifest, group, domain, targeted_by_group
     targeted_by_group = (_targeted_by_group(review_root, manifest)
                          if targeted_by_group is None else targeted_by_group)
     expected = (targeted_by_group.get(group, ()) if domain == "SEC" else ())
-    if findings_contract.targeted_review_paths(data) != tuple(expected):
+    if not findings_contract.echoes_targeted_review(data, expected):   # #3614, #3709
         return None
     meta = data.get("_panopticon")
     if (isinstance(meta, dict) and meta.get("run_id") == manifest.get("run_id")

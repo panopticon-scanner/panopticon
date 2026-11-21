@@ -29,7 +29,8 @@ import scripts.safe_git as safe_git
 import scripts.setup_flow as setup_flow
 import scripts.synth.validate_schema as validate_schema
 import scripts.synthesize as syn
-from tests._test_helpers import adopt_panopticon, all_proven_artifact, docker_probe_runner
+from tests._test_helpers import (adopt_panopticon, all_proven_artifact, docker_probe_runner,
+                                 hard_link_or_skip)
 from tests.orchestrate_helpers import FakeRunner, LoopCase
 from tests.setup_helpers import SetupFixtureBase
 from tests.synth.helpers import _chdir
@@ -348,6 +349,124 @@ class TestWhetherTheConfigIsInTheReviewedCommit(unittest.TestCase):
         self._write(sub, "version: 1\n" + self.GROUPS + "# edited\n")
         self.assertEqual(("working_tree", "committed"),
                          (mp.origin(sub, "panopticon.yml"), mp.origin(root, "panopticon.yml")))
+
+    # -- #3684: the commit spells the config another way --------------------------------
+
+    def _spelled_by_the_commit(self, name="Panopticon.yml"):
+        """A repository whose commit holds the config as `name`, and the path of the file
+        `panopticon.yml` opens. On a filesystem that folds case that is the committed file
+        already; on one that does not, a hard link makes it so: one file, two names."""
+        root = make_git_repo(test_case=self,
+                             files=dict(FILES, **{name: "version: 1\n" + self.GROUPS}))
+        exact = os.path.join(root, "panopticon.yml")
+        if not os.path.lexists(exact):
+            hard_link_or_skip(os.path.join(root, name), exact)
+        self.assertTrue(os.path.samefile(exact, os.path.join(root, name)))
+        return root
+
+    def test_a_config_the_commit_spells_in_another_case_is_committed(self):
+        # `HEAD:./panopticon.yml` is case-sensitive whatever the filesystem is. The target's
+        # own committed matrix read as the working tree's, and a dirty run of it could then
+        # be excused as "a fresh matrix" by `compare_runs --allow-different-layouts`.
+        root = self._spelled_by_the_commit()
+        self.assertEqual("committed", mp.origin(root, "panopticon.yml"))
+        described = mp.describe(root)
+        self.assertEqual(("committed", "panopticon.yml", None),
+                         (described["origin"], described["config"], described["setup_draft"]))
+        self._write(root, "version: 1\n" + self.GROUPS + "# edited after the commit\n")
+        self.assertEqual("working_tree", mp.origin(root, "panopticon.yml"))
+
+    def test_head_is_asked_about_each_other_name_until_it_holds_one(self):
+        root = self._spelled_by_the_commit()
+        hard_link_or_skip(os.path.join(root, "panopticon.yml"), os.path.join(root, "A-copy.yml"))
+        asked = []
+        real = safe_git.probe
+
+        def probe(target, args, **kw):
+            asked.append(list(args))
+            return real(target, args, **kw)
+
+        with mock.patch.object(safe_git, "probe", side_effect=probe):
+            self.assertEqual("committed", mp.origin(root, "panopticon.yml"))
+        self.assertEqual([["rev-parse", "--verify", "HEAD^{tree}"],
+                          ["rev-parse", "--verify", "HEAD:./panopticon.yml"],
+                          ["rev-parse", "--verify", "HEAD:./A-copy.yml"],       # not in HEAD
+                          ["rev-parse", "--verify", "HEAD:./Panopticon.yml"]], asked)
+
+    def test_the_first_name_head_holds_decides_and_no_later_one_is_asked(self):
+        root = self._spelled_by_the_commit()
+        hard_link_or_skip(os.path.join(root, "panopticon.yml"), os.path.join(root, "z-copy.yml"))
+        asked = []
+        real = safe_git.probe
+
+        def probe(target, args, **kw):
+            asked.append(args[-1])
+            return real(target, args, **kw)
+
+        with mock.patch.object(safe_git, "probe", side_effect=probe):
+            self.assertEqual("committed", mp.origin(root, "panopticon.yml"))
+        self.assertEqual(["HEAD^{tree}", "HEAD:./panopticon.yml", "HEAD:./Panopticon.yml"], asked)
+
+    def test_a_config_head_holds_under_its_exact_name_is_asked_about_no_other(self):
+        # An untracked hard link beside a committed config: HEAD has no such name, and
+        # that must not turn the committed config into the working tree's.
+        root = self._repo()
+        hard_link_or_skip(os.path.join(root, "panopticon.yml"), os.path.join(root, "copy.yml"))
+        with mock.patch.object(mp, "_other_names", side_effect=AssertionError("not asked")):
+            self.assertEqual("committed", mp.origin(root, "panopticon.yml"))
+        self.assertEqual("committed", mp.origin(root, "panopticon.yml"))
+
+    def test_another_name_the_commit_does_not_hold_is_still_the_working_trees(self):
+        root = make_git_repo(test_case=self, files=dict(FILES))
+        self._write(root, "version: 1\n" + self.GROUPS)
+        hard_link_or_skip(os.path.join(root, "panopticon.yml"), os.path.join(root, "copy.yml"))
+        self.assertEqual("working_tree", mp.origin(root, "panopticon.yml"))
+
+    def test_the_other_names_are_this_file_s_only_sorted_and_capped(self):
+        root = self._repo()
+        exact = os.path.join(root, "panopticon.yml")
+        info = os.lstat(exact)
+        self.assertEqual([], mp._other_names(root, "panopticon.yml", info))
+        self._write(root, "version: 1\n" + self.GROUPS, name="same-bytes.yml")  # another file
+        self.assertEqual([], mp._other_names(root, "panopticon.yml", info))
+        for n in (3, 1, 2):
+            hard_link_or_skip(exact, os.path.join(root, "link-%d.yml" % n))
+        self.assertEqual(["link-1.yml", "link-2.yml", "link-3.yml"],
+                         mp._other_names(root, "panopticon.yml", os.lstat(exact)))
+        for n in range(4, 12):
+            hard_link_or_skip(exact, os.path.join(root, "link-%02d.yml" % n))
+        names = mp._other_names(root, "panopticon.yml", os.lstat(exact))
+        self.assertEqual((8, 8), (len(names), mp._OTHER_NAMES_MAX))
+        self.assertEqual(sorted(names), names)
+        self.assertEqual("link-04.yml", names[0])
+
+    def test_the_same_inode_number_on_another_device_is_not_another_name(self):
+        root = self._repo()
+        info = os.lstat(os.path.join(root, "panopticon.yml"))
+
+        class Entry:
+            def __init__(self, name, device):
+                self.name, self._device = name, device
+
+            def inode(self):
+                return info.st_ino
+
+            def stat(self, follow_symlinks=True):
+                assert follow_symlinks is False
+                return mock.Mock(st_dev=self._device)
+
+        listing = mock.MagicMock()
+        listing.__enter__.return_value = [Entry("mounted.yml", info.st_dev + 1),
+                                          Entry("Panopticon.yml", info.st_dev)]
+        with mock.patch.object(mp.os, "scandir", return_value=listing):
+            self.assertEqual(["Panopticon.yml"], mp._other_names(root, "panopticon.yml", info))
+
+    def test_a_review_root_that_cannot_be_listed_is_unknown(self):
+        root = make_git_repo(test_case=self, files=dict(FILES))
+        self._write(root, "version: 1\n" + self.GROUPS)
+        with mock.patch.object(mp.os, "scandir", side_effect=PermissionError(13, "refused")):
+            self.assertEqual("unknown", mp.origin(root, "panopticon.yml"))
+        self.assertEqual("working_tree", mp.origin(root, "panopticon.yml"))
 
     def test_only_rev_parse_is_asked_of_the_target(self):
         root = self._repo()

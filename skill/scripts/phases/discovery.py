@@ -2,6 +2,7 @@
 import os
 import sys
 
+import scripts.delta_withdrawn as delta_withdrawn
 import scripts.redact as redact
 from . import budget
 from . import child
@@ -166,8 +167,12 @@ def discovery_execute(review_root, manifest):
         # the PR. A plain -c/--base run in the primary checkout never sets
         # manifest["pr"], so this never touches a real reviewable change there.
         cmd += ["--pr-worktree"]
+    # #3735: the on-diff tolerance goes to the child only for a delta run's manifest, as
+    # `phases/synthesize.py` hands over the hunk map. A run started on 5.3 with
+    # `--diff-context N` and no diff is a whole-repository run: forwarded, the child
+    # refused a flag nobody had typed (#3737 review F2).
     _dc = (manifest.get("flags") or {}).get("diff_context")
-    if _dc is not None:
+    if _dc is not None and delta_withdrawn.is_delta_run(manifest):
         cmd += ["--diff-context", str(_dc)]
     # Chunk size was reachable only by calling discovery.py directly, so in
     # practice every run used the 15-file default. On a mid-size repo that is

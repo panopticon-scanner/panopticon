@@ -441,7 +441,8 @@ class TestReport(unittest.TestCase):
 
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
-                rc = syn.main(["--target", "src", "--changes", "--out", out, p])
+                rc = syn.main(["--target", "src", "--changes", "--out", out, p],
+                              refuse_delta=False)
             self.assertEqual(rc, 0)
             with open(out) as _fh:
                 report = json.load(_fh)
@@ -477,7 +478,8 @@ class TestReport(unittest.TestCase):
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(errbuf),
         ):
-            rc = syn.main(["--changes", "--target", "src", "--diff-hunks", hunks, "--out", out, *extra, p])
+            rc = syn.main(["--changes", "--target", "src", "--diff-hunks", hunks, "--out", out,
+                           *extra, p], refuse_delta=False)
         self.assertEqual(rc, 0)
         return errbuf.getvalue()
 

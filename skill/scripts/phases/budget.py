@@ -33,13 +33,25 @@ from typing import NoReturn
 from . import runio
 
 
-def _refuse(path, key, what) -> NoReturn:
+def _refuse(path, key, what, kind="a count") -> NoReturn:
     """The #1809 refusal, with the key that is not a count named. Same class
     and same remedy as the torn-document read one call away, so an operator
     sees one message for one file whichever half of it is broken."""
     raise runio.DriverError(
-        "%s at %s is present but unreadable (key %s is not a count); "
-        "delete it or re-run with --reset" % (what, path, key))
+        "%s at %s is present but unreadable (key %s is not %s); "
+        "delete it or re-run with --reset" % (what, path, key, kind))
+
+
+def _is_count(value):
+    return not isinstance(value, bool) and isinstance(value, int) and value >= 0
+
+
+def _is_id_list(value):
+    """A recorded list of ids: at least one, each a non-empty string, and nothing
+    else (#3695). An empty list is refused here because its reader
+    (`synth/backups._scope`) takes it for no record at all."""
+    return (isinstance(value, list) and bool(value)
+            and all(isinstance(i, str) and i for i in value))
 
 
 def _count_in(data, path, key, what):
@@ -47,7 +59,7 @@ def _count_in(data, path, key, what):
     is 0 -- a cell that was never dispatched is not an error -- and anything
     that is not a non-negative int refuses."""
     value = data.get(key, 0)
-    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+    if not _is_count(value):
         _refuse(path, key, what)
     return value
 
@@ -63,19 +75,34 @@ def bump(path, key, what):
     return bump_many(path, [key], what)[key]
 
 
-def bump_many(path, keys, what):
+def bump_many(path, keys, what, record=None):
     """Charge one attempt against each of `keys` in ONE write, returning
     {key: new count}. A key listed twice is charged twice: review's fan-out
     counts one charge per dispatched ENTRY, so two entries for one cell are two
     attempts. (`give_back` is the asymmetric half -- see its own note.) The
     whole document is written back, so keys this call never named keep their
-    counts. An empty batch charges nothing and writes nothing."""
+    counts. An empty batch charges nothing and writes nothing.
+
+    `record` SETS keys in the same write: a fact recorded at dispatch beside the
+    charge. A value is a count (a backup cell's part count, #3679) or a non-empty
+    list of non-empty strings (the claim ids that backup was handed, #3695), and
+    nothing else. A present value of the other kind still refuses, as for a charge."""
     if not keys:
         return {}
     data = runio._load_state_json(path, what)
     charged = {}
     for key in keys:
         charged[key] = data[key] = _count_in(data, path, key, what) + 1
+    for key, value in (record or {}).items():
+        if _is_count(value):
+            _count_in(data, path, key, what)
+        elif _is_id_list(value):
+            if key in data and not _is_id_list(data[key]):
+                _refuse(path, key, what, "a list of ids")
+        else:
+            raise ValueError("a recorded value must be a count or a non-empty list of "
+                             "non-empty strings: %r" % (value,))
+        data[key] = value
     runio._write_json(path, data)
     return charged
 
