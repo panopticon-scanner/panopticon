@@ -616,6 +616,32 @@ def test_a_host_failure_is_never_silent(lab, plan, request):
         pytest.fail("known: " + "; ".join(sentence for _check, _phase, sentence in found))
 
 
+# --- a resume while the host still limits the capability probe (#3646) --------------------
+
+def test_a_resume_under_a_host_limit_stays_paused_and_then_recovers(lab):
+    # #3663 review item 5: the whole chain. An outage pauses the run; the operator resumes
+    # three times while the real canary's launch is still rate-limited; then the host heals.
+    plan = next(plan for plan in full_cases() if fh.is_outage(plan))
+    seeded = plan.seeded_for(lab.control.launched)
+    outcome = fh.drive(lab, seeded, recover=True, limited_resumes=3)
+    assert outcome.stalled == ["paused"] * fh.MAX_INVOCATIONS
+    assert len(outcome.limited) == 3
+    for resume in outcome.limited:
+        assert resume.status["status"] == "paused", resume.status
+        message = resume.status["message"]
+        assert message.startswith("paused: this resume's capability probe could not launch")
+        assert "usage limit reached" in message         # the host's own words
+        assert outage.RESUME_ADVICE in message
+        assert "posture changed" not in message
+        assert resume.launches == 0
+        assert not resume.report
+        assert resume.changed == [], resume.changed
+    # The healed host finishes the run, and the report is the control's.
+    assert outcome.status == "complete", outcome.statuses[-1]
+    assert _comparable(outcome) == _comparable(lab.control)
+    assert not problems(lab.control, outcome)
+
+
 # --- a backup that answers part of what it was handed (#3695) -----------------------------
 
 @pytest.fixture(scope="module")

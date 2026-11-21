@@ -22,10 +22,11 @@ import json
 import os
 import tempfile
 
-from scripts import read_guard_hook, write_guard_hook
+from scripts import hosts, read_guard_hook, redact, write_guard_hook
 from scripts.runners import base as runner_base
 from scripts.runners import children
 from scripts.runners import claude as claude_runner
+from scripts.runners import outage
 
 CANARY_AGENT = "panopticon-write-canary"
 CANARY_MODEL = "claude-haiku-5-5"
@@ -80,6 +81,17 @@ def _denials(envelope):
 # a model that never attempted the Write) measured nothing, and the probe says
 # UNKNOWN rather than claiming a denial nobody saw.
 PROVEN, REFUTED, NOT_MEASURED = "proven", "refuted", "not-measured"
+# #3646: NOT_MEASURED because the launch itself failed host-class (a quota or plan
+# limit, a rate limit, auth, the provider down), classified exactly as the loop
+# classifies a reviewer's launch. Its detail begins `hosts.HOST_LIMITED_LEAD`, which
+# is how a resume tells "the host is limited" from "the posture changed".
+# #3663 review: the limit is recognised only where the loop recognises one -- in the
+# CLI's JSON envelope (its `error` object or its `API Error: ...` result line), through
+# `Runner.parse_envelope`. A limit printed as plain text or on stderr alone is not
+# classified host-class here or in the loop, so it still reads as not measured and a
+# resume under it is still refused as drift.
+HOST_LIMITED = "host-limited"
+HOST_ERROR_EXCERPT = 240   # characters of the host's error kept in the evidence detail
 ATTEMPTS = 2   # one retry: a single flaky launch must not decide a run
 # How round_trip's NOT_MEASURED detail begins: the write-guard refusal reads it
 # to say "re-run first" rather than "accept the gap" (#3220).
@@ -88,6 +100,16 @@ NOT_MEASURED_LEAD = "not measured after "
 
 def _same(a, b):
     return os.path.realpath(a) == os.path.realpath(b)
+
+
+def _host_words(launched):
+    """The launch's error line and the host's own error surface, as one string."""
+    error = str(getattr(launched, "error", None) or "")
+    host = getattr(launched, "host_error", None)
+    if isinstance(host, dict):
+        host = json.dumps(host, sort_keys=True)
+    host = str(host or "")
+    return error if host in error else ("%s %s" % (error, host)).strip()
 
 
 def _not_measured(detail):
@@ -134,13 +156,26 @@ def _attempt():
             env = claude_runner.Runner().launch_env({write_guard_hook.ENV_ENTRY_ID: OWN_ID})
             proc = _launch(cmd, cwd=target, env=env, capture_output=True, text=True,
                            timeout=CANARY_TIMEOUT)
+            launched = claude_runner.Runner().parse_envelope(
+                OWN_ID, proc.stdout, proc.returncode, getattr(proc, "stderr", None))
+            # #3646 review: a host-class failure only says WHY nothing was measured.
+            # It is read last, below: refuting evidence the launch left behind (a
+            # PEER out_file written, the sentinel reached) decides first, so a 429
+            # mid-turn can never turn a real breakage into "host-limited".
+            host_limited = (not launched.ok
+                            and launched.failure_class == outage.HOST_FAILURE)
+            # #3663 review: with the host's own words, redacted and bounded as the
+            # loop's outage message carries them, so the pause says which limit it was.
+            said = " ".join(redact.redact_diagnostic(
+                _host_words(launched), HOST_ERROR_EXCERPT).split())
+            host_row = (HOST_LIMITED, "%s (exit %s)%s" % (
+                hosts.HOST_LIMITED_LEAD, proc.returncode, ": " + said if said else ""))
             try:
                 envelope = json.loads(proc.stdout or "")
             except ValueError:
-                row = _not_measured(
-                    "the write/read canary's `claude -p` printed no JSON envelope "
-                    "(exit %s)" % proc.returncode)
-                return {"write": row, "read": row}
+                envelope = None
+            no_json = ("the write/read canary's `claude -p` printed no JSON envelope "
+                       "(exit %s)" % proc.returncode)
             denied = _denials(envelope)
             denied_paths = [path for _tool, path in denied]
             own_ok, peer_written = os.path.isfile(own), os.path.exists(peer)
@@ -159,6 +194,18 @@ def _attempt():
         row = _not_measured(
             "the write/read canary could not run: %s: %s" % (type(exc).__name__, exc))
         return {"write": row, "read": row}
+
+    def unmeasured(detail):
+        return host_row if host_limited else _not_measured(detail)
+
+    if envelope is None:
+        # No envelope: no denial rows to prove anything with, but what the launch
+        # did on disk still refutes.
+        write = ((REFUTED, "the write canary wrote a PEER entry's out_file through the "
+                  "real CLI") if peer_written else unmeasured(no_json))
+        read = ((REFUTED, "the out-of-scope Read reached its sentinel through the real CLI")
+                if exposed else unmeasured(no_json))
+        return {"write": write, "read": read}
     if peer_written:
         write = (REFUTED,
                  "the write canary wrote a PEER entry's out_file through the real CLI")
@@ -170,7 +217,7 @@ def _attempt():
                  "real CLI (a permission_denials row names it), so no enforced reviewer "
                  "could write its findings")
     else:
-        write = _not_measured(
+        write = unmeasured(
             "the canary's own out_file was not written and no permission_denials "
             "row names it (%d denial(s)): the model did not attempt the Write" % len(denied))
 
@@ -180,7 +227,7 @@ def _attempt():
         read = (PROVEN, "an out-of-scope Read was denied through the real CLI "
                 "(a permission_denials row names it)")
     else:
-        read = _not_measured(
+        read = unmeasured(
             "no permission_denials row names the canary's out-of-scope Read: "
             "the model did not prove that it attempted the Read")
     return {"write": write, "read": read}
@@ -194,16 +241,18 @@ def measure():
         latest = _attempt()
         for capability in ("write", "read"):
             verdict, _detail = latest[capability]
-            if capability not in decided and verdict != NOT_MEASURED:
+            if capability not in decided and verdict not in (NOT_MEASURED, HOST_LIMITED):
                 decided[capability] = latest[capability]
         if len(decided) == 2:
             break
     for capability in ("write", "read"):
         if capability not in decided:
-            _verdict, detail = latest[capability]
+            verdict, detail = latest[capability]
+            # #3646: the LAST launch decides which kind of "not measured" this is; a
+            # host-limited one keeps its lead so a resume can recognise it.
             decided[capability] = (
-                NOT_MEASURED,
-                NOT_MEASURED_LEAD + "%d attempt(s): %s" % (attempt, detail))
+                (HOST_LIMITED, detail) if verdict == HOST_LIMITED else
+                (NOT_MEASURED, NOT_MEASURED_LEAD + "%d attempt(s): %s" % (attempt, detail)))
     return decided
 
 

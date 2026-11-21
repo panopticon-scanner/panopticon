@@ -31,6 +31,7 @@ from scripts.host_posture import (  # noqa: F401 -- compatibility names for #340
     _carry_output_schema_shape, _disclose_posture, _emit_posture_disclosure,
     _establish_host_posture, _gating_states, _posture_drift, _surface_refusal,
 )
+from scripts.host_posture import HostLimited
 import scripts.money as money
 import scripts.model_resolver as model_resolver
 import scripts.setup_config as setup_config
@@ -583,6 +584,10 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     # engine.Phase: phases are skipped once their done-predicate holds, which
     # is exactly the resume where re-probing matters.
     posture_error = _establish_host_posture(review_root, manifest, args)
+    if isinstance(posture_error, HostLimited):
+        # #3646: the resume probe could not launch under a host limit -- the run stays
+        # paused and resumable, exactly as a batch that hit the same limit does.
+        return dict(runio._error_status(str(posture_error)), status="paused")
     if posture_error:
         return runio._error_status(posture_error)
     try:

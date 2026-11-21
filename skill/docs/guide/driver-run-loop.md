@@ -735,7 +735,11 @@ on Claude hooks, and always uses the return-persist path.
   launched (neither was ever given a turn) — and that give-back happens whenever the stop cancelled
   anything, not only when the batch ends `paused`, since a later launch answering cleanly can close
   the run after the stop has already fired, so three paused runs during one outage do not drop the
-  cells the way three automatic iterations of it used to. `paused` exits **non-zero**, so a CI job
+  cells the way three automatic iterations of it used to. A **resume** run while the host is still
+  limited stays `paused` too (#3646): its capability probe could not launch, so a guard that read
+  unknown for that reason is not posture drift. The stored posture is left as it was, nothing is
+  dispatched, and the same resume advice applies. A probe that ran and proved less is still drift.
+  `paused` exits **non-zero**, so a CI job
   cannot read an outage as a clean review. A batch that mixes the two classes charges only the
   entry-class failures, and the cap above is unchanged for them. A **second** stop rule — the
   `--max-budget-usd` cap described with the flags above — stops launching the same way, and the
