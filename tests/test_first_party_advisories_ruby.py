@@ -788,8 +788,13 @@ class TestTheSecondReview(TestTheReviewProbes):
                  self._spec('  s.name = "foo"\n  s.version = "1.0", "9"\n')),
                 ("a dependency with only a space", self._spec(lit + "  s.add_dependency \n")),
                 ("a dependency with empty parens", self._spec(lit + "  s.add_dependency()\n")),
-                ("non-ASCII digits", self._spec(lit + "  s.rubygems_version = %s\n"
+                ("an integer", self._spec(lit + "  s.rubygems_version = 4\n")),
+                ("an integer with a leading zero",
+                 self._spec(lit + "  s.specification_version = 08\n")),
+                ("non-ASCII digits", self._spec(lit + "  s.specification_version = %s\n"
                                                 % (chr(0x661) + chr(0x662)))),
+                ("true", self._spec(lit + "  s.has_rdoc = true\n")),
+                ("nil", self._spec(lit + "  s.cert_chain = nil\n")),
                 ("a metadata value that is not a string",
                  self._spec(lit + '  s.metadata["homepage_uri"] = 1\n')),
                 ("a metadata value that is an array",
@@ -818,8 +823,13 @@ class TestTheSecondReview(TestTheReviewProbes):
                           "  s.description = 'say \"hi\"; # not a comment'\n"
                           '  s.authors = ["A", \'B\']\n  s.files = []\n'
                           '  s.require_paths = [ "lib" ]\n  s.bindir = "exe"\n'
-                          "  s.rubygems_version = 4\n  s.has_rdoc = false\n"
-                          "  s.cert_chain = nil\n  s.required_ruby_version = \">= 3.0\"\n")),
+                          "  s.email = 'a@example.invalid'\n  s.email = ['a@example.invalid']\n"
+                          '  s.homepage = "https://example.invalid"\n  s.license = "MIT"\n'
+                          "  s.licenses = ['MIT']\n  s.executables = ['foo']\n"
+                          "  s.required_ruby_version = \">= 3.0\"\n"
+                          "  s.required_ruby_version = ['>= 3.0', '< 4']\n"
+                          "  s.required_rubygems_version = '~>3.2.0.rc1'\n"
+                          "  s.required_ruby_version = '3'\n")),
                 ("dependencies", self._spec(lit + '  s.add_dependency "rack", "~> 2.2"\n'
                                                   '  s.add_runtime_dependency("rake")\n'
                                                   '  s.add_development_dependency "rspec", '
@@ -838,6 +848,118 @@ class TestTheSecondReview(TestTheReviewProbes):
                  "Gem::Specification.new do |_s|\n" + lit.replace("s.", "_s.") + "end\n")):
             with self.subTest(gemspec=label):
                 self.assertEqual("first_party", self._probe(self.PATH, gemspec=gemspec))
+
+    def test_only_fields_the_reader_knows_with_the_kind_each_takes(self):
+        # #3692 round 2, items 1 and 2: `x.<anything> = <literal>` let through gemspecs
+        # Ruby cannot load (`Gem::Specification.load` returns nil), and a platform.
+        lit = self.LIT
+        for label, line in (
+                ("platform", '  s.platform = "java"\n'),
+                ("original_platform", '  s.original_platform = "java"\n'),
+                ("a field that does not exist", '  s.bogus = "x"\n'),
+                ("class", '  s.class = "x"\n'),
+                ("freeze", '  s.freeze = "x"\n'),
+                ("a junk ruby requirement", '  s.required_ruby_version = "junk"\n'),
+                ("an empty requirement", '  s.required_ruby_version = ""\n'),
+                ("a requirement with a bad operator", '  s.required_ruby_version = "=> 3"\n'),
+                ("a requirement with two versions", '  s.required_ruby_version = ">= 3 4"\n'),
+                ("a requirement with a non-ASCII digit",
+                 '  s.required_ruby_version = ">= %s"\n' % chr(0x663)),
+                ("a requirement list holding junk",
+                 '  s.required_rubygems_version = [">= 3", "junk"]\n'),
+                ("an empty requirement list", "  s.required_ruby_version = []\n"),
+                ("a date", '  s.date = "2026-11-21"\n'),
+                ("a junk date", '  s.date = "junk"\n'),
+                ("a dependency with a junk requirement", '  s.add_dependency "a", "junk req"\n'),
+                ("a dependency with an empty name", '  s.add_dependency ""\n'),
+                ("a dependency with a spaced name", '  s.add_dependency "a b"\n'),
+                ("a development dependency with a junk requirement",
+                 '  s.add_development_dependency("a", ">= 1", "x")\n'),
+                ("an array for a string field", '  s.summary = ["a"]\n'),
+                ("a string for an array field", '  s.files = "a.rb"\n'),
+                ("an array for the author", '  s.author = ["A"]\n'),
+                ("a string for the authors", '  s.authors = "A"\n'),
+                ("an array for the name", '  s.name = ["foo"]\n'),
+                ("signing_key", '  s.signing_key = "key.pem"\n'),
+                ("rubygems_version", '  s.rubygems_version = "3.5.0"\n'),
+                ("specification_version", "  s.specification_version = 4\n")):
+            with self.subTest(field=label):
+                body = line if "s.name" in line else lit + line
+                if "s.name" in line:
+                    body = line + '  s.version = "1.0"\n'
+                self.assertIsNone(self._probe(self.PATH, gemspec=self._spec(body)))
+        # The table itself: every field, and the kind it takes.
+        self.assertEqual(
+            {"name": "string", "version": "string", "summary": "string",
+             "description": "string", "homepage": "string", "license": "string",
+             "author": "string", "bindir": "string", "post_install_message": "string",
+             "email": "string or array", "authors": "array", "licenses": "array",
+             "files": "array", "test_files": "array", "executables": "array",
+             "extensions": "array", "extra_rdoc_files": "array", "rdoc_options": "array",
+             "require_paths": "array", "requirements": "array",
+             "required_ruby_version": "requirement",
+             "required_rubygems_version": "requirement"},
+            first_party_advisory.GEMSPEC_FIELDS)
+        for field, kind in first_party_advisory.GEMSPEC_FIELDS.items():
+            if field in ("name", "version"):
+                continue
+            values = {"string": ('"a"',), "array": ('["a"]', "[]"),
+                      "string or array": ('"a"', '["a"]'),
+                      "requirement": ('">= 1"', '[">= 1", "< 2"]')}[kind]
+            wrong = {"string": '["a"]', "array": '"a"', "string or array": "1",
+                     "requirement": '"a"'}[kind]
+            for value in values:
+                with self.subTest(field=field, value=value):
+                    self.assertEqual("first_party", self._probe(
+                        self.PATH, gemspec=self._spec(lit + "  s.%s = %s\n" % (field, value))))
+            with self.subTest(field=field, wrong=wrong):
+                self.assertIsNone(self._probe(
+                    self.PATH, gemspec=self._spec(lit + "  s.%s = %s\n" % (field, wrong))))
+
+    def test_a_requirement_is_one_rubygems_can_parse(self):
+        ok = first_party_advisory._gem_requirement_ok
+        for text in ("1", "1.0", ">= 1", ">=1", "~> 2.2", "~>2.2.0.rc1", "= 1.a", "!= 1.0",
+                     "> 0", "< 4", "<= 4.0.0", "  >= 1  ", "1.0.0.pre"):
+            with self.subTest(valid=text):
+                self.assertTrue(ok(text))
+        for text in ("", " ", "junk", "junk req", ">=", "=> 1", ">= 1 2", ">> 1", "~ 1",
+                     ">= .1", ">= 1.", ">= 1..2", ">= v1", ">= 1-rc", ">= 1,", "1 >=",
+                     ">= " + chr(0x663), ">= 1." + chr(0xE9), ">=\t1"):
+            with self.subTest(invalid=text):
+                self.assertFalse(ok(text))
+
+    def test_a_coding_comment_must_be_exactly_utf_8(self):
+        # Item 3: Ruby's magic comment allows spaces round the separator.
+        lit = self.LIT
+        for comment in ("#  coding   :   bogus", "# coding  = bogus-enc",
+                        "# -*- encoding : utf-16 -*-", "# coding : us-ascii",
+                        "# coding: utf-8x", "# coding: utf-8.old", "# coding: utf8",
+                        "# vim: set fileencoding=latin-1 :", "# CODING: SHIFT_JIS",
+                        "# coding", "# coding utf-8", "#coding:ascii-8bit",
+                        "# coding: utf-8 coding: big5", "# decoding notes"):
+            for where in ("before", "inside", "after"):
+                with self.subTest(comment=comment, where=where):
+                    gemspec = {"before": comment + "\n" + self._spec(lit),
+                               "inside": self._spec("  " + comment + "\n" + lit),
+                               "after": self._spec(lit) + comment + "\n"}[where]
+                    self.assertIsNone(self._probe(self.PATH, gemspec=gemspec))
+        for comment in ("# coding: utf-8", "# encoding: UTF-8", "#coding:utf-8",
+                        "# -*- coding : utf-8 -*-", "# encoding  =  Utf-8",
+                        "# vim: set fileencoding=utf-8 :", "# coding: utf-8 encoding: utf-8",
+                        "# nothing about it"):
+            with self.subTest(utf8=comment):
+                self.assertEqual("first_party", self._probe(
+                    self.PATH, gemspec=comment + "\n" + self._spec(lit)))
+
+    def test_a_numbered_parameter_is_not_a_block_variable(self):
+        # Item 7: Ruby 3 reserves _1 to _9.
+        for var, expected in (("_1", None), ("_9", None), ("_0", "first_party"),
+                              ("_10", "first_party"), ("_a", "first_party"),
+                              ("_", "first_party")):
+            with self.subTest(var=var):
+                gemspec = ("Gem::Specification.new do |%s|\n" % var
+                           + self.LIT.replace("s.", var + ".") + "end\n")
+                self.assertEqual(expected, self._probe(self.PATH, gemspec=gemspec))
 
     def test_an_escape_is_never_read_as_its_own_text(self):
         # A lock name may hold a backslash; `"fo\x6f"` is `foo` to Ruby, not that text.
@@ -906,6 +1028,13 @@ class TestTheSecondReview(TestTheReviewProbes):
                  good.replace("  specs:\n    rack", "  specs: x\n    rack")),
                 ("a valued specs with nothing under it",
                  good + "\nGIT\n  remote: https://example.invalid/x.git\n  specs: junk\n"),
+                # Item 6: Bundler raises on a source with no remote, or a spaced one.
+                ("a second PATH with no remote", good + "\nPATH\n  specs:\n    bar (1.0)\n"),
+                ("a GIT with no remote", good + "\nGIT\n  revision: abc\n  specs:\n"),
+                ("a GEM with no remote and no specs line", good + "\nGEM\n"),
+                ("a spaced GEM remote",
+                 good.replace("remote: https://rubygems.org/", "remote: https://rubygems.org/ junk")),
+                ("a spaced PATH remote", good.replace("remote: gems/foo", "remote: gems/foo x")),
                 ("a dependency before any spec",
                  good + "\nGIT\n  remote: https://example.invalid/x.git\n  specs:\n"
                         "      rack\n")):
@@ -913,8 +1042,11 @@ class TestTheSecondReview(TestTheReviewProbes):
                 self.assertNotEqual(good, lock)
                 self.assertIsNone(self._probe(lock))
         # A version RubyGems rejects, on an unrelated spec, fails the whole lock.
+        # Item 5: digits and letters are ASCII, as RubyGems' pattern is.
         for version in ("x", ".1", "1.", "1..0", "a.1", "1.0!", "1.0_1", "1.0-", "-java",
-                        "1.0-x86 64", "v1.0", "1.0+1", "1,0"):
+                        "1.0-x86 64", "v1.0", "1.0+1", "1,0", chr(0x661) + ".2",
+                        "1." + chr(0xE9), "1." + chr(0x662), "1.0-jav" + chr(0xE9),
+                        chr(0xB2), "1." + chr(0xB2)):
             with self.subTest(version=version):
                 self.assertIsNone(self._probe(
                     good.replace("    json (2.0)\n", "    json (%s)\n" % version)))
@@ -1009,6 +1141,12 @@ class TestTheSecondReview(TestTheReviewProbes):
         # ...except the literal `.gemspec`, which the glob's empty alternative names.
         self.assertIsNone(reset(**{"foo.gemspec": good, ".gemspec": private}))
         self.assertEqual("first_party", reset(**{".gemspec": good}))
+        # Item 4: on a case-insensitive filesystem Ruby's glob matches any case.
+        for other in ("X.GEMSPEC", "x.Gemspec", "real/B.GemSpec", ".GEMSPEC"):
+            with self.subTest(other=other):
+                self.assertIsNone(reset(**{"foo.gemspec": good, other: private}))
+        self.assertEqual("first_party", reset(**{"FOO.GEMSPEC": good}))
+        self.assertEqual("first_party", reset(**{"real/Foo.Gemspec": good}))
         # ...and only here: one level down the glob is `*/*.gemspec`.
         self.assertEqual("first_party",
                          reset(**{"foo.gemspec": good, "real/.gemspec": private}))
