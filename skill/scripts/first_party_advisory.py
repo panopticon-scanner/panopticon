@@ -917,8 +917,7 @@ def _gem_version_ok(version):
     optional ``-platform`` of letters, digits, ``_``, ``.`` and ``-``."""
     release, dash, platform = version.partition("-")
     segments = release.split(".")
-    if not (segments[0].isascii() and segments[0].isdigit()
-            and all(_ascii_alnum(segment) for segment in segments)):
+    if not (segments[0].isdigit() and all(_ascii_alnum(segment) for segment in segments)):
         return False
     return not dash or (bool(platform) and platform.isascii()
                         and all(ch.isalnum() or ch in "_.-" for ch in platform))
@@ -1208,8 +1207,8 @@ def _gemspec_document(text):
                                              and "metadata" in line):
             return None
         if statement[0] == "set" and statement[1] in ("name", "version"):
-            kind, value = statement[2]
-            if statement[1] in document or kind != "string" or not value:
+            value = statement[2][1]                 # a string: GEMSPEC_FIELDS says so
+            if statement[1] in document or not value:
                 return None
             document[statement[1]] = value
     if not closed or "name" not in document or "version" not in document:
