@@ -92,12 +92,13 @@ def _tool_verify_queue(review_root, manifest):
     Runs synthesize's OWN combined pipeline (agent findings from the cell files
     PLUS the ingested tool findings) -> prepare_for_queue -> build_verify_queue,
     then filters to is_tool_sourced entries. The full combined pipeline (not a
-    tool-only slice) is what guarantees FINDING-ID parity: aggregate_tool_findings
-    chooses its survivor for a repeated rule using the AGENT findings' loci, so a
-    tool-only pipeline could keep a different survivor -- same fingerprint/queue_id
-    but a different finding id -- and synthesize's match_verdict enforces the
-    finding_id echo, so a mismatched id would drop the driver's verdict and force
-    the very INCONCLUSIVE this phase exists to prevent. Feeding the identical
+    tool-only slice) is what guarantees FINDING-ID parity: which tool findings are
+    queue entries at all depends on the AGENT findings, since a claim that absorbs a
+    scanner finding at its line takes its place in the queue. (Until #3731
+    aggregate_tool_findings also chose its survivor for a repeated rule by the agent
+    findings' loci; the survivor is the lowest line now.) synthesize's match_verdict
+    enforces the finding_id echo, so a mismatched id would drop the driver's verdict
+    and force the very INCONCLUSIVE this phase exists to prevent. Feeding the identical
     inputs through the identical functions makes the (queue_id, id) pair the tool
     findings carry here byte-identical to what synthesize's report exports.
 

@@ -83,7 +83,9 @@ and `max_groups` to 4-64 — so a committed value cannot collapse the matrix int
 or starve it to a handful; an out-of-band value is clamped to the nearest bound and disclosed, and a
 value too large to be an integer setting at all (beyond 53 bits) is refused as out of range rather
 than clamped. **Gate (ratchet)** keys — `security`, `fail_on`, `severity`, `gate_scope`, `tools`,
-`max_verify` — change how the review judges, and are honoured only when the value is at least as
+`max_verify` — change how the review judges (`gate_scope` stays a valid key and has no effect in
+5.4: delta review is withdrawn, #3735, and with no diff it scopes nothing), and are honoured only
+when the value is at least as
 strict as panopticon's own default: a repository may tighten its own review and may never loosen it,
 so `security: redteam` is honoured and `tools: false` is refused. `fail_on` defaults to `critical`:
 `high`, `medium` and `low` tighten it and are honoured without a word, and `fail_on: off` is a
@@ -116,10 +118,18 @@ line is added — `driver migrate-config` adds it for you.
 
 Setup writes a **draft**: read `.panopticon/setup-report.md`, review `panopticon.yml.draft`, move it
 to `panopticon.yml`, and commit it (setup never overwrites a committed file). **Commit it before you
-compare runs.** A proposal differs from one setup run to the next, and a run over a config that is
-not in the reviewed commit reports its matrix as FRESH (`meta.matrix.origin: working_tree`), with
-whether it is still setup's last draft; once committed it reads `committed`, and every later run on
-that commit shares one `matrix_fingerprint` (#3651, see Output).
+compare runs.** Repeatable results are claimed for a committed matrix: the same panopticon version,
+the same pinned repository and the same committed `panopticon.yml`. A freshly proposed matrix is
+not repeatable (#3729): two setups on one commit can differ in how the files are grouped, in how
+many groups there are and in the groups' names, not only in their order or spelling. A run over a
+config that is not in the reviewed commit reports its matrix as FRESH (`meta.matrix.origin:
+working_tree`, and `origin=working_tree (FRESH: ...)` on the report's `Matrix:` line), with whether
+it is still setup's last draft. Once committed it reads `committed` (`origin=committed (reused:
+...)`), and every later run on that commit shares one `matrix_fingerprint` (#3651, see Output).
+
+Repeatable does not mean identical. The README gives the measured figures for 5.4.0 (seven runs on
+each of 16 repositories, #3584): scanner findings are steady, and 46% of reviewer-agent findings
+appear in only one run of seven.
 
 **Upgrading from a `.panopticon/groups.yml` tree.** Nothing reads that file any more.
 `python3 skill/scripts/driver.py migrate-config .` writes `panopticon.yml` from it (group order
@@ -137,7 +147,7 @@ kept, not deleted. Rotation was chosen over scoping `usage.json` by run tag: a s
 `runs/<tag>/` folder, and the ledger is the one source both files are read from. Both files of a
 cycle get one tag, and a name already taken (even by a dangling link) moves the pair to a fresh one.
 While a `driver loop --setup` is still running on the tree, reset leaves both in place and says so:
-that loop's `--budget` reads the ledger's total. A move that fails stops the reset before anything
+that loop's `--max-budget-usd` reads the ledger's total. A move that fails stops the reset before anything
 else is removed and is the reset's error status, so the next cycle never counts the old spend.
 
 **Glob semantics.** `match:`, `tests:` and `exclude_paths:` take gitignore-flavored globs: `*` and
@@ -175,8 +185,9 @@ dot-directories, plus root dot-files such as `.env*`, `.npmrc`, `.travis.yml` an
 dot-directory nested below the root.
 A claimed dot-path a group does not match lands in `Ungrouped`, which is the signal that the matrix
 has a gap — not that the file was skipped.
-`--scope-changed` narrows that same surface through the same filter, so a changed tracked
-`.venv/lib/x.py` is pruned from a delta review exactly as it is from a whole-repo one (#2272).
+`--scope-changed` (withdrawn in 5.4 and refused, #3735) narrowed that same surface through the same
+filter, so a changed tracked `.venv/lib/x.py` was pruned from a delta review exactly as it is from
+a whole-repo one (#2272).
 
 **Two ways to narrow scope in `panopticon.yml` — pick the right one.** A per-group
 `exclude: [DOMAIN, …]` is a *domain* filter: it drops named review domains for that group, but **SEC
@@ -211,7 +222,7 @@ so that nobody's taste about scope can hide code from security review (the same 
 overridden), so this is deliberate, and it is **disclosed** rather than silent: the carved globs,
 paths and count appear in `groups.json`, on discovery's stderr line, and in the report's coverage
 section as
-`meta.coverage.exclude_paths_sec_carve_out`. `--pr` mode is the same in every respect, and a
+`meta.coverage.exclude_paths_sec_carve_out`. A
 narrowing scope flag narrows the carve-out with the rest of the run: `--scope-dir` keeps the carved
 files under that directory, `--scope-file` and `--scope-group` carve nothing, so a `count: 0` there
 means "nothing in this run's scope" rather than "nothing in the repository".
@@ -220,12 +231,17 @@ To drop a path from SEC too, the exclusion has to stop being yours to make: remo
 the repository, or run with `--security standard`, which prunes a recognised
 deliberately-vulnerable fixture corpus at discovery — before `exclude_paths` is consulted at all.
 
-**The scanner's own config is not reviewed (#3642).** A full-repo scan leaves the root
-`panopticon.yml` / `.panopticon.yml` (`repo_config.CONFIG_NAMES`, the names a `--pr` review already
-drops) out of every group, and discloses it under `excluded.scanner_config` in `groups.json` and on
-the scan's stderr. A nested `sub/panopticon.yml` is not the scanner's config and is reviewed as
-usual. An explicit `--scope-files panopticon.yml`, and a plain `-c`/`--base` delta that changes it,
-still review it. Tool scans are unchanged.
+**The scanner's own config is not reviewed (#3642).** A full-repo scan leaves the root config it
+loaded out of every group, and discloses it under `excluded.scanner_config` in `groups.json` and on
+the scan's stderr. That is one file (#3708): `panopticon.yml`, or `.panopticon.yml` when it is the
+only one there. Where the root holds both names, `panopticon.yml` is the config and
+`.panopticon.yml` is an ordinary file that is reviewed. Where neither was loaded (a symlink at
+either name is refused), nothing is left out. The report names the file too, in
+`meta.coverage.scanner_config_excluded`; it does not change the letter, the certification or the
+coverage note. A nested `sub/panopticon.yml` is not the scanner's config and is reviewed as
+usual. Naming it explicitly still reviews it. The
+driver's flag is `--files panopticon.yml`; `discovery.py`, run directly, takes `--scope-files`, and
+the driver refuses that spelling. Tool scans are unchanged.
 
 **What these settings do to the letter (#3548).** On a full review, a per-group `exclude:` that
 removes a domain the run would otherwise have used makes the letter provisional, the same way a

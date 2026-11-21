@@ -113,6 +113,177 @@ class TestTheDependencyAuditReceipt(unittest.TestCase):
                 dependency_applicable=["python", "unknown", "forged"],
             )
         self.assertEqual(payload["dependency_audit"]["applicable"], ["python"])
+        # A caller that measured no reasons writes none: the three-key receipt.
+        self.assertEqual({"applicable", "selected", "produced"},
+                         set(payload["dependency_audit"]))
+
+
+def _tree(d, *names):
+    for name in names:
+        os.makedirs(os.path.dirname(os.path.join(d, name)), exist_ok=True)
+        open(os.path.join(d, name), "w").close()
+    return d
+
+
+class TestWhyAnEcosystemWentUnaudited(unittest.TestCase):
+    """#3648. A JavaScript tree with `package.json` and no lockfile is applicable and
+    no auditor reads it. The report said only "no SCA tool produced output", which
+    does not say why; beside an audited `requirements.txt` it said nothing at all."""
+
+    JS = ("javascript not audited: no npm-shrinkwrap.json, package-lock.json, yarn.lock or "
+          "pnpm-lock.yaml; npm-audit and osv-scanner need one")
+
+    def _unaudited(self, names, selected=(), online=False):
+        with tempfile.TemporaryDirectory() as d:
+            return tm.dependency_audit_unaudited(_tree(d, *names), list(selected), online)
+
+    def test_no_file_any_auditor_reads(self):
+        for names, ecosystem in ((["package.json"], "javascript"), (["Cargo.toml"], "rust"),
+                                 (["Gemfile"], "ruby"), (["go.sum"], "go"),
+                                 (["Pipfile"], "python")):
+            for online in (False, True):
+                with self.subTest(names=names, online=online):
+                    self.assertEqual({ecosystem: "no_auditable_file"},
+                                     self._unaudited(names, online=online))
+
+    def test_a_selected_auditor_that_reads_it_leaves_no_reason(self):
+        for names, selected in ((["package.json", "yarn.lock"], ["osv-scanner"]),
+                                (["package.json", "npm-shrinkwrap.json"], ["npm-audit"]),
+                                (["Cargo.toml", "Cargo.lock"], ["cargo-audit"]),
+                                (["requirements-dev.txt"], ["pip-audit"]),
+                                (["go.mod"], ["osv-scanner"])):
+            with self.subTest(names=names):
+                self.assertEqual({}, self._unaudited(names, selected, online=True))
+
+    def test_a_selected_auditor_reads_only_the_ecosystems_whose_files_are_there(self):
+        self.assertEqual({"javascript": "no_auditable_file"},
+                         self._unaudited(["requirements.txt", "package.json"], ["osv-scanner"]))
+        # npm-audit selected, and its lockfile absent: it is not reading this tree.
+        self.assertEqual({"javascript": "not_run"},
+                         self._unaudited(["package.json", "yarn.lock"], ["npm-audit"],
+                                         online=True))
+
+    def test_an_auditor_that_runs_only_online(self):
+        self.assertEqual({"python": "needs_online"}, self._unaudited(["pyproject.toml"]))
+        self.assertEqual({"python": "needs_online"}, self._unaudited(["requirements-dev.txt"]))
+        # #3699 L2: only when EVERY reader is online-only. osv-scanner reads a
+        # requirements.txt offline, so its absence is not for want of --online.
+        self.assertEqual({"python": "not_run"}, self._unaudited(["requirements.txt"]))
+        self.assertEqual({"javascript": "not_run"},
+                         self._unaudited(["package.json", "package-lock.json"]))
+        # Online and still not selected: that is not for want of --online.
+        self.assertEqual({"python": "not_run"},
+                         self._unaudited(["pyproject.toml"], online=True))
+        # npm-audit's lockfile is not osv-scanner's: only --online audits a shrinkwrap.
+        self.assertEqual({"javascript": "needs_online"},
+                         self._unaudited(["package.json", "npm-shrinkwrap.json"]))
+
+    def test_a_file_is_there_and_no_auditor_was_selected_for_it(self):
+        # osv-scanner reads package-lock.json offline and was left out of the selection.
+        self.assertEqual({"javascript": "not_run"},
+                         self._unaudited(["package.json", "package-lock.json"], online=True))
+        # dependency-check reads build.gradle, and declines a tree with no resolved jars.
+        self.assertEqual({"java": "not_run"}, self._unaudited(["build.gradle"]))
+
+    def test_a_tree_with_no_dependency_surface_has_no_reasons(self):
+        self.assertEqual({}, self._unaudited(["app.py"]))
+
+    def test_a_directory_with_a_lockfiles_name_is_no_lockfile(self):
+        # #3699 L1. npm-audit and osv-scanner ask for a regular file, so neither would
+        # be selected for this tree, online or not: "npm-audit needs --online" would be
+        # wrong advice. The reason uses each adapter's own test.
+        for online in (False, True):
+            with self.subTest(online=online), tempfile.TemporaryDirectory() as d:
+                _tree(d, "package.json")
+                os.mkdir(os.path.join(d, "package-lock.json"))
+                os.mkdir(os.path.join(d, "npm-shrinkwrap.json"))
+                self.assertEqual({"javascript": "no_auditable_file"},
+                                 tm.dependency_audit_unaudited(d, [], online))
+        # cargo-audit's own test is "the path exists", and it is asked the same way.
+        with tempfile.TemporaryDirectory() as d:
+            _tree(d, "Cargo.toml")
+            os.mkdir(os.path.join(d, "Cargo.lock"))
+            self.assertEqual({"rust": "not_run"}, tm.dependency_audit_unaudited(d, [], True))
+            self.assertEqual({}, tm.dependency_audit_unaudited(d, ["cargo-audit"], True))
+
+    def test_the_file_test_asked_is_the_adapters_own(self):
+        from scripts.tools import ADAPTERS
+        asked = []
+
+        def never(target, name):
+            asked.append(name)
+            return False
+
+        with tempfile.TemporaryDirectory() as d, mock.patch.object(
+                type(ADAPTERS["npm-audit"]), "has_audit_file", staticmethod(never)):
+            _tree(d, "package.json", "npm-shrinkwrap.json")
+            self.assertEqual({"javascript": "no_auditable_file"},
+                             tm.dependency_audit_unaudited(d, [], False))
+        self.assertEqual(["npm-shrinkwrap.json", "package-lock.json"], asked)
+
+    def test_the_auditors_and_their_files_come_from_the_adapters(self):
+        from scripts.tools import ADAPTERS
+        self.assertEqual({"npm-audit": ("npm-shrinkwrap.json", "package-lock.json"),
+                          "osv-scanner": ("package-lock.json", "yarn.lock", "pnpm-lock.yaml")},
+                         tm.dependency_auditors("javascript"))
+        self.assertEqual({}, tm.dependency_auditors("unknown"))
+        for ecosystem in sorted(tm.DEPENDENCY_AUDIT_ECOSYSTEMS - {"unknown"}):
+            readers = tm.dependency_auditors(ecosystem)
+            self.assertTrue(readers, ecosystem)
+            for tool, files in readers.items():
+                with self.subTest(ecosystem=ecosystem, tool=tool):
+                    self.assertIn(tool, tm.DEPENDENCY_AUDIT_TOOLS)
+                    self.assertIs(ADAPTERS[tool].audit_files[ecosystem], files)
+        # Every dedicated auditor exports its list, and reads at least one ecosystem.
+        for tool in sorted(tm.DEPENDENCY_AUDIT_TOOLS):
+            self.assertTrue(ADAPTERS[tool].audit_files, tool)
+        # Only a dedicated auditor counts: a pattern scanner that grew a list would
+        # not make a `package.json` audited.
+        before = tm.dependency_auditors("javascript")
+        with mock.patch.object(type(ADAPTERS["semgrep"]), "audit_files",
+                               {"javascript": ("package.json",)}, create=True):
+            self.assertEqual(before, tm.dependency_auditors("javascript"))
+
+    def test_the_sentences(self):
+        sentence = tm.unaudited_sentence
+        self.assertEqual(self.JS, sentence("javascript", "no_auditable_file"))
+        self.assertEqual("go not audited: no go.mod; osv-scanner needs one",
+                         sentence("go", "no_auditable_file"))
+        self.assertEqual("python not audited: pip-audit needs --online",
+                         sentence("python", "needs_online"))
+        self.assertEqual("javascript not audited: npm-audit needs --online",
+                         sentence("javascript", "needs_online"))
+        self.assertEqual("java not audited: no dependency auditor ran on it",
+                         sentence("java", "not_run"))
+        # No online-only auditor reads Go: the pair is still named, in the plain words.
+        self.assertEqual("go not audited: no dependency auditor ran on it",
+                         sentence("go", "needs_online"))
+        for ecosystem, reason in (("unknown", "not_run"), ("javascript", "because"),
+                                  ("<b>", "not_run"), ("javascript", None), (None, "not_run")):
+            with self.subTest(ecosystem=ecosystem, reason=reason):
+                self.assertIsNone(sentence(ecosystem, reason))
+        self.assertEqual(("no_auditable_file", "needs_online", "not_run"), tm.UNAUDITED_REASONS)
+
+    def test_the_writer_records_reasons_for_listed_ecosystems_in_closed_enums(self):
+        with tempfile.TemporaryDirectory() as d:
+            payload = tm.write_manifest(
+                os.path.join(d, "manifest.json"), ["osv-scanner"], [],
+                dependency_applicable=["python", "javascript"],
+                dependency_unaudited={"javascript": "no_auditable_file", "rust": "not_run",
+                                      "python": "<script>", "unknown": "not_run"})
+            self.assertEqual({"applicable": ["javascript", "python"],
+                              "selected": ["osv-scanner"], "produced": [],
+                              "unaudited": {"javascript": "no_auditable_file"}},
+                             payload["dependency_audit"])
+            payload = tm.write_manifest(
+                os.path.join(d, "manifest.json"), ["osv-scanner"], [],
+                dependency_applicable=["python"], dependency_unaudited={})
+            self.assertEqual({}, payload["dependency_audit"]["unaudited"])
+            # No applicability measured: no receipt, so no reasons either.
+            payload = tm.write_manifest(
+                os.path.join(d, "manifest.json"), ["osv-scanner"], [],
+                dependency_unaudited={"javascript": "not_run"})
+            self.assertNotIn("dependency_audit", payload)
 
 
 class TestTheManifestPublishesItsScopeRows(unittest.TestCase):

@@ -32,7 +32,7 @@ One real measurement, Panopticon reviewing its own repository on 2026-09-20 in i
 
 What moves the number, in order:
 
-- **Scope.** `-c` (this branch against its base), `--pr N`, `-d dir` and `-f file` review a slice. A 25-file PR still queues every finding for verification, so pair a delta review with `--max-verify N`; our own delta runs use about twice the changed-file count as a rule of thumb.
+- **Scope.** `-d dir`, `-f file` and `--files a b` review a slice. Reviewing a diff (`--pr`, `-c`, `--base`) is withdrawn in 5.4 and refused at the command line (#3735); 5.4 is a whole-repository audit.
 - **Security posture.** `--security standard` (the default) is markedly cheaper than `redteam`.
 - **Model tier.** Advisors are the expensive seat. The host's model profile decides the tier per role.
 - **Hard stops.** `driver loop --max-budget-usd X` stops the run at a dollar figure on hosts that report cost (Claude does; Codex reports tokens only, so use `--max-iterations` and `--entry-timeout` there).
@@ -74,8 +74,8 @@ Setup dispatches one classifier over the whole tree and writes `panopticon.yml.d
 
 ```bash
 python3 skill/scripts/driver.py loop .                          # everything
-python3 skill/scripts/driver.py loop . -c --base main            # this branch vs main
-python3 skill/scripts/driver.py loop . --pr 217 --fail-on high   # a PR, gate on HIGH+
+python3 skill/scripts/driver.py loop . -d src/payments          # one directory
+python3 skill/scripts/driver.py loop . --fail-on high            # everything, gate on HIGH+
 ```
 
 The loop prints progress per phase and per cell, and ends with the terminal summary. The artifacts land under `.panopticon/`:

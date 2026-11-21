@@ -25,6 +25,441 @@
     to `pdm.lock`, `uv.lock` to `Cargo.lock`, `package-lock.json` to `npm-shrinkwrap.json`) is
     no longer read. The parser and its cache follow the resolved name, so such a lock could be
     parsed as a format no scanner read it as.
+## 5.4.0 — Verdict integrity and the whole-repository audit
+
+Cut after a five-gate review of everything since 5.3.0 (security, correctness, robustness,
+evidence, contract), each gate by a reviewer who took no part in the work.
+
+**Known issues in 5.4.0.** All but the last fail closed: the run reads worse than it is, never
+better.
+
+- **`--severity` or a docs tree can leave a confirmed scanner finding "unanswered" (#3739).**
+  With `--severity` set to anything but `all`, or for findings under a docs tree, a scanner
+  finding its advisor confirmed can be reported as unanswered: the run is NOT CERTIFIED
+  (INCONCLUSIVE where nothing else fails the gate) and the finding shows as MEDIUM
+  `tool_reported`. Run without `--severity` (`--reset` for a finished run); for a finding
+  under a docs tree, check the unanswered scanner finding by hand.
+- **Re-running a loop that still cannot launch spends dispatches (#3740).** Re-running
+  `driver loop` while the `--max-budget-usd` cap is already reached, or in session mode before
+  the agents finish, charges every pending review cell one of its three dispatches each time,
+  with nothing launched. After three such re-runs the cells are exhausted, then the
+  tool-advisor entries the same way, and the run completes INCONCLUSIVE, not certified. Only
+  `--reset` recovers. After a budget stop, raise `--max-budget-usd` before you re-run.
+- **Three crash points need a hand (#3741).**
+  - If `driver loop` dies with an `OSError` traceback (disk full, read-only run folder), fix
+    the cause and re-run the same command.
+  - If the next run says "cannot recover stale batch batch-N.json" and
+    `.panopticon/runs/<run-tag>/batch-N.json` is 0 bytes, delete that file and re-run.
+    `--discard-batch` does not help.
+  - If the driver was killed as review finished and `.panopticon/run-manifest.json` has no
+    top-level `out_file_snapshot` key, delete
+    `.panopticon/runs/<run-tag>/out-file-hashes.json` before re-running. If you already
+    re-ran and the report says "CONTENT SNAPSHOT CHANGED",
+    only `--reset` recovers. Never delete a snapshot the manifest has stamped.
+- **No advisor is asked about a scanner finding that a reviewer's claim absorbed (#3734).**
+  When a report says "1 tool finding unanswered by its advisor" (or "N tool findings
+  unanswered by their advisors"), check those scanner findings by hand.
+- **An advisory against the project's own package is not always confirmed (#3747).** When a
+  scanner advisory matches the reviewed project's own package, the advisor can answer
+  `needs_more_info` because it could not read the manifest, and the answer can differ between
+  identical runs. Rarely it rejects the advisory as "not an external dependency", and then the
+  finding is dropped: this is the one known issue where a run can read better than it is.
+  Check advisories that name your own package by hand.
+
+- **BREAKING: delta review is withdrawn (#3735). Panopticon 5.4 is a whole-repository audit.**
+  `--pr`, `--changes` (`-c`), `--base` and `--gate-scope` are refused at the command line, with
+  `--diff-context`, on `driver run`, `loop`, `readiness` and `persist`: exit 2, one message,
+  before a root is resolved, a PR worktree acquired or a file written.
+  - Why: reviewing a diff was never calibrated or stress-tested. Every measurement behind 5.4 is
+    a whole-repository run. The five-gate review found a `--pr` run that passes, certified, with
+    a new finding on a changed line (#3731, #3732), in one case with no hostile agent involved.
+    A wrong PASS on a pull request is the worst failure this tool can have.
+  - What to do instead: run a whole-repository review, or scope one with `-f`, `-d`, `-g` or
+    `--files`. `--files` with no `--base` is unchanged.
+  - A run folder that was started as a delta review is not resumed: `driver run`, `loop` and
+    `persist` stop with the same reason, and `readiness` says so. `--reset` discards the folder
+    and starts a whole-repository run.
+  - `discovery.py` and `synthesize.py` refuse their delta flags when run by hand
+    (`--scope-changed`, `--base`, `--pr-base`, `--pr-worktree`, `--diff-hunks`,
+    `--diff-hunks-run-id`, `--changes`, `--gate-scope`, `--diff-context`).
+  - A `diff-hunks.json` left in a run folder no longer turns the on-diff gate on. The driver
+    handed it to `synthesize.py` whenever the file was there, whatever the run's manifest said.
+  - `gate_scope` in a committed `panopticon.yml` stays a valid key and has no effect. No config
+    key and no environment variable selected delta review, and none does now.
+  - The delta code is still in the tree, unreachable, and is deleted in 5.5 (#3736). Delta review
+    returns when it has been rebuilt and measured.
+
+- **A scanner rule's hits are read at their worst, and a merge cannot lighten a confirmed
+  finding (#3731, #3732, high).** Two things an honest run got wrong, with no hostile agent:
+  - A scanner rule that fires several times in a file is one finding, shown at its lowest line,
+    and it kept that hit's severity. A rule that fired LOW at line 10 and CRITICAL at line 300
+    was one LOW finding: PASS, letter A. It now carries the highest severity among its hits,
+    and `severity_from` names the hit when it is not the shown one.
+  - The health score is a sum over rows of severity times lines spanned, and the merge kept the
+    winning row whole. A one-line finding that won the merge over a confirmed finding spanning
+    50 lines cut its weight to a fiftieth.
+  - What a hostile reviewer cell could do with them:
+    - File a one-line copy of another cell's confirmed HIGH over 50 lines. The letter went from
+      F to B with the finding still in the report, certified.
+    - File a claim at a rule's LOW hit. The scanner finding was shown there, at LOW, and its
+      CRITICAL hit was only another line.
+    - File a claim at a lower hit of a rule. The scanner finding moved to that line, away from
+      a line where it had been the third finding, and the two left there collapsed into one
+      row: the run weighed less for a claim that touched neither.
+  - What changed:
+    - **A merge group is counted once in the health score, at its heaviest counted finding.**
+      The group is what the merge put together at one line. Its weight is the largest own
+      weight (the severity a finding is published at, times its own lines) among its findings
+      that count for the gate on their own. Nothing is mixed: it is one finding's weight. No
+      row's range, severity or evidence changes. A row says `weight_from` when the weight it
+      carries is not its own, and the group's other counted rows say `weight_with`.
+    - **The shown hit of an aggregated scanner finding is always the lowest line.** A line an
+      agent had flagged used to win. Nothing a reviewer writes moves a scanner finding now, so
+      no cell changes how many findings sit on a line it never touched, and the shown line is
+      the same on every run.
+    - An aggregated scanner finding weighs as its widest hit. In 5.4 no scanner adapter
+      reports a span, so every scanner hit is one line and this rule changes nothing yet.
+    - A scanner finding that a CONFIRMED claim absorbed counts as confirmed with it. No advisor
+      is asked about an absorbed scanner finding, so on its own missing verdict it weighed
+      nothing, and a claim hid the scanner finding it sat on.
+    - A range that ends before it starts is read as one line, the start, at load.
+    - `additional_loci` on a reviewer's claim is not weighed. It is the scanner aggregation's
+      field.
+  - What an honest run can see change:
+    - A scanner finding whose hits differ in severity reads higher: the worst hit's.
+    - A claim on a later hit of a rule no longer pairs with the scanner finding. They are two
+      rows. The claim is not `reinforced` and is not at the head of the verify queue. A claim
+      on the first hit still pairs. Which of the two is the row can change where the hits
+      differ in severity: the scanner finding ranks at its worst hit now, and can win a pair
+      it used to lose. (Corroboration without the move is #3734.)
+    - More scanner findings are asked about. A scanner finding that a claim on a later hit
+      used to absorb is its own row now, so its advisor is asked, and its place in the verify
+      queue follows its worst hit. A run that read INCONCLUSIVE because nobody had been asked
+      can read PASS where that advisor rejects the finding, and FAIL where it confirms it.
+    - A confirmed scanner-and-claim pair weighs as the heavier of the two. Scanner hits are
+      one line each in 5.4, so the heavier is the claim wherever the claim spans more.
+    - A merge group whose heaviest counted finding is merged under a lighter row weighs more.
+    - **Health can rise** where one merge group has two counted rows: they were added and are
+      now counted once, at the heavier. An uncapped `TST-A1*` HIGH that comes back beside the
+      confirmed MEDIUM that won their tie (#3727) weighed 25 + 5 and weighs 25.
+  - The group-weight rule itself changes no row: which findings are in the report, their
+    ranges, severities and evidence, the gate and the certification are as they were. The
+    scanner changes above do change rows, as listed.
+  - The property that removing any one cell never makes the run stricter now also compares
+    the letter and the health score, and a second property pins that adding a cell's findings
+    never joins two other findings into one merge group.
+  - Known and not fixed here: no advisor is asked about a scanner finding that a claim
+    absorbed. The runs with and without a cell are the same once that finding's own answer is
+    supplied in both; what differs is whether anybody asked. Three faces of it:
+    - A cell files a claim at a scanner finding's line and does not confirm it. A certified
+      FAIL becomes INCONCLUSIVE, not certified, with the scanner finding named as unanswered.
+      This one cannot make a PASS.
+    - A cell's claim breaks the pair that had absorbed a scanner finding, so its advisor is
+      asked. The run is then judged on that answer: where the advisor rejects the finding,
+      INCONCLUSIVE becomes PASS, certified. Under `--gate-unverified` the run without the cell
+      is FAIL (the unanswered finding counts) and the run with it is PASS, certified.
+    - A scanner finding that counted as confirmed with the claim over it is asked about once a
+      cell's claim breaks the pair, and weighs nothing where its advisor does not confirm it.
+    In each the cell gains only the tool advisor's own answer. Asking about every scanner
+    finding, absorbed or not, is #3734.
+
+- **The merge ranks a finding by the severity it will be published at (#3727, high).** Findings
+  of one category at one line are merged into the most severe. "Most severe" was the severity a
+  reviewer claimed, and the controller lowers a severity only afterwards: an override with no
+  reason resets it to its code's default (127 of the 398 codes default to LOW or INFO), and a
+  `TST-A1*` claim is capped at MEDIUM where no test can witness it. So a review cell could
+  claim CRITICAL and CERTAIN at another cell's confirmed CRITICAL, or at a scanner finding, win
+  the merge, and then be demoted. The real finding was in neither list: PASS, certified,
+  letter A. It was as old as 5.3.0.
+  - The merge now ranks by the severity a finding can finally have, as far as its own content
+    says: after the override rule, and with a `TST-A1*` claim at CRITICAL or HIGH ranked at
+    its cap. The same holds in the verify queue, which is built on the merged list.
+  - After the merge, no finding that is not REJECTED stays under a row of lower final severity
+    than its own. It comes back as its own finding, whatever the verdict of the row it was
+    under.
+  - A scanner finding nobody has confirmed is still capped at MEDIUM with the claim merged
+    into it, as one row (#3231): a lone claim and a lone scanner finding at one line are
+    merged whatever their categories. No review cell can bring that about. It holds for a
+    claim the merge ranked where it ends. A `TST-A1*` claim that turns out uncapped ranked
+    below where it ends, so it is not left under the scanner's MEDIUM row: it comes back.
+  - What an honest run can see change:
+    - A different row where the old one was demoted after winning: of two claims at one line,
+      the row is the one the merge ranks higher, which is the severity each ends at as far as
+      its own content says. (Beside a scanner finding that is not always the higher row in the
+      end: see the claim an empty override lowers, below.)
+    - A different row where nothing is demoted: a `TST-A1*` claim at HIGH that is not capped
+      (a Python module no test names or imports) ranks at MEDIUM for the merge. It now loses
+      to a plain HIGH claim at its line that it used to beat on confidence. They end at one
+      severity, so it stays merged under that claim.
+    - Two rows where there was one: such an uncapped `TST-A1*` claim comes back from under a
+      MEDIUM row that won the tie, and from under a scanner finding of its own claimed
+      severity or higher that nobody confirmed (the claim at HIGH beside the scanner's MEDIUM
+      row, where there was one row at HIGH).
+    - A claim that an empty `severity_override` raises now wins its pair. A lone claim written
+      LOW or MEDIUM, on a code whose default is higher, ranks at that default. Beside a lone
+      scanner finding at or below it on its line, the claim is the row, and when it is
+      CONFIRMED it covers the scanner finding: one confirmed row and no tool shortfall, where
+      there were two rows and one tool finding unanswered. That is what a claim written at
+      the default already got.
+    - A claim that an empty `severity_override` lowers can be shown as the scanner's row. A
+      lone claim written CRITICAL, on a code whose default is HIGH, that nobody confirmed,
+      ranks at HIGH. Beside an unconfirmed scanner finding on its line that outranks that
+      (CRITICAL, or HIGH and the more confident of the two), it is merged under the scanner's
+      row, which reads MEDIUM while it is unverified. The claim used to be shown at HIGH.
+      That is the row a claim written at HIGH already got. With a catalog whose codes carry
+      severity ranges, the same holds for such a claim with no override at all.
+    - One id can be in the report at two severities: one claim filed twice under different
+      codes, by two cells or by one, where the instance that is not capped comes back over
+      the other. The two rows can differ in evidence status too.
+    - In the verify queue a scanner finding gains or loses its own advisor the same way. A
+      claim that ranks below a scanner finding at its line no longer absorbs it, so the
+      scanner finding gains one: that is a claim that will be demoted, and also any `TST-A1*`
+      claim at HIGH or CRITICAL, capped in the end or not. A claim an empty override raises
+      now absorbs the scanner finding it outranks, so that scanner finding loses its own.
+  - No finding is published at a severity it would not have had before.
+
+- **Docs: repeatable results are claimed for a committed matrix (#3729).** The same version,
+  the same pinned repository and the same committed `panopticon.yml`. A freshly proposed matrix
+  can differ between two setups on one commit, in how files are grouped and in group names, so
+  commit the draft before comparing runs. The README and the setup guide now say so, and point
+  at where each report says which it ran under: `meta.matrix.origin` (`committed` or
+  `working_tree`) and the `Matrix:` line (`origin=committed (reused: ...)` or
+  `origin=working_tree (FRESH: ...)`). No behaviour change.
+
+- **Merging findings at one line no longer changes what the run owes (#3716).** Findings of one
+  category at one line are merged into the most severe before any verdict is read, and only the
+  CONFIRMED findings under it came back (#2991). So a claim at another finding's line could take
+  it out of the accounting: an unverified CRITICAL under a REJECTED claim was in neither
+  `findings` nor `discarded_claims`, and under a NEEDS_MORE_INFO claim it read as "unsure". Either
+  way the gate went from INCONCLUSIVE to PASS and the run certified. A HIGH tool finding with no
+  verdict was lost the same way under an agent claim.
+  - **What is owed is counted before anything is merged.** A claim that was owed an advisor's
+    answer and has none is one unanswered finding whatever it is merged under. One claim held by
+    several cells counts once.
+  - **A silent advisor is a shortfall even when another cell confirmed the claim.** The claim is
+    reported confirmed. The cell that was asked and said nothing still owes its answer, so the run
+    is not certified. This changes an honest run: two cells report one claim, one advisor confirms
+    it and the other never answers. That run certified before and does not now.
+  - **A claim merged under a CONFIRMED finding is still owed.** Two different claims at one line,
+    one confirmed and one never answered, used to certify. The unanswered one is now a shortfall,
+    and two unanswered claims at one line count as two, where one was counted.
+  - **What comes back out of a merge:** a CONFIRMED finding, as before; under a REJECTED finding,
+    everything not itself REJECTED; and a finding that is owed an answer and has none, unless the
+    one it is merged under is CONFIRMED or is itself owed and unanswered. A report can gain
+    findings: each is one that used to disappear under another claim.
+  - **A tool finding merged into an agent claim owes nothing while it is merged.** No advisor is
+    asked about it; the claim's advisor answers for the one issue, as before. When it comes back
+    it is `tool_reported` and unanswered, and the agent claim is no longer marked `reinforced`:
+    `tool_axis.queued` counted that one scanner finding twice.
+  - "Owed" follows what the controller asked. A claim's cell is the findings file it was loaded
+    from, whatever domain its reviewer declared, and the cell is scored over every loaded claim,
+    where it was scored after merging and by declared domain. A cell the dispatch record says
+    was asked about a claim owes its answer whatever its claims score.
+
+- **A verdict speaks only for its own cell's instance of a claim (#3707, high).** A claim id is
+  derived from what a reviewer wrote (domain, category, file, title and line) and holds no group.
+  So one cell's reviewer could emit a copy of another cell's claim, and the controller handed that
+  id to the copying cell's advisors as one of the cell's own. Their REJECTED was in scope, and it
+  discarded a CRITICAL claim the other cell's own advisor had CONFIRMED: gate PASS, certified, no
+  shortfall. It worked through the copying cell's primary (its verdict file sorts first) and
+  through its backup (a backup won over every primary).
+  - A bundle verdict now counts for a finding only when the bundle is stamped for the cell that
+    finding was loaded from. The cell is the findings file's, never the `domain` a reviewer wrote.
+  - Where several cells hold one id, each cell's advisors answer for their own instance, and a
+    backup stands over its own cell's primary only. Any CONFIRMED keeps the claim reported. A
+    holding cell that gave no verdict leaves it unverified. Only every holding cell rejecting it
+    discards it.
+  - A cell that was never asked about the claim is not one of the cells that decide it: the
+    dispatch record shows the id in none of that cell's scopes. That is a cell below the verify
+    gate, and also a cell whose findings file was refused until its review budget ran out. Such a
+    cell dismisses nothing, and no other cell dismisses its instance: the instance stays in the
+    report as it would with no other cell holding the id, at its own severity. A CONFIRMED from a
+    cell that was asked still reports the claim as confirmed. A cell that was asked and did not
+    answer is one of the cells that decide, and so is one the record cannot speak for.
+  - `meta.coverage.verdicts.ids_in_several_cells` counts the ids held by more than one cell. It is
+    a disclosure and not a shortfall: two cells that really report one claim, and agree, decide it
+    as before.
+  - The id itself is unchanged, so baselines are not affected.
+  - A verdict bundle now binds only to findings loaded from a cell's own file
+    (`findings-<group>-<domain>.json`). Findings collected by hand into a file of another name
+    get no bundle verdict.
+
+- **A full scan leaves out of review only the config file it loaded, and the report names it
+  (#3708).** Discovery dropped both root config names, `panopticon.yml` and `.panopticon.yml`,
+  from every review group (#3642), whichever one was in use. A repo configured by
+  `panopticon.yml` could carry anything in a file named `.panopticon.yml`, and no review agent
+  read it. The only disclosure was in `groups.json` and one stderr line.
+  - Only the file the scanner loaded as its config is left out. With both names at the root that
+    is `panopticon.yml`, and `.panopticon.yml` goes to review like any other file. When neither
+    was loaded (a symlink at either name is refused), neither is left out.
+  - The report names the file in `meta.coverage.scanner_config_excluded`. It is a disclosure:
+    the letter, the gate, the certification and `coverage_note` do not move.
+  - Each name alone is left out as before. `--scope-*` runs and tool scans are unchanged.
+
+- **A malformed Semgrep result no longer stops the tool scan (#3713).** In a tree with a
+  Dockerfile variant Semgrep runs twice and the two captures are folded into one. A result
+  whose `message.text`, `ruleId` or `startLine` was a list or an object, or whose `region` was
+  not an object, raised out of that merge and then out of the whole tool run: the scanners
+  after Semgrep never launched, no manifest was written and every scanner's output was lost.
+  It failed closed (NOT CERTIFIED, with a reason), and only `--reset` retried it.
+  - The merge now declines such a result, in either pass, and nothing raises out of the
+    capture. The primary capture is kept as it is, with the Dockerfile variants stamped
+    unanalyzed, so the report reads "partial scanner file coverage: semgrep", names the
+    files and does not certify. The scanners after Semgrep run, and the manifest is written.
+  - The kept capture says why the second pass was not folded in, as one fixed word at
+    `runs[0].properties.panopticon_dockerfile_merge_declined`: `result_malformed`,
+    `second_pass_failed`, `second_pass_unreadable`, `not_mergeable`, `merged_over_limit` or
+    `merge_error`.
+  - A malformed result in the primary is treated as it already is in a tree with no
+    Dockerfile variant: the capture is ingested, and that one result is dropped or kept as
+    the ingest decides.
+  - The upgrade note under #3579 below now says what a 5.3.0 capture reads as on this
+    version, and that the remedy is `--reset`, which discards that run's review work too.
+  - A value Semgrep's own output carries at `panopticon_dockerfile_merge_declined` is dropped
+    from every capture. Only a merge this version declined sets it.
+  - A result whose `region` is `[]`, `""`, `0` or `false` is declined as malformed. It used to
+    be read as a result with no region.
+
+- **A review cell that owes the `targeted_review` echo is launched for every dispatch it is
+  charged (#3709).** A SEC cell handed the files Semgrep could not parse is done only once its
+  reviewer echoes that list exactly (#3614). Only the review phase asked. A reviewer that
+  returned findings and no echo was "not done" to the phase, which charged another dispatch,
+  and "done" to the loop, which launched nothing: charged 3, launched 1. The run then reported
+  the cell as having spent its retry budget, on one launch. It failed closed: coverage was not
+  certified.
+  - The loop and the receipt of a returned reply now ask the phase's own rule
+    (`findings_contract.echoes_targeted_review`): the exact list, in the order given, or no
+    list for a cell that was handed none.
+  - A returned reply without the echo is refused, and the refusal names it: "does not echo the
+    `targeted_review` list it was handed (2 path(s), in the order given)". It used to be
+    accepted, so a retry was never told what was wrong.
+  - Cost: up to two more reviewer launches for a cell that keeps omitting the echo.
+
+- **An advisor's verdict counts only for a claim that advisor was handed (#3702, high).** Verify
+  verdicts are matched to findings by finding id across the whole run, and a backup advisor's
+  verdict wins over a primary's. Nothing asked whether the advisor that wrote a verdict had been
+  handed that claim. A backup handed one claim could say REJECTED about two that no primary had
+  answered: both were discarded, "2 findings unanswered by their verify advisors" disappeared and
+  the run certified. A primary could do the same to another cell's claims, and where two
+  primaries spoke of one claim the first verdict file by name won, not the claim's own advisor.
+  An honest advisor is shown only its own claims, but finding ids are derived from content, and
+  an advisor's reply is untrusted text. This has been so since 5.0.0.
+  - **Verify records what it hands out.** For each cell and stage it dispatches, primary and
+    backup, `verify-attempts.json` now holds the claim ids, the number of parts and the part
+    size (`<group>/<domain>/<stage>/claims`, `/parts`, `/part_size`), in the same write as the
+    charge.
+  - **A reply that names a claim it was not handed is refused.** A returned reply is refused
+    whole, with a count and never the ids. A bundle an advisor wrote itself is asked for again.
+    Both are on the usual budget of three dispatches. A claim is answered by its own part's
+    bundle only: the parts of a split cell are no longer merged.
+  - **Synthesis counts a bundle verdict only when the record shows its part was handed that
+    claim.** Any other is dropped before anything is matched: another part's claim, another
+    cell's, or an id that names no claim. `meta.coverage.verdicts.out_of_scope` counts them, and
+    `summary.grade_shortfalls` says "2 advisor verdicts outside their handed scope". The letter
+    is held back and coverage is NOT CERTIFIED, even when every advisor answered all it was
+    asked.
+  - **With no recorded scope, nothing in a bundle counts.** `meta.coverage.verdicts`'
+    `scope_not_recorded` counts those verdicts, and the reason reads "verify scope not recorded:
+    12 advisor verdicts not counted".
+  - **Upgrading:** a run whose verify phase ran before this version has no such record. Its
+    advisor verdicts are not counted and its report is NOT CERTIFIED, for the reason above.
+    - **A run in flight at the upgrade is affected too.** If it is resumed on this version, the
+      verify cells it finished before the upgrade are never dispatched again, so nothing records
+      their scope and all their verdicts land in `scope_not_recorded`. Only what was dispatched
+      after the upgrade counts.
+    - **The remedy is a full re-run, not a re-verify:** `--reset` discards the whole run folder,
+      the review as well as the verify phase, so the run starts again from discovery.
+    - The same holds for a hand `synthesize.py --verdicts-dir` call over verdict bundles with no
+      `verify-attempts.json` in the run folder.
+    - Single-verdict files (the tool advisors' and the queue flow's) are not affected.
+
+- **Every verify dispatch that is charged now launches its advisor (#3698).** A verify cell has a
+  budget of three dispatches. When an advisor kept leaving a bundle that was short (verdicts for
+  only some of its claims) or unloadable, the third dispatch was charged and launched nothing:
+  charged 3, launched 2. The loop decided what to launch by asking whether the part was done, and
+  that answer was also "yes" once the budget was spent, which the third charge had just made true.
+  The loop now asks only whether this part's bundle answers its claims; whether a cell may be
+  dispatched again stays the verify phase's decision, so a spent cell is still never dispatched.
+  - Cost: one more advisor launch for a part still short or unloadable after two tries. A part that
+    answers, or that leaves no file at all (it was already launched three times), is unchanged.
+  - The same answer is read in four other places, each of which now sees a short bundle of a spent
+    cell as not done: no settlement proof is recorded for it, its ledger row keeps the head of the
+    advisor's reply, a returned reply is judged on its content (not refused as "already done"),
+    and the progress line counts it as "to dispatch".
+
+- **The report says why a dependency ecosystem was not audited (#3648).** A JavaScript tree with
+  `package.json` and no lockfile is counted as having dependencies, and no auditor reads it:
+  npm-audit needs `package-lock.json` or `npm-shrinkwrap.json`, and osv-scanner needs one of those
+  or `yarn.lock` or `pnpm-lock.yaml`. `--online` does not change that. The report said only "no SCA
+  tool produced output on an applicable tree". `coverage_note` now adds a fixed sentence per
+  ecosystem: "javascript not audited: no npm-shrinkwrap.json, package-lock.json, yarn.lock or
+  pnpm-lock.yaml; npm-audit and osv-scanner need one", or "python not audited: pip-audit needs
+  --online". `meta.coverage.dependency_audit.unaudited` carries the same as `{ecosystem: reason}`.
+  - The sentence is also written when another ecosystem's auditor answered and the tree certifies,
+    for example `requirements.txt` beside a `package.json` with no lockfile. Before, nothing said
+    JavaScript had gone unaudited there.
+  - Disclosure only: the gate and `coverage_certified` are computed exactly as before.
+  - `tools-manifest.json`'s `dependency_audit` gains the optional `unaudited` key. A manifest
+    written before this still loads.
+
+- **A backup advisor that answers part of its claims no longer counts as answered (#3695).** A
+  backup that confirmed 1 of the 20 claims it was handed and said nothing of the other 19 was
+  done for the verify phase and `answered` in the report: those 19 findings lost
+  `backup_confirmed` and no surface named them. Backup coverage is now counted per claim.
+  - **Verify** holds a backup part to the primary advisor's rule: every claim it was handed has
+    a verdict. A short backup reply is refused or asked again, up to the verify budget of three
+    dispatches. That is up to two more dispatches for a backup that keeps omitting claims.
+  - **The report** adds `claims_scoped`, `claims_unanswered` and `scope_not_recorded` to
+    `meta.coverage.backups`. A backup is `answered` only when every claim it was handed has a
+    verdict, and `summary.grade_shortfalls` names the findings beside the advisors: "1 backup
+    advisor unanswered", "19 findings unanswered by their backup advisors". The letter is held
+    back and coverage is NOT CERTIFIED, as for any other shortfall.
+  - Verify records the claim ids it hands each backup in `verify-attempts.json`
+    (`<group>/<domain>/backup/claims`), in the same write as the charge. A verdict counts only
+    for an id in that list. A record without one (a run started before this) is never
+    `answered`: it reads `unanswered`, or `unloadable`, with "(1 scope not recorded)" beside it.
+    `--reset` starts a run that records it.
+
+- **The HTML report names each review cell that returned no answer (#3677).** With one review
+  cell exhausted, the terminal said `panels COD 1/2` and the JSON listed the cell under
+  `meta.coverage.cells.missing_floor`, but the HTML header said only "gate-relevant coverage
+  did not complete". Its NOT CERTIFIED line now ends `review cell with no answer: 1 (app/COD)`:
+  the count, then each cell as `group/domain`, at most twelve named and the rest counted. The
+  fault-injection harness's known-gap row for this is removed, and the harness now checks that
+  the HTML names every unanswered review cell exactly.
+
+- **Fixed: a tracked-in-git check no longer depends on how the path is spelled (#3684).** A git
+  pathspec is case-sensitive whatever the filesystem is. On one that ignores case (macOS by
+  default), a committed `.Panopticon/` is the directory a run reads as `.panopticon/`, and git,
+  asked about `.panopticon`, said nothing there was tracked. Three checks asked that way:
+  - **First contact H1.** A committed `.Panopticon/` did not halt as tracked. Nothing planted
+    was trusted (H2 still halted on its stamp), but `--reset` moved the tracked directory aside
+    and ran on. H1 now asks under any case, and names the spelling the index holds, so the
+    `git rm -r --cached` it suggests works: `".Panopticon" is tracked in the target's git index,
+    and a filesystem that ignores case reads it as .panopticon/; ...`.
+  - **`driver readiness`'s "is this manifest git-tracked".** #3671 made it ignore ASCII case.
+    A filesystem folds more than that: APFS reads `run-manifeſt.json` (a long s) as
+    `run-manifest.json`, and `run-manifeﬆ.json` (a ligature) too, so that committed file still
+    read as this checkout's own untracked manifest. The check now compares the manifest with
+    every path git tracks in its directory by file identity, so it holds for any spelling the
+    filesystem reads as the same file. Two more ways to commit that file under another path
+    read as tracked now: a submodule at `.panopticon` (it read as untracked, and its manifest
+    chose the host `readiness` reported on), and a symlink on the way to the manifest (the
+    verb already refused a linked `.panopticon`; the check no longer relies on that).
+  - **`meta.matrix.origin`.** A config the commit holds as `Panopticon.yml` read as
+    `working_tree`. It reads `committed` now, when its bytes are the commit's.
+
+- **Summoned backup advisors that never answer hold the letter back (#3676).** A run whose
+  backup advisors all failed (non-zero exit, empty reply, timeout) read as fully certified, and
+  a malformed backup sank certification without naming a cause. `meta.coverage.backups`
+  (`summoned`, `answered`, `unanswered`, `unloadable`, in cells, off the verify phase's own
+  `verify-attempts.json`, where verify now also records each backup cell's part count) feeds
+  the shared `grade_shortfalls` rule from #3667. A chunked cell (more than 25 claims, answered
+  in parts) is answered only when every part is, and a backup binds to this run through the
+  verify queue or the driver's `--run-id`; with neither, it is never answered. Unanswered
+  and unloadable backups are named reasons, the letter is provisional ("S (provisional; 5
+  backup advisors unanswered)"), coverage is NOT CERTIFIED and a PASS gate is INCONCLUSIVE. A
+  run whose backups all answered is unchanged.
 
 - **`driver readiness` reads a stored run only when a run in this checkout wrote it (#3671).** A
   target could commit a run folder holding a posture with every control PROVEN, and a
@@ -79,7 +514,8 @@
   named by the outgoing setup run's id (only a 32-hex id becomes a filename; anything else gets a
   fresh one, and a rotation never overwrites an earlier one). The next cycle's usage is its own
   rows only, and the previous cycle's spend is kept. Both files of a cycle share one tag. Under a
-  still-running `driver loop --setup` the pair stays in place (its `--budget` reads the ledger),
+  still-running `driver loop --setup` the pair stays in place (its `--max-budget-usd` reads the
+  ledger),
   and a failed move stops the reset with an error before anything else is removed.
 
 - **Tool findings a split report put out of sight, and a letter that read as checked (#3667).**
@@ -89,8 +525,8 @@
   `report.json` held almost none of them. Meanwhile the letter printed as certified.
   - `findings[]` is now published worst first (gate-eligible, severity, evidence status, then the
     old order), split or not, so the main file carries what matters most.
-  - A split main file names what each part holds (`meta.parts_findings`), and the terminal and
-    HTML print a `**Report parts:**` line.
+  - A split main file names what each part holds (`meta.parts_findings`), and the terminal
+    prints a `**Report parts:**` line; the HTML's reads `JSON report split:`.
   - `meta.coverage.tool_axis.by_tool` reconciles each scanner: ingested, in the report, merged
     into an agent finding, or dropped into another tool finding, with the reason.
   - Unanswered tool advisors hold the letter back as provisional with the reason
@@ -139,9 +575,10 @@
   fault-free control: no finding is lost silently, the tool-axis counts reconcile, undone work
   is never certified, the gate never passes over undone work, and the shortfall is disclosed on
   the terminal, in the JSON and in the HTML. No model, network or Docker is used. The default
-  run is 56 of 126 cases (about 45 s serial); `PANOPTICON_FAULT_MATRIX=full` runs them all.
-  Invariants that do not hold today are strict `xfail`s naming their issue (#3641, #3667, #3676,
-  #3677), so each fix must un-mark its own cases.
+  run is 56 of the 126 matrix cases (95 of the file's 165 tests);
+  `PANOPTICON_FAULT_MATRIX=full` runs them all.
+  Invariants that did not hold when the harness landed were strict `xfail`s naming their issue
+  (#3641, #3667, #3676, #3677). Each has since been fixed and un-marked, so `KNOWN_GAPS` is empty.
 
 - **Changed: the gate is armed at CRITICAL by default (#3673, owner ruling 2026-11-15).** With
   no `--fail-on` flag and no committed `fail_on`, a run used to gate nothing (`gate: OFF`) and
@@ -174,7 +611,7 @@
     threshold, and it gates at CRITICAL when it synthesizes.
   - `driver readiness` reports the default threshold on its `gate` row and warns only for
     `--fail-on off`. The delta-review notice (`DELTA REVIEW WITH Gate: OFF`) now fires only for
-    `--fail-on off`.
+    `--fail-on off`. (Delta review is withdrawn in 5.4, #3735, so the notice cannot fire.)
 
 - **`driver readiness` no longer shows another run's posture as this one's (#3668).** Its
   `capabilities` row read back whatever posture the target's run folder held. So
@@ -215,9 +652,12 @@
   reinforced when the agent agrees on category), and the agent claim queues on its own.
   Separately, two tools reporting one advisory on one package (osv-scanner and cargo-audit at
   `Cargo.lock:1`) kept whichever came first in input order, so the survivor's severity and source
-  moved with the order. Content now decides: an agent-corroborated locus first, then the lowest
-  line (a LOW at line 1 still beats a CRITICAL at line 5), then the most severe, the source, the
-  reported version and the title. And the first-party mark is part of the grouping key, so the
+  moved with the order. Content now decides: the hit at the lowest line is the row that is
+  kept, and among hits on one line the most severe, then the source, the reported version and
+  the title. The kept row carries the highest severity among its hits, and `severity_from`
+  names that hit when it is not the shown one (#3732). (As first merged, an agent-corroborated locus came first, and a LOW
+  at line 1 kept its own severity over a CRITICAL at line 5; #3731 removed the first and #3732
+  the second before release.) And the first-party mark is part of the grouping key, so the
   project's own `workspace-app 1.2.3` and a registry `workspace-app 0.9.0` in the same lock stay
   two findings: before, one copy was dropped by input order or by an agent's line.
   **Intended gating change (owner ruling):** because the most severe duplicate now survives, a
@@ -254,10 +694,12 @@
 - **A full-repo scan no longer reviews the scanner's own root config (#3642).** The root
   `panopticon.yml` / `.panopticon.yml` -- including the one setup-scan just wrote -- was reviewed
   like target code, and an owner-observed run graded a HIGH finding against the matrix itself.
-  Discovery now leaves the same `repo_config.CONFIG_NAMES` that `--pr` mode drops (#1681) out of
+  Discovery now leaves the same `repo_config.CONFIG_NAMES` that `--pr` mode dropped (#1681;
+  delta review is withdrawn in 5.4, #3735) out of
   the whole-repo surface and discloses them under `excluded.scanner_config` and on stderr. A nested
-  `sub/panopticon.yml` is still reviewed; an explicit `--scope-files` and a plain delta that
-  changes the root config are unchanged, as are tool scans. This supersedes #1681 Task 7's
+  `sub/panopticon.yml` is still reviewed; naming the file explicitly (`--files` on the driver,
+  `--scope-files` on `discovery.py` itself) is unchanged, as are tool scans. This supersedes
+  #1681 Task 7's
   grouping of the root config under Commons `Config` in full-repo scans.
 
 - **agy's `Individual quota reached` response now pauses as a host outage (#3640).** The
@@ -395,11 +837,15 @@
   configuration starts `agy --gemini_dir <run>/gemini`: a per-run directory holding only our guard
   hook, the emitted shells, an empty MCP list and two settings, in place of `~/.gemini`. Before
   any entry, a fail-closed preflight checks that `agy agents` lists exactly the run's shells and
-  that agy's log recorded the hook load, then runs one minimal real turn (default model, no agent
-  shell); auth trouble raises `AgyAuthUnreachable`, anything else `AgyPreflightRefused`, and
-  nothing falls back. The token file link is retired. The routes are now `signin` (the default)
+  that agy's log recorded the hook load, then runs one minimal real turn (no agent shell; agy's
+  default model on the sign-in route, `--model gemini-4-argon-high` on the API-key route, which
+  refuses the run when `agy models` does not list that name); auth trouble raises
+  `AgyAuthUnreachable`, as does an `agy models` that fails or lists nothing, anything else
+  `AgyPreflightRefused`, and nothing falls back. The token file link is retired. The routes are now `signin` (the default)
   and `key`, and the key route runs only when `PANOPTICON_AGY_AUTH=key` names it. Off that route
-  no agy child holds `GEMINI_API_KEY`, so an expired sign-in cannot fall back to it, and a failed
+  no agy child that loads the run's configuration holds `GEMINI_API_KEY` (the probes' `agy
+  --version` and `agy --help` reads inherit the operator's environment: #3714), so an expired
+  sign-in cannot fall back to it, and a failed
   sign-in with a key set says how to choose the key route and does not. For agy, the shadow-shell
   scan no longer reads `~/.gemini/agents`, which `--gemini_dir` replaces.
 
@@ -511,7 +957,13 @@
   uncovered, missing, malformed, incomplete, oversized, argv-bounded, or failed
   second-pass remainder is partial file coverage and its count reaches
   `coverage_note`. Re-ingesting an older capture without this stamp intentionally
-  reads as partial. Template-named variants such as `Dockerfile.j2`, `.tmpl`, and
+  reads as partial. **Upgrading:** that includes a run whose tools phase ran on
+  5.3.0 and is resumed on this version. Its report reads "partial scanner file
+  coverage: semgrep" and is not certified. The remedy is to run it again with
+  `--reset`, so the scanners run on this version. `--reset` discards the whole
+  run folder, so the review and verify work of that run is done again too.
+  Template-named variants such
+  as `Dockerfile.j2`, `.tmpl`, and
   `.in` likewise disclose partial coverage if Semgrep cannot parse them as
   Dockerfiles. Tolerated fixture dependency-build failures use conditional forms
   so Dockerfile rules do not misclassify `||` as an unprotected pipeline. Trivy
@@ -526,9 +978,12 @@
   guard-state rule (#3545) are unchanged.
 
 - **agy can sign in with a Gemini API key, and those runs use Argon (High) (#3576).** With
-  no consumer sign-in, or with `PANOPTICON_AGY_AUTH=key`, agy runs on `GEMINI_API_KEY`, which
-  reaches the child only through its environment and is never written to disk. The consumer
-  sign-in still wins when both are present. The API-key route does not offer Carbon, so its
+  `PANOPTICON_AGY_AUTH=key`, agy runs on `GEMINI_API_KEY`, which reaches the child only through
+  its environment and is never written to disk. Route selection is as #3613 left it: a key
+  alone never selects this route, whether or not there is a consumer sign-in, and
+  `PANOPTICON_AGY_AUTH=key` takes it even when there is one. (As first shipped, the key was
+  also used when there was no consumer sign-in, and the sign-in won when both were present.)
+  The API-key route does not offer Carbon, so its
   domain roles run `gemini-4-argon-high`. That route takes the effort as part of the model
   name, never as `--effort`, and a run checks every name against `agy models` before
   launching. Ledger rows record the requested and the bound model. A model named with
@@ -558,11 +1013,13 @@
 - **agy fails closed when its sign-in is unreachable (#3576).** When an interactive `agy`
   session refreshed its token, agy 1.5.6 moved the token into the macOS Keychain and deleted the
   token file a run home links. Every agy child after that opened a browser sign-in, and the probes
-  timed out. Now a run home is refused before any child launches when the token file is missing
-  or dangling, with `agy auth not reachable from the isolated HOME` and what to do. Any agy child
-  that reaches agy's interactive-OAuth fallback anyway is ended at that line, before a browser
-  opens. An entry ended that way is a host failure; a probe reads UNKNOWN. How a sign-in should
-  survive a token refresh is a separate decision.
+  timed out. As first shipped, a run home was refused before any child launched when the token
+  file was missing or dangling. #3613 superseded that check: the token-file link is retired, and
+  the refusal is now the preflight's (`agy is not authenticated: its preflight turn could not
+  sign in`). What stands from this entry: an agy entry, a preflight child, or a probe child that
+  loads the run's configuration is ended at agy's interactive-OAuth fallback line, before a
+  browser opens. An entry ended that way is a host failure; a probe reads UNKNOWN. The probes'
+  `agy --version` and `agy --help` reads carry no such stop line (#3714).
 
 - **The egress sidecar uses the reviewed current tinyproxy image (#3558).**
   The new OCI index still provides `linux/amd64` and `linux/arm64`, and both
@@ -596,7 +1053,9 @@
   argument, as Google's Antigravity CLI documents. A model change can move findings. An unknown
   effort, or an effort beside a model that already names one, fails the entry before launch.
   The `agy-model-bound` probe passes `--effort` on its `/model` check and reads back
-  `/effort`; it reports UNKNOWN until the owner's capture shows which field carries the level.
+  `/effort`. Since the owner's capture the fields are known: `/model` must report
+  `<model>-<effort>` with the level in `data.effort`, and `/effort` must report the level as
+  current and available on a model whose effort is adjustable.
   A `PANOPTICON_MODEL_*` override that gives agy codex's `model_reasoning_effort` (or another
   host agy's `effort`), or an agy effort outside the documented levels, is refused at driver
   start instead of silently running at the model's default effort.
@@ -628,8 +1087,10 @@
   `gemini-3-pro-preview`, `gemini-3-flash`, and `auto-gemini-3` were removed;
   a config naming one now gets a loud refusal before launch.
 - **Antigravity's model catalogue now covers its current models (#3563).**
-  Existing Argon/3.8 defaults stay fixed because the runner does not yet carry
-  a separate effort input; 4.6 and GPT-OSS remain until their 2026-11-18 removal.
+  When this landed the Argon/3.8 defaults stayed fixed, because the runner did
+  not yet carry a separate effort input. #3564 (above) added `--effort` and
+  moved the domain roles to `gemini-4-carbon` at high effort. 4.6 and GPT-OSS
+  remain until their 2026-11-18 removal.
 - **More disk headroom for the Dockerfile PR build (#3441).** Its `load: true` import of
   the tools image intermittently ran out of space. The job now removes preinstalled
   toolchains it never uses before building, and logs the free disk and the image's layer IDs
@@ -667,8 +1128,9 @@
 - **PR config sync always rewrites the operator config (#3535).** It no longer re-reads both files
   to prove byte equality; each sync publishes the selected config and emits one direct sync note.
 - **The written artifact is the report schema authority (#3535).** The hydrated report and X0X
-  siblings are schema-validated once after publication; `meta.schema_errors` records those errors
-  together with advisory in-memory semantic-policy errors, which remain separately labelled.
+  siblings are schema-validated once after publication; `meta.schema_errors` is the count of
+  those errors together with advisory in-memory semantic-policy errors, which remain separately
+  labelled.
 - **Tool receipts, not a directory-wide file cap, select ingestion inputs (#3535).** Unrecorded
   files cannot consume selected capacity, while their disclosed names retain a named bound well
   above the supported adapter set; direct ingestion without a receipt stays compatible.

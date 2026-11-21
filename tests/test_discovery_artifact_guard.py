@@ -33,7 +33,7 @@ class TestArtifactOutputGuard(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             touch(d, "src/app.py")
             # Base resolution refuses a non-git repo before collection begins.
-            self.assertEqual(orchestrator.main(["--repo", d, "--repo-scan", "--scope-changed"]), 2)
+            self.assertEqual(orchestrator.main(["--repo", d, "--repo-scan", "--scope-changed"], refuse_delta=False), 2)
 
     def test_scope_changed_collection_failure_refuses_artifact(self):
         with tempfile.TemporaryDirectory() as d:
@@ -46,7 +46,7 @@ class TestArtifactOutputGuard(unittest.TestCase):
             with mock.patch.object(discovery_scope, "collect_changed_files", return_value=None) as collect, \
                     contextlib.redirect_stderr(stderr):
                 rc = orchestrator.main(["--repo", d, "--repo-scan", "--scope-changed",
-                                        "--base", "HEAD", "--out", out])
+                                        "--base", "HEAD", "--out", out], refuse_delta=False)
             self.assertTrue(collect.called)
             self.assertEqual(rc, 2)
             self.assertEqual(stderr.getvalue(),
@@ -60,4 +60,4 @@ class TestArtifactOutputGuard(unittest.TestCase):
             git_cmd(d, "add", ".")
             git_cmd(d, "commit", "-q", "-m", "init")
             # bad base -> resolve_base_or_die returns None -> return 2
-            self.assertEqual(orchestrator.main(["--repo", d, "--repo-scan", "--scope-files", "src/app.py", "--base", "nope"]), 2)
+            self.assertEqual(orchestrator.main(["--repo", d, "--repo-scan", "--scope-files", "src/app.py", "--base", "nope"], refuse_delta=False), 2)

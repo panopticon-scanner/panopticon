@@ -261,6 +261,18 @@ def accepts(entry, data):
     if role == "review-cell":
         if not findings_contract.is_acceptable(data):
             return False, "not an acceptable findings file (a `findings` list of objects)"
+        # #3709: the echo the review phase asks for (#3614), by its own rule. A
+        # reply accepted without it was written, read back "not done" by the phase
+        # and never told why. The reason gives counts, never the reply's own text.
+        handed = entry.get("targeted_review")
+        if not findings_contract.echoes_targeted_review(data, handed):
+            if handed is not None and not isinstance(handed, (list, tuple)):
+                return False, ("cannot be checked: this entry's `targeted_review` is not a "
+                               "list of paths")
+            if handed:
+                return False, ("does not echo the `targeted_review` list it was handed "
+                               "(%d path(s), in the order given)" % len(handed))
+            return False, "carries a `targeted_review` list, and this cell was handed none"
         return _stamp_matches(entry, data)
     if role == "verify-cell":
         if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):
@@ -336,10 +348,8 @@ def _verify_accepts(entry, data):
         return False, ("cannot place verdict bundle %r against a review root"
                        % entry.get("out_file"))
     review_root, manifest, group, domain, stage, part = placed
-    if stage != "primary":
-        # verify._part_done: a backup bundle is answered once it is LABELED
-        # for its cell, and the stamp check above is that label, entry-anchored.
-        return True, ""
+    # #3695: a backup reply too. `_verify_claims` gives the backup round's own
+    # scope, so this asks for exactly the claims that advisor was handed.
     chunks = verify._cell_chunks(
         _verify_claims(review_root, manifest, group, domain, stage))
     if part >= len(chunks):
@@ -351,11 +361,17 @@ def _verify_accepts(entry, data):
     # to reason about separately.
     mine = [evidence._agent_verdict(v) for v in data.get("verdicts") or []
             if isinstance(v, dict)]
-    # Parts strictly BEFORE this one, from disk -- `_part_done` merges parts
-    # 0..part and this reply stands in for part `part` itself.
-    earlier = (verify._cell_verdicts(review_root, group, domain, stage, part)
-               if part else [])
-    if not verify._chunk_answered(chunks[part], earlier + mine):
+    # #3702: before "did it answer everything". A reply that names a claim this
+    # part was not handed is refused whole: verdicts are matched to findings by id
+    # across the run, so the extra one would be read as that claim's verdict. The
+    # reason carries a count and never the ids, which are the advisor's own text.
+    extra = verify._chunk_exceeded(chunks[part], mine)
+    if extra:
+        return False, ("names %d claim(s) it was not handed in part %d"
+                       % (len(extra), part))
+    # This part's own reply and nothing else: `_part_done` asks the same of the
+    # file this reply would write.
+    if not verify._chunk_answered(chunks[part], mine):
         return False, ("does not adjudicate every claim it was handed "
                        "(%d verdict(s) for %d claim(s) in part %d)"
                        % (len(mine), len(chunks[part]), part))
@@ -374,17 +390,29 @@ def is_done(entry):
     if role == "review-cell":
         return group_runner.entry_is_done(out_file, entry)
     if role == "verify-cell":
-        # I3, spec 4.5: the verify PHASE's own done predicate, verbatim --
-        # `_pending` filters on this, so anything looser drops a cell the
-        # engine still wants and the loop launches nothing for it. Mirrors
-        # how `review-cell` delegates to group_runner.entry_is_done.
+        # I3, spec 4.5: the verify PHASE's own predicate for an answered part,
+        # `verify._part_done` -- `_pending` filters on this, so anything looser
+        # drops a part the engine still wants and the loop launches nothing for
+        # it. Mirrors how `review-cell` delegates to group_runner.entry_is_done.
+        #
+        # #3698: the ARTIFACT only, for this entry's own part, and never the
+        # budget. This used to ask `verify._verify_cell_done`, which is also true
+        # once the cell's dispatches are spent. The phase charges a dispatch and
+        # THEN the loop asks here, so on the third dispatch a short or unloadable
+        # bundle on disk read as done and nothing was launched: charged 3,
+        # launched 2. Whether a cell may be dispatched again is the phase's
+        # question (`_verify_cell_done`, unchanged); an exhausted cell is never
+        # in a request, so the loop cannot spin on it.
         placed = _verify_cell_of(entry)
         if placed is None:
             return False
-        review_root, manifest, group, domain, stage, _part = placed
-        return verify._verify_cell_done(
-            review_root, manifest, group, domain, stage,
-            cell=_verify_claims(review_root, manifest, group, domain, stage))
+        review_root, manifest, group, domain, stage, part = placed
+        chunks = verify._cell_chunks(
+            _verify_claims(review_root, manifest, group, domain, stage))
+        if part >= len(chunks):
+            return False
+        return verify._part_done(review_root, manifest, group, domain, stage,
+                                 part, chunks[part])
     data = runio._load_return_json(out_file)
     return data is not None and accepts(entry, data)[0]
 

@@ -62,7 +62,9 @@ KNOWN_READERS = {
     "scripts.phases.persist::_verify_accepts",
     # #2104: each reads the declared format versions, through the sanitizer.
     "scripts.phases.persist::_version_defect",
-    "scripts.phases.verify::_cell_verdicts",
+    # #3702: one part's bundle (was `_cell_verdicts`, every part merged); the phase's
+    # one reader, and `_scoped_verdicts` keeps of it only what that part was handed.
+    "scripts.phases.verify::_part_verdicts",
     "scripts.phases.verify::_verify_bundle_labeled",
 }
 

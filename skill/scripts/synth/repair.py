@@ -24,6 +24,7 @@ artifacts.
 """
 import json
 import sys
+from typing import Any
 
 from scripts import tools_manifest
 
@@ -52,11 +53,16 @@ def repair_dependency_audit(value, warn=None):
     ``None`` is a legacy manifest with no measurement. Any present malformed
     receipt becomes one fixed applicable/zero-output state, so corrupting it
     can only cost certification and no target-authored value reaches a report.
+
+    #3648: `unaudited` ({ecosystem: reason}) is optional, so a receipt written
+    before it still loads as it did. Present, it is held to closed enums like
+    the rest: an applicable ecosystem, and a reason `tools_manifest` defines.
     """
     if value is None:
         return None
     fallback = {"applicable": ["unknown"], "selected": [], "produced": []}
-    if not isinstance(value, dict) or set(value) != {"applicable", "selected", "produced"}:
+    required = {"applicable", "selected", "produced"}
+    if not isinstance(value, dict) or set(value) - {"unaudited"} != required:
         warn_repairs("tools-manifest.json", [("dependency_audit", "repaired")], warn)
         return fallback
     allowed = {
@@ -64,7 +70,7 @@ def repair_dependency_audit(value, warn=None):
         "selected": tools_manifest.DEPENDENCY_AUDIT_TOOLS,
         "produced": tools_manifest.DEPENDENCY_AUDIT_TOOLS,
     }
-    repaired = {}
+    repaired: dict[str, Any] = {}
     for key, enum in allowed.items():
         rows = value.get(key)
         if not isinstance(rows, list) or any(not isinstance(row, str) or row not in enum
@@ -78,6 +84,18 @@ def repair_dependency_audit(value, warn=None):
                 and (repaired["selected"] or repaired["produced"]))):
         warn_repairs("tools-manifest.json", [("dependency_audit", "repaired")], warn)
         return fallback
+    if "unaudited" in value:
+        rows = value["unaudited"]
+        if not isinstance(rows, dict) or any(
+                not isinstance(ecosystem, str) or ecosystem == "unknown"
+                or ecosystem not in repaired["applicable"]
+                or not isinstance(reason, str)
+                or reason not in tools_manifest.UNAUDITED_REASONS
+                for ecosystem, reason in rows.items()):
+            warn_repairs("tools-manifest.json",
+                         [("dependency_audit.unaudited", "repaired")], warn)
+            return fallback
+        repaired["unaudited"] = {ecosystem: rows[ecosystem] for ecosystem in sorted(rows)}
     return repaired
 
 

