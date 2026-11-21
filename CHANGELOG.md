@@ -17,6 +17,72 @@
   - One helper does the matching (`scripts/safe_glob.py`), and a test fails if any other module
     in `skill/scripts` calls `glob` directly.
 
+- **Tools closure re-resolved: semgrep 1.185.0 (supersedes Dependabot #3751; #3619 not taken).**
+  - Taken as offered: semgrep 1.183.0 -> 1.185.0, with the Dockerfile `SEMGREP_VERSION` moved to
+    match; bracex 3.2.1 -> 3.2.2; filelock 4.2.9 -> 4.2.10; markdown-it-py 4.2.0 -> 4.3.0;
+    py-serializable 2.1.0 -> 2.2.0; pydantic 2.14.2 -> 2.14.3; sse-starlette 3.6.0 -> 3.7.0;
+    stevedore 5.9.1 -> 5.10.0. The pyproject ruff floor is now 0.17.5.
+  - Two pins moved that Dependabot did not offer. pydantic 2.14.3 requires exactly pydantic-core
+    2.50.4 (was 2.50.2). Semgrep requires `structlog~=26.1.0` since 1.184.0, so structlog 26.1.0
+    is new and the closure is 92 packages (was 91). Dependabot now offers only structlog's patch
+    updates.
+  - **Not taken: opentelemetry-api 1.37.0 -> 1.45.2 (#3619), a security update.** Semgrep 1.185.0
+    requires `opentelemetry-api~=1.37.0`, and so does 1.186.0, the latest release. The two
+    advisories it fixes stay open (GHSA-mf5v-w3w3-f6cg, GHSA-xcq7-p3pf-p88h), as do the mcp and
+    wcmatch ones, which Semgrep pins the same way (`mcp==1.29.0`, `wcmatch~=8.3`).
+  - Semgrep's SARIF writer, its error ids and its target selection are unchanged between the two
+    releases, so the adapter reads 1.185.0's output as it read 1.183.0's.
+  - The closure was re-resolved with `uv pip compile` for Python 3.12 on both linux architectures
+    (identical results), and `bump_pins.py requirements --write` wrote the digests.
+- **A resume under a live host limit stays paused instead of erroring (#3646).** A run paused
+  for a host outage (a Claude weekly limit, in the owner's run) was resumed while the limit still
+  held. Its capability probe could not launch the write/read canary, so both guards read unknown,
+  and the proven -> unknown move was refused as "host posture changed mid-run" -- an `error` for
+  a run that was only paused. The canary now classifies its own failed launch exactly as the loop
+  classifies a reviewer's (`runners.outage.classify_failure`, via `Runner.parse_envelope`). When
+  every moved guard is unknown for that host-class reason, the run stays `paused`, with the resume
+  advice, the host's own redacted error, and the run folder byte-for-byte unchanged (the posture
+  and the manifest's disclosure stamp included). A probe that ran and proved less is still drift.
+  Limits: the limit is recognised only in the CLI's JSON envelope, as in the loop, so a limit
+  printed as plain text or on stderr alone is still refused as drift. And a FIRST run under a
+  limit is refused with the unmeasured posture already recorded, so its refusal (and #3220's,
+  for a canary that measured nothing) now says to re-run with `--reset`: a plain re-run that
+  measures the guard was itself refused as a posture change.
+
+- **Python advisories against the project's own packages are first-party (#3623).** The Cargo
+  and npm rule now has a Python twin. An osv-scanner or Trivy advisory naming an exact name
+  (PEP 503 normalised) and version from the review root's own `uv.lock`, `poetry.lock` or
+  `pdm.lock` is confirmed at ingest, without an advisor, when every lock entry with that identity
+  is a local-path package -- a uv `editable` / `directory` / `virtual` source, a Poetry
+  `directory` source, a PDM `path` -- whose realpath is inside the review root and whose own
+  `pyproject.toml` has the same name and a static version and is publishable. `[project]` comes
+  first; Poetry's legacy `[tool.poetry]` is read only without it.
+  - **Unpublishable:** any `Private ::` classifier (PyPI refuses them all), `package-mode =
+    false`, `[tool.uv] package = false`, `[tool.pdm] distribution = false`, a uv `virtual`
+    source, and `dynamic = ["classifiers"]` (a private classifier filled in at build time could
+    not be seen). The review root itself is exempt, as for npm's `private`; a member is not.
+  - **Fails closed onto the advisor path:** a dynamic version, a registry / git / url / archive
+    copy of the same identity (or of a PEP 440-equal spelling of it, such as `1.2.0-rc1` beside
+    `1.2.0rc1`; confirmation itself stays an exact match), a second local spelling of the same
+    release, an outside-tree package, a version mismatch, a lock entry whose name is not a PEP
+    508 name, a malformed lock or manifest, and an unread manifest.
+  - **Out of scope:** `Pipfile.lock` and `requirements.txt` (no versioned local identity), and
+    pip-audit, which audits an environment rather than the lock.
+
+  Every read spends #3634's shared ingest budget; fingerprints and reconcile keys are unchanged.
+  - **All ecosystems:** a lock that resolves to a file of another name (`poetry.lock` symlinked
+    to `pdm.lock`, `uv.lock` to `Cargo.lock`, `package-lock.json` to `npm-shrinkwrap.json`) is
+    no longer read. The parser and its cache follow the resolved name, so such a lock could be
+    parsed as a format no scanner read it as.
+
+- **Go advisories always stay with the advisor (#3623, owner ruling).** Unlike Cargo, npm and
+  Python, Go has no first-party marker: a go.mod declares `module M` but no version of its own
+  (the main module's comes from VCS tags at build time), so there is no identity a manifest can
+  prove. A main module, a go.work `use` module and a local `replace` target -- whose version is
+  the consumer's `require` line, often a placeholder pseudo-version -- are all pinned to the
+  ordinary tool-advisor path under osv-scanner and Trivy, and nothing Go is read from the
+  ingest budget. No behaviour changes; this documents and pins it.
+
 - **A host-cut-short verify phase now names the host and resume path (#3753).** The dispatch
   ledger preserves the loop's host/entry failure class, and synthesis joins each verify entry's
   latest result to the exact unresolved cell or tool claim before counting the never-launched

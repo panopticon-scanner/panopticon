@@ -13,8 +13,9 @@ from unittest import mock
 from scripts import (collect_usage, driver, host_disclosure, host_posture, host_probes,
                      hosts, run_manifest)
 import scripts.probes.claude as claude_probes
+import scripts.runners.outage as outage
 import scripts.probes.common as probes_common
-from scripts.phases import runio
+from scripts.phases import requests, runio
 
 
 @contextlib.contextmanager
@@ -655,6 +656,175 @@ class TestThePostureIsEstablishedEveryInvocation(unittest.TestCase):
             # pre-fix assertion passed without ever reaching this branch.
             self.assertIn(host_disclosure.ALL_PROVEN, out)
             self.assertNotIn("NOT PROVEN", out)
+
+
+class TestAHostLimitedResumeStaysPaused(unittest.TestCase):
+    """#3646: a resume under a live host limit (a Claude weekly limit, in the owner's
+    run) could not LAUNCH the write/read canary, so both guards read UNKNOWN and the
+    proven -> unknown move was refused as posture drift -- turning a resumable pause
+    into an error. A probe whose launch failed host-class measured nothing: the run
+    stays paused and the stored posture is untouched. A probe that ran and proved less
+    is still drift."""
+
+    LIMITED = (hosts.ARTIFACT_WRITE_GUARD, hosts.READ_SCOPE_CONFINED)
+    # The fixture helpers, borrowed rather than inherited: a subclass would run every
+    # one of that class's tests a second time.
+    _args = TestThePostureIsEstablishedEveryInvocation._args
+    _manifest = TestThePostureIsEstablishedEveryInvocation._manifest
+    _artifact = TestThePostureIsEstablishedEveryInvocation._artifact
+
+    def _posture(self, overrides):
+        artifact = self._artifact(hosts.PROVEN)
+        for name in self.LIMITED:
+            artifact["capabilities"][name] = {"state": hosts.PROVEN, "by": "fixture",
+                                              "detail": "proven"}
+        for name, body in overrides.items():
+            artifact["capabilities"][name] = body
+        return artifact
+
+    def _resume(self, overrides):
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        manifest = self._manifest(session_dir=review_root)
+        with mock.patch.object(host_probes, "run_probes", return_value=self._posture({})):
+            self.assertIsNone(driver._establish_host_posture(review_root, manifest,
+                                                             self._args()))
+        path = runio._pano(review_root, runio.HOST_CAPABILITIES)
+        before = runio._load_json(path)
+        with mock.patch.object(host_probes, "run_probes",
+                               return_value=self._posture(overrides)):
+            err = driver._establish_host_posture(review_root, manifest, self._args())
+        return err, before, runio._load_json(path)
+
+    @staticmethod
+    def _limited():
+        return {"state": hosts.UNKNOWN, "by": "fixture",
+                "detail": hosts.HOST_LIMITED_LEAD + " (exit 1)"}
+
+    def test_a_host_limited_probe_pauses_and_leaves_the_posture_unchanged(self):
+        err, before, after = self._resume({name: self._limited() for name in self.LIMITED})
+        self.assertIsInstance(err, host_posture.HostLimited)
+        self.assertTrue(err.startswith("paused: "), err)
+        for name in self.LIMITED:
+            self.assertIn(name, err)
+        self.assertIn(outage.RESUME_ADVICE, err)
+        self.assertNotIn("posture changed mid-run", err)
+        self.assertEqual(before, after)
+        # #3663 review item 4: the probe's own account reaches the pause.
+        self.assertIn("without being measured -- probe: (exit 1); the stored", err)
+
+    def test_a_host_limited_resume_stamps_no_disclosure_in_the_manifest(self):
+        # #3663 review item 3: the pause leaves run-manifest.json as it found it; the
+        # healthy resume after it prints only the headline, having disclosed already.
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        os.makedirs(runio._pano(review_root), exist_ok=True)
+        manifest = self._manifest(session_dir=review_root)
+        run_manifest.write_manifest(review_root, manifest)
+        path = run_manifest.manifest_path(review_root)
+
+        def establish(overrides):
+            with mock.patch.object(host_probes, "run_probes",
+                                   return_value=self._posture(overrides)), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                answer = driver._establish_host_posture(
+                    review_root, run_manifest.load_manifest(review_root), self._args())
+            with open(path, "rb") as fh:
+                return answer, fh.read(), err.getvalue()
+
+        first, stamped, _said = establish({})
+        self.assertIsNone(first)
+        self.assertIn(b"posture_disclosed", stamped)
+        limited = {name: self._limited() for name in self.LIMITED}
+        for _ in range(2):
+            paused, after, _said = establish(limited)
+            self.assertIsInstance(paused, host_posture.HostLimited)
+            self.assertEqual(stamped, after)
+        healed, after, said = establish({})
+        self.assertIsNone(healed)
+        self.assertEqual(stamped, after)
+        self.assertIn("unchanged since", said)                 # the headline alone
+
+    def test_setup_is_recorded_not_compared_so_a_limit_there_still_stamps(self):
+        # `driver loop --setup` is not a run: its posture is recorded every time and
+        # never paused on, so the disclosure it printed is stamped even under a limit.
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        os.makedirs(runio._pano(review_root), exist_ok=True)
+        setup_path = run_manifest.manifest_path(review_root, "setup")
+        with open(setup_path, "w", encoding="utf-8") as fh:
+            json.dump({"run_id": "setup-id", "host": "claude"}, fh)
+        stamps = []
+        for overrides in ({}, {name: self._limited() for name in self.LIMITED}):
+            with open(setup_path, encoding="utf-8") as fh:
+                manifest = json.load(fh)
+            with mock.patch.object(host_probes, "run_probes",
+                                   return_value=self._posture(overrides)), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertIsNone(driver._establish_host_posture(
+                    review_root, manifest, self._args(), namespace="setup"))
+            with open(setup_path, encoding="utf-8") as fh:
+                stamps.append(json.load(fh)[run_manifest.POSTURE_DISCLOSED])
+        self.assertNotEqual(stamps[0], stamps[1])
+
+    def test_a_first_run_under_a_limit_then_needs_reset_as_its_refusal_says(self):
+        # #3663 review item 1: a FIRST run under a limit stores the unmeasured posture
+        # and is refused; a plain re-run on a healthy host is then drift, whose remedy
+        # is --reset -- which is what the refusal now tells the operator up front.
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        manifest = self._manifest(session_dir=review_root)
+        limited = {name: self._limited() for name in self.LIMITED}
+        with mock.patch.object(host_probes, "run_probes", return_value=self._posture(limited)):
+            self.assertIsNone(driver._establish_host_posture(review_root, manifest,
+                                                             self._args()))
+        with self.assertRaises(runio.DriverError) as refused:
+            requests.require_unenforced_ack(review_root, {"host": "claude", "flags": {}},
+                                            [{"id": "cell-1"}])
+        self.assertIn("re-run with --reset", str(refused.exception))
+        with mock.patch.object(host_probes, "run_probes", return_value=self._posture({})):
+            err = driver._establish_host_posture(review_root, manifest, self._args())
+        self.assertNotIsInstance(err, host_posture.HostLimited)
+        self.assertIn("host posture changed mid-run", err)
+        self.assertIn("unknown -> proven", err)
+        self.assertIn("Start a fresh run with --reset.", err)
+
+    def test_a_probe_that_ran_and_proved_less_is_still_drift(self):
+        for label, body in (
+                ("unknown, not host-limited", {"state": hosts.UNKNOWN, "by": "fixture",
+                                               "detail": "not measured after 2 attempt(s)"}),
+                ("refuted", {"state": hosts.REFUTED, "by": "fixture",
+                             "detail": hosts.HOST_LIMITED_LEAD}),
+                ("lead not at the start", {"state": hosts.UNKNOWN, "by": "fixture",
+                                           "detail": "x " + hosts.HOST_LIMITED_LEAD})):
+            with self.subTest(label):
+                err, _before, _after = self._resume({hosts.ARTIFACT_WRITE_GUARD: body})
+                self.assertNotIsInstance(err, host_posture.HostLimited)
+                self.assertIn("host posture changed mid-run", err)
+
+    def test_a_host_limit_does_not_excuse_a_real_change_beside_it(self):
+        err, _before, _after = self._resume({
+            hosts.ARTIFACT_WRITE_GUARD: self._limited(),
+            hosts.READ_SCOPE_CONFINED: {"state": hosts.REFUTED, "by": "fixture",
+                                        "detail": "an out-of-scope Read reached its sentinel"}})
+        self.assertNotIsInstance(err, host_posture.HostLimited)
+        self.assertIn("host posture changed mid-run", err)
+
+    def test_driver_run_reports_the_pause_as_paused_not_error(self):
+        with tempfile.TemporaryDirectory() as root:
+            root = os.path.realpath(root)
+            os.makedirs(runio._pano(root))
+            with open(os.path.join(root, "panopticon.yml"), "w", encoding="utf-8") as fh:
+                fh.write("version: 1\ngroups:\n  Auth:\n    match: ['a.py']\n")
+            args = driver.build_parser().parse_args(["run", root])
+            pause = host_posture.HostLimited("paused: the host is limited")
+            with mock.patch("scripts.driver._establish_host_posture", return_value=pause), \
+                    mock.patch("scripts.phases.validate.capture_tree_baseline"), \
+                    mock.patch("scripts.phases.engine.run_engine") as engine:
+                status = driver.run(args, resolved=(root, None, None))
+            self.assertEqual("paused", status["status"], status)
+            self.assertEqual("paused: the host is limited", status["message"])
+            engine.assert_not_called()
 
 
 class TestTheProbesReadTheRightTree(unittest.TestCase):
@@ -1688,7 +1858,7 @@ class TestTheOutputSchemaShapeSurvivesEveryReProbe(unittest.TestCase):
         seen = {}
         with mock.patch("scripts.host_probes.run_probes", return_value=self._artifact()), \
                 mock.patch.object(host_posture, "_disclose_posture",
-                                  side_effect=lambda rr, m, fresh, ns: seen.update(
+                                  side_effect=lambda rr, m, fresh, ns, **_kw: seen.update(
                                       fresh[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA])), \
                 contextlib.redirect_stderr(io.StringIO()):
             driver._establish_host_posture(d, self._manifest(), self._headless(d))

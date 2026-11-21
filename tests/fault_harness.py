@@ -28,6 +28,7 @@ import scripts.orchestrate as orchestrate
 import scripts.phases.child as child
 import scripts.phases.review as review
 import scripts.phases.runio as runio
+import scripts.probes.claude_write_canary as canary
 import scripts.runners.outage as outage
 import scripts.synth.render as render
 import scripts.synthesize as synthesize_cli
@@ -447,6 +448,7 @@ class Outcome:
     stalled: list = dataclasses.field(default_factory=list)   # statuses before the recovery
     stalled_report: bool = False                              # ...and whether a report existed
     short: list = dataclasses.field(default_factory=list)     # entries that answered in part
+    limited: list = dataclasses.field(default_factory=list)   # one LimitedResume per #3646 resume
 
     @property
     def status(self):
@@ -523,13 +525,60 @@ def _loop_once(root, runner, split_bytes, unparsed=()):
     return status, err.getvalue()
 
 
+# Bound at import: conftest stands the canary's `measure` down for every test, and the
+# limited-resume row is the one place here that wants the real one (over a fake launch).
+_REAL_CANARY_MEASURE = canary.measure
+
+
+@dataclasses.dataclass
+class LimitedResume:
+    """One resume whose capability probe the host rate-limited (#3646)."""
+    status: dict
+    launches: int             # reviewer launches the resume made
+    report: bool              # whether a report existed after it
+    changed: list             # run-folder files whose bytes differ from before it
+
+
+LIMIT_ENVELOPE = {"type": "result", "is_error": True, "result": "",
+                  "error": {"type": "rate_limit_error", "message": "usage limit reached"}}
+
+
+def host_limited_artifact(host="claude"):
+    """The posture a resume probes under a host limit: the REAL write/read canary, its
+    `claude -p` launch answered with the envelope a quota-limited CLI prints, and every
+    other capability as the healthy fixture has it."""
+    limited = mock.Mock(returncode=1, stdout=json.dumps(LIMIT_ENVELOPE), stderr="")
+    with mock.patch.object(canary, "_launch", return_value=limited):
+        measured = _REAL_CANARY_MEASURE()
+    body = all_proven_artifact(host)
+    for name, key in ((hosts.ARTIFACT_WRITE_GUARD, "write"),
+                      (hosts.READ_SCOPE_CONFINED, "read")):
+        verdict, detail = measured[key]
+        assert verdict == canary.HOST_LIMITED, measured
+        body["capabilities"][name] = {"state": hosts.UNKNOWN, "by": "write-canary",
+                                      "detail": detail}
+    return body
+
+
+def _run_folder_bytes(root):
+    found = {}
+    for directory, _dirs, names in os.walk(runio._pano(root)):
+        for name in names:
+            path = os.path.join(directory, name)
+            with open(path, "rb") as fh:
+                found[os.path.relpath(path, root)] = fh.read()
+    return found
+
+
 def drive(test_case, plan=None, recover=False, split_bytes=None, replies=None, unparsed=(),
-          suffix=""):
+          limited_resumes=0, suffix=""):
     """One case: a fresh target, reviewed under `plan` until the loop stops for a reason other
     than a pause (or `MAX_INVOCATIONS` pauses). With `recover`, the host then heals and the
     loop is run again, as an operator would after an outage. `replies` is what the agents
     say, when it is not the fixture's usual answers. `unparsed` are the files Semgrep
-    reports it could not parse. `suffix` is `build_target`'s."""
+    reports it could not parse. `limited_resumes` is how many times the operator resumes
+    while the host still rate-limits the capability probe, before it heals (#3646).
+    `suffix` is `build_target`'s."""
     root = build_target(test_case, suffix)
     replies = replies or FixtureReplies()
     runner = FakeRunner(faults=plan, replies=replies)
@@ -544,10 +593,22 @@ def drive(test_case, plan=None, recover=False, split_bytes=None, replies=None, u
                 return
 
     invoke()
-    recovered, stalled, stalled_report = False, [], False
+    recovered, stalled, stalled_report, limited = False, [], False, []
     if recover and statuses[-1]["status"] != "complete":
         stalled = [status["status"] for status in statuses]
         stalled_report = os.path.lexists(runio._pano(root, "report.json"))
+        for _ in range(limited_resumes):
+            before, launched = _run_folder_bytes(root), len(runner.launched)
+            with mock.patch("scripts.host_probes.run_probes",
+                            side_effect=lambda host, target, **kw: host_limited_artifact(host)):
+                status, said = _loop_once(root, runner, split_bytes, unparsed)
+            after = _run_folder_bytes(root)
+            terminal.append(said)
+            limited.append(LimitedResume(
+                status=status, launches=len(runner.launched) - launched,
+                report=os.path.lexists(runio._pano(root, "report.json")),
+                changed=sorted(name for name in set(before) | set(after)
+                               if before.get(name) != after.get(name))))
         runner.faults, recovered = None, True
         invoke()
     report, part_files = read_report(root)
@@ -560,7 +621,7 @@ def drive(test_case, plan=None, recover=False, split_bytes=None, replies=None, u
     return Outcome(plan=plan, root=root, statuses=statuses, terminal="".join(terminal),
                    launched=list(runner.launched), injected=list(runner.injected),
                    report=report, part_files=part_files, html=html, recovered=recovered,
-                   stalled=stalled, stalled_report=stalled_report,
+                   stalled=stalled, stalled_report=stalled_report, limited=limited,
                    short=list(getattr(replies, "short", list)()))
 
 
