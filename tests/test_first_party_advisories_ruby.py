@@ -521,6 +521,38 @@ class TestTheReviewProbes(_RubyCase):
             with self.subTest(spec=label):
                 self.assertIsNone(self._probe(self.PATH + self._gem(body)))
 
+    def test_a_gemfile_lock_symlinked_to_another_name_is_refused(self):
+        # #3692 review L3, on #3686's F1 guard: the parser follows the resolved name,
+        # so a Gemfile.lock must resolve to a file called Gemfile.lock.
+        lock = self.PATH + self._gem("    rack (2.0)\n")
+        self.assertEqual("first_party", self._probe(lock))             # the control
+        for target in ("gems.locked", "Gemfile.lock.real", "Cargo.lock"):
+            with self.subTest(target=target):
+                os.remove(os.path.join(self.root, "Gemfile.lock"))
+                with open(os.path.join(self.root, target), "w", encoding="utf-8") as fh:
+                    fh.write(lock)
+                os.symlink(target, os.path.join(self.root, "Gemfile.lock"))
+                self.assertIsNone(self._origin(self.FOO))
+                # The real file under its own name is not a lock this marker reads.
+                self.assertIsNone(self._origin(self.FOO, path=target))
+        # The other direction is the dangerous one: another ecosystem's lock resolving
+        # to a Gemfile.lock would have its advisory matched against the gems.
+        for stale in ("Gemfile.lock", "gems.locked", "Gemfile.lock.real", "Cargo.lock"):
+            os.remove(os.path.join(self.root, stale))
+        with open(os.path.join(self.root, "Gemfile.lock"), "w", encoding="utf-8") as fh:
+            fh.write(lock)
+        for name in ("poetry.lock", "uv.lock", "pdm.lock", "package-lock.json", "Cargo.lock"):
+            with self.subTest(link=name):
+                os.symlink("Gemfile.lock", os.path.join(self.root, name))
+                self.assertIsNone(self._origin(self.FOO, path=name))
+        self.assertEqual("first_party", self._origin(self.FOO))
+        # A symlink to a Gemfile.lock elsewhere keeps the name but is not the root's own.
+        os.remove(os.path.join(self.root, "Gemfile.lock"))
+        _write(os.path.join(self.root, "nested", "Gemfile.lock"), lock)
+        os.symlink(os.path.join("nested", "Gemfile.lock"),
+                   os.path.join(self.root, "Gemfile.lock"))
+        self.assertIsNone(self._origin(self.FOO))
+
     def test_an_option_after_specs_fails_the_lock(self):
         # L2: Bundler builds the source at `specs:`.
         self.assertIsNone(self._probe("PATH\n  specs:\n    foo (1.0)\n  remote: gems/foo\n\n"))
