@@ -25,6 +25,15 @@
     to `pdm.lock`, `uv.lock` to `Cargo.lock`, `package-lock.json` to `npm-shrinkwrap.json`) is
     no longer read. The parser and its cache follow the resolved name, so such a lock could be
     parsed as a format no scanner read it as.
+
+- **Go advisories always stay with the advisor (#3623, owner ruling).** Unlike Cargo and npm,
+  Go has no first-party marker: a go.mod declares `module M` but no version of its own
+  (the main module's comes from VCS tags at build time), so there is no identity a manifest can
+  prove. A main module, a go.work `use` module and a local `replace` target -- whose version is
+  the consumer's `require` line, often a placeholder pseudo-version -- are all pinned to the
+  ordinary tool-advisor path under osv-scanner and Trivy, and nothing Go is read from the
+  ingest budget. No behaviour changes; this documents and pins it.
+
 - **A host-cut-short verify phase now names the host and resume path (#3753).** The dispatch
   ledger preserves the loop's host/entry failure class, and synthesis joins each verify entry's
   latest result to the exact unresolved cell or tool claim before counting the never-launched
