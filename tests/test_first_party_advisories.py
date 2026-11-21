@@ -16,6 +16,7 @@ import scripts.phases.verify_tools as verify_tools
 import scripts.synth.corroborate as corroborate
 import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
+import scripts.tools.osv_scanner as osv_scanner
 
 
 WORKSPACE_NAME = "workspace-app"
@@ -2284,6 +2285,156 @@ class TestFirstPartyAdvisoryVerification(unittest.TestCase):
         self.assertEqual(report["discarded_claims"], [])
         self.assertEqual(report["meta"]["coverage"]["verdicts"]["queued"], 0)
         self.assertEqual(report["meta"]["coverage"]["verdicts"]["unknown"], 1)
+
+
+class TestTheAdvisoryEcosystemMustAgreeWithItsLock(unittest.TestCase):
+    """#3760: the marker chose its parser from the lock's file name alone. A scanner
+    record that says `Maven` (or `Go`, or anything but the lock's own ecosystem) and
+    names a Cargo, npm or Python lock is not that lock's advisory: it stays on the
+    advisor path, decided before the lock is read. A record with no ecosystem (Trivy
+    carries none) is judged by the lock alone, as before."""
+
+    CASES = (
+        ("Cargo.lock", "crates.io", (WORKSPACE_NAME, WORKSPACE_VERSION)),
+        ("package-lock.json", "npm", NPM_MEMBER),
+        ("npm-shrinkwrap.json", "npm", NPM_MEMBER),
+        ("uv.lock", "PyPI", PY_MEMBER),
+        ("poetry.lock", "PyPI", PY_MEMBER),
+        ("pdm.lock", "PyPI", PY_MEMBER),
+    )
+    OTHERS = ("Maven", "maven", "MAVEN", "Go", "RubyGems", "Packagist", "NuGet", "")
+
+    def _tree(self, lock_name):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        root = os.path.realpath(d.name)
+        if lock_name == "Cargo.lock":
+            _write_lock(root)
+            _write_manifest(root)
+        elif lock_name in first_party_advisory.NPM_LOCKS:
+            _npm_tree(root, lock_name=lock_name)
+        else:
+            lock = {"uv.lock": _uv_lock, "poetry.lock": _poetry_lock,
+                    "pdm.lock": _pdm_lock}[lock_name]()
+            _py_tree(root, lock=lock, lock_name=lock_name)
+        return root
+
+    @staticmethod
+    def _finding(lock_name, package, source="tool:osv-scanner", **tool_evidence):
+        body = {"rule_id": "GHSA-xxxx-yyyy-zzzz", "package_name": package[0],
+                "vulnerable_versions": package[1]}
+        body.update(tool_evidence)
+        return {"id": "OS-001", "title": "%s %s: GHSA-xxxx-yyyy-zzzz" % package,
+                "source": source, "severity": "MEDIUM", "confidence": "CERTAIN",
+                "panel": "security", "category": "dependency_vulnerability",
+                "location": {"file": lock_name, "line_start": 1}, "tool_evidence": body}
+
+    def _mark(self, root, finding):
+        cache = first_party_advisory.IngestCache()
+        first_party_advisory.mark([finding], root, cache)
+        return finding["tool_evidence"].get("package_origin"), cache
+
+    def assert_nothing_read(self, cache):
+        self.assertEqual(first_party_advisory.MAX_CARGO_MANIFEST_INGEST_BYTES,
+                         cache.manifest_bytes_remaining)
+        self.assertEqual({}, cache.manifests)
+        self.assertEqual({}, cache.package_origins)
+
+    def test_the_locks_own_ecosystem_classifies(self):
+        for lock_name, ecosystem, package in self.CASES:
+            with self.subTest(lock=lock_name):
+                root = self._tree(lock_name)
+                origin, _cache = self._mark(
+                    root, self._finding(lock_name, package, ecosystem=ecosystem))
+                self.assertEqual("first_party", origin)
+
+    def test_an_absent_ecosystem_is_judged_by_the_lock_alone(self):
+        # Trivy's SARIF and the audit adapters carry no ecosystem, so absence says
+        # nothing against the lock: it classifies as it did before #3760.
+        for lock_name, _ecosystem, package in self.CASES:
+            for source in ("tool:osv-scanner", "tool:trivy"):
+                with self.subTest(lock=lock_name, source=source):
+                    root = self._tree(lock_name)
+                    origin, _cache = self._mark(
+                        root, self._finding(lock_name, package, source=source))
+                    self.assertEqual("first_party", origin)
+
+    def test_another_ecosystem_stays_with_the_advisor_and_reads_nothing(self):
+        every = sorted({ecosystem for _lock, ecosystem, _package in self.CASES})
+        for lock_name, own, package in self.CASES:
+            root = self._tree(lock_name)
+            wrong = self.OTHERS + tuple(e for e in every if e != own) + (
+                own.upper() if own.upper() != own else own.lower(), own + " ", " " + own,
+                own + ":1")
+            for ecosystem in wrong:
+                with self.subTest(lock=lock_name, ecosystem=ecosystem):
+                    finding = self._finding(lock_name, package, ecosystem=ecosystem)
+                    origin, cache = self._mark(root, finding)
+                    self.assertIsNone(origin)
+                    self.assertFalse(evidence.is_first_party_advisory(finding))
+                    self.assertNotIn("advisory_package", finding["tool_evidence"])
+                    self.assert_nothing_read(cache)
+                    # It still queues for the advisor, and is not confirmed without one.
+                    self.assertEqual(1, len(evidence.build_verify_queue([finding])[0]))
+                    self.assertEqual("tool_reported",
+                                     evidence.derive_evidence(finding)["status"])
+
+    def test_an_ecosystem_that_is_not_a_string_stays_with_the_advisor(self):
+        for lock_name, own, package in self.CASES[:2]:
+            root = self._tree(lock_name)
+            for ecosystem in (1, True, [own], {"name": own}, 0, False, [], {}):
+                with self.subTest(lock=lock_name, ecosystem=ecosystem):
+                    origin, cache = self._mark(
+                        root, self._finding(lock_name, package, ecosystem=ecosystem))
+                    self.assertIsNone(origin)
+                    self.assert_nothing_read(cache)
+
+    def test_every_lock_the_marker_reads_has_an_ecosystem(self):
+        self.assertEqual(
+            {lock for lock, _ecosystem, _package in self.CASES},
+            set(first_party_advisory.LOCK_ECOSYSTEMS))
+        self.assertEqual({lock: ecosystem for lock, ecosystem, _package in self.CASES},
+                         first_party_advisory.LOCK_ECOSYSTEMS)
+
+    def test_osv_ingest_of_a_maven_record_at_a_cargo_or_npm_lock_is_not_first_party(self):
+        # The issue's probe, through the real adapter: the record names the local
+        # package's exact name and version but says Maven.
+        for lock_name, own, package in self.CASES[:3]:
+            for ecosystem, expected in (("Maven", False), ("maven", False),
+                                        ("MAVEN", False), (own, True)):
+                with self.subTest(lock=lock_name, ecosystem=ecosystem):
+                    root = self._tree(lock_name)
+                    document = {"results": [{"source": {"path": "/src/" + lock_name}, "packages": [{
+                        "package": {"name": package[0], "version": package[1],
+                                    "ecosystem": ecosystem},
+                        "vulnerabilities": [{"id": "GHSA-xxxx-yyyy-zzzz", "summary": "x",
+                                             "database_specific": {"severity": "MEDIUM"}}],
+                        "groups": []}]}]}
+                    findings = _ingest_document(root, "osv-scanner.json", document)
+                    self.assertEqual(1, len(findings))
+                    self.assertEqual(expected, evidence.is_first_party_advisory(findings[0]))
+                    self.assertEqual(0 if expected else 1,
+                                     len(evidence.build_verify_queue(findings)[0]))
+                    self.assertEqual("tool_confirmed" if expected else "tool_reported",
+                                     evidence.derive_evidence(findings[0])["status"])
+
+    def test_a_record_with_no_source_path_never_borrows_a_lock_name(self):
+        # The adapter used the ECOSYSTEM as the file when a record had no source path,
+        # so `ecosystem: "Cargo.lock"` became a lock this marker reads.
+        for lock_name, _own, package in self.CASES:
+            with self.subTest(ecosystem=lock_name):
+                root = self._tree(lock_name)
+                document = {"results": [{"packages": [{
+                    "package": {"name": package[0], "version": package[1],
+                                "ecosystem": lock_name},
+                    "vulnerabilities": [{"id": "GHSA-xxxx-yyyy-zzzz", "summary": "x"}],
+                    "groups": []}]}]}
+                findings = _ingest_document(root, "osv-scanner.json", document)
+                self.assertEqual(1, len(findings))
+                self.assertEqual(osv_scanner.NO_SOURCE_PATH, findings[0]["location"]["file"])
+                self.assertFalse(evidence.is_first_party_advisory(findings[0]))
+        self.assertEqual("manifest", osv_scanner.NO_SOURCE_PATH)
+        self.assertNotIn(osv_scanner.NO_SOURCE_PATH, first_party_advisory.LOCK_ECOSYSTEMS)
 
 
 if __name__ == "__main__":
