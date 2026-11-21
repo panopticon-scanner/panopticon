@@ -1012,7 +1012,6 @@ _GEMSPEC_OPEN = re.compile(r"( *)Gem::Specification\.new(?: +(do) *| *\{ *)"
                            r"\| *([a-z_][A-Za-z0-9_]*) *\| *\Z")
 _GEMSPEC_SETTER = re.compile(r"([a-z_][a-z0-9_]*) *= *")
 _GEMSPEC_DEPENDENCY = re.compile(r"add_(?:runtime_|development_)?dependency")
-_GEMSPEC_METADATA_KEY = re.compile(r"[A-Za-z0-9_.-]+\Z")
 _RUBY_CODING = re.compile(r"coding[:=] *([A-Za-z0-9_.-]+)", re.IGNORECASE)
 # Bundler's glob is `{,*,*/*}.gemspec`: bound the listing it takes to mirror it.
 MAX_GEMSPEC_SCAN_ENTRIES = 65536
@@ -1071,8 +1070,7 @@ def _gemspec_statement(rest):
         key = _plain_strings(rest[len("metadata["):close]) if close > 0 else None
         tail = rest[close + 1:].lstrip(" ") if close > 0 else ""
         value = _ruby_literal(tail[1:]) if tail.startswith("=") else None
-        if (key is None or len(key) != 1 or not _GEMSPEC_METADATA_KEY.match(key[0])
-                or value is None or value[0] != "string"):
+        if key is None or len(key) != 1 or value is None or value[0] != "string":
             return None
         return "metadata", key[0], value[1]
     dependency = _GEMSPEC_DEPENDENCY.match(rest)
@@ -1087,8 +1085,8 @@ def _gemspec_statement(rest):
         return ("dependency",) if strings else None
     setter = _GEMSPEC_SETTER.match(rest)
     literal = _ruby_literal(rest[setter.end():]) if setter else None
-    if setter is None or literal is None or setter[1] == "metadata":
-        return None
+    if setter is None or literal is None:
+        return None                # (`x.metadata = ...` is refused by the caller)
     return "set", setter[1], literal
 
 

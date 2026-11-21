@@ -774,7 +774,24 @@ class TestTheSecondReview(TestTheReviewProbes):
                  "# encoding: Shift_JIS\n" + hidden),
                 ("an encoding comment inside", self._spec("  # coding: big5\n" + lit)),
                 ("a block comment", "=begin\n=end\n" + hidden),
-                ("an opener with trailing code", hidden.replace("|s|\n", "|s| # x\n"))):
+                ("an opener with trailing code", hidden.replace("|s|\n", "|s| # x\n")),
+                # Survivors of the first mutation pass.
+                ("a block that never closes", hidden.replace("end\n", "")),
+                ("adjacent literals", self._spec(lit + '  s.summary = "a" "b"\n')),
+                ("a trailing comma, so the statement continues",
+                 self._spec(lit + '  s.add_dependency "rack",\n')),
+                ("a trailing comma in an array", self._spec(lit + '  s.files = ["a",]\n')),
+                ("two strings for one field",
+                 self._spec('  s.name = "foo"\n  s.version = "1.0", "9"\n')),
+                ("a dependency with only a space", self._spec(lit + "  s.add_dependency \n")),
+                ("a dependency with empty parens", self._spec(lit + "  s.add_dependency()\n")),
+                ("non-ASCII digits", self._spec(lit + "  s.rubygems_version = %s\n"
+                                                % (chr(0x661) + chr(0x662)))),
+                ("a metadata value that is not a string",
+                 self._spec(lit + '  s.metadata["homepage_uri"] = 1\n')),
+                ("a metadata value that is an array",
+                 self._spec(lit + '  s.metadata["homepage_uri"] = ["x"]\n')),
+                ("two metadata keys", self._spec(lit + '  s.metadata["a", "b"] = "x"\n'))):
             with self.subTest(gemspec=label):
                 self.assertIsNone(self._probe(self.PATH, gemspec=gemspec))
 
@@ -819,6 +836,40 @@ class TestTheSecondReview(TestTheReviewProbes):
             with self.subTest(gemspec=label):
                 self.assertEqual("first_party", self._probe(self.PATH, gemspec=gemspec))
 
+    def test_an_escape_is_never_read_as_its_own_text(self):
+        # A lock name may hold a backslash; `"fo\x6f"` is `foo` to Ruby, not that text.
+        name = "fo\\x6f"
+        lock = self.PATH.replace("foo (1.0)", name + " (1.0)")
+        for quote in ('"', "'"):
+            with self.subTest(quote=quote):
+                gemspec = self._spec("  s.name = %s%s%s\n  s.version = \"1.0\"\n"
+                                     % (quote, name, quote))
+                self.assertIsNone(self._probe(lock, gemspec=gemspec, package=(name, "1.0")))
+
+    def test_a_version_that_is_not_a_string_proves_nothing(self):
+        lock = self.PATH.replace("foo (1.0)", "foo (1)")
+        self.assertEqual("first_party", self._probe(
+            lock, gemspec=_gemspec("foo", "1"), package=("foo", "1")))
+        for version in ("1", '["1"]', "true"):
+            with self.subTest(version=version):
+                gemspec = self._spec('  s.name = "foo"\n  s.version = %s\n' % version)
+                self.assertIsNone(self._probe(lock, gemspec=gemspec, package=("foo", "1")))
+                self.assertIsNone(self._probe(
+                    self.PATH.replace("foo (1.0)", "foo (true)"), gemspec=gemspec,
+                    package=("foo", "true")))
+
+    def test_the_gemspec_listing_is_bounded(self):
+        base = os.path.join(self.root, "gems", "foo")
+        for extra in range(3):
+            _write(os.path.join(base, "lib", "f%d.rb" % extra), "x")
+        self._probe(self.PATH)
+        # gems/foo holds foo.gemspec and lib/ (2), and lib/ holds 3 files: 5 entries.
+        for cap, expected in ((5, "first_party"), (4, None), (2, None)):
+            with self.subTest(cap=cap), \
+                    mock.patch.object(first_party_advisory, "MAX_GEMSPEC_SCAN_ENTRIES", cap):
+                self.assertEqual(expected, self._origin(self.FOO))
+        self.assertEqual(65536, first_party_advisory.MAX_GEMSPEC_SCAN_ENTRIES)
+
     def test_the_lock_holds_exact_indents_markers_and_versions(self):
         good = ("PATH\n  remote: gems/foo\n  specs:\n    foo (1.0)\n      rack (~> 2.2)\n"
                 "      json\n\n" + self._gem("    rack (2.2.3)\n      webrick\n    json (2.0)\n"))
@@ -841,7 +892,12 @@ class TestTheSecondReview(TestTheReviewProbes):
                 ("specs with a trailing space",
                  good.replace("  specs:\n    foo", "  specs: \n    foo")),
                 ("a GEM specs with a value",
-                 good.replace("  specs:\n    rack", "  specs: x\n    rack"))):
+                 good.replace("  specs:\n    rack", "  specs: x\n    rack")),
+                ("a valued specs with nothing under it",
+                 good + "\nGIT\n  remote: https://example.invalid/x.git\n  specs: junk\n"),
+                ("a dependency before any spec",
+                 good + "\nGIT\n  remote: https://example.invalid/x.git\n  specs:\n"
+                        "      rack\n")):
             with self.subTest(lock=label):
                 self.assertNotEqual(good, lock)
                 self.assertIsNone(self._probe(lock))
@@ -942,6 +998,9 @@ class TestTheSecondReview(TestTheReviewProbes):
         # ...except the literal `.gemspec`, which the glob's empty alternative names.
         self.assertIsNone(reset(**{"foo.gemspec": good, ".gemspec": private}))
         self.assertEqual("first_party", reset(**{".gemspec": good}))
+        # ...and only here: one level down the glob is `*/*.gemspec`.
+        self.assertEqual("first_party",
+                         reset(**{"foo.gemspec": good, "real/.gemspec": private}))
         # A file that only ends like one is not matched; a DIRECTORY named like one is
         # (the glob does not ask what it matched), so Bundler would fail on it.
         self.assertEqual("first_party",
@@ -1004,6 +1063,8 @@ class TestTheSecondReview(TestTheReviewProbes):
         plugin = "PLUGIN SOURCE\n  remote: gems/foo\n  type: path\n  specs:\n    foo (1.0)\n\n"
         self.assertIsNone(self._probe(self.PATH + plugin))
         self.assertIsNone(self._probe(plugin))
+        # Even shaped exactly like a PATH source: no option but `remote`.
+        self.assertIsNone(self._probe(plugin.replace("  type: path\n", "")))
         self.assertEqual("first_party", self._probe(
             self.PATH + plugin.replace("foo (1.0)", "bar (1.0)")))
 
