@@ -339,18 +339,19 @@ class TestPipAuditAdapter(unittest.TestCase):
             self.assertTrue(pa.PipAuditAdapter().is_applicable("/tmp/fake"))
 
     def test_is_applicable_when_requirements_dev_present(self):
-        with mock.patch("scripts.tools.pip_audit.safe_glob.under", return_value=["/tmp/fake/requirements-dev.txt"]):
+        with mock.patch("scripts.tools.pip_audit.safe_glob.iter_under",
+                        return_value=iter(["/tmp/fake/requirements-dev.txt"])):
             with mock.patch("os.path.exists", return_value=False):
                 self.assertTrue(pa.PipAuditAdapter().is_applicable("/tmp/fake"))
 
     def test_is_applicable_when_pyproject_present(self):
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("pyproject.toml")):
-            with mock.patch("scripts.tools.pip_audit.safe_glob.under", return_value=[]):
+            with mock.patch("scripts.tools.pip_audit.safe_glob.iter_under", return_value=iter([])):
                 self.assertTrue(pa.PipAuditAdapter().is_applicable("/tmp/fake"))
 
     def test_is_applicable_false_for_setup_py(self):
         with mock.patch("os.path.exists", side_effect=lambda p: p.endswith("setup.py")):
-            with mock.patch("scripts.tools.pip_audit.safe_glob.under", return_value=[]):
+            with mock.patch("scripts.tools.pip_audit.safe_glob.iter_under", return_value=iter([])):
                 self.assertFalse(pa.PipAuditAdapter().is_applicable("/tmp/fake"))
 
     def test_is_applicable_false_for_setup_cfg(self):

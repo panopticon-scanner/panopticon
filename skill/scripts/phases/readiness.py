@@ -302,14 +302,21 @@ GATING_ROWS = ("guide", "dependencies", "matrix", "cli", "tools-image")
 _LABEL = 13
 
 
-def _find_sub_skill(leaf):
-    """The first `SKILL.md` for `leaf` under any documented root, or None."""
+def _find_sub_skill(leaf, unlistable=None):
+    """The first `SKILL.md` for `leaf` under any documented root, or None. A directory
+    on the way that could not be listed is appended to `unlistable`, when given, and
+    the search goes on past it (#3706): the row is never a stop."""
     for root in SUB_SKILL_ROOTS:
         base = os.path.expanduser(root)
         if not os.path.isdir(base):
             continue
         for pattern in _SUB_SKILL_GLOBS:
-            hits = sorted(safe_glob.under(base, pattern % leaf, "SKILL.md"))
+            try:
+                hits = sorted(safe_glob.under(base, pattern % leaf, "SKILL.md"))
+            except safe_glob.Unlistable as exc:
+                if unlistable is not None and exc.directory not in unlistable:
+                    unlistable.append(exc.directory)
+                continue
             if hits:
                 return hits[0]
     return None
@@ -317,10 +324,28 @@ def _find_sub_skill(leaf):
 
 def _sub_skill_rows():
     """[{name, found_at}] -- never gating (SKILL.md ruling: a missing sub-skill
-    is a documented default plus a disclosure, not a stop)."""
-    return [{"name": name,
-             "found_at": _find_sub_skill(name.split(":", 1)[-1])}
-            for name in REQUIRED_SUB_SKILLS]
+    is a documented default plus a disclosure, not a stop). A sub-skill that was not
+    found past a directory that could not be listed carries `unlistable`, that
+    directory: "not found" there is not "not installed" (#3706)."""
+    rows = []
+    for name in REQUIRED_SUB_SKILLS:
+        unlistable: list[str] = []
+        row = {"name": name, "found_at": _find_sub_skill(name.split(":", 1)[-1], unlistable)}
+        if row["found_at"] is None and unlistable:
+            row["unlistable"] = unlistable[0]
+        rows.append(row)
+    return rows
+
+
+def _sub_skill_line(rows):
+    """The sub-skill rows as the one line the human form prints."""
+    def state(row):
+        if row["found_at"]:
+            return row["found_at"]
+        if row.get("unlistable"):
+            return "not found (%s could not be listed)" % row["unlistable"]
+        return "not found"
+    return "; ".join("%s: %s" % (row["name"].split(":", 1)[-1], state(row)) for row in rows)
 
 
 def _guide_row():
@@ -691,9 +716,7 @@ def _row_lines(document):
     """(label, state, detail) per row. `--` is informational: it never moves
     the exit code, and rendering it as `ok` would tell an operator that a
     sub-skill they do not have is fine AND that it was checked for pass/fail."""
-    sub_skills = "; ".join(
-        "%s: %s" % (row["name"].split(":", 1)[-1], row["found_at"] or "not found")
-        for row in document["sub_skills"])
+    sub_skills = _sub_skill_line(document["sub_skills"])
     return (("guide", document["guide"]["ok"], document["guide"]["detail"]),
             ("dependencies", document["dependencies"]["ok"],
              document["dependencies"]["detail"]),

@@ -388,17 +388,25 @@ def _requirement_candidate(target):
     """
     target = os.path.abspath(target)
     exact = os.path.join(target, "requirements.txt")
-    # #3701: the directory is escaped. `glob` reads `[x]` in ANY part of the pattern as a
-    # character class, so under `/work/repo[x]` this matched nothing of the target's, and
-    # could match a sibling `/work/repox/requirements-dev.txt` instead.
-    candidates = [exact] + sorted(safe_glob.under(target, "requirements*.txt"))
-    # `lexists`, not `isfile`: a DANGLING symlink is a path entry that exists and has to be judged,
-    # and `isfile` is false for one (F8). Filtering on `isfile` here ran the F5 check ahead of
-    # confinement, so `requirements.txt -> /nonexistent/outside/creds` reported as "no manifest" --
-    # the exact reading C2(a) exists to make impossible.
-    candidates = [c for c in dict.fromkeys(candidates) if os.path.lexists(c)]
+
+    def candidates():
+        yield exact
+        # #3701: the directory is taken as it is spelled. `glob` reads `[x]` in ANY part of
+        # the pattern as a character class, so under `/work/repo[x]` this matched nothing of
+        # the target's, and could match a sibling `/work/repox/requirements-dev.txt` instead.
+        # #3706: listed only when `requirements.txt` was not the answer, and a target that
+        # cannot be listed raises `safe_glob.Unlistable`: the files that would have been
+        # considered are not known, and "none" is not what is known about them.
+        yield from (c for c in sorted(safe_glob.under(target, "requirements*.txt")) if c != exact)
+
     rejected = []
-    for candidate in candidates:
+    for candidate in candidates():
+        # `lexists`, not `isfile`: a DANGLING symlink is a path entry that exists and has to be
+        # judged, and `isfile` is false for one (F8). Filtering on `isfile` here ran the F5 check
+        # ahead of confinement, so `requirements.txt -> /nonexistent/outside/creds` reported as
+        # "no manifest" -- the exact reading C2(a) exists to make impossible.
+        if not os.path.lexists(candidate):
+            continue
         if not confined_to_root(target, candidate):
             rejected.append(os.path.relpath(candidate, target))
         elif os.path.isfile(candidate):
@@ -504,9 +512,15 @@ class PipAuditAdapter:
         by `is_applicable` and by `tools_manifest`'s reason, so "an auditor reads
         this file" means the same in both (#3699 L1): the path exists, or the pattern matches something."""
         if "*" in name:
-            # #3701: only `name` is a pattern. The target's own path is escaped, or a
-            # `[` in it is read as a character class and the file there is never seen.
-            return bool(safe_glob.under(target, name))
+            # #3701: only `name` is a pattern. The target's own path is taken as it is
+            # spelled, or a `[` in it is read as a character class and the file there is
+            # never seen.
+            try:
+                return next(safe_glob.iter_under(target, name), None) is not None
+            except safe_glob.Unlistable:
+                # #3706: not known, so yes. The adapter is selected, `invoke` fails on the
+                # same listing, and the ecosystem reads applicable with nothing produced.
+                return True
         return os.path.exists(os.path.join(target, name))
 
     def is_applicable(self, target: str) -> bool:
@@ -519,7 +533,13 @@ class PipAuditAdapter:
         # --progress-spinner=off: some pip-audit builds emit an ANSI progress
         # spinner into stdout ahead of the JSON, which corrupts parsing.
         cmd = ["pip-audit", "--format=json", "--desc=on", "--progress-spinner=off"]
-        req = self._find_requirement(target)
+        try:
+            req = self._find_requirement(target)
+        except safe_glob.Unlistable as exc:
+            # #3706: a failed run, not the pyproject branch below. That branch is for a
+            # target with no requirements file, and whether this one has any is not known.
+            print("pip-audit: %s; nothing was audited" % exc, file=sys.stderr)
+            return b"", 2
         if req:
             # #1646: NEVER `--requirement <the repo's own file>`. pip-audit resolves what that file
             # names, and a requirement form it has to resolve runs the target's build backend. The

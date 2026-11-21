@@ -12,7 +12,6 @@ import scripts.loop_progress as loop_progress
 import scripts.run_manifest as run_manifest
 import scripts.synth.validate_schema as validate_schema_mod
 import scripts.redact as redact
-import scripts.safe_glob as safe_glob
 import scripts.safe_write as safe_write
 import scripts.x0x_report as x0x_report
 from . import child
@@ -311,7 +310,7 @@ def synthesize_execute(review_root, manifest):
     # `--tools-disabled-mid-run` through instead of re-reading the manifest.
     runio._write_json(runio._pano(review_root, config_schema.RESOLUTION_NAME),
                       config_schema.resolution_document(manifest))
-    findings = sorted(safe_glob.under(*os.path.split(runio._pano(review_root, "findings-*.json"))))
+    findings = runio._findings_files(review_root)
     verdicts_dir = runio._pano(review_root, "verdicts")
     os.makedirs(verdicts_dir, exist_ok=True)   # empty in P3 (verify is a no-op)
     report = runio._report_out(review_root)   # §5.1: durable, top-level, tag-named

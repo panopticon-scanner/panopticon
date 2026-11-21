@@ -6,7 +6,9 @@
   for its own files with `glob`, and passed the run folder's path as part of the pattern. Under a
   review root such as `repo[x]/`, `[x]` was read as a character class, so nothing matched: the
   report held no agent finding and no reviewed cell, every verdict was counted as "unknown", and
-  it said only "NOT CERTIFIED — incomplete". `--reset` cleared nothing there, and said nothing.
+  it said only "NOT CERTIFIED — incomplete". `--reset` there removed the run's own folder, left
+  its flat artifacts in place, and deleted the flat artifacts of the sibling `repox/.panopticon/`,
+  which is what the pattern matched. It said nothing.
   - Every such lookup now takes the directory as it is spelled: the findings files, dispatch
     plans, scout replies and coverage files of a run, the dispatch counts in `meta.cost`, the
     `--reset` sweep, the report parts surfaced from a `--pr` worktree (code no run reaches while
@@ -14,8 +16,31 @@
   - pip-audit had the same fault in the other direction: an empty `repo[x]/` beside
     `repox/requirements-dev.txt` read as a Python tree, and the sibling's file was reported as a
     rejected requirements path. It now matches `requirements*.txt` under the target itself.
-  - One helper does the matching (`scripts/safe_glob.py`), and a test fails if any other module
-    in `skill/scripts` calls `glob` directly.
+  - One helper does the matching (`scripts/safe_glob.py`), and a test fails if any module in
+    `skill/scripts` calls `glob`. There is one exception, which the test names: `guard_rules.py`
+    is loaded with the standard library alone, cannot import the helper, and escapes its
+    directory itself.
+  - **A directory that cannot be listed no longer reads as an empty one.** `glob` returns
+    nothing for a directory it cannot read, so "no such file" and "could not look" were the same
+    answer. This fault is older than #3701; it is fixed here because every listing now goes
+    through the one helper. A directory that is not there still matches nothing. One that is
+    there and cannot be listed is reported by each caller as something worse than the truth:
+    - the dependency audit: an existing `requirements-dev.txt` was not seen, pip-audit read as
+      not applicable, and the report showed no gap. The Python ecosystem now reads as
+      applicable and pip-audit is selected. Where pip-audit cannot list the target either, it
+      fails with the reason, and the report shows the ecosystem as applicable with nothing
+      produced for it;
+    - `--reset`: it left every flat artifact in place and said nothing. It now stops with
+      `unsafe reset cleanup: <directory> could not be listed: <reason>; nothing was cleared`
+      and a non-zero exit, before removing anything;
+    - a run folder: its findings files, plans, scout replies, coverage files and verdict
+      bundles read as none. The run now stops with the reason;
+    - `readiness`: a sub-skill row past such a directory says
+      `not found (<directory> could not be listed)`, and its JSON row carries `unlistable`;
+    - token usage: this session's transcript directories stop the collection. Another user's
+      `claude-<uid>` directory under the temp root is passed over, as it cannot hold them.
+  - The helper refuses a pattern that would leave its directory: an empty, absolute, `.` or
+    `..` part, no pattern at all, or an empty directory is a `ValueError`.
 
 - **Tools closure re-resolved: semgrep 1.185.0 (supersedes Dependabot #3751; #3619 not taken).**
   - Taken as offered: semgrep 1.183.0 -> 1.185.0, with the Dockerfile `SEMGREP_VERSION` moved to

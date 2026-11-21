@@ -135,8 +135,9 @@
 #   - 2026-10-31 (#3272): `probe_cache.py` is claimed by `Orchestration:Runners`
 #     beside the external-CLI launch seam whose measurements it caches. `Hosts`
 #     was already at its 48-file cap; the cache's focused test moves with it.
-#   - 2026-11-17 (#3701): `safe_glob.py` (the one place `skill/scripts` calls
-#     `glob`, with the directory escaped) is claimed by `RepoProfiling:Discovery`,
+#   - 2026-11-17 (#3701): `safe_glob.py` (the one matcher in `skill/scripts`,
+#     which takes its directory as spelled; no module calls `glob` but
+#     `guard_rules.py`, which cannot import it) is claimed by `RepoProfiling:Discovery`,
 #     not `Orchestration:Core`, where the other shared stdlib-only leaves are
 #     (`claim_scope.py`, `safe_write.py`): that leaf is AT the 48 cap. It is
 #     parked beside `plan_contract.py`, the other leaf every layer reads, with

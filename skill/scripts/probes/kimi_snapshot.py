@@ -62,7 +62,7 @@ def _kimi_wire_snapshots(run_home):
     try:
         wires = sorted(safe_glob.under(home, "sessions", "*", "*", "agents", "*", "wire.jsonl"),
                        key=os.path.getmtime, reverse=True)
-    except OSError as exc:        # a file that vanished between glob and stat
+    except (OSError, safe_glob.Unlistable) as exc:   # vanished between listing and stat, or unlistable
         return [], "the per-run home's wire files could not be listed: %s" % exc
     found = []
     for wire in wires:

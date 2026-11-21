@@ -25,10 +25,12 @@ import scripts.first_contact as first_contact
 import scripts.inert as inert
 import scripts.host_disclosure as host_disclosure
 import scripts.run_manifest as run_manifest
+import scripts.safe_glob as safe_glob
 import scripts.synth.report as report_mod
 from scripts import hosts
 
 from tests.tools.git_repo import make_git_repo
+from tests.test_safe_glob import unlistable
 
 # #3210: `_land_one_review`'s severity that omits the key.
 ABSENT = object()
@@ -756,6 +758,46 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         with open(os.path.join(planted, "inside.txt"), "w") as fh:
             fh.write("the tree's own file")
         return planted
+
+    def test_reset_that_cannot_list_the_run_folder_stops_and_clears_nothing(self):
+        # #3706 review, item 1: `glob` read a `.panopticon/` it could not list as an
+        # empty one, so `--reset` removed the run folder, left every flat artifact in
+        # place, said nothing, and the run went on over them.
+        d = self._repo()
+        driver.run(self._args(d, "--no-tools"))
+        pano = os.path.join(d, ".panopticon")
+        with open(os.path.join(pano, "findings-zz-SEC.json"), "w") as fh:
+            fh.write("[]")
+
+        def held():
+            return sorted(os.path.relpath(os.path.join(folder, name), pano)
+                          for folder, _dirs, names in os.walk(pano) for name in names)
+
+        def reset():
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                rc = driver.main(["run", d, "--no-tools", "--reset"])
+            return rc, json.loads(out.getvalue())
+
+        before = held()
+        # A directory nothing can list is refused at first contact, before the reset.
+        with unlistable(pano):
+            rc, status = reset()
+        self.assertEqual((1, "error"), (rc, status["status"]), status)
+        self.assertIn("first contact", status["message"])
+        self.assertEqual(before, held())
+        # One that first contact could list and the reset cannot (a failing disk) is
+        # the reset's to report.
+        failed = safe_glob.Unlistable(pano, PermissionError(13, "Permission denied"))
+        with mock.patch.object(safe_glob, "under", side_effect=failed):
+            rc, status = reset()
+        self.assertEqual((1, "error"), (rc, status["status"]), status)
+        self.assertEqual("unsafe reset cleanup: %s could not be listed: Permission denied; "
+                         "nothing was cleared" % pano, status["message"])
+        self.assertEqual(before, held())
+        rc, status = reset()
+        self.assertEqual((0, "checkpoint"), (rc, status["status"]), status)
+        self.assertNotIn("findings-zz-SEC.json", held())
 
     def test_reset_leaves_a_directory_at_every_reset_name_and_still_resets(self):
         # #2095: every `_RESET_GLOBS` name is a FILE this driver writes, so a

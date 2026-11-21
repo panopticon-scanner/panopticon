@@ -72,6 +72,9 @@ DROP_COUNTERS = ("unreadable_transcripts", "undecodable_lines",
 # any real run and only an adversarial or runaway tasks directory reaches it.
 TASK_TRANSCRIPTS_MAX = 20_000
 
+#: Where Claude Code keeps a session's task output: `<root>/claude-<uid>/<project>/<session>/tasks`.
+TEMP_ROOTS = ("/private/tmp", "/tmp")
+
 # #run10 B2 hands agents a `prompt_file` PATH instead of an inline prompt, so a
 # real dispatch prompt names `_prompts/<entry-id>.txt` and never mentions the
 # findings file at all. The entry id already encodes the phase, and it is the
@@ -184,8 +187,16 @@ def find_task_transcripts(controller_transcript, tasks_dir=None, info=None):
     proj = os.path.dirname(controller_transcript)
     slug = os.path.basename(proj)
     candidates = []
-    for base in safe_glob.under("/private/tmp", "claude-*") + safe_glob.under("/tmp", "claude-*"):
-        candidates.extend(safe_glob.under(os.path.join(base, slug, session, "tasks"), "*"))
+    for root in TEMP_ROOTS:
+        for base in safe_glob.under(root, "claude-*"):
+            try:
+                candidates.extend(safe_glob.under(os.path.join(base, slug, session, "tasks"), "*"))
+            except safe_glob.Unlistable:
+                # #3706: a shared machine has one `claude-<uid>` per user, and another
+                # user's is closed to us. This session's tasks are not in it, so it is
+                # passed over. One we can enter and still cannot list is ours: that stops.
+                if os.access(base, os.R_OK | os.X_OK):
+                    raise
     subagents = os.path.join(proj, session, "subagents")
     candidates.extend(safe_glob.under(subagents, "workflows", "*", "agent-*.jsonl"))
     candidates.extend(safe_glob.under(subagents, "*.jsonl"))

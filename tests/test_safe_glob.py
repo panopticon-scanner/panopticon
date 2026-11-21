@@ -3,10 +3,20 @@
 `glob.glob(os.path.join(directory, "findings-*.json"))` reads the directory as part
 of the pattern. A review root at `repo[x]/` then found none of its own findings
 files, plans, scout replies or coverage files, and lost every agent finding with no
-reason given. `scripts.safe_glob.under` escapes the directory, and it is the one
-place `skill/scripts` calls `glob`: the ratchet below fails on any other.
+reason given. `scripts.safe_glob.under` takes the directory as it is spelled, and it
+is the one matcher in `skill/scripts`: the ratchet below fails on any module that
+calls `glob`, with one exception it names (`guard_rules.py`, which cannot import
+the helper and escapes its directory itself).
+
+`glob` also returns nothing for a directory it cannot list. `under` raises
+`Unlistable` there, and `TestADirectoryThatCannotBeListedIsNotAnEmptyOne` holds each
+caller to what that means for it.
 """
 import ast
+import contextlib
+import errno
+import glob
+import io
 import json
 import os
 import tempfile
@@ -21,6 +31,7 @@ import scripts.diff_map as diff_map
 import scripts.phases.readiness as readiness
 import scripts.probes.kimi_snapshot as kimi_snapshot
 import scripts.phases.run_artifacts as run_artifacts
+import scripts.phases.runio as runio
 import scripts.phases.validate as validate_phase
 import scripts.run_manifest as run_manifest
 import scripts.runners.kimi as kimi_runner
@@ -28,22 +39,49 @@ import scripts.safe_glob as safe_glob
 import scripts.synth.cost as cost_mod
 import scripts.synth.coverage_io as coverage_io
 import scripts.synth.plan as plan_mod
+import scripts.tools.pip_audit as pip_audit
 import scripts.tools_manifest as tools_manifest
 
 SCANNED = "skill/scripts"
-OWNER = "skill/scripts/safe_glob.py"
-#: Loaded under `python -I` with the standard library alone on `sys.path`, so it cannot
-#: import this package. It escapes its directory itself; `test_the_exception_escapes`
-#: holds it to that.
+#: The one module that still calls `glob`. It is loaded under `python -I` with the
+#: standard library alone on `sys.path`, so it cannot import the helper. It escapes its
+#: directory itself; `test_the_exception_escapes` holds it to that.
 STDLIB_ONLY = "skill/scripts/guard_rules.py"
 MATCHERS = frozenset({"glob", "iglob", "glob0", "glob1"})
+#: What the `glob` module holds that matches nothing: the only uses of it that are not counted.
+HARMLESS = frozenset({"escape", "has_magic"})
+#: The helper's own entry points, and the first arguments that hand it no directory.
+HELPERS = frozenset({"under", "iter_under"})
+NO_DIRECTORY = frozenset({"", "."})
+
+
+@contextlib.contextmanager
+def unlistable(*directories):
+    """`os.scandir` fails on these directories as it does on one whose mode denies
+    reading it. Every other directory is listed."""
+    real, denied = os.scandir, {os.path.realpath(directory) for directory in directories}
+
+    def scandir(path="."):
+        if isinstance(path, (str, os.PathLike)) and os.path.realpath(path) in denied:
+            raise PermissionError(errno.EACCES, "Permission denied", os.fspath(path))
+        return real(path)
+
+    with mock.patch.object(os, "scandir", scandir):
+        yield
 
 
 def glob_uses(source):
-    """The line numbers where `source` reaches the `glob` module's matchers: called or
-    just named, through `import glob`, an alias of it, or `from glob import ...`.
-    `glob.escape` and `glob.has_magic` match nothing and are not counted; neither is a
-    `.glob()` on anything that is not the module (a `pathlib.Path` takes a pattern only)."""
+    """The line numbers where `source` reaches the `glob` module's matchers, or hands the
+    helper no directory:
+
+    - the module named for anything but `glob.escape` and `glob.has_magic`, which match
+      nothing: a call, an alias (`match = glob.glob`, `g = glob`), an argument;
+    - a matcher imported by name (`from glob import iglob as find`);
+    - another module's `glob` (`safe_glob.glob.glob(d)`);
+    - `safe_glob.under("", os.path.join(d, ...))`: the directory is back in the pattern.
+
+    A `.glob()` on anything that is not the module is not counted (a `pathlib.Path` takes
+    a pattern only)."""
     tree = ast.parse(source)
     modules, names = set(), set()
     for node in ast.walk(tree):
@@ -56,14 +94,31 @@ def glob_uses(source):
                     names.update(MATCHERS)
                 elif alias.name in MATCHERS:
                     names.add(alias.asname or alias.name)
-    lines = set()
+    lines, harmless = set(), set()
     for node in ast.walk(tree):
-        if (isinstance(node, ast.Attribute) and node.attr in MATCHERS
-                and isinstance(node.value, ast.Name) and node.value.id in modules):
+        if isinstance(node, ast.Attribute):
+            if (node.attr in HARMLESS and isinstance(node.value, ast.Name)
+                    and node.value.id in modules):
+                harmless.add(id(node.value))
+            elif (node.attr in MATCHERS and isinstance(node.value, ast.Attribute)
+                    and node.value.attr == "glob"):
+                lines.add(node.lineno)
+        elif isinstance(node, ast.Call) and _hands_the_helper_no_directory(node):
             lines.add(node.lineno)
-        elif isinstance(node, ast.Name) and node.id in names and isinstance(node.ctx, ast.Load):
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load) and (
+                node.id in names or (node.id in modules and id(node) not in harmless)):
             lines.add(node.lineno)
     return sorted(lines)
+
+
+def _hands_the_helper_no_directory(call):
+    func = call.func
+    helper = (isinstance(func, ast.Attribute) and func.attr in HELPERS
+              and ast.unparse(func.value).split(".")[-1] == "safe_glob")
+    first = call.args[0] if call.args else None
+    return (helper and isinstance(first, ast.Constant) and isinstance(first.value, str)
+            and first.value in NO_DIRECTORY)
 
 
 def offenders(root=REPO_ROOT):
@@ -77,13 +132,12 @@ def offenders(root=REPO_ROOT):
 
 
 class TestOnlyTheOwnerCallsGlob(unittest.TestCase):
-    def test_no_other_module_reaches_a_matcher(self):
-        found = offenders()
-        self.assertIn(OWNER, found)
-        extra = {path: lines for path, lines in found.items()
-                 if path not in (OWNER, STDLIB_ONLY)}
-        self.assertEqual({}, extra, "match under a directory with scripts.safe_glob.under, "
-                         "which takes the directory as it is spelled")
+    def test_no_module_but_the_named_exception_reaches_a_matcher(self):
+        """The helper itself does not call `glob`: `glob` reads a directory it cannot
+        list as an empty one."""
+        self.assertEqual([STDLIB_ONLY], sorted(offenders()),
+                         "match under a directory with scripts.safe_glob.under, which "
+                         "takes the directory as it is spelled")
 
     def test_the_exception_escapes(self):
         """`guard_rules` cannot import the helper, so its one call is held to the same
@@ -109,7 +163,16 @@ class TestOnlyTheOwnerCallsGlob(unittest.TestCase):
                    "import glob\nmatch = glob.glob\nmatch(d)\n",
                    "import glob\nsorted(map(glob.glob, dirs))\n",
                    "def f():\n    import glob\n    return glob.glob(d)\n",
-                   "import glob\nglob.glob1(d, '*')\n")
+                   "import glob\nglob.glob1(d, '*')\n",
+                   "import glob\ng = glob\ng.glob(d)\n",
+                   "import glob\nfind(glob, d)\n",
+                   "import scripts.safe_glob as safe_glob\nsafe_glob.glob.glob(d)\n",
+                   "from scripts import safe_glob\nsafe_glob.glob.iglob(d)\n",
+                   "import scripts.safe_glob as safe_glob\n"
+                   "safe_glob.under('', os.path.join(d, '*'))\n",
+                   "import scripts.safe_glob as safe_glob\n"
+                   "safe_glob.iter_under('.', os.path.join(d, '*'))\n",
+                   "import scripts.safe_glob\nscripts.safe_glob.under('', d + '/*')\n")
         for source in reaches:
             with self.subTest(source=source):
                 self.assertNotEqual([], glob_uses(source))
@@ -121,6 +184,9 @@ class TestOnlyTheOwnerCallsGlob(unittest.TestCase):
                  "paths = tree.glob('*')\n",
                  "note = 'glob.glob(d) reads d as a pattern'\n",
                  "import scripts.safe_glob as safe_glob\nsafe_glob.under(d, '*')\n",
+                 "import scripts.safe_glob as safe_glob\nsafe_glob.iter_under(d, '.*')\n",
+                 "published.under('')\n",
+                 "import glob\nglob.has_magic(glob.escape(d))\n",
                  "def glob(d):\n    return []\nglob(d)\n",
                  "from fnmatch import fnmatch\nfnmatch(name, '*.py')\n")
         for source in clean:
@@ -186,6 +252,130 @@ class TestUnder(unittest.TestCase):
 
     def test_a_directory_that_is_not_there_matches_nothing(self):
         self.assertEqual([], safe_glob.under(os.path.join(self.base, "absent[x]"), "*"))
+        self.assertEqual([], safe_glob.under(os.path.join(self.base, "absent"), "a", "*"))
+        self.assertEqual([], safe_glob.under(os.path.join(self.base, "absent"), "a.json"))
+
+    def test_a_file_where_a_directory_is_expected_matches_nothing(self):
+        self.make("home", "sessions")
+        root = os.path.join(self.base, "home")
+        self.assertEqual([], safe_glob.under(root, "sessions", "*"))
+        self.assertEqual([], safe_glob.under(root, "sessions", "wire.jsonl"))
+        self.assertEqual([], safe_glob.under(os.path.join(root, "sessions"), "*"))
+
+    def test_a_directory_that_cannot_be_listed_is_not_an_empty_one(self):
+        """`glob` swallows the error of a directory it cannot list and returns nothing,
+        so "no such file" and "could not look" read the same (#3706 review, item 1)."""
+        there = os.path.dirname(self.make("locked", "findings-a.json"))
+        with unlistable(there):
+            self.assertEqual([], glob.glob(os.path.join(glob.escape(there), "findings-*.json")))
+            with self.assertRaises(safe_glob.Unlistable) as caught:
+                safe_glob.under(there, "findings-*.json")
+        self.assertEqual(there, caught.exception.directory)
+        self.assertEqual("%s could not be listed: Permission denied" % there,
+                         str(caught.exception))
+        self.assertEqual("Permission denied", caught.exception.reason)
+        # Not an OSError: this package is full of readers that skip a file they cannot
+        # read (`except OSError: continue`), and a failed listing must not be skipped too.
+        self.assertNotIsInstance(caught.exception, OSError)
+
+    def test_a_directory_under_a_wildcard_that_cannot_be_listed_raises(self):
+        seen = self.make("home", "sessions", "d1", "s1", "wire.jsonl")
+        locked = os.path.dirname(os.path.dirname(
+            self.make("home", "sessions", "d2", "s2", "wire.jsonl")))
+        root = os.path.join(self.base, "home")
+        with unlistable(locked):
+            with self.assertRaises(safe_glob.Unlistable) as caught:
+                safe_glob.under(root, "sessions", "*", "*", "wire.jsonl")
+            self.assertEqual(locked, caught.exception.directory)
+            self.assertEqual([seen], safe_glob.under(root, "sessions", "d1", "*", "wire.jsonl"))
+
+    @unittest.skipIf(not hasattr(os, "geteuid") or os.geteuid() == 0,
+                     "root lists a directory whatever its mode")
+    def test_a_directory_whose_mode_denies_it_raises(self):
+        """The real thing, not the injected one: search without read finds a name it is
+        given and cannot list; no permission at all cannot even look a name up."""
+        there = os.path.dirname(self.make("locked", "findings-a.json"))
+        self.addCleanup(os.chmod, there, 0o700)
+        os.chmod(there, 0o300)
+        with self.assertRaises(safe_glob.Unlistable):
+            safe_glob.under(there, "findings-*.json")
+        self.assertEqual([os.path.join(there, "findings-a.json")],
+                         safe_glob.under(there, "findings-a.json"))
+        os.chmod(there, 0o000)
+        for pattern in ("findings-*.json", "findings-a.json"):
+            with self.subTest(pattern=pattern), self.assertRaises(safe_glob.Unlistable):
+                safe_glob.under(there, pattern)
+
+    def test_it_matches_what_glob_matches(self):
+        """The helper no longer calls `glob`, so it is held to `glob`'s answers: hidden
+        names, character classes, a literal part, a part that is a file."""
+        for relative in ("a.json", ".hidden.json", "b.txt", "[x].json", "sub/c.json",
+                         "sub/.d.json", "sub/deep/e.json", ".dot/f.json", "sub2/c.json",
+                         "s-1/agents/main/wire.jsonl", "s-2/agents/other/wire.jsonl"):
+            self.make("tree[1]", *relative.split("/"))
+        root = os.path.join(self.base, "tree[1]")
+        for pattern in (("*",), ("*.json",), (".*",), (".*.json",), ("[[]x].json",), ("?.json",),
+                        ("[ab].*",), ("*", "*.json"), ("sub", "*"), ("sub", ".*"),
+                        ("*", "c.json"), ("sub*", "c.json"), ("*", "*", "*.json"),
+                        ("a.json",), ("missing.json",), ("a.json", "x"), ("*", "agents", "*",
+                                                                          "wire.jsonl"),
+                        ("s-[0-9]", "agents", "main", "wire.jsonl"), ("**",), ("**", "c.json"),
+                        ("*/c.json",), ("sub/deep/*.json",), ("[",), ("sub", "[!.]*")):
+            with self.subTest(pattern=pattern):
+                expected = glob.glob(os.path.join(glob.escape(root), *pattern))
+                self.assertEqual(sorted(expected), sorted(safe_glob.under(root, *pattern)))
+
+    def test_the_iterator_lists_a_directory_only_when_it_reaches_it(self):
+        """The existence question (#3706 review, item 2): the first match costs the
+        directories on the way to it, not the whole tree."""
+        for n in range(3):
+            self.make("t", "d%d" % n, "requirements-dev.txt")
+        root = os.path.join(self.base, "t")
+        listed, real = [], os.scandir
+
+        def scandir(path):
+            listed.append(path)
+            return real(path)
+
+        with mock.patch.object(os, "scandir", scandir):
+            found = safe_glob.iter_under(root, "*", "requirements*.txt")
+            self.assertEqual([], listed)
+            first = next(found)
+            self.assertEqual([root, os.path.dirname(first)], listed)
+            rest = list(found)
+        self.assertEqual(4, len(listed))
+        self.assertEqual(sorted(safe_glob.under(root, "*", "requirements*.txt")),
+                         sorted([first] + rest))
+
+    def test_what_it_refuses(self):
+        """Every match is under the directory (#3706 review, item 3). Each of these left
+        it, or returned the directory itself; each is refused at the call."""
+        inside = os.path.dirname(self.make("d", "a.json"))
+        outside = self.make("a.json")
+        for directory, pattern in ((inside, ()),
+                                   (inside, ("",)),
+                                   (inside, ("..", "a.json")),
+                                   (inside, ("../a.json",)),
+                                   (inside, ("*", "..", "..", "a.json")),
+                                   (inside, (outside,)),
+                                   (inside, ("/",)),
+                                   (inside, (".",)),
+                                   (inside, ("./a.json",)),
+                                   (inside, ("a.json/",)),
+                                   (inside, ("x//a.json",)),
+                                   (inside, ("*", "")),
+                                   ("", ("*",)),
+                                   ("", (os.path.join(inside, "*"),))):
+            with self.subTest(directory=directory, pattern=pattern):
+                with self.assertRaises(ValueError):
+                    safe_glob.under(directory, *pattern)
+                with self.assertRaises(ValueError):
+                    safe_glob.iter_under(directory, *pattern)
+
+    def test_a_part_may_hold_separators(self):
+        mine = self.make("home", "vendor", "skills", "leaf", "SKILL.md")
+        self.assertEqual([mine], safe_glob.under(os.path.join(self.base, "home"),
+                                                 "*/skills/leaf", "SKILL.md"))
 
     def test_a_path_object_is_a_directory_too(self):
         mine = self.make("repo[x]", "a.json")
@@ -246,8 +436,13 @@ class TestEveryReaderOfADirectoryTakesItAsSpelled(unittest.TestCase):
                 self.assertEqual((1, 1, 1, 1), tuple(counts[key] for key in (
                     "review_cells", "verify_primary", "verify_backup", "verify_tools")))
 
+    def test_the_findings_files(self):
+        mine = self.both(os.path.join(".panopticon", "findings-app-SEC.json"), [], [])
+        self.assertEqual([mine], runio._findings_files(self.here))
+
     def test_the_reset_sweep(self):
-        """`--reset` cleared nothing under such a root, and said nothing."""
+        """`--reset` under such a root left the run's flat artifacts in place and deleted
+        the sibling's, which is what the pattern matched. It said nothing."""
         stale = ("findings-app-SEC.json", "coverage-app.json", "scout-app.json",
                  "verify-attempts.json", "dispatch-plan-driver.json")
         kept = [self.write(self.decoy, os.path.join(".panopticon", name), "theirs")
@@ -325,6 +520,287 @@ class TestEveryReaderOfADirectoryTakesItAsSpelled(unittest.TestCase):
         self.write(self.decoy, wire, json.dumps(dict(record, agent="theirs.md")) + "\n")
         self.assertEqual(([({"Read"}, "mine", mine)], ""),
                          kimi_snapshot._kimi_wire_snapshots(self.here))
+
+
+class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
+    """#3706 review, item 1: each caller of the helper, with the directory it lists
+    there and unreadable. Before, every one of them read "nothing here"."""
+
+    def setUp(self):
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        self.base = os.path.realpath(d.name)
+        self.target = os.path.join(self.base, "target")
+        os.makedirs(self.target)
+
+    def write(self, root, relative, document):
+        path = os.path.join(root, relative)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            fh.write(document if isinstance(document, str) else json.dumps(document))
+        return path
+
+    # --- the dependency audit ----------------------------------------------------------
+
+    def test_the_dependency_surface_reads_as_applicable(self):
+        """An existing `requirements-dev.txt` was not seen, pip-audit read as not
+        applicable, and the certification gap (applicable, nothing produced) was false:
+        an unmeasured dependency surface looked clean."""
+        self.write(self.target, "requirements-dev.txt", "x==1\n")
+        adapter = pip_audit.PipAuditAdapter()
+        with unlistable(self.target):
+            self.assertEqual(["python"], tools_manifest.dependency_audit_applicable(self.target))
+            self.assertTrue(adapter.has_audit_file(self.target, "requirements*.txt"))
+            self.assertTrue(adapter.is_applicable(self.target))
+            # An auditor reads the ecosystem, so the reason is never "no auditable file".
+            self.assertEqual({"python": "not_run"}, tools_manifest.dependency_audit_unaudited(
+                self.target, selected=[], online=True))
+        self.assertEqual(["python"], tools_manifest.dependency_audit_applicable(self.target))
+
+    def test_the_existence_questions_do_not_build_the_list(self):
+        """#3706 review, item 2: both ask only whether a requirements file is there."""
+        for n in range(3):
+            self.write(self.target, "requirements-%d.txt" % n, "x==1\n")
+        with mock.patch.object(safe_glob, "under", side_effect=AssertionError("built the list")):
+            self.assertEqual(["python"], tools_manifest.dependency_audit_applicable(self.target))
+            self.assertTrue(pip_audit.PipAuditAdapter.has_audit_file(
+                self.target, "requirements*.txt"))
+
+    def test_an_unreadable_target_with_no_python_in_it_still_reads_as_applicable(self):
+        """It cannot be told from the one above, so it reads the same: worse than the truth."""
+        with unlistable(self.target):
+            self.assertEqual(["python"], tools_manifest.dependency_audit_applicable(self.target))
+        self.assertEqual([], tools_manifest.dependency_audit_applicable(self.target))
+
+    def test_pip_audit_fails_instead_of_auditing_less(self):
+        """With no `requirements.txt`, the listing decides which file is audited. Unable
+        to list, pip-audit audited `pyproject.toml` alone and reported a complete run."""
+        self.write(self.target, "requirements-dev.txt", "x==1\n")
+        self.write(self.target, "pyproject.toml",
+                   '[project]\nname = "p"\nversion = "1"\ndependencies = ["y==2"]\n')
+        err = io.StringIO()
+        with unlistable(self.target), contextlib.redirect_stderr(err), \
+                mock.patch.object(pip_audit, "run_tool", side_effect=AssertionError("launched")):
+            self.assertEqual((b"", 2), pip_audit.PipAuditAdapter().invoke(self.target))
+        self.assertEqual("pip-audit: %s could not be listed: Permission denied; "
+                         "nothing was audited\n" % self.target, err.getvalue())
+
+    def test_pip_audit_needs_no_listing_when_requirements_txt_is_there(self):
+        """`requirements.txt` is preferred over anything the listing would add, so a
+        target that has one is audited as before."""
+        self.write(self.target, "requirements.txt", "x==1\n")
+        with unlistable(self.target), \
+                mock.patch.object(pip_audit, "run_tool", return_value=(b"{}", b"", 0)) as run:
+            self.assertEqual((b"{}", 0), pip_audit.PipAuditAdapter().invoke(self.target))
+            report = pip_audit.PipAuditAdapter().sanitization_report(self.target)
+        run.assert_called_once()
+        self.assertEqual(("requirements.txt", 1), (report["source"], report["kept"]))
+
+    def test_the_sanitization_disclosure_is_announced_as_lost(self):
+        self.write(self.target, "requirements-dev.txt", "x==1\n")
+        err = io.StringIO()
+        with unlistable(self.target), contextlib.redirect_stderr(err):
+            found = tools_manifest.collect_sanitization(
+                {"pip-audit": pip_audit.PipAuditAdapter()}, self.target)
+        self.assertEqual({}, found)
+        self.assertEqual("adapter pip-audit could not report what it sanitized: %s could not "
+                         "be listed: Permission denied\n" % self.target, err.getvalue())
+
+    # --- --reset -----------------------------------------------------------------------
+
+    def test_reset_clears_nothing_and_says_why(self):
+        """`--reset` left `findings-*.json` in place and printed nothing."""
+        pano = os.path.join(self.target, ".panopticon")
+        stale = [self.write(pano, name, "stale")
+                 for name in ("findings-app-SEC.json", "scout-app.json", "verify-attempts.json")]
+        kept = [self.write(pano, os.path.join(sub, "x.json"), "stale")
+                for sub in ("tools", "verdicts")]
+        with unlistable(pano):
+            with self.assertRaises(runio.DriverError) as caught:
+                run_artifacts._clear_run_artifacts(self.target)
+        self.assertEqual("%s could not be listed: Permission denied; nothing was cleared" % pano,
+                         str(caught.exception))
+        # Nothing is removed before everything is listed: a half-cleared run is worse.
+        self.assertEqual(stale + kept, [path for path in stale + kept if os.path.exists(path)])
+        run_artifacts._clear_run_artifacts(self.target)
+        self.assertEqual([], [path for path in stale + kept if os.path.exists(path)])
+
+    # --- the worktree's report ---------------------------------------------------------
+
+    def test_a_worktree_whose_reports_cannot_be_listed_is_kept(self):
+        """No report part was surfaced and the worktree, the only other copy, was released."""
+        worktree = os.path.join(self.base, "worktree")
+        manifest = {"run_id": "R", "worktree": worktree, "target": self.target}
+        tag = run_manifest.run_tag(manifest)
+        for part in ("report.json", "report_part2.json"):
+            self.write(worktree, os.path.join(".panopticon", "%s-%s" % (tag, part)), {"p": part})
+        pano, err = os.path.join(worktree, ".panopticon"), io.StringIO()
+        with unlistable(pano), contextlib.redirect_stderr(err), \
+                mock.patch.object(diff_map, "release_worktree") as release:
+            validate_phase._finalize_worktree(worktree, manifest)
+        release.assert_not_called()
+        self.assertIn("FAILED to surface 1 report artifact(s)", err.getvalue())
+        self.assertIn("%s could not be listed: Permission denied" % pano, err.getvalue())
+        self.assertIn("KEEPING the worktree %s" % worktree, err.getvalue())
+        self.assertEqual([], [name for name in os.listdir(self.target) if name != ".panopticon"])
+
+    # --- the run folder ----------------------------------------------------------------
+
+    def test_the_readers_of_a_run_folder_stop(self):
+        """Its plans, scout replies, coverage files and verdict bundles: a run folder
+        that cannot be listed is not a run with none of them."""
+        run = os.path.join(self.base, "run")
+        self.write(run, "dispatch-plan-driver.json",
+                   [{"group": "app", "domain": "SEC", "out_file": "findings-app-SEC.json"}])
+        self.write(run, "scout-app.json", {"domains": [], "files": [], "tools": ["semgrep"]})
+        self.write(run, "coverage-app.json", {"group": "app", "effective": ["SEC"]})
+        verdicts = os.path.dirname(self.write(run, os.path.join("verdicts", "v.json"), {}))
+        readers = (("the dispatch plans, with diagnostics", run,
+                    lambda: plan_mod.load_dispatch_plans_detailed(run)),
+                   ("the dispatch plans", run, lambda: plan_mod.load_dispatch_plans(run)),
+                   ("the scout replies", run, lambda: plan_mod.load_scout_requests(run)),
+                   ("the coverage files", run, lambda: coverage_io.load_coverage_files(run)),
+                   ("the verdict bundles, by default", verdicts,
+                    lambda: cost_mod.driver_cost_counts(run, None, [])),
+                   ("the verdict bundles, named", verdicts,
+                    lambda: cost_mod.driver_cost_counts(run, verdicts, [])))
+        for what, locked, read in readers:
+            with self.subTest(what=what):
+                read()
+                with unlistable(locked), self.assertRaises(safe_glob.Unlistable) as caught:
+                    read()
+                self.assertEqual(locked, caught.exception.directory)
+
+    def test_the_findings_of_a_run_are_not_none(self):
+        """The synthesize and verify phases both ask for the run's findings files. A
+        `DriverError` is the phase failure the driver reports as `status: error`."""
+        pano = os.path.join(self.target, ".panopticon")
+        mine = self.write(pano, "findings-app-SEC.json", [])
+        self.assertEqual([mine], runio._findings_files(self.target))
+        with unlistable(pano), self.assertRaises(runio.DriverError) as caught:
+            runio._findings_files(self.target)
+        self.assertEqual("%s could not be listed: Permission denied" % pano,
+                         str(caught.exception))
+
+    # --- the host's transcripts --------------------------------------------------------
+
+    def transcripts(self):
+        """(controller transcript, the session's task directory under a temp root)."""
+        project = os.path.join(self.base, "project")
+        slug = collect_usage.project_slug(project)
+        home = os.path.join(self.base, "home")
+        controller = self.write(home, os.path.join(".claude", "projects", slug, "s1.jsonl"), "")
+        temp = os.path.join(self.base, "tmp")
+        tasks = os.path.join(temp, "claude-505", slug, "s1", "tasks")
+        self.write(tasks, "t1.output", "")
+        patch = mock.patch.object(collect_usage, "TEMP_ROOTS", (temp,))
+        patch.start()
+        self.addCleanup(patch.stop)
+        return project, home, controller, tasks
+
+    def test_the_session_transcripts_that_cannot_be_listed_are_not_no_transcripts(self):
+        project, home, controller, tasks = self.transcripts()
+        sessions = os.path.dirname(controller)
+        subagents = os.path.dirname(self.write(sessions, os.path.join(
+            "s1", "subagents", "agent-1.jsonl"), ""))
+        self.assertEqual(2, len(collect_usage.find_task_transcripts(controller)))
+        for what, locked, read in (
+                ("the project's sessions", sessions,
+                 lambda: collect_usage.find_controller_transcript(project, home=home)),
+                ("a directory named with --tasks-dir", tasks,
+                 lambda: collect_usage.find_task_transcripts(None, tasks_dir=tasks)),
+                ("this session's task directory", tasks,
+                 lambda: collect_usage.find_task_transcripts(controller)),
+                ("the temp root", os.path.join(self.base, "tmp"),
+                 lambda: collect_usage.find_task_transcripts(controller)),
+                ("this session's subagents", subagents,
+                 lambda: collect_usage.find_task_transcripts(controller))):
+            with self.subTest(what=what):
+                with unlistable(locked), self.assertRaises(safe_glob.Unlistable) as caught:
+                    read()
+                self.assertEqual(locked, caught.exception.directory)
+
+    @unittest.skipIf(not hasattr(os, "geteuid") or os.geteuid() == 0,
+                     "root reads another user's directory")
+    def test_another_users_temp_directory_is_not_ours_to_list(self):
+        """A shared machine has one `claude-<uid>` per user under the temp root, and the
+        others' are closed to us. This session's tasks are not in them: they are passed
+        over, and ours is still read."""
+        _project, _home, controller, tasks = self.transcripts()
+        theirs = os.path.join(self.base, "tmp", "claude-501")
+        os.makedirs(theirs)
+        self.addCleanup(os.chmod, theirs, 0o700)
+        os.chmod(theirs, 0o000)
+        self.assertEqual([os.path.join(tasks, "t1.output")],
+                         collect_usage.find_task_transcripts(controller))
+
+    def test_the_temp_task_directory_is_taken_as_it_is_spelled(self):
+        """#3706 review, item 6: the one site of #3701 with no test. A session named
+        `s[1]` read the tasks of the session named `s1`."""
+        project = os.path.join(self.base, "project")
+        slug = collect_usage.project_slug(project)
+        sessions = os.path.join(self.base, "home", ".claude", "projects", slug)
+        controller = self.write(sessions, "s[1].jsonl", "")
+        temp = os.path.join(self.base, "tmp[1]")
+        mine = self.write(temp, os.path.join("claude-505", slug, "s[1]", "tasks", "mine.output"), "")
+        self.write(temp, os.path.join("claude-505", slug, "s1", "tasks", "theirs.output"), "")
+        self.write(self.base, os.path.join("tmp1", "claude-505", slug, "s[1]", "tasks",
+                                           "elsewhere.output"), "")
+        with mock.patch.object(collect_usage, "TEMP_ROOTS", (temp,)):
+            self.assertEqual([mine], collect_usage.find_task_transcripts(controller))
+
+    # --- kimi --------------------------------------------------------------------------
+
+    def test_a_kimi_home_that_cannot_be_listed(self):
+        home = os.path.join(self.base, "kimi")
+        record = {"type": "llm.tools_snapshot", "tools": ["Read"], "agent": "mine.md"}
+        wire = self.write(home, os.path.join("sessions", "d", "s1", "agents", "main", "wire.jsonl"),
+                          json.dumps(record) + "\n")
+        sessions = os.path.join(home, "sessions")
+        self.assertEqual(wire, kimi_runner.wire_path(home, "s1"))
+        with unlistable(sessions):
+            with self.assertRaises(safe_glob.Unlistable):
+                kimi_runner.wire_path(home, "s1")
+            self.assertEqual(([], "the per-run home's wire files could not be listed: %s could "
+                              "not be listed: Permission denied" % sessions),
+                             kimi_snapshot._kimi_wire_snapshots(home))
+
+    # --- readiness ---------------------------------------------------------------------
+
+    def test_a_sub_skill_root_that_cannot_be_listed_says_so(self):
+        """Readiness never stops for a sub-skill, so this one is a row, not an error: the
+        row no longer reads as "not installed"."""
+        root = os.path.join(self.base, "plugins")
+        mine = self.write(root, os.path.join("vendor", "skills", "leaf", "SKILL.md"), "#")
+        with mock.patch.object(readiness, "SUB_SKILL_ROOTS", (root,)), \
+                mock.patch.object(readiness, "REQUIRED_SUB_SKILLS", ("pack:leaf", "pack:absent")):
+            found = [{"name": "pack:leaf", "found_at": mine},
+                     {"name": "pack:absent", "found_at": None}]
+            self.assertEqual(found, readiness._sub_skill_rows())
+            self.assertEqual("leaf: %s; absent: not found" % mine,
+                             readiness._sub_skill_line(found))
+            with unlistable(root):
+                rows = readiness._sub_skill_rows()
+            # A name is looked up without listing its directory, so the sub-skill inside
+            # an unlistable one is still found. The deeper patterns do list it, so the one
+            # that is not found says where the search could not look.
+            skills = os.path.join(root, "vendor", "skills")
+            with unlistable(skills):
+                self.assertEqual([found[0], dict(found[1], unlistable=skills)],
+                                 readiness._sub_skill_rows())
+            # The search goes on past a root it could not list, and what it finds
+            # elsewhere is simply found.
+            other = os.path.join(self.base, "skills")
+            there = self.write(other, os.path.join("leaf", "SKILL.md"), "#")
+            with mock.patch.object(readiness, "SUB_SKILL_ROOTS", (root, other)), unlistable(root):
+                self.assertEqual([{"name": "pack:leaf", "found_at": there},
+                                  {"name": "pack:absent", "found_at": None, "unlistable": root}],
+                                 readiness._sub_skill_rows())
+        self.assertEqual([{"name": "pack:leaf", "found_at": None, "unlistable": root},
+                          {"name": "pack:absent", "found_at": None, "unlistable": root}], rows)
+        self.assertEqual("leaf: not found ({0} could not be listed); "
+                         "absent: not found ({0} could not be listed)".format(root),
+                         readiness._sub_skill_line(rows))
 
 
 if __name__ == "__main__":

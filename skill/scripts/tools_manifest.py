@@ -96,7 +96,14 @@ def dependency_audit_applicable(target):
     """
     found = {ecosystem for ecosystem, markers in _DEPENDENCY_AUDIT_MARKERS.items()
              if any(os.path.isfile(os.path.join(target, marker)) for marker in markers)}
-    if safe_glob.under(target, "requirements*.txt"):
+    try:
+        python = next(safe_glob.iter_under(target, "requirements*.txt"), None) is not None
+    except safe_glob.Unlistable:
+        # #3706: the target could not be listed, so whether it holds a requirements file
+        # is not known. Not known is applicable: with nothing produced for it, that is
+        # the certification gap, where "no Python here" was a clean bill.
+        python = True
+    if python:
         found.add("python")
     return sorted(found)
 
