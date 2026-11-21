@@ -9,7 +9,14 @@
   a run that was only paused. The canary now classifies its own failed launch exactly as the loop
   classifies a reviewer's (`runners.outage.classify_failure`, via `Runner.parse_envelope`). When
   every moved guard is unknown for that host-class reason, the run stays `paused`, with the resume
-  advice and the stored posture unchanged. A probe that ran and proved less is still drift.
+  advice, the host's own redacted error, and the run folder byte-for-byte unchanged (the posture
+  and the manifest's disclosure stamp included). A probe that ran and proved less is still drift.
+  Limits: the limit is recognised only in the CLI's JSON envelope, as in the loop, so a limit
+  printed as plain text or on stderr alone is still refused as drift. And a FIRST run under a
+  limit is refused with the unmeasured posture already recorded, so its refusal (and #3220's,
+  for a canary that measured nothing) now says to re-run with `--reset`: a plain re-run that
+  measures the guard was itself refused as a posture change.
+
 - **A host-cut-short verify phase now names the host and resume path (#3753).** The dispatch
   ledger preserves the loop's host/entry failure class, and synthesis joins each verify entry's
   latest result to the exact unresolved cell or tool claim before counting the never-launched

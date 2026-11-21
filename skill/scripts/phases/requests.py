@@ -525,6 +525,12 @@ def write_capable_roles():
 _ACK_DISCLOSURE = (hosts.TOOL_POLICY_ENFORCED, hosts.ARTIFACT_WRITE_GUARD, "tool_policy_detail", "gaps")
 
 
+# #3663 review: why "re-run" alone is the wrong advice after an unmeasured canary.
+RERUN_NEEDS_RESET = (" (this run recorded the unmeasured posture, so a plain re-run that "
+                     "measures it is refused as a posture change; nothing was dispatched, "
+                     "so --reset discards nothing)")
+
+
 def require_unenforced_ack(review_root, manifest, entries):
     """Refuse when the reviewer artifact-write boundary is not proven, unless
     the operator accepted the risk explicitly (#1519, AGT-B1A; #1622).
@@ -611,7 +617,10 @@ def require_unenforced_ack(review_root, manifest, entries):
                        if guarded else "")
         row = evidence.get(hosts.ARTIFACT_WRITE_GUARD) or {}
         # #3220: an UNKNOWN the write canary left unmeasured is worth a second
-        # probe before it is worth accepting -- the next run launches it again.
+        # probe before it is worth accepting. #3663 review: that second probe needs
+        # `--reset`. This refusal comes after the unmeasured posture was stored, so
+        # a plain re-run that measures it moves unknown -> proven, which F3a refuses
+        # as posture drift; nothing has been dispatched, so a fresh run loses nothing.
         detail = str(row.get("detail") or "")
         unknown = posture[hosts.ARTIFACT_WRITE_GUARD] == hosts.UNKNOWN
         unmeasured = unknown and detail.startswith(write_canary.NOT_MEASURED_LEAD)
@@ -629,11 +638,13 @@ def require_unenforced_ack(review_root, manifest, entries):
                row.get("detail") or "no evidence",
                ", ".join(sorted(write_capable_roles())),
                ("The write canary's launch hit a host limit (a rate limit or an outage), "
-                "so it measured nothing: wait for the host to recover and re-run, and the "
-                "next run probes again. Only if it stays unknown on a healthy host, re-run"
+                "so it measured nothing: wait for the host to recover and re-run with "
+                "--reset, which probes again%s. Only if it stays unknown on a healthy "
+                "host, re-run" % RERUN_NEEDS_RESET
                 if host_limited else
-                "The write canary measured nothing, so re-run first: the next run "
-                "probes again. Only if it stays unknown, re-run" if unmeasured else "Re-run"),
+                "The write canary measured nothing, so re-run with --reset first, which "
+                "probes again%s. Only if it stays unknown, re-run" % RERUN_NEEDS_RESET
+                if unmeasured else "Re-run"),
                UNENFORCED_ACK, alternative))
     return _record_unenforced_ack(review_root, manifest, entries, evidence, posture)
 

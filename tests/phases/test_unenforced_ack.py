@@ -604,14 +604,21 @@ class TestAnUnmeasuredCanaryAsksForARerunFirst(unittest.TestCase):
 
     def test_an_unknown_the_canary_left_unmeasured_says_re_run_first(self):
         message = self._message(hosts.UNKNOWN, self._unmeasured())
-        self.assertIn("so re-run first", message)
-        self.assertLess(message.index("so re-run first"), message.index("--allow-unenforced"))
+        # #3663 review: a plain re-run that measures it is refused as drift, so the
+        # advice names --reset, and says why and that it costs nothing.
+        self.assertIn("so re-run with --reset first, which probes again", message)
+        self.assertIn(requests.RERUN_NEEDS_RESET, message)
+        self.assertLess(message.index("re-run with --reset first"),
+                        message.index("--allow-unenforced"))
 
     def test_a_host_limited_canary_asks_to_wait_for_the_host_not_to_accept(self):
         # #3646 review: a rate limit measured nothing; the remedy is a healthy host.
         message = self._message(hosts.UNKNOWN, hosts.HOST_LIMITED_LEAD + " (exit 1)")
         self.assertIn("hit a host limit", message)
-        self.assertIn("wait for the host to recover and re-run", message)
+        self.assertIn("wait for the host to recover and re-run with --reset, which probes "
+                      "again" + requests.RERUN_NEEDS_RESET, message)
+        self.assertIn("a plain re-run that measures it is refused as a posture change",
+                      requests.RERUN_NEEDS_RESET)
         self.assertLess(message.index("wait for the host to recover"),
                         message.index("--allow-unenforced"))
         self.assertIn("Only if it stays unknown on a healthy host", message)
@@ -622,7 +629,7 @@ class TestAnUnmeasuredCanaryAsksForARerunFirst(unittest.TestCase):
                               (hosts.REFUTED, self._unmeasured())):
             with self.subTest(state=state):
                 message = self._message(state, detail)
-                self.assertNotIn("re-run first", message)
+                self.assertNotIn("--reset", message)
                 self.assertIn("declared out_file. Re-run with --allow-unenforced", message)
 
 

@@ -22,7 +22,7 @@ import json
 import os
 import tempfile
 
-from scripts import hosts, read_guard_hook, write_guard_hook
+from scripts import hosts, read_guard_hook, redact, write_guard_hook
 from scripts.runners import base as runner_base
 from scripts.runners import children
 from scripts.runners import claude as claude_runner
@@ -85,7 +85,13 @@ PROVEN, REFUTED, NOT_MEASURED = "proven", "refuted", "not-measured"
 # limit, a rate limit, auth, the provider down), classified exactly as the loop
 # classifies a reviewer's launch. Its detail begins `hosts.HOST_LIMITED_LEAD`, which
 # is how a resume tells "the host is limited" from "the posture changed".
+# #3663 review: the limit is recognised only where the loop recognises one -- in the
+# CLI's JSON envelope (its `error` object or its `API Error: ...` result line), through
+# `Runner.parse_envelope`. A limit printed as plain text or on stderr alone is not
+# classified host-class here or in the loop, so it still reads as not measured and a
+# resume under it is still refused as drift.
 HOST_LIMITED = "host-limited"
+HOST_ERROR_EXCERPT = 240   # characters of the host's error kept in the evidence detail
 ATTEMPTS = 2   # one retry: a single flaky launch must not decide a run
 # How round_trip's NOT_MEASURED detail begins: the write-guard refusal reads it
 # to say "re-run first" rather than "accept the gap" (#3220).
@@ -94,6 +100,16 @@ NOT_MEASURED_LEAD = "not measured after "
 
 def _same(a, b):
     return os.path.realpath(a) == os.path.realpath(b)
+
+
+def _host_words(launched):
+    """The launch's error line and the host's own error surface, as one string."""
+    error = str(getattr(launched, "error", None) or "")
+    host = getattr(launched, "host_error", None)
+    if isinstance(host, dict):
+        host = json.dumps(host, sort_keys=True)
+    host = str(host or "")
+    return error if host in error else ("%s %s" % (error, host)).strip()
 
 
 def _not_measured(detail):
@@ -148,8 +164,12 @@ def _attempt():
             # mid-turn can never turn a real breakage into "host-limited".
             host_limited = (not launched.ok
                             and launched.failure_class == outage.HOST_FAILURE)
-            host_row = (HOST_LIMITED, "%s (exit %s)" % (hosts.HOST_LIMITED_LEAD,
-                                                       proc.returncode))
+            # #3663 review: with the host's own words, redacted and bounded as the
+            # loop's outage message carries them, so the pause says which limit it was.
+            said = " ".join(redact.redact_diagnostic(
+                _host_words(launched), HOST_ERROR_EXCERPT).split())
+            host_row = (HOST_LIMITED, "%s (exit %s)%s" % (
+                hosts.HOST_LIMITED_LEAD, proc.returncode, ": " + said if said else ""))
             try:
                 envelope = json.loads(proc.stdout or "")
             except ValueError:

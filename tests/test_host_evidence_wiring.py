@@ -15,7 +15,7 @@ from scripts import (collect_usage, driver, host_disclosure, host_posture, host_
 import scripts.probes.claude as claude_probes
 import scripts.runners.outage as outage
 import scripts.probes.common as probes_common
-from scripts.phases import runio
+from scripts.phases import requests, runio
 
 
 @contextlib.contextmanager
@@ -710,6 +710,62 @@ class TestAHostLimitedResumeStaysPaused(unittest.TestCase):
         self.assertIn(outage.RESUME_ADVICE, err)
         self.assertNotIn("posture changed mid-run", err)
         self.assertEqual(before, after)
+        # #3663 review item 4: the probe's own account reaches the pause.
+        self.assertIn("without being measured -- probe: (exit 1); the stored", err)
+
+    def test_a_host_limited_resume_stamps_no_disclosure_in_the_manifest(self):
+        # #3663 review item 3: the pause leaves run-manifest.json as it found it; the
+        # healthy resume after it prints only the headline, having disclosed already.
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        os.makedirs(runio._pano(review_root), exist_ok=True)
+        manifest = self._manifest(session_dir=review_root)
+        run_manifest.write_manifest(review_root, manifest)
+        path = run_manifest.manifest_path(review_root)
+
+        def establish(overrides):
+            with mock.patch.object(host_probes, "run_probes",
+                                   return_value=self._posture(overrides)), \
+                    contextlib.redirect_stderr(io.StringIO()) as err:
+                answer = driver._establish_host_posture(
+                    review_root, run_manifest.load_manifest(review_root), self._args())
+            with open(path, "rb") as fh:
+                return answer, fh.read(), err.getvalue()
+
+        first, stamped, _said = establish({})
+        self.assertIsNone(first)
+        self.assertIn(b"posture_disclosed", stamped)
+        limited = {name: self._limited() for name in self.LIMITED}
+        for _ in range(2):
+            paused, after, _said = establish(limited)
+            self.assertIsInstance(paused, host_posture.HostLimited)
+            self.assertEqual(stamped, after)
+        healed, after, said = establish({})
+        self.assertIsNone(healed)
+        self.assertEqual(stamped, after)
+        self.assertIn("unchanged since", said)                 # the headline alone
+
+    def test_a_first_run_under_a_limit_then_needs_reset_as_its_refusal_says(self):
+        # #3663 review item 1: a FIRST run under a limit stores the unmeasured posture
+        # and is refused; a plain re-run on a healthy host is then drift, whose remedy
+        # is --reset -- which is what the refusal now tells the operator up front.
+        review_root = tempfile.mkdtemp(prefix="review-root-")
+        self.addCleanup(shutil.rmtree, review_root, ignore_errors=True)
+        manifest = self._manifest(session_dir=review_root)
+        limited = {name: self._limited() for name in self.LIMITED}
+        with mock.patch.object(host_probes, "run_probes", return_value=self._posture(limited)):
+            self.assertIsNone(driver._establish_host_posture(review_root, manifest,
+                                                             self._args()))
+        with self.assertRaises(runio.DriverError) as refused:
+            requests.require_unenforced_ack(review_root, {"host": "claude", "flags": {}},
+                                            [{"id": "cell-1"}])
+        self.assertIn("re-run with --reset", str(refused.exception))
+        with mock.patch.object(host_probes, "run_probes", return_value=self._posture({})):
+            err = driver._establish_host_posture(review_root, manifest, self._args())
+        self.assertNotIsInstance(err, host_posture.HostLimited)
+        self.assertIn("host posture changed mid-run", err)
+        self.assertIn("unknown -> proven", err)
+        self.assertIn("Start a fresh run with --reset.", err)
 
     def test_a_probe_that_ran_and_proved_less_is_still_drift(self):
         for label, body in (
@@ -1780,7 +1836,7 @@ class TestTheOutputSchemaShapeSurvivesEveryReProbe(unittest.TestCase):
         seen = {}
         with mock.patch("scripts.host_probes.run_probes", return_value=self._artifact()), \
                 mock.patch.object(host_posture, "_disclose_posture",
-                                  side_effect=lambda rr, m, fresh, ns: seen.update(
+                                  side_effect=lambda rr, m, fresh, ns, **_kw: seen.update(
                                       fresh[hosts.CLI_FLAGS][hosts.OUTPUT_SCHEMA])), \
                 contextlib.redirect_stderr(io.StringIO()):
             driver._establish_host_posture(d, self._manifest(), self._headless(d))

@@ -1650,6 +1650,32 @@ class TestTheWriteCanaryGoesThroughTheRealCli(unittest.TestCase):
             self.assertTrue(detail.startswith(hosts.HOST_LIMITED_LEAD), detail)
         self.assertEqual(canary.ATTEMPTS, seen["calls"])
 
+    def test_the_host_limited_detail_carries_the_hosts_redacted_words(self):
+        # #3663 review item 4: what the loop's outage message does -- the host's own
+        # error, redacted, on one line and bounded.
+        import scripts.probes.claude_write_canary as canary
+        secret = "sk-ant-api03-" + "A" * 95
+        for label, envelope, expected in (
+                ("CLI error line",
+                 {"type": "result", "is_error": True,
+                  "result": "API Error: 429 Too Many Requests\nkey %s %s" % (secret, "x" * 900)},
+                 "API Error: 429 Too Many Requests key [REDACTED"),
+                ("error object",
+                 {"type": "result", "is_error": True, "result": "",
+                  "error": {"type": "rate_limit_error", "message": "usage limit reached"}},
+                 "usage limit reached")):
+            with self.subTest(label):
+                launch, _seen = self.limited(envelope)
+                with mock.patch.object(canary, "_launch", side_effect=launch):
+                    detail = canary.measure()["write"][1]
+                lead = hosts.HOST_LIMITED_LEAD + " (exit 1): "
+                self.assertTrue(detail.startswith(lead), detail)
+                self.assertIn(expected, detail)
+                self.assertNotIn(secret, detail)
+                self.assertNotIn("\n", detail)
+                self.assertLessEqual(len(detail) - len(lead), canary.HOST_ERROR_EXCERPT)
+        self.assertEqual(240, canary.HOST_ERROR_EXCERPT)
+
     def test_a_successful_launch_carrying_a_host_shaped_error_is_not_host_limited(self):
         # `not launched.ok`: only a FAILED launch can be host-limited.
         import scripts.probes.claude_write_canary as canary
