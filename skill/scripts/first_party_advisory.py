@@ -924,6 +924,21 @@ def _gem_version_ok(version):
                         and all(ch.isalnum() or ch in "_.-" for ch in platform))
 
 
+_GEM_REQUIREMENT_OPERATORS = ("~>", ">=", "<=", "!=", "=", ">", "<")
+
+
+def _gem_requirement_ok(text):
+    """True for one requirement string RubyGems can parse: an optional operator, then a
+    release ``[0-9]+(\\.[0-9a-zA-Z]+)*``. A ``-prerelease`` form is refused, not
+    parsed."""
+    text = text.strip(" ")
+    for operator in _GEM_REQUIREMENT_OPERATORS:
+        if text.startswith(operator):
+            text = text[len(operator):].strip(" ")
+            break
+    return "-" not in text and _gem_version_ok(text)
+
+
 def _gem_canonical(release):
     """RubyGems' own equality key (``Gem::Version#canonical_segments``): the release
     split into digit and letter runs, with trailing zeros dropped from the numeric
@@ -950,8 +965,9 @@ def _gem_lock_sections(text):
     version) or a spec's dependency at six (``      name`` or ``      name (...)``).
     Any other header or indent, any whitespace but plain spaces (a tab, ``\r``,
     U+2028, a BOM, ...), an indented line before the first header, an option after
-    ``specs:``, a spec before it, and a dependency with no spec above it fail the
-    whole lock (ValueError). Only ``remote:`` is understood; any other option is kept
+    ``specs:``, a spec before it, a dependency with no spec above it, a ``specs:``
+    with no ``remote:`` above it and a remote holding a space fail the whole lock
+    (ValueError), as Bundler raises on each. Only ``remote:`` is understood; any other option is kept
     as an unknown marker."""
     if _odd_whitespace(text):
         raise ValueError("Gemfile.lock whitespace Bundler reads differently")
@@ -988,6 +1004,8 @@ def _gem_lock_sections(text):
         elif indent == 2 and not in_specs:
             # Bundler builds the source at `specs:`; a later option is not part of it.
             if line == _GEM_SPECS_MARKER:
+                if current.remote is None:
+                    raise ValueError("Gemfile.lock source with no remote")
                 in_specs = True
                 continue
             option = _GEM_OPTION.match(line)
@@ -995,8 +1013,8 @@ def _gem_lock_sections(text):
                 raise ValueError("malformed Gemfile.lock option")
             if option[1] != "remote":
                 current.options.add(option[1])
-            elif current.remote is not None:
-                raise ValueError("two Gemfile.lock remotes")
+            elif current.remote is not None or " " in option[2]:
+                raise ValueError("malformed Gemfile.lock remote")
             else:
                 current.remote = option[2]
         else:
@@ -1012,8 +1030,23 @@ _RUBY_KEYWORDS = frozenset(
 _GEMSPEC_OPEN = re.compile(r"( *)Gem::Specification\.new(?: +(do) *| *\{ *)"
                            r"\| *([a-z_][A-Za-z0-9_]*) *\| *\Z")
 _GEMSPEC_SETTER = re.compile(r"([a-z_][a-z0-9_]*) *= *")
+# #3692 round 2: the only fields the reader accepts, with the one literal kind each
+# takes, so nothing it accepts is a gemspec `Gem::Specification.load` cannot load.
+# `platform` is absent on purpose: a gem that sets one is not the platformless lock
+# entry. Dates and version stamps are absent because the reader does not validate them.
+GEMSPEC_FIELDS = {
+    "name": "string", "version": "string", "summary": "string", "description": "string",
+    "homepage": "string", "license": "string", "author": "string", "bindir": "string",
+    "post_install_message": "string",
+    "email": "string or array",
+    "authors": "array", "licenses": "array", "files": "array", "test_files": "array",
+    "executables": "array", "extensions": "array", "extra_rdoc_files": "array",
+    "rdoc_options": "array", "require_paths": "array", "requirements": "array",
+    "required_ruby_version": "requirement", "required_rubygems_version": "requirement",
+}
+_GEM_NAME = re.compile(r"[A-Za-z0-9_.-]+\Z")
 _GEMSPEC_DEPENDENCY = re.compile(r"add_(?:runtime_|development_)?dependency")
-_RUBY_CODING = re.compile(r"coding[:=] *([A-Za-z0-9_.-]+)", re.IGNORECASE)
+_RUBY_CODING_UTF8 = re.compile(r"coding *[:=] *utf-8(?![A-Za-z0-9_.-])")
 # Bundler's glob is `{,*,*/*}.gemspec`: bound the listing it takes to mirror it.
 MAX_GEMSPEC_SCAN_ENTRIES = 65536
 
@@ -1050,11 +1083,9 @@ def _plain_strings(text):
 
 
 def _ruby_literal(text):
-    """``(kind, value)`` for an inert right-hand side, else None: one plain string, an
-    array of plain strings, ``true`` / ``false`` / ``nil`` or a decimal integer."""
+    """``(kind, value)`` for an inert right-hand side, else None: one plain string or
+    an array of plain strings."""
     text = text.strip(" ")
-    if text in ("true", "false", "nil") or (text.isascii() and text.isdigit()):
-        return "atom", text
     if text.startswith("[") and text.endswith("]"):
         strings = _plain_strings(text[1:-1])
         return None if strings is None else ("array", strings)
@@ -1083,11 +1114,22 @@ def _gemspec_statement(rest):
             strings = _plain_strings(args.rstrip(" ")[1:-1])
         else:
             strings = None
-        return ("dependency",) if strings else None
+        # A gem name, then requirements RubyGems can parse: anything else raises at load.
+        if (not strings or not _GEM_NAME.match(strings[0])
+                or not all(_gem_requirement_ok(text) for text in strings[1:])):
+            return None
+        return ("dependency",)
     setter = _GEMSPEC_SETTER.match(rest)
     literal = _ruby_literal(rest[setter.end():]) if setter else None
-    if setter is None or literal is None:
-        return None                # (`x.metadata = ...` is refused by the caller)
+    if setter is None or literal is None or setter[1] not in GEMSPEC_FIELDS:
+        return None                # no literal, an unknown field, or `x.metadata = ...`
+    kind = GEMSPEC_FIELDS[setter[1]]
+    if kind == "requirement":
+        texts = [literal[1]] if literal[0] == "string" else literal[1]
+        if not texts or not all(_gem_requirement_ok(text) for text in texts):
+            return None
+    elif literal[0] not in kind.split(" or "):
+        return None
     return "set", setter[1], literal
 
 
@@ -1100,8 +1142,11 @@ def _inert_line(line):
         return True
     if not stripped.startswith("#"):
         return False
-    coding = _RUBY_CODING.search(stripped)
-    return coding is None or coding[1].lower() == "utf-8"
+    # #3692 round 2: Ruby's magic comment takes spaces round the separator and several
+    # names (`coding`, `encoding`, `fileencoding`), so every mention of `coding` must be
+    # exactly a UTF-8 declaration; a comment that merely contains the word is refused.
+    lowered = stripped.lower()
+    return lowered.count("coding") == len(_RUBY_CODING_UTF8.findall(lowered))
 
 
 def _gemspec_document(text):
@@ -1112,18 +1157,21 @@ def _gemspec_document(text):
 
     - outside the block: blank lines, ``#`` comments, the opener and its closer;
     - the opener: ``Gem::Specification.new do |x|`` or ``... { |x|``, whitespace before
-      ``do``, ``x`` a Ruby local-variable name that is not a keyword;
+      ``do``, ``x`` a Ruby local-variable name that is not a keyword or ``_1`` to ``_9``;
     - the closer: ``end`` (``}``) at the opener's indentation;
     - inside: blank lines, comments, ``x.<field> = <literal>``,
       ``x.add_(runtime_|development_)?dependency "lit", ...`` (parenthesised or not) and
-      ``x.metadata["key"] = "lit"``. A literal is one plain string, an array of plain
-      strings, ``true`` / ``false`` / ``nil`` or an integer.
+      ``x.metadata["key"] = "lit"``. ``<field>`` is one of ``GEMSPEC_FIELDS``, each taking
+      a plain string or an array of plain strings; a requirement field, and a
+      dependency's constraints, must be requirements RubyGems can parse. No field
+      takes a number, ``true``, ``false`` or ``nil``, and ``platform`` is not a field.
 
     ``x.name`` and ``x.version`` are each assigned exactly once, a non-empty plain
     string; ``allowed_push_host`` may appear only as that metadata key, at most once.
     Anything else -- a conditional, a ``require``, a second statement, a trailing
-    comment, an interpolation, a call on the right-hand side, a non-UTF-8 ``coding:``
-    comment, whitespace other than spaces -- refuses the file."""
+    comment, an interpolation, a call on the right-hand side, a comment that mentions
+    ``coding`` without being exactly a UTF-8 declaration, whitespace other than spaces
+    -- refuses the file."""
     text = text.replace("\r\n", "\n")
     if _odd_whitespace(text):
         return None
@@ -1132,8 +1180,10 @@ def _gemspec_document(text):
     if first is None:
         return None
     opener = _GEMSPEC_OPEN.match(lines[first])
-    if opener is None or opener[3] in _RUBY_KEYWORDS:
-        return None
+    var = opener[3] if opener else ""
+    if opener is None or var in _RUBY_KEYWORDS or (
+            len(var) == 2 and var[0] == "_" and var[1] in "123456789"):
+        return None                                    # Ruby 3 reserves _1 to _9
     closer = opener[1] + ("end" if opener[2] else "}")
     prefix = opener[3] + "."
     document: ManifestDocument = {}
@@ -1174,7 +1224,10 @@ def _gemspec_path(real_dir, target_root):
     dot-prefixed name. More than one match, an unreadable or oversized listing, or a
     subdirectory that resolves outside the review root is None."""
     def matches(name):
-        return name == ".gemspec" or (name.endswith(".gemspec") and not name.startswith("."))
+        # Case-insensitively: on a case-insensitive filesystem Ruby's glob is too.
+        lowered = name.lower()
+        return lowered == ".gemspec" or (lowered.endswith(".gemspec")
+                                         and not name.startswith("."))
 
     found: list[str] = []
     try:
@@ -1195,7 +1248,7 @@ def _gemspec_path(real_dir, target_root):
                     seen += 1
                     if seen > MAX_GEMSPEC_SCAN_ENTRIES:
                         return None
-                    if child.name != ".gemspec" and matches(child.name):
+                    if not child.name.startswith(".") and matches(child.name):
                         found.append(child.path)
     except OSError:
         return None

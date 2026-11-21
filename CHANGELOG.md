@@ -6,29 +6,34 @@
   rule now has a Ruby twin, under owner rulings R1 and R2. An osv-scanner or Trivy advisory
   naming an exact name and version from the review root's own `Gemfile.lock` is confirmed at
   ingest, without an advisor, when every lock entry with that identity sits under a `PATH`
-  source whose realpath is inside the review root, and the source's one `*.gemspec` proves the
-  same name and version.
+  source whose realpath is inside the review root, and the one gemspec Bundler would load for
+  that source proves the same name and version.
   - **Literal only (R1):** `x.name = "lit"` and `x.version = "lit"`, each exactly once, in the
     one `Gem::Specification.new do |x|` block, plain string literals. The reader allowlists
     every line of the file. Outside the block only blank lines and `#` comments are allowed.
     Inside it only blank lines, comments, `x.<field> = <literal>`, `x.add_*dependency "lit", ...`
-    and `x.metadata["key"] = "lit"` are; a literal is a plain string, an array of plain strings,
-    `true` / `false` / `nil` or an integer. Everything else refuses the file: `Foo::VERSION`,
-    interpolation, `.freeze`, `%q{}`, `Dir[...]`, a `require`, a conditional, a second
-    statement or a trailing comment on a line, a non-UTF-8 `coding:` comment, and whitespace
-    other than spaces. So most real gems stay with the advisor, which is the ruled trade-off.
+    and `x.metadata["key"] = "lit"` are. The fields are a fixed list, each taking a plain string
+    or an array of plain strings (`summary`, `authors`, `files`, ...), and requirement strings
+    (`required_ruby_version`, a dependency's constraints) must be ones RubyGems can parse.
+    Everything else refuses the file: `Foo::VERSION`, interpolation, `.freeze`, `%q{}`,
+    `Dir[...]`, a `require`, a conditional, a second statement or a trailing comment on a
+    line, `platform`, `date`, an unknown field, a number, a comment mentioning `coding` that
+    is not exactly a UTF-8 declaration, and whitespace other than spaces. So most real gems
+    stay with the advisor, which is the ruled trade-off.
   - **Publishable (R2):** a literal `allowed_push_host` other than `https://rubygems.org` (bare
     or with one trailing `/`) is private-only, and that key may appear only as that one
     metadata line. The review root is exempt; a member is not.
   - **The gemspec is Bundler's:** the one file its glob `{,*,*/*}.gemspec` finds (this
-    directory and one level down, no dot-prefixed names). More than one refuses.
+    directory and one level down, no dot-prefixed names, any letter case). More than one
+    refuses.
   - **Fails closed:** a copy of the same name at a version RubyGems reads as equal, under any
     source or platform (`1.2` beside `1.2.0`, `foo (1.0-java)` beside `foo (1.0)`); an
     outside-tree or symlinked-out source; a remote Bundler would expand elsewhere (`~`, a `..`
     component, a URL, an absolute path); a `PATH` source with any option besides `remote`
     (such as `glob:`); a version mismatch; and a malformed lock. The lock parser is an
-    allowlist too: only the known headers, options at two spaces, the bare `specs:` marker,
-    specs at four with a RubyGems-valid version, and dependencies at six. Any other line, and
+    allowlist too: only the known headers, options at two spaces, a `remote:` (with no space
+    in it) before the bare `specs:` marker, specs at four with a RubyGems-valid version, and
+    dependencies at six. Any other line, and
     whitespace other than spaces (a tab, `\r`, U+2028, a BOM), fails the whole lock.
     bundler-audit and `gems.locked` stay with the advisor.
   - **The confirmation names what matched:** a first-party advisory's exported reasoning said

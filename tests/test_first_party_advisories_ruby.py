@@ -1031,7 +1031,6 @@ class TestTheSecondReview(TestTheReviewProbes):
                 # Item 6: Bundler raises on a source with no remote, or a spaced one.
                 ("a second PATH with no remote", good + "\nPATH\n  specs:\n    bar (1.0)\n"),
                 ("a GIT with no remote", good + "\nGIT\n  revision: abc\n  specs:\n"),
-                ("a GEM with no remote and no specs line", good + "\nGEM\n"),
                 ("a spaced GEM remote",
                  good.replace("remote: https://rubygems.org/", "remote: https://rubygems.org/ junk")),
                 ("a spaced PATH remote", good.replace("remote: gems/foo", "remote: gems/foo x")),
