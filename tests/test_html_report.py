@@ -1377,6 +1377,38 @@ class TestCoverageHonesty(unittest.TestCase):
         certified["meta"]["coverage"] = {"cells": {"missing_floor": [["app", "COD"]]}}
         self.assertNotIn("with no answer", hr.render(certified))
 
+    def test_at_most_twelve_cells_are_named(self):
+        """#3677 (#3720): the number itself, not the constant read back."""
+        self.assertEqual(12, hr.CELLS_NAMED_MAX)
+        cells = [["g%02d" % n, "COD"] for n in range(13)]
+        banner = self._banner(self._uncertified(cells))
+        self.assertIn("review cells with no answer: 13 (g00/COD, ", banner)
+        self.assertIn("g11/COD, and 1 more)", banner)
+        self.assertNotIn("g12/COD", banner)
+        self.assertEqual(12, banner.count("/COD"))
+        self.assertIn("g11/COD)", self._banner(self._uncertified(cells[:12])))
+
+    def test_a_parser_gap_target_says_covered_over_cap_or_uncovered(self):
+        """#3611 (#3720). A file Semgrep could not parse is handed to a SEC cell for a
+        targeted read. The report says which cell covered it; a file no cell covered
+        reads UNCOVERED, unless the run was over the cap and it was never dispatched.
+        The two are different facts and must not be swapped."""
+        def line(covered_by, **more):
+            return hr._render_targeted_review({"coverage": {"targeted_review": dict(
+                files=[{"file": "bin/run", "language": "Shell", "covered_by": covered_by}],
+                **more)}})
+        self.assertIn("<code>bin/run</code> (Shell; app/SEC, lib/SEC)",
+                      line([["app", "SEC"], ["lib", "SEC"]]))
+        uncovered = line([])
+        self.assertIn("<code>bin/run</code> (Shell; UNCOVERED)", uncovered)
+        self.assertNotIn("over cap", uncovered)
+        over_cap = line([], over_cap=True)
+        self.assertIn("<code>bin/run</code> (Shell; not dispatched: over cap)", over_cap)
+        self.assertNotIn("UNCOVERED", over_cap)
+        # A covered file reads the same over the cap: the cell is what it says.
+        self.assertIn("(Shell; app/SEC)", line([["app", "SEC"]], over_cap=True))
+        self.assertNotIn("over cap", line([["app", "SEC"]], over_cap=True))
+
     def test_a_long_list_is_cut_and_says_by_how_many(self):
         cells = [["g%02d" % n, "COD"] for n in range(hr.CELLS_NAMED_MAX + 5)]
         banner = self._banner(self._uncertified(cells))

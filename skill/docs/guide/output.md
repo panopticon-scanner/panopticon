@@ -5,7 +5,8 @@ panel ran partial, a scout-requested tool produced no output, or an integrity ch
 undeclared or content-substituted findings file, which on the driver path is caught by the driver's
 own `dispatch-plan-driver.json` (declares every review cell → `reconcile_findings_files`) and its
 `out-file-hashes.json` fan-out snapshot (per-cell sha256 → `verify_out_file_hashes`)) — treat it as
-NOT certified, distinct from a real `FAIL`. Another cause (#2178, narrowed by #2222): under the
+NOT certified, distinct from a real `FAIL`. (The delta causes that follow are unreachable in 5.4:
+delta review is withdrawn, #3735.) Another cause (#2178, narrowed by #2222): under the
 default `--gate-scope on-diff`, an ACTIVE delta review whose hunk map has no ranges while
 gate-eligible findings exist (active, admitted by the evidence policy and by `--fail-on`, which
 is `critical` unless set) reads `INCONCLUSIVE`, and `coverage_note` names the map and the remedy; an empty change
@@ -70,8 +71,9 @@ untouched.
 **A split report explains itself, and undone verify work holds the letter back (#3667).** Past
 the writer's byte budget `findings[]` is split into `_partN.json` files named in `meta.parts`; the
 main file then also carries `meta.parts_findings`, `{part: {origin: count}}` (origin is
-`tool:<name>` or `agent`), and the terminal and HTML print a `**Report parts:**` line saying how
-many findings the main file holds and what each part holds. `findings[]` is published worst first
+`tool:<name>` or `agent`), and the terminal prints a `**Report parts:**` line, the HTML a `JSON
+report split:` one, saying how many findings the main file holds and what each part holds.
+`findings[]` is published worst first
 -- gate-eligible, then severity, then evidence status, then pipeline order -- split or not, so the
 main file carries what matters most. `meta.coverage.tool_axis.by_tool` reconciles each scanner:
 `ingested == in_report + merged_into_agent + dropped`, every drop with its reason. A tool finding
@@ -104,6 +106,88 @@ never `answered`: its cell is `unanswered`, or `unloadable` when one of its bund
 load. It is counted in `scope_not_recorded` (`scope_not_recorded_unloadable` says how many of those
 are unloadable) and left out of both claim counts, and the reason for the state it landed in says
 so: "1 backup advisor unanswered (1 scope not recorded)".
+An advisor's verdict counts only for a claim that advisor was handed (#3702). Verdicts are matched
+to findings by id across the run, so verify records, for each cell and stage it dispatches, the
+claim ids it hands out, the number of parts and the part size (`<group>/<domain>/<stage>/claims`,
+`/parts` and `/part_size` in `verify-attempts.json`, in the same write as the charge). A verdict in
+a bundle is counted only when that record shows its own part was handed the claim it names. Any
+other is dropped: `meta.coverage.verdicts.out_of_scope` counts them, and "2 advisor verdicts
+outside their handed scope" is a `grade_shortfalls` reason, so a run with one is NOT CERTIFIED even
+when every advisor answered all it was asked. The verify phase refuses such a reply, or asks for
+the bundle again, on the usual budget of three dispatches. A bundle whose cell and stage have no
+recorded scope counts for nothing, and `scope_not_recorded` counts its verdicts: "verify scope not
+recorded: 12 advisor verdicts not counted". That is what a run whose verify phase ran before this
+version reads as, and a hand `synthesize.py --verdicts-dir` call over bundles with no
+`verify-attempts.json` in the run folder. A run in flight at the upgrade and resumed after it is
+affected too: the verify cells it had already finished are never dispatched again, so their scope
+is never recorded and their verdicts are not counted. The remedy is a full re-run, not a re-verify:
+`--reset` discards the whole run folder, the review included, and the run starts from discovery.
+A verdict speaks only for its own cell's instance of a claim (#3707). A claim id is derived from the
+claim's domain, category, file, title and line, and no group, so two cells can hold one id: two
+reviewers reporting the same thing, or one copying the other's claim. A bundle verdict counts for a
+finding only when the bundle is stamped for the cell that finding was loaded from. Where several
+cells hold one id, each cell's advisors answer for their own instance (a backup stands over its own
+cell's primary and no other), and the claim is decided across them: any CONFIRMED keeps it reported;
+otherwise a holding cell that gave no verdict leaves it unverified; and only every holding cell
+rejecting it discards it. A cell that was never asked about the claim is not one of the cells that
+decide it: the dispatch record shows the id in none of its scopes, as for a cell below the verify
+gate, or one whose findings file was refused. It dismisses nothing, and no other cell dismisses its
+instance, which stays in the report as it would with no other cell holding the id (a CONFIRMED from
+a cell that was asked still reports the claim as confirmed). A cell that was asked and did not
+answer is one of the cells that decide. `meta.coverage.verdicts.ids_in_several_cells` counts such
+ids. It is a disclosure, not a shortfall: an honest duplicate that both cells confirm, or both
+reject, is decided as it always was.
+Merging findings at one line changes what the report shows and never what the run owes (#3716).
+Findings of one category at one line are merged into the most severe before any verdict is read.
+"Most severe" is the severity a finding will be published at, as far as its own content says, and
+not the one its reviewer claimed (#3727): a `severity_override` with no reason counts as its code's
+default, and a `TST-A1*` claim at CRITICAL or HIGH counts as MEDIUM, its cap. And no finding that
+is not REJECTED stays merged under a row whose final severity is below its own; it comes back as
+its own finding. One row is not held to that: a scanner finding nobody has confirmed, capped at
+MEDIUM, keeps the claim merged into it (a lone claim and a lone scanner finding at one line are
+merged whatever their categories). A claim written above its code's default with an empty
+override ranks at the default, so beside a scanner finding that outranks the default it is under
+the scanner's row, as a claim written at the default is. An uncapped `TST-A1*` claim is the
+exception to the exception:
+it ranked below where it ends, so it comes back beside the scanner's row. So one id can be in the
+report at two severities: one claim filed twice under different codes, by two cells or by one,
+where the instance that is not capped comes back over the other; the two rows can differ in
+evidence status too.
+What is owed is counted first, over every loaded finding. A claim is owed an advisor's answer when
+its review cell reaches the verify gate, or the dispatch record says the cell was asked about it;
+the cell is the findings file the claim was loaded from, whatever domain its reviewer declared. A
+claim that was owed an answer and has none is one unanswered finding whatever it is merged under,
+and so is a claim that
+another cell confirmed when its own cell was asked and said nothing (the claim is reported
+confirmed, and the run is not certified). One claim held by several cells counts once. A tool
+finding merged into an agent claim is the exception: no advisor is asked about it while it is
+merged, so it owes nothing until it is reported by itself.
+What comes back out of a merge as its own finding: a CONFIRMED finding, unless the one it is
+merged under is CONFIRMED too; under a REJECTED finding, which goes to `discarded_claims`,
+everything not itself REJECTED; a finding that is owed an answer and has none, unless the one it
+is merged under is CONFIRMED or is itself owed and unanswered; and any finding not itself REJECTED
+whose row ends at a lower severity than its own (#3727, above). Anything else stays merged under a
+finding that is in the report.
+**What a merge weighs (#3731).** `summary.health.weighted_defect` adds each counted finding's
+severity weight times the lines it spans. The findings merged at one line are one merge group, and
+a group is counted once, at the heaviest of its findings that count for the gate on their own:
+confirmed by its own cell's verdict (any finding not REJECTED under `--gate-unverified`), or a
+scanner finding that a CONFIRMED claim absorbed, which no advisor is asked about and which is
+confirmed with the pair. The weight is one finding's own, the severity it is published at times
+its own lines; nothing is mixed, and no row's range or severity changes. A row carries
+`weight_from` (the finding's id and weight) when the group's weight is not its own, and the
+group's other counted rows carry `weight_with`, the id of the row that does. So a one-line claim
+that wins the merge over a confirmed finding spanning 50 lines does not lighten it, and two counted
+rows that came out of one merge are not added.
+**A scanner rule's hits (#3732).** A rule that fires several times in one file is one finding. It
+is shown at its lowest line, whatever a reviewer flagged (a claim on a later hit is its own row),
+with the other hits in `additional_loci`. It carries the highest severity among its hits, and
+`severity_from` names the hit and the shown hit's own severity when they differ. In 5.4 every
+scanner finding is one line, because no scanner adapter reports a span: no hit carries a
+`line_end`, and a scanner finding weighs as one line. The widest-hit rule (a scanner finding
+weighs as its widest hit, and a hit in `additional_loci` keeps its `line_end`) would apply only
+if an adapter reported a span. The ranges that weigh in 5.4 are agent findings' own. A range that
+ends before it starts is read as one line at load.
 `meta.coverage.dependency_audit` is the dependency-audit receipt: the ecosystems the tree has a
 dependency manifest for (`applicable`), and the dedicated auditors that were `selected` and
 `produced` output. Its `unaudited` map (#3648) names each applicable ecosystem that no selected
@@ -117,6 +201,11 @@ SCA tool produced output on an applicable tree". When another ecosystem's audito
 tree certifies as before and the sentence is the only sign that one ecosystem went unaudited: read
 `coverage_note` in the JSON, since the terminal and the HTML show it only beside NOT CERTIFIED or a
 provisional letter. It is disclosure only and moves neither the gate nor `coverage_certified`.
+`meta.coverage.scanner_config_excluded` (#3708) names the scanner's own root config file, which a
+full scan does not hand to any review group: the one file it loaded as its config
+(`panopticon.yml`, or `.panopticon.yml` when that is the only one). It is disclosure only too,
+and `coverage_note` does not mention it: that field is for what needs attention. The key is absent
+when no config was left out (a scoped run, or a tree with none).
 A legitimate catalog-gap finding without `location.file` cannot satisfy X0X's required occurrence
 shape. It remains in the main JSON and HTML, while `synthesize` excludes it from the X0X candidate
 set and writes `<report-stem>-x0x-failures.json` beside the X0X, where `<report-stem>` means the

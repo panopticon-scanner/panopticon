@@ -44,12 +44,13 @@ class _RunDir(unittest.TestCase):
 
     def summon(self, *cells, count=1, parts=1, claims=("SEC-001",), extra=None):
         """Charge each cell's backup, recording `parts` and the `claims` it was
-        handed beside it (None: no record of that one)."""
+        handed beside it (None: no record of that one), and the part size (#3702)."""
         body: dict = {"%s/%s/backup" % cell: count for cell in cells}
         if parts is not None:
             body.update({"%s/%s/backup/parts" % cell: parts for cell in cells})
         if claims is not None:
             body.update({"%s/%s/backup/claims" % cell: list(claims) for cell in cells})
+            body.update({"%s/%s/backup/part_size" % cell: 25 for cell in cells})
         body.update(extra or {})
         with open(os.path.join(self.run_dir, backups_mod.ATTEMPTS_FILE), "w",
                   encoding="utf-8") as fh:
@@ -61,12 +62,15 @@ class _RunDir(unittest.TestCase):
                                                  "-part%d" % part if part else "")
         with open(os.path.join(self.verdicts, name), "w", encoding="utf-8") as fh:
             fh.write(raw if raw is not None else json.dumps(
-                {"verdicts": verdicts, "_panopticon": {"run_id": run_id, "stage": stage}}))
+                {"verdicts": verdicts, "_panopticon": {
+                    "run_id": run_id, "stage": stage, "group": group, "domain": domain}}))
         return name
 
     def loaded(self):
-        """What synthesize's FindingSet holds: the loader's per-file stamps and
-        its unloadable rows -- the only verdict reads in the path."""
+        """The loader's per-file stamps and its unloadable rows -- the only verdict
+        reads in the path. Unscoped: these tests are about what `coverage` makes of
+        the stamps, whatever they hold. Synthesis loads through the dispatch record
+        (#3702, `test_verdict_scope.py`), so a stamp there lists handed claims only."""
         accepted = {}
         _by_fid, unloadable = evidence_mod.load_verdict_bundles(self.verdicts, accepted=accepted)
         return accepted, unloadable
@@ -113,7 +117,8 @@ class TestBackupCoverage(_RunDir):
         accepted, _unloadable = self.loaded()
         self.assertEqual({"verdicts-g1-SEC-backup.json":
                           {"run_id": RUN_ID, "stage": "backup", "kept": 3,
-                           "finding_ids": ["B", "SEC-001"]}}, accepted)
+                           "finding_ids": ["B", "SEC-001"],
+                           "out_of_scope": 0, "scope_not_recorded": 0}}, accepted)
 
     def test_a_chunked_cell_is_answered_only_when_every_part_is(self):
         # #3679 review F1: verify splits a backup scope of more than 25 claims into
@@ -451,9 +456,9 @@ class TestTheVerifyPhaseSpellsTheSameRecord(unittest.TestCase):
         self.assertEqual("g1/SEC" + backups_mod.BACKUP_SUFFIX,
                          verify._verify_key("g1", "SEC", "backup"))
         self.assertEqual(verify._verify_key("g1", "SEC", "backup") + backups_mod.PARTS_SUFFIX,
-                         verify._backup_parts_key("g1", "SEC"))
+                         verify._parts_key("g1", "SEC", "backup"))
         self.assertEqual(verify._verify_key("g1", "SEC", "backup") + backups_mod.CLAIMS_SUFFIX,
-                         verify._backup_claims_key("g1", "SEC"))
+                         verify._claims_key("g1", "SEC", "backup"))
         with tempfile.TemporaryDirectory() as root:
             for part in (0, 2):
                 name = os.path.basename(verify._verify_out_file(root, "g1", "SEC", "backup", part))
@@ -557,12 +562,15 @@ class TestUnansweredBackupsHoldTheLetterBack(unittest.TestCase):
 
 class TestSynthesizeReadsTheRunRecord(_RunDir):
     def test_the_finding_set_carries_the_loader_stamps(self):
-        self.bundle("g1", "SEC", [_VERDICT])
+        self.summon(("g1", "SEC"))
+        self.bundle("g1", "SEC", [_VERDICT, _verdict("B")])     # B: not a handed claim
         fs = findings_mod.FindingSet.load(types.SimpleNamespace(verdicts_dir=self.verdicts),
-                                          [], "standard", RUN_ID, prepared=([], None, {}))
+                                          [], "standard", RUN_ID, prepared=([], None, {}),
+                                          run_dir=self.run_dir)
         self.assertEqual({"verdicts-g1-SEC-backup.json":
                           {"run_id": RUN_ID, "stage": "backup", "kept": 1,
-                           "finding_ids": ["SEC-001"]}}, fs.bundle_files)
+                           "finding_ids": ["SEC-001"],
+                           "out_of_scope": 1, "scope_not_recorded": 0}}, fs.bundle_files)
 
     def test_plan_inputs_load_carries_the_block(self):
         self.summon(("g1", "SEC"))

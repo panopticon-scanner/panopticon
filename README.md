@@ -115,17 +115,23 @@ python3 skill/scripts/driver.py setup .         # one-time: proposes panopticon.
 python3 skill/scripts/driver.py loop .          # the whole review, resumable
 ```
 
-Read `.panopticon/setup-report.md`, rename the draft to `panopticon.yml`, commit it, and the loop runs the committed matrix. Scope a review instead of running the whole repository:
+Read `.panopticon/setup-report.md`, rename the draft to `panopticon.yml`, commit it, and the loop runs the committed matrix.
+
+**Commit the draft before you compare runs.** Repeatable results are claimed for a committed matrix: the same panopticon version, the same pinned repository and the same committed `panopticon.yml`. A freshly proposed matrix is not repeatable. Two `setup` runs on one commit can group the files differently and give the groups different names, and a review's results move with the matrix. Every report says which kind it ran under: `meta.matrix.origin` is `committed` or `working_tree`, and the `Matrix:` line of the terminal summary and the HTML header reads `origin=committed (reused: the config is in the reviewed commit, unmodified)` or `origin=working_tree (FRESH: the config is not in the reviewed commit; ...)`. A fresh matrix adds `comparable only with runs on the same fingerprint`.
+
+**How repeatable, measured.** For 5.4.0 the same review was run seven times on each of 16 pinned repositories with a committed matrix (112 runs, #3584). Scanner findings are steady: 83% appear in at least 5 of the 7 runs. Reviewer-agent findings are not: 8% appear in all 7 runs and 46% in only one. At CRITICAL and HIGH the agents agree more: 25% of those findings appear in all 7 runs and 21% in only one. Severity moves too: the letter grade was the same in all 7 runs for 5 of the 16 repositories. Recall was measured against 48 known bugs in 13 of the repositories, matched by title. That is an upper bound, because a title match also credits a related finding in the same code: 38 were matched in at least 5 of 7 runs and 6 never, and on reading the findings at least 4 of the 38 are a related finding, not the known bug itself. Of the 29 whose severity is HIGH or CRITICAL, 22 were matched in at least 5 of 7 runs (the same 4 among them) and 17 were rated HIGH or above that often. Treat one run as a sample: a finding that matters to a decision is worth a second run, and a clean run is not proof of absence.
+
+Scope a review instead of running the whole repository:
 
 ```bash
 python3 skill/scripts/driver.py loop . -f src/auth.py        # one file plus its tests and neighbours
 python3 skill/scripts/driver.py loop . -d src/payments       # one directory
-python3 skill/scripts/driver.py loop . -c                    # this branch vs its base
-python3 skill/scripts/driver.py loop . -c --base release-2   # vs an explicit base
-python3 skill/scripts/driver.py loop . --pr 217              # PR 217 in an isolated worktree
+python3 skill/scripts/driver.py loop . --files a.py b.py     # the files you name
 ```
 
-Useful flags: `--security redteam` for the adversarial security posture, `--fail-on high` to tighten the gate (it fails on a confirmed CRITICAL by default; `--fail-on off` disables it, loudly), `--tools` or `--no-tools`, `--max-budget-usd` and `--max-iterations` to bound spend, `--max-verify N` to cap the verification queue on large deltas. The full list is in [`docs/PANOPTICON.md`](docs/PANOPTICON.md), "Global flags".
+**Panopticon 5.4 is a whole-repository audit. Delta review is withdrawn.** `--pr`, `--changes` (`-c`), `--base` and `--gate-scope` are refused at the command line, and a run folder that was started as a delta review is not resumed (`--reset` starts a whole-repository run). Reviewing a diff was never calibrated or stress-tested, and a wrong PASS on a pull request is the worst failure this tool can have. It returns when it has been rebuilt and measured (#3735, #3736).
+
+Useful flags: `--security redteam` for the adversarial security posture, `--fail-on high` to tighten the gate (it fails on a confirmed CRITICAL by default; `--fail-on off` disables it, loudly), `--tools` or `--no-tools`, `--max-budget-usd` and `--max-iterations` to bound spend, `--max-verify N` to cap the verification queue. The full list is in [`docs/PANOPTICON.md`](docs/PANOPTICON.md), "Global flags".
 
 ## What a review costs
 
@@ -142,7 +148,7 @@ This is a multi-agent fan-out, so the first question is the right one. One measu
 | Wall clock | 24.5 h, of which roughly 9 h was waiting on session quota |
 | Result | 1,124 findings kept (0 critical, 13 high), 1,079 of them confirmed; coverage certified |
 
-That is the most expensive shape the tool has: adversarial mode, every tool, the largest model tier for verification, on a repository that is itself a scanner. Levers, in order of effect: scope (`-c`, `--pr`, `-d`), `--security standard`, `--max-verify`, a smaller advisor tier in the host's model profile, and `--max-budget-usd` on `driver loop` as the hard stop. Every report carries its own ledger under `meta.cost`, so your second run can be budgeted from your first.
+That is the most expensive shape the tool has: adversarial mode, every tool, the largest model tier for verification, on a repository that is itself a scanner. Levers, in order of effect: scope (`-d`, `-f`, `--files`), `--security standard`, `--max-verify`, a smaller advisor tier in the host's model profile, and `--max-budget-usd` on `driver loop` as the hard stop. Every report carries its own ledger under `meta.cost`, so your second run can be budgeted from your first.
 
 ## What you get
 

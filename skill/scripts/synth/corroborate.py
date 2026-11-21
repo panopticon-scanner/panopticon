@@ -14,7 +14,10 @@ way, so neither module needs the other to be fully imported first.
 """
 from typing import Any
 import scripts.evidence as evidence_mod
+import scripts.ocrdb as ocrdb
+from . import codes as codes_mod
 from . import findings as findings_mod
+from . import severity_cap as severity_cap_mod
 
 
 RELATED_PANELS = {
@@ -40,11 +43,46 @@ def _is_tool_sourced(finding):
 # #2991: the members dedupe drops, kept on their survivor. Dedupe runs BEFORE any
 # verdict binds (both passes share it, #443), so it picks the survivor by
 # severity alone; a dropped member's own verdict can still matter. A CONFIRMED
-# one is restored as its own finding when the survivor's own verdict is not
+# one is restored as its own finding when the survivor's own verdict is not, and
+# under a REJECTED survivor so is every member not itself REJECTED (#3716)
 # (`verdicts.restore_confirmed`). Underscore-prefixed like `_merged_ids`: never
 # serialized (pass 1 drops `_` keys) and stripped before the report. The ONLY
 # record of a dropped member since #3202 withdrew #1476's id aliases.
 ABSORBED_FIELD = "_absorbed"
+
+
+LOAD = object()        # `bundle=LOAD`: read the vendored catalog (None is "no catalog")
+
+
+def merge_rank(finding, bundle):
+    """What `dedupe` keeps the lowest of at one line: (severity rank, confidence rank).
+
+    #3727: the severity is the one the finding can finally be PUBLISHED at, as far as
+    its own content says, and never the one its reviewer claimed. The controller
+    lowers a severity only after the merge: an override with no reason resets it to
+    its code's default (`codes.severity_after_discipline`), and a `TST-A1*` claim may
+    be capped at MEDIUM (`severity_cap`). Ranked as claimed, a hostile cell's CRITICAL
+    and CERTAIN claim won the merge over another cell's confirmed CRITICAL, was then
+    demoted to LOW, and the real finding was in neither list: PASS, certified.
+
+    Whether the `TST-A1*` cap applies needs the run's root and groups, which the
+    merge does not have (pass 1 and tool-verify share it), so such a claim ranks at
+    what the cap would leave. `verdicts.restore_confirmed` knows the rest, and gives
+    back a member that the merge left under a lower row."""
+    severity = codes_mod.severity_after_discipline(finding, bundle)
+    if severity_cap_mod.may_be_coverage_absence_capped(finding, severity):
+        severity = severity_cap_mod.CAP_TO
+    return evidence_mod.sev_rank({"severity": severity}), _conf_rank(finding)
+
+
+def outranks(finding, other, bundle=LOAD):
+    """Would `dedupe` keep `finding` over `other`: more severe by `merge_rank`, then
+    more confident; the first seen among equals, so False on a tie. True when there
+    is no `other`."""
+    if other is None:
+        return True
+    bundle = ocrdb.load_bundle() if bundle is LOAD else bundle
+    return merge_rank(finding, bundle) < merge_rank(other, bundle)
 
 
 def _absorb(best, other):
@@ -77,11 +115,11 @@ def _reinforce_merge(best, other):
             best[field] = other[field]
     evidence_mod.merge_citations(best, other)
 
-# `findings.aggregate_tool_findings` deliberately parks an aggregated survivor on
-# a locus an agent also flagged so the pair still reinforces in `dedupe` -- which
-# then keeps the more severe member, usually the agent finding. Without the carry
-# below, that rule's other lines and its count left the report with the dropped
-# member, disclosed nowhere.
+# An aggregated survivor sits on its rule's lowest line (#3731; until then
+# `findings.aggregate_tool_findings` parked it on a locus an agent had also flagged).
+# A claim at that line pairs with it in `dedupe`, which keeps the more severe
+# member, usually the agent finding. Without the carry below, that rule's other
+# lines and its count left the report with the dropped member, disclosed nowhere.
 def _carry_aggregation(best, other):
     """Carry a DROPPED tool member's aggregation onto the survivor (#2361).
 
@@ -144,7 +182,7 @@ def _by_package(members):
         buckets[key].append(m)
     return [buckets[k] for k in order]
 
-def dedupe(findings):
+def dedupe(findings, bundle=LOAD):
     """Cluster findings by (file, line). An exactly-two cluster with one tool- and
     one agent-sourced finding is treated as the same issue seen twice (even across
     categories) -> collapse to one reinforced survivor. Larger clusters keep one
@@ -162,6 +200,11 @@ def dedupe(findings):
     Clustering them on file+category alone would drop distinct issues that
     merely omit a line number; exact duplicates are fungible and otherwise
     publish the same content-derived id twice."""
+    bundle = ocrdb.load_bundle() if bundle is LOAD else bundle
+
+    def rank(finding):
+        return merge_rank(finding, bundle)
+
     passthrough = []
     locus_free_content = []
     by_locus: dict[tuple[str, int], list[dict[str, Any]]] = {}
@@ -203,7 +246,7 @@ def dedupe(findings):
         # (reinforced when the agent agrees on category), the agent claim its own.
         if (len(group) == 2 and len(tool_srcd) == 1 and len(agent_srcd) == 1
                 and not evidence_mod.is_first_party_advisory(tool_srcd[0])):
-            best = min(group, key=lambda f: (findings_mod._sev_rank(f), _conf_rank(f)))
+            best = min(group, key=rank)
             other = agent_srcd[0] if _is_tool_sourced(best) else tool_srcd[0]
             best["reinforced"] = True
             _reinforce_merge(best, other)
@@ -241,7 +284,7 @@ def dedupe(findings):
                     # ...then by the ARTIFACT the advisory is about (#2225), so
                     # two jars sharing one CVE at one manifest both survive.
                     for sub in _by_package(by_rule[rk]):
-                        best = min(sub, key=lambda f: (findings_mod._sev_rank(f), _conf_rank(f)))
+                        best = min(sub, key=rank)
                         if cat_has_tool and cat_has_agent:
                             # Category-level tool+agent corroboration still marks
                             # every surviving member of the category reinforced;
@@ -252,9 +295,7 @@ def dedupe(findings):
                             # remains tool-reported by construction (see evidence.py).
                             if rk is None:
                                 best_tool = min(
-                                    [m for m in members if _is_tool_sourced(m)],
-                                    key=lambda f: (findings_mod._sev_rank(f), _conf_rank(f)),
-                                )
+                                    [m for m in members if _is_tool_sourced(m)], key=rank)
                                 _reinforce_merge(best, best_tool)
                                 # no _carry_aggregation: best_tool stays in the report (#2361)
                             for m in sub:
@@ -353,14 +394,14 @@ def cross_panel_corroboration(findings, window=CORROBORATION_LINE_WINDOW):
         i = j
     return integration
 
-def prepare_findings(findings):
+def prepare_findings(findings, bundle=LOAD):
     """Dedupe + cross-panel corroboration. Extracted so pass 1 (--emit-verify-queue)
     can compute the queue with the same deterministic pipeline as pass 2."""
-    findings = dedupe(findings)
+    findings = dedupe(findings, bundle)
     integration = cross_panel_corroboration(findings)
     return findings, integration
 
-def prepare_for_queue(findings):
+def prepare_for_queue(findings, bundle=LOAD):
     """Aggregate, then prepare — the ONE pipeline both passes must share.
 
     #443: pass 1 (--emit-verify-queue) used to call prepare_findings alone
@@ -369,4 +410,4 @@ def prepare_for_queue(findings):
     first tool merge shifted. Both passes call this now; identity is
     content-addressed on top of it (evidence.build_verify_queue).
     """
-    return prepare_findings(findings_mod.aggregate_tool_findings(findings))
+    return prepare_findings(findings_mod.aggregate_tool_findings(findings), bundle)

@@ -1,5 +1,6 @@
 """#3593: advisories against a Cargo workspace package are controller facts."""
 
+import copy
 import itertools
 import json
 import os
@@ -337,6 +338,54 @@ class TestCargoFirstPartyAdvisoryIngest(unittest.TestCase):
         finding = _ingest_document(
             root.name, "osv-scanner.json", _osv_document())[0]
         self.assertTrue(evidence.is_first_party_advisory(finding))
+
+    def _workspace_finding(self, members, root_manifest='[workspace]\nmembers = ["crates/*"]\n'):
+        """The advisory on the lock's sourceless `workspace-app 1.2.3`, in a workspace
+        whose members are `members` ({directory under crates/: manifest text})."""
+        root = tempfile.TemporaryDirectory()
+        self.addCleanup(root.cleanup)
+        _write_lock(root.name)
+        _write_manifest(root.name, root_manifest)
+        for name, text in members.items():
+            member = os.path.join(root.name, "crates", name)
+            os.makedirs(member)
+            _write_manifest(member, text)
+        return _ingest_document(root.name, "osv-scanner.json", _osv_document())[0]
+
+    def test_two_members_declaring_one_identity_are_ambiguous_whatever_they_publish(self):
+        """#3593, "ambiguity fails closed" (#3720). An identity is first-party when ONE
+        manifest in the tree declares it, and that one is publishable. Two members that
+        declare `workspace-app 1.2.3` do not say which of them the lock entry is, so the
+        advisory stays on the advisor path: one of them private, in either order, or
+        both publishable."""
+        package = '[package]\nname = "workspace-app"\nversion = "1.2.3"\n'
+        private = package + 'publish = false\n'
+        self.assertTrue(evidence.is_first_party_advisory(self._workspace_finding({"a": package})))
+        for label, members in (("private, then publishable", {"a": private, "b": package}),
+                               ("publishable, then private", {"a": package, "b": private}),
+                               ("both publishable", {"a": package, "b": package})):
+            with self.subTest(label):
+                finding = self._workspace_finding(members)
+                self.assertFalse(evidence.is_first_party_advisory(finding))
+                self.assertNotIn("package_origin", finding["tool_evidence"])
+
+    def test_a_manifest_reached_under_two_workspace_inheritances_is_ambiguous(self):
+        """#3593 (#3720). `crates/a` takes its version from the workspace it is read
+        under. It is a member of the root workspace (1.2.3), and it is a path dependency
+        of `crates/b`, which is a workspace of its own (9.9.9). Which version it has
+        depends on the road taken, so nothing in the tree is proved first-party."""
+        root_manifest = ('[workspace]\nmembers = ["crates/*"]\n\n'
+                         '[workspace.package]\nversion = "1.2.3"\n')
+        app = '[package]\nname = "workspace-app"\nversion.workspace = true\n'
+        other = ('[package]\nname = "other"\nversion = "0.1.0"\n\n'
+                 '[dependencies]\nworkspace-app = { path = "../a" }\n')
+        nested = other + '\n[workspace]\n\n[workspace.package]\nversion = "9.9.9"\n'
+        # Reached twice under ONE inheritance, it is the same manifest read the same way.
+        self.assertTrue(evidence.is_first_party_advisory(
+            self._workspace_finding({"a": app, "b": other}, root_manifest)))
+        finding = self._workspace_finding({"a": app, "b": nested}, root_manifest)
+        self.assertFalse(evidence.is_first_party_advisory(finding))
+        self.assertNotIn("package_origin", finding["tool_evidence"])
 
     def test_private_registry_only_manifest_stays_on_the_advisor_path(self):
         manifest = (
@@ -1393,18 +1442,23 @@ class TestFirstPartyAdvisoryStability(unittest.TestCase):
         self.assertEqual("FAIL", gate(both[::-1]))
         self.assertEqual("PASS", gate([f for f in both if f["severity"] == "LOW"]))
 
-    def test_the_lowest_line_wins_before_severity(self):
-        # The order is corroborated locus, then the LOWEST LINE, then severity: a LOW at
-        # line 1 beats a CRITICAL at line 5, in either input order.
+    def test_the_lowest_line_is_shown_and_the_worst_hit_gives_the_severity(self):
+        # Which hit is SHOWN is decided by the LOWEST LINE, then severity (#3731: no
+        # longer by a locus an agent flagged): the LOW at line 1, in either input order. Its severity is the
+        # group's worst (#3732): it read LOW, and the CRITICAL at line 5 was only an
+        # additional locus. `severity_from` names the hit that gave it.
         base = [f for f in self._ingest(["cargo-audit.json", "osv-scanner.json"])
                 if evidence.tool_rule_id(f) == "RUSTSEC-2099-0001"]
         low, critical = sorted(base, key=lambda f: f["severity"] != "LOW")
         self.assertEqual(("LOW", "CRITICAL"), (low["severity"], critical["severity"]))
         critical = dict(critical, location={"file": "Cargo.lock", "line_start": 5})
         for members in ([low, critical], [critical, low]):
-            out = findings_mod.aggregate_tool_findings([dict(f) for f in members])
-            self.assertEqual([("LOW", 1)], [(f["severity"], f["location"]["line_start"])
-                                            for f in out])
+            out = findings_mod.aggregate_tool_findings(copy.deepcopy(members))
+            self.assertEqual([("CRITICAL", 1, low["source"])],
+                             [(f["severity"], f["location"]["line_start"], f["source"])
+                              for f in out])
+            self.assertEqual({"file": "Cargo.lock", "line_start": 5,
+                              "shown_hit_severity": "LOW"}, out[0]["severity_from"])
 
     def test_a_full_tie_is_broken_by_the_reported_version_then_the_title(self):
         # Every member of a group shares one fingerprint, so only content left over --

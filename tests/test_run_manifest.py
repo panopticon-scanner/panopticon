@@ -3,7 +3,9 @@ import io
 import json
 import os
 import re
+import subprocess
 import tempfile
+import types
 import unittest
 from unittest import mock
 
@@ -839,6 +841,51 @@ class TestArtifactStamps(unittest.TestCase):
             self.assertNotIn(key, rm._FLAG_KEYS)
         rm.record_artifact_stamp(self.root, None, rm.DRIVER_PLAN, sha256="a" * 64)
         self.assertEqual([], rm.conflicting_flags(rm.load_manifest(self.root)))
+
+
+
+class TestAPathIsAbsentOnlyAfterTheTreeVerifies(unittest.TestCase):
+    """#3602 (#3720). `git_path_baseline` answers "absent" when the commit does not hold
+    the path. A failed path lookup alone does not say that: the lookup also fails when
+    the commit itself cannot be read. So the commit's tree is asked for, and only a tree
+    that verifies makes the path absent. Every other outcome is None, which earns no
+    receipt and no exclusion."""
+
+    OID = "a" * 40
+    NAME = rm.repo_config.CONFIG_NAMES[0]
+
+    def _baseline(self, tree, commit=None):
+        """(the answer, what git was asked) with the path lookup failing and the tree
+        probe returning `tree`: a return code, or an exception to raise."""
+        asked = []
+
+        def probe(_repo, args, **_kwargs):
+            asked.append(args[-1])
+            if args[-1] == "HEAD":
+                return types.SimpleNamespace(returncode=0, stdout=self.OID + "\n", stderr="")
+            if args[-1].endswith("^{tree}"):
+                if isinstance(tree, BaseException):
+                    raise tree
+                return types.SimpleNamespace(returncode=tree, stdout="", stderr="")
+            return types.SimpleNamespace(returncode=128, stdout="", stderr="fatal: no such path")
+
+        with mock.patch.object(rm.safe_git, "probe", side_effect=probe):
+            return rm.git_path_baseline("/repo", self.NAME, commit=commit), asked
+
+    def test_a_tree_that_verifies_makes_the_missing_path_absent(self):
+        lookups = ["%s:%s" % (self.OID, self.NAME), "%s^{tree}" % self.OID]
+        self.assertEqual(("absent", ["HEAD"] + lookups), self._baseline(0))
+        self.assertEqual(("absent", lookups), self._baseline(0, commit=self.OID))
+
+    def test_a_tree_probe_that_fails_is_not_an_absent_path(self):
+        for label, tree in (("exit 128", 128), ("exit 1", 1),
+                            ("timed out", subprocess.TimeoutExpired("git", 15)),
+                            ("could not run", OSError("no git"))):
+            for commit in (None, self.OID):
+                with self.subTest(label, commit=commit):
+                    answer, asked = self._baseline(tree, commit=commit)
+                    self.assertIsNone(answer)
+                    self.assertEqual("%s^{tree}" % self.OID, asked[-1])
 
 
 if __name__ == "__main__":

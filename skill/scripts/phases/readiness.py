@@ -43,6 +43,7 @@ import json
 import os
 import sys
 
+import scripts.delta_withdrawn as delta_withdrawn
 import scripts.discovery as discovery
 import scripts.grouping_engine as grouping_engine
 import scripts.host_disclosure as host_disclosure
@@ -105,8 +106,7 @@ def _git_root_row(review_root):
         return (name, True, detail)
     return (name, None,
             "not a git repo root -- the run proceeds over the directory "
-            "itself; delta scoping (-c/--pr/--base) and the clean-tree "
-            "baseline are what degrade")
+            "itself; the clean-tree baseline is what degrades")
 
 
 def _checks(review_root, manifest):
@@ -267,7 +267,7 @@ NOT_MEASURED_ON_HOST = ("not measured on host %s — the stored run measured ano
 # shares no scope flag -- deliberately -- so it reports the whole-repo answer
 # and says which scopes that answer does not apply to.
 NO_GROUPS = ("no %s — run `driver setup`; a whole-repo review needs it, "
-             "the -f / -d / -g / --pr scopes do not (this verb takes no scope "
+             "the -f / -d / -g scopes do not (this verb takes no scope "
              "flag, so it reports the whole-repo answer)" % repo_config.CONFIG_NAMES[0])
 
 # Fix round 1, F2. `--host H` is a statement about how the run will be DRIVEN,
@@ -469,7 +469,8 @@ def _existing_run_row(review_root):
 
     `status` is the last state RECORDED for that run: `complete` (a durable
     report exists), `error` (the run stopped at the readiness checkpoint, which
-    wrote its verdict), `checkpoint` (a dispatch request with entries still
+    wrote its verdict; or it was started as a delta review, which 5.4 does not
+    resume, #3735), `checkpoint` (a dispatch request with entries still
     pending), and `started` for a run folder that exists but has recorded none
     of those yet.
 
@@ -488,7 +489,14 @@ def _existing_run_row(review_root):
     # #3671: the folder is the one this checkout's own manifest names. `runs/latest` is a
     # symlink in the reviewed tree, so the target can point it at a folder it committed; read
     # through it, this row said "complete" for a run nobody here did.
-    tag = run_manifest.run_tag(_trusted_manifest(review_root))
+    manifest = _trusted_manifest(review_root)
+    tag = run_manifest.run_tag(manifest)
+    if tag and delta_withdrawn.is_delta_run(manifest):
+        # #3735: `driver loop` refuses to resume it, so this row must not say it would.
+        return {"tag": tag, "status": "error", "pending": 0,
+                "detail": "%s was started as a delta review and cannot be resumed: delta "
+                          "review is withdrawn in 5.4 (#3735); `--reset` starts a "
+                          "whole-repository run" % tag}
     if tag and not os.path.isdir(os.path.join(runs, tag)):
         # Our own manifest, and the folder it names is gone: not a run to resume, and not
         # something the target shipped either.

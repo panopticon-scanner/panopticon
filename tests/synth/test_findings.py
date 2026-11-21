@@ -1452,11 +1452,13 @@ class TestToolFindingAggregation(unittest.TestCase):
         )
         self.assertEqual(a, b)
 
-    def test_aggregation_preserves_a_tool_plus_agent_reinforcement(self):
-        # Aggregation runs before dedupe, and dedupe reinforces on an EXACT
-        # (file, line) match. Collapsing a multi-hit rule to its lowest line
-        # would move the tool witness away from the line an agent independently
-        # flagged, silently downgrading a tool_confirmed finding.
+    def test_an_agents_line_does_not_choose_the_hit_shown(self):
+        # #3731: the survivor is the lowest line, whatever an agent flagged. It used
+        # to sit on the agent's line, so that dedupe (which reinforces on an EXACT
+        # (file, line) match) still paired the two. That let one cell's claim move a
+        # scanner finding between lines, and so join two other findings on a line it
+        # never touched. A claim on a later hit is its own finding now; a claim on
+        # the first hit pairs as before.
         agent = {
             "id": "AG-001",
             "title": "agent claim",
@@ -1472,10 +1474,17 @@ class TestToolFindingAggregation(unittest.TestCase):
         tool_survivor = [f for f in aggregated if f.get("id", "").startswith("A-")]
         self.assertEqual(len(tool_survivor), 1)
         self.assertEqual(tool_survivor[0]["occurrences"], 3)
-        # The survivor sits on the corroborated line, not the lowest one.
-        self.assertEqual(tool_survivor[0]["location"]["line_start"], 20)
+        self.assertEqual(tool_survivor[0]["location"]["line_start"], 13)
+        self.assertEqual([20, 31], [locus["line_start"]
+                                    for locus in tool_survivor[0]["additional_loci"]])
         deduped, _ = corroborate_mod.prepare_findings(aggregated)
-        self.assertTrue(any(f.get("reinforced") for f in deduped))
+        self.assertEqual(2, len(deduped))
+        self.assertFalse(any(f.get("reinforced") for f in deduped))
+        # On the first hit, the pair is made as it always was.
+        first = dict(agent, location=dict(agent["location"], line_start=13))
+        deduped, _ = corroborate_mod.prepare_for_queue(
+            [self._hit("A-001", 13), self._hit("A-002", 20), self._hit("A-003", 31), first])
+        self.assertEqual([True], [f.get("reinforced") for f in deduped])
 
 class TestShortTitle(unittest.TestCase):
     def test_long_tool_message_gets_a_short_title(self):
@@ -1727,16 +1736,17 @@ class TestPathVariantClustering(unittest.TestCase):
         self.assertTrue(a.get("corroborated"))
         self.assertTrue(b.get("corroborated"))
 
-    def test_aggregate_agent_locus_wins_across_variant(self):
+    def test_aggregate_lowest_line_wins_whatever_an_agent_flagged(self):
         # The agent flagged ./f.py:10; the tool's rule hit f.py:5 and f.py:10.
-        # The agent-corroborated locus must win primary, exactly as it does
-        # when both spell the path identically.
-        agent = self._agent("SE-001", "./f.py", 10)
-        tools = [self._tool("SG-001", "f.py", 5), self._tool("SG-002", "f.py", 10)]
-        out = findings_mod.aggregate_tool_findings([agent] + tools)
-        merged = [f for f in out if evidence_mod.is_tool_sourced(f)]
-        self.assertEqual(len(merged), 1)
-        self.assertEqual(merged[0]["location"]["line_start"], 10)
+        # #3731: the lowest line is the primary, however the agent spelled the
+        # path. (The agent-corroborated locus used to win, across spellings too.)
+        for spelled in ("./f.py", "f.py"):
+            agent = self._agent("SE-001", spelled, 10)
+            tools = [self._tool("SG-001", "f.py", 5), self._tool("SG-002", "f.py", 10)]
+            out = findings_mod.aggregate_tool_findings([agent] + tools)
+            merged = [f for f in out if evidence_mod.is_tool_sourced(f)]
+            self.assertEqual(len(merged), 1)
+            self.assertEqual(merged[0]["location"]["line_start"], 5)
 
 class FindingSetLoaderTest(unittest.TestCase):
     """WS-0 S3: FindingSet.load = files + tool findings + enrichment + policy +

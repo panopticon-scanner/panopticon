@@ -7,6 +7,7 @@ import sys
 
 from scripts import hosts
 import scripts.config_schema as config_schema
+import scripts.delta_withdrawn as delta_withdrawn
 import scripts.loop_progress as loop_progress
 import scripts.run_manifest as run_manifest
 import scripts.synth.validate_schema as validate_schema_mod
@@ -411,9 +412,15 @@ def synthesize_execute(review_root, manifest):
     drivers = manifest.get("git_drivers_suppressed")
     if drivers:
         cmd += ["--git-drivers-suppressed", json.dumps(drivers)]
+    # #3735: delta review is withdrawn. The gate scope and the hunk map are handed to
+    # the child only for a run whose manifest says it is a delta run, and no manifest
+    # the command line can write or resume does. So a committed `gate_scope:` reaches
+    # no child, and a `diff-hunks.json` left in the run folder turns nothing on: it
+    # used to be handed over whenever it was there, whatever the manifest said.
+    delta_run = delta_withdrawn.is_delta_run(manifest)
     for flag, key in (("--fail-on", "fail_on"), ("--severity", "severity"),
                       ("--gate-scope", "gate_scope")):
-        if flags.get(key):
+        if flags.get(key) and (delta_run or key != "gate_scope"):
             cmd += [flag, str(flags[key])]
     # #2107: the hunk map must come from the SAME discovery child as this run's
     # `groups.json`. The inventory decides what the review covered and the hunk
@@ -453,7 +460,7 @@ def synthesize_execute(review_root, manifest):
     # stays, because this function is also called with a manifest dict
     # directly.
     diff_hunks = runio._pano(review_root, "diff-hunks.json")
-    if os.path.isfile(diff_hunks):
+    if delta_run and os.path.isfile(diff_hunks):
         run_id = manifest.get("run_id")
         hunks_doc = runio._load_json(diff_hunks)
         stamp = hunks_doc.get("run_id") if isinstance(hunks_doc, dict) else None
@@ -470,7 +477,7 @@ def synthesize_execute(review_root, manifest):
                       "delta_artifact.payload_malformed = generation-mismatch "
                       "(#2107)" % (stamp, run_id),
                       file=sys.stderr, flush=True)
-    if flags.get("diff_context") is not None:
+    if delta_run and flags.get("diff_context") is not None:
         cmd += ["--diff-context", str(flags["diff_context"])]
     if flags.get("max_verify") is not None:
         cmd += ["--max-verify", str(flags["max_verify"])]

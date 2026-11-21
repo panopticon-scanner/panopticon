@@ -20,6 +20,7 @@ import scripts.redact as redact
 import scripts.tools.base as tool_base
 from . import artifacts as artifacts_mod
 from . import validate_schema as validate_schema_mod
+from . import verdict_scope as verdict_scope_mod
 
 
 # evidence_mod owns the canonical severity and panel scales (#688's aliasing
@@ -65,8 +66,12 @@ class FindingSet:
     catalog: dict | None = None      # CWE catalog; None -> citations.load_cwe_catalog()
     doc_policy: dict | None = None   # apply_doc_severity_policy's disclosure
     # #3676: per loadable bundle file, {"run_id", "stage", "kept"} (the
-    # controller stamps and a count; `evidence.load_verdict_bundles(accepted=)`).
+    # controller stamps and a count; `evidence.load_verdict_bundles(accepted=)`),
+    # and #3702's two counts of the verdicts in it that were not counted.
     bundle_files: dict = field(default_factory=dict)
+    # #3707: the run's dispatch record (`verdict_scope.Scope`), for "was this cell
+    # asked about this claim". None for a set built without one: nothing can be said.
+    scope: Any = None
 
     @classmethod
     def prepare(cls, args, tool_findings, security_mode):
@@ -104,7 +109,8 @@ class FindingSet:
         return findings, doc_policy, catalog
 
     @classmethod
-    def load(cls, args, tool_findings, security_mode, verdict_run_id, prepared=None):
+    def load(cls, args, tool_findings, security_mode, verdict_run_id, prepared=None,
+             run_dir=None):
         """main()'s findings stage (WS-0 S3), in its original order: `prepare`
         (above) for the findings half, then the advisor verdicts and bundles.
         `verdict_run_id` is the verify queue's run_id (None without a queue)
@@ -112,14 +118,18 @@ class FindingSet:
         reuse a `prepare()` it already ran ahead of the --emit-verify-queue
         branch (WS-0 S3 fix #1) instead of re-deriving the same findings;
         when omitted `load` calls `prepare` itself, so this contract (and
-        every existing caller) is unchanged."""
+        every existing caller) is unchanged. `run_dir` holds the verify phase's
+        dispatch record (#3702): a bundle verdict counts only for a claim that
+        record shows its advisor was handed, so with no `run_dir`, or no record
+        in it, no bundle verdict counts."""
         if prepared is None:
             prepared = cls.prepare(args, tool_findings, security_mode)
         findings, doc_policy, catalog = prepared
         verdicts, verdict_unloadable = evidence_mod.load_verdicts_detailed(args.verdicts_dir)
         bundle_files: dict[str, dict] = {}
+        scope = verdict_scope_mod.Scope.load(run_dir)
         verdict_bundles, bundle_unloadable = evidence_mod.load_verdict_bundles(
-            args.verdicts_dir, accepted=bundle_files)
+            args.verdicts_dir, accepted=bundle_files, scope=scope.handed)
         # Both loaders scan the same verdicts_dir and independently attempt to
         # parse every *.json in it, so a single unparseable file is reported by
         # both -- dedupe on filename or a genuinely-corrupt file double-counts
@@ -134,7 +144,7 @@ class FindingSet:
                    verdicts_supplied=args.verdicts_dir is not None,
                    verdict_unloadable=verdict_unloadable, verdict_run_id=verdict_run_id,
                    verdict_bundles=verdict_bundles, catalog=catalog, doc_policy=doc_policy,
-                   bundle_files=bundle_files)
+                   bundle_files=bundle_files, scope=scope)
 
 
 SHORT_TITLE_MAX = 100
@@ -213,6 +223,16 @@ def normalize_finding(f):
         f.pop("location", None)
     elif loc.get("line_start") is not None:
         loc.setdefault("line_end", loc.get("line_start"))
+        # #3731: a range that ends before it starts is one line, the start. Left as
+        # written, the delta classifier read `line_end` and the health weight did not:
+        # a claim at line 52 with `line_end: 1` was off a hunk at 50-55.
+        if _inverted(loc):
+            # Announced, as `validate_schema.repair_finding` announces its repairs.
+            # (An agent's finding has no id yet: its file and line say which it is.)
+            print("findings: %s: line_end %s is before line_start %s -- read as one line"
+                  % (f.get("id") or "%s:%s" % (loc.get("file"), loc["line_start"]),
+                     loc["line_end"], loc["line_start"]), file=sys.stderr)
+            loc["line_end"] = loc["line_start"]
         loc.setdefault("function", None)
     else:
         loc.pop("line_start", None)
@@ -302,7 +322,10 @@ def normalize_finding(f):
 # point this entry can go.
 AGENT_FORBIDDEN_FIELDS = ("source", "reinforced", "corroborated", "corroborated_by",
                           "evidence", "fingerprint", "delta", "doc_policy",
-                          "code_corrected_by", "backup_confirmed", evidence_mod.CATEGORY_SOURCE)
+                          "code_corrected_by", "backup_confirmed", evidence_mod.CATEGORY_SOURCE,
+                          # #3731, #3732: what the controller says of a merge group's
+                          # weight and of an aggregated finding's severity.
+                          "weight_from", "weight_with", "severity_from")
 
 
 def cell_panel(domain):
@@ -422,6 +445,9 @@ def load_findings_detailed(paths):
             nf["id"] = evidence_mod.matrix_finding_id(nf)
             if group is not None:
                 nf["_group"] = group
+                # #3707: the cell is the FILE's. `nf["domain"]` is what the reviewer
+                # wrote, and a verdict binds to the cell its advisor was dispatched for.
+                nf[evidence_mod.CELL_DOMAIN_FIELD] = cell[1]
             out.append(nf)
     return out, diagnostics
 
@@ -466,6 +492,13 @@ def _norm_line(v):
         return int(v)
     except (TypeError, ValueError):
         return v
+
+
+def _inverted(loc):
+    """Does the range end before it starts?"""
+    start, end = loc.get("line_start"), loc.get("line_end")
+    return (isinstance(start, int) and isinstance(end, int)
+            and not isinstance(start, bool) and not isinstance(end, bool) and end < start)
 
 
 def _present(findings, sev):
@@ -586,38 +619,34 @@ def aggregate_tool_findings(findings):
     key -- findings naming no artifact share one bucket, as they always did.
     Only tool-sourced findings aggregate; agent findings
     are distinct judgements and pass through untouched. The survivor keeps the
-    lowest line as its primary locus and records the rest in `additional_loci`
-    — except where an agent independently flagged one of the other lines, in
-    which case that locus wins. This runs before dedupe, which reinforces on an
-    EXACT (file, line) match: moving the tool witness off a line an agent also
-    flagged would silently cost that finding its `reinforced` status — the
-    tool+agent corroboration in `verified_by`, and the triage_priority 0 that
-    puts it at the head of the verify queue. (Pre-P2 it also cost the finding
-    automatic `tool_confirmed` evidence; unverified tool claims are
-    `tool_reported` now, and only an advisor verdict promotes them, except for
-    #3593's exact first-party Cargo advisory match.)
-    """
-    agent_loci = {
-        (evidence_mod.norm_path((f.get("location") or {}).get("file")),
-         _norm_line((f.get("location") or {}).get("line_start")))
-        for f in findings if not evidence_mod.is_tool_sourced(f)}
+    LOWEST LINE as its primary locus and records the rest in `additional_loci`.
 
+    #3731: and nothing an agent wrote decides which hit that is. A locus an agent
+    had also flagged used to win, so that the pair still reinforced in dedupe, which
+    matches on an exact (file, line). That let one cell's claim move a scanner
+    finding from one line to another, and so change how many findings sat on a line
+    the cell never touched: the scanner-and-claim pair rule needs exactly two there,
+    and a claim placed at a lower hit pulled the scanner finding away from a line
+    where it was the third, leaving two other findings to collapse into one. A claim
+    on a later hit of a rule is now its own row beside the scanner finding's, not
+    `reinforced` by it (corroboration without the move is #3734). The shown line is
+    the same on every run.
+    """
     def _sort_key(f):
         loc = f.get("location") or {}
         line = _norm_line(loc.get("line_start"))
-        corroborated = (evidence_mod.norm_path(loc.get("file")), line) in agent_loci
         # #3649: two TOOLS reporting one advisory on one artifact (osv-scanner and
         # cargo-audit both at `Cargo.lock:1`) used to keep whichever came first in
         # input order -- so its severity, source and identity moved with the order.
-        # Content decides instead. The corroborated locus comes first, then the
-        # LOWEST LINE (so a LOW at line 1 beats a CRITICAL at line 5), and only then
-        # the most severe, the source, the reported version and the title. Every
-        # member of a group shares one fingerprint (the group key holds its inputs),
-        # so the version and the title are what separate two copies of one package.
+        # Content decides instead: the LOWEST LINE, then the most severe, the source,
+        # the reported version and the title. Every member of a group shares one
+        # fingerprint (the group key holds its inputs), so the version and the title
+        # are what separate two copies of one package. (Which hit is shown does not
+        # decide the finding's severity: `_take_the_worst_hit`, #3732.)
         tool_evidence = f.get("tool_evidence")
         version = (tool_evidence.get("vulnerable_versions")
                    if isinstance(tool_evidence, dict) else None)
-        return (0 if corroborated else 1, line if isinstance(line, int) else 0,
+        return (line if isinstance(line, int) else 0,
                 _sev_rank(f), str(f.get("source") or ""), str(version or ""),
                 str(f.get("title") or ""))
 
@@ -655,11 +684,37 @@ def aggregate_tool_findings(findings):
         members = sorted(groups[key], key=_sort_key)
         best = members[0]
         if len(members) > 1:
-            rest = sorted(members[1:], key=lambda m: _sort_key(m)[1])
-            best["additional_loci"] = [
-                {"file": (m.get("location") or {}).get("file"),
-                 "line_start": (m.get("location") or {}).get("line_start")}
-                for m in rest]
+            rest = sorted(members[1:], key=lambda m: _sort_key(m)[0])
+            best["additional_loci"] = [_locus(m) for m in rest]
+            _take_the_worst_hit(best, members)
         best["occurrences"] = len(members)
         out.append(best)
     return out
+
+
+def _locus(hit):
+    """One hit of an aggregated rule, as `additional_loci` records it. The end line is
+    kept where the hit spans more than its first line: the finding weighs as its
+    widest hit (`grading._loc_span`), whichever hit is the shown one."""
+    loc = hit.get("location") or {}
+    locus = {"file": loc.get("file"), "line_start": loc.get("line_start")}
+    start, end = _norm_line(loc.get("line_start")), _norm_line(loc.get("line_end"))
+    if isinstance(start, int) and isinstance(end, int) and end > start:
+        locus["line_end"] = end
+    return locus
+
+
+def _take_the_worst_hit(best, members):
+    """#3732: the collapsed finding carries the highest severity among its hits.
+
+    The shown hit kept its own severity: a rule that fired LOW at line 10 and
+    CRITICAL at line 300 was one LOW finding. (And while an agent's line could choose
+    the shown hit, a claim filed at the right line chose which; the shown hit is the
+    lowest line now, #3731.) `severity_from` names the hit, when it is not the shown
+    one."""
+    worst = min(members, key=_sev_rank)     # the first of the most severe, in sort order
+    if _sev_rank(worst) < _sev_rank(best):
+        best["severity_from"] = {"file": (worst.get("location") or {}).get("file"),
+                                 "line_start": (worst.get("location") or {}).get("line_start"),
+                                 "shown_hit_severity": best.get("severity")}
+        best["severity"] = worst.get("severity")

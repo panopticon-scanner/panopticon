@@ -261,6 +261,18 @@ def accepts(entry, data):
     if role == "review-cell":
         if not findings_contract.is_acceptable(data):
             return False, "not an acceptable findings file (a `findings` list of objects)"
+        # #3709: the echo the review phase asks for (#3614), by its own rule. A
+        # reply accepted without it was written, read back "not done" by the phase
+        # and never told why. The reason gives counts, never the reply's own text.
+        handed = entry.get("targeted_review")
+        if not findings_contract.echoes_targeted_review(data, handed):
+            if handed is not None and not isinstance(handed, (list, tuple)):
+                return False, ("cannot be checked: this entry's `targeted_review` is not a "
+                               "list of paths")
+            if handed:
+                return False, ("does not echo the `targeted_review` list it was handed "
+                               "(%d path(s), in the order given)" % len(handed))
+            return False, "carries a `targeted_review` list, and this cell was handed none"
         return _stamp_matches(entry, data)
     if role == "verify-cell":
         if not (isinstance(data, dict) and isinstance(data.get("verdicts"), list)):
@@ -349,11 +361,17 @@ def _verify_accepts(entry, data):
     # to reason about separately.
     mine = [evidence._agent_verdict(v) for v in data.get("verdicts") or []
             if isinstance(v, dict)]
-    # Parts strictly BEFORE this one, from disk -- `_part_done` merges parts
-    # 0..part and this reply stands in for part `part` itself.
-    earlier = (verify._cell_verdicts(review_root, group, domain, stage, part)
-               if part else [])
-    if not verify._chunk_answered(chunks[part], earlier + mine):
+    # #3702: before "did it answer everything". A reply that names a claim this
+    # part was not handed is refused whole: verdicts are matched to findings by id
+    # across the run, so the extra one would be read as that claim's verdict. The
+    # reason carries a count and never the ids, which are the advisor's own text.
+    extra = verify._chunk_exceeded(chunks[part], mine)
+    if extra:
+        return False, ("names %d claim(s) it was not handed in part %d"
+                       % (len(extra), part))
+    # This part's own reply and nothing else: `_part_done` asks the same of the
+    # file this reply would write.
+    if not verify._chunk_answered(chunks[part], mine):
         return False, ("does not adjudicate every claim it was handed "
                        "(%d verdict(s) for %d claim(s) in part %d)"
                        % (len(mine), len(chunks[part]), part))

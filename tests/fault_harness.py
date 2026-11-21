@@ -21,10 +21,12 @@ import subprocess
 import tempfile
 from unittest import mock
 
+import scripts.claim_scope as claim_scope
 import scripts.driver as driver
 import scripts.loop_progress as loop_progress
 import scripts.orchestrate as orchestrate
 import scripts.phases.child as child
+import scripts.phases.review as review
 import scripts.phases.runio as runio
 import scripts.runners.outage as outage
 import scripts.synth.render as render
@@ -209,6 +211,127 @@ class PartialBackup(FixtureReplies):
         return [] if self.whole else [self.SHORT]
 
 
+class OutOfScope(FixtureReplies):
+    """#3702: an advisor that speaks of claims it was not handed. `speaker` (an entry id)
+    answers what it was handed as the fixture does, and also says `says` about every claim
+    of the review cell `about` that it was not handed (only the one titled `only`, when
+    given). With no `says`, nobody volunteers anything: the silent row beside it.
+
+    The rest sets the scene. `triple` is a cell that makes three claims in one category, as
+    `PartialBackup`'s does. `answers` is {entry id: how many of its handed claims it gives
+    a verdict on}, for an advisor that falls short. `severity` is {cell: its claims'
+    severity}: a HIGH claim summons no backup, so nothing stands over its primary."""
+
+    def __init__(self, speaker=None, about=None, says=None, only=None, triple=None,
+                 answers=None, severity=None):
+        self.speaker, self.about, self.says, self.only = speaker, about, says, only
+        self.triple, self.answers, self.severity = triple, answers or {}, severity or {}
+
+    def findings(self, entry):
+        cell = (entry["group"], entry["domain"])
+        claims = super().findings(entry)
+        if cell == self.triple:
+            claims = [dict(claims[0], title="%s/%s defect %d" % (cell + (n,)),
+                           location=dict(claims[0]["location"],
+                                         line_start=claims[0]["location"]["line_start"] + n))
+                      for n in range(3)]
+        return [dict(claim, severity=self.severity.get(cell, claim["severity"]))
+                for claim in claims]
+
+    def answered(self, entry, cell):
+        return cell[:self.answers.get(entry["id"], len(cell))]
+
+    def volunteered(self, entry, handed):
+        if self.says is None or entry["id"] != self.speaker:
+            return []
+        root = claim_scope.review_root_of_artifact_path(entry["out_file"])
+        theirs = review._load_cell_findings(root, {"run_id": entry["run_id"]}, *self.about)
+        mine = {finding["id"] for finding in handed}
+        return [(finding["id"], self.says, "nobody handed this advisor this claim")
+                for finding in theirs
+                if finding["id"] not in mine and self.only in (None, finding["title"])]
+
+    def short(self):
+        """The entries that answer only part of what they are handed."""
+        return sorted(self.answers)
+
+
+class CopiedClaim(FixtureReplies):
+    """#3707: a reviewer that copies another cell's claim. With `copy`, the reviewer of the
+    cell `copier` emits, beside its own claim, one with the identity of the cell `owner`'s:
+    the same domain, category, file, title and line, so the same id. The controller then
+    hands that id to the copier's advisors as one of the cell's own.
+
+    `says` is what the copier's advisors say of the copy, by stage ({"primary": ...,
+    "backup": ...}); a stage not named confirms it. `owner_says` is what the owner's own
+    advisors say of the claim. Without `copy` nobody copies anything: the silent run.
+    `severity` is the claim's, and its copy's: a HIGH claim summons no backup, so the
+    owner's backup does not stand over the two primaries. With `below_gate`, everything the
+    copier's cell reports is INFO, its copy too: the cell does not reach the verify gate,
+    so no advisor is ever dispatched for it. With `bad_owner`, the owner's reviewer returns
+    its claim and a `null` beside it, every time: the driver refuses the file until the
+    cell's review budget is spent, so no advisor is ever dispatched for the OWNER's cell,
+    and synthesis still reads the claim out of the file.
+
+    #3716: with `decoy`, what the copier emits is not a copy. It is another claim at the
+    owner's line, in its category, under another title (so another id): dedupe keeps it,
+    the first loaded, over the owner's claim. With `owner_says=None` the owner's advisors
+    are asked about the claim and say nothing of it.
+
+    #3727: with `demoted`, what the copier emits (the copy, or the decoy) claims
+    `confidence: CERTAIN` and carries `DEMOTED`: a code whose default is LOW and an empty
+    `severity_override`, which the controller resets to that default after the merge."""
+    COPIER, OWNER = ("app", "COD"), ("lib", "COD")
+    CLAIM = "%s/%s defect" % OWNER
+    DECOY = "another reading of the %s/%s defect" % OWNER
+    DEMOTED = {"confidence": "CERTAIN", "code": "ARC-A2D", "severity_override": {}}
+
+    def __init__(self, copy=True, says=None, owner_says="CONFIRMED", severity="CRITICAL",
+                 below_gate=False, bad_owner=False, decoy=False, demoted=False):
+        self.copy, self.says, self.owner_says = copy, says or {}, owner_says
+        self.severity, self.below_gate, self.bad_owner = severity, below_gate, bad_owner
+        self.decoy, self.demoted = decoy, demoted
+
+    def findings(self, entry):
+        claims = super().findings(entry)
+        copier = (entry["group"], entry["domain"]) == self.COPIER
+        if self.copy and copier:
+            claims += [dict(claim, **({"title": self.DECOY} if self.decoy else {}),
+                            **(self.DEMOTED if self.demoted else {}))
+                       for claim in super().findings(dict(entry, group=self.OWNER[0],
+                                                          domain=self.OWNER[1]))]
+        claims = [dict(claim, severity=self.severity)
+                  if claim["title"] in (self.CLAIM, self.DECOY) else claim for claim in claims]
+        if self.bad_owner and (entry["group"], entry["domain"]) == self.OWNER:
+            return claims + [None]
+        return [dict(claim, severity="INFO") for claim in claims] if (
+            copier and self.below_gate) else claims
+
+    def answered(self, entry, cell):
+        silent = (self.owner_says is None
+                  and (entry.get("group"), entry.get("domain")) == self.OWNER)
+        return [finding for finding in cell
+                if not (silent and finding.get("title") == self.CLAIM)]
+
+    def verdict(self, entry, finding):
+        if finding is None or finding.get("title") not in (self.CLAIM, self.DECOY):
+            return super().verdict(entry, finding)
+        if (entry["group"], entry["domain"]) == self.COPIER:
+            return self.says.get(entry.get("stage", "primary"), "CONFIRMED"), "of its copy"
+        return self.owner_says, "of its own claim"
+
+
+class NoEcho(FixtureReplies):
+    """#3709: a reviewer that returns its findings and never echoes the `targeted_review`
+    list its entry handed it. With `echo`, it echoes that instead (a wrong list)."""
+
+    def __init__(self, echo=None):
+        self.echo = echo
+
+    def attested(self, entry):
+        return self.echo if entry.get("targeted_review") else None
+
+
 def build_target(test_case, suffix=""):
     """A fresh fixture target. `suffix` ends the directory's own name, for a target whose
     path holds characters a pattern would read as wildcards (#3701)."""
@@ -227,7 +350,9 @@ def build_target(test_case, suffix=""):
     return root
 
 
-def _semgrep_document():
+def _semgrep_document(unparsed=()):
+    """Semgrep's capture. `unparsed` are files it reports a syntax error for: the review
+    then hands them to their group's SEC cell as `targeted_review` (#3614)."""
     results = [{"ruleId": rule, "level": "error", "message": {"text": rule},
                 "locations": [{"physicalLocation": {
                     "artifactLocation": {"uri": uri}, "region": {"startLine": line}}}]}
@@ -237,8 +362,13 @@ def _semgrep_document():
                                           "files": []},
               semgrep_targets.DOCKERFILE_STAMP_KEY: {"count": 0, "analyzed": 0, "unanalyzed": 0,
                                                      "complete": True, "files": []}}
+    notes = [{"descriptor": {"id": "Syntax error"}, "level": "warning",
+              "message": {"text": "Syntax error at line /src/%s:1:\n parser failed" % path}}
+             for path in unparsed]
+    invocations = ({"invocations": [{"executionSuccessful": True,
+                                     "toolExecutionNotifications": notes}]} if notes else {})
     return {"runs": [{"tool": {"driver": {"name": "semgrep", "rules": []}},
-                      "results": results, "properties": stamps}]}
+                      "results": results, "properties": stamps, **invocations}]}
 
 
 def _osv_document():
@@ -251,12 +381,12 @@ def _osv_document():
     return {"results": [{"source": {"path": "/src/Cargo.lock"}, "packages": packages}]}
 
 
-def _scan(cmd):
+def _scan(cmd, unparsed=()):
     """The `tools` child, without Docker: the captures two scanners would have left, and the
     manifest the runner writes about them."""
     out = cmd[cmd.index("--out") + 1]
     os.makedirs(out, exist_ok=True)
-    for name, document in (("semgrep.sarif", _semgrep_document()),
+    for name, document in (("semgrep.sarif", _semgrep_document(unparsed)),
                            ("osv-scanner.json", _osv_document())):
         with open(os.path.join(out, name), "w", encoding="utf-8") as fh:
             json.dump(document, fh)
@@ -286,12 +416,12 @@ def _synthesize_split(cmd, review_root, max_bytes):
     return subprocess.CompletedProcess(cmd, code or 0, out.getvalue(), err.getvalue())
 
 
-def _children(split_bytes):
+def _children(split_bytes, unparsed=()):
     real = child._run_child
 
     def run_child(cmd, review_root, phase, timeout=None):
         if phase == "tools":
-            return _scan(cmd)
+            return _scan(cmd, unparsed)
         if phase == "synthesize" and split_bytes:
             return _synthesize_split(cmd, review_root, split_bytes)
         return real(cmd, review_root, phase, timeout=timeout)
@@ -379,11 +509,12 @@ def read_report_at(path):
     return dict(report, findings=findings, discarded_claims=discarded), parts + siblings
 
 
-def _loop_once(root, runner, split_bytes):
+def _loop_once(root, runner, split_bytes, unparsed=()):
     # No `--fail-on`: every case runs under the default gate (#3673), which is CRITICAL.
     args = driver.build_parser().parse_args(["loop", root])
     err = io.StringIO()
-    with mock.patch("scripts.phases.child._run_child", side_effect=_children(split_bytes)), \
+    with mock.patch("scripts.phases.child._run_child",
+                    side_effect=_children(split_bytes, unparsed)), \
             mock.patch("scripts.runners.base.runner_for", return_value=runner), \
             contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
         # Under the wrapper `driver loop` runs under, so the terminal reads as an operator's
@@ -392,11 +523,13 @@ def _loop_once(root, runner, split_bytes):
     return status, err.getvalue()
 
 
-def drive(test_case, plan=None, recover=False, split_bytes=None, replies=None, suffix=""):
+def drive(test_case, plan=None, recover=False, split_bytes=None, replies=None, unparsed=(),
+          suffix=""):
     """One case: a fresh target, reviewed under `plan` until the loop stops for a reason other
     than a pause (or `MAX_INVOCATIONS` pauses). With `recover`, the host then heals and the
     loop is run again, as an operator would after an outage. `replies` is what the agents
-    say, when it is not the fixture's usual answers. `suffix` is `build_target`'s."""
+    say, when it is not the fixture's usual answers. `unparsed` are the files Semgrep
+    reports it could not parse. `suffix` is `build_target`'s."""
     root = build_target(test_case, suffix)
     replies = replies or FixtureReplies()
     runner = FakeRunner(faults=plan, replies=replies)
@@ -404,7 +537,7 @@ def drive(test_case, plan=None, recover=False, split_bytes=None, replies=None, s
 
     def invoke():
         for _ in range(MAX_INVOCATIONS):
-            status, said = _loop_once(root, runner, split_bytes)
+            status, said = _loop_once(root, runner, split_bytes, unparsed)
             statuses.append(status)
             terminal.append(said)
             if status["status"] != "paused":

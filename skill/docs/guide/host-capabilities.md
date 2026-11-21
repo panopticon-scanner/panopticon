@@ -209,16 +209,23 @@ directory holds our single `*` guard hook, the emitted shells, an empty MCP list
 listed server, even for `agy agents`) and the two settings above; nothing is copied or linked from
 `~/.gemini`. The child still reads the rest of the operator's HOME as any process does, a global
 gitconfig for one: `--gemini_dir`, the guard hook and #3607's Keychain path rules are the boundary,
-not HOME. Every child runs with `BROWSER=/usr/bin/false`.
+not HOME. Every child that loads the run's configuration (each entry, the preflight's `agy agents`,
+`agy models` and turn, and each probe child but two) runs with `BROWSER=/usr/bin/false`. The two
+are the probes' `agy --version` and `agy --help` reads: they pass no environment of their own, so
+they inherit the operator's as it is (#3714).
 
 **The runner's preflight fails closed before any entry launches (#3613).** `agy agents` must list
 exactly the run's shells, with no `[project]` one, and agy's own log under the run must say `loaded
 1 named hooks from 1 hooks.json file(s)` (`agy_home.HOOK_LOAD_PROOF`): together they prove the
 undocumented flag took effect, and a change in either refuses with `AgyPreflightRefused`. Then one
-minimal real turn (`-p "Reply with the single word OK."`, the default model, no effort and no agent
-shell, so agy runs its default agent and any tool call meets the guard hook) must return a success
-envelope. An interactive-auth line, a stopped child, or `You are not logged into Antigravity` on
-the turn's own output raises `AgyAuthUnreachable`; any other failure, a timeout of `agy agents` or
+minimal real turn (`-p "Reply with the single word OK."`, no effort and no agent shell, so agy runs
+its default agent and any tool call meets the guard hook) must return a success envelope. On the
+sign-in route the turn names no model, so agy uses its default. On the API-key route it names
+`--model gemini-4-argon-high` (`KEY_ROUTE_DEFAULT`), and the run is refused with
+`AgyPreflightRefused` when `agy models` does not list that name, even when every role is overridden
+to another listed model. An interactive-auth line, a stopped child, or `You are not logged into
+Antigravity` on the turn's own output raises `AgyAuthUnreachable`, and so does an `agy models` that
+exits non-zero or lists nothing on the key route; any other failure, a timeout of `agy agents` or
 `agy models` included, raises `AgyPreflightRefused`. agy's run log is never read for that line:
 `agy agents` writes it there without signing in, and the turn reuses the same log file (#3620).
 Every refusal ends `[preflight step: ...]`, naming the check that refused. A refused run leaves no
@@ -234,8 +241,10 @@ agy signs in one of two ways, chosen by `agy_home.auth_route()` (#3576, #3613).
 The key route runs only when `PANOPTICON_AGY_AUTH=key` names it; any value other than `signin` or
 `key` is refused. A key alone never moves a run off the sign-in: the consumer plan carries Carbon,
 and a stray key in a shell must not move a run to another model and per-token billing. That is
-enforced, not left to agy's precedence: off the key route no agy child, entry or probe, holds
-`GEMINI_API_KEY`, so an expired sign-in cannot quietly fall back to it. When the sign-in's preflight
+enforced, not left to agy's precedence: off the key route no agy child that loads the run's
+configuration, entry or probe, holds `GEMINI_API_KEY`, so an expired sign-in cannot quietly fall
+back to it. (The probes' `agy --version` and `agy --help` reads inherit the operator's
+environment, the key with it if it is exported: #3714. They run no turn.) When the sign-in's preflight
 turn fails with a key set, the refusal says how to choose the key route and does not take it. The
 token file runs once linked (`antigravity-oauth-token`) no longer exists after the
 self-update and is not read.
@@ -263,9 +272,14 @@ refused, as it is with no ladder.
 
 - **Only routes with a measured list.** Today that is agy's API-key route (`agy models`), where
   every rung must end in an agy effort word (`-low`, `-medium` or `-high`), as that route's names do.
-  A ladder for any other route or host (agy sign-in, claude, codex, kimi, gemini), or one that is
-  malformed, is refused at run start, before any reset or dispatch: `route <r> has no measured
-  model list`. Codex's bundled catalogue
+  A ladder that cannot be honoured is refused at run start, before any reset or dispatch, and each
+  way has its own text. For any other route or host (agy sign-in, claude, codex, kimi, gemini):
+  `names fallbacks for route '<r>', but route <r> has no measured model list on <host>`. For a
+  malformed one: `has a fallbacks block that is not a route-to-ladder mapping`, `has fallbacks for
+  route '<r>' that are not a non-empty list of model names`, or `repeats a model in its fallbacks
+  for route '<r>'`. A rung with no effort word is a well-formed model name, so it passes that
+  check and is refused by the next: `has fallbacks for route 'key' that the route can never
+  list: <names> (each must end in -low/-medium/-high, as key names do)`. Codex's bundled catalogue
   (`codex debug models --bundled`) is not what an account can use, so it does not count.
 - **Never silent.** Every substitution (requested, bound, route, rung, reason) is recorded on:
   - the ledger row;
@@ -298,6 +312,11 @@ Sources:
   2026-11-12.
 - API-key column: the owner's `agy models` capture on that route, 2026-11-12. Google documents no
   per-plan list for this route.
+- A listed name can still be refused: an entry's model must also be in the runner's own catalogue
+  (`runners/agy.py` `KNOWN_MODELS`). `gemini-4-argon-medium` is listed by the route and is not in
+  that catalogue today, so `PANOPTICON_MODEL_<ROLE>=gemini-4-argon-medium` is refused before
+  launch (`is not in agy's known model catalogue`). `gemini-4-argon` with `effort: medium` binds
+  it, because the catalogue is asked about the model and the route about the full name.
 
 agy never switches models on its own: its documented quota behaviour is "AI Credit Overages" (wait
 for the refresh, or spend credits). The shipped ladder is the Carbon domain roles' `key:
@@ -305,8 +324,9 @@ for the refresh, or spend credits). The shipped ladder is the Carbon domain role
 models` list for that route.
 
 Every agy
-child, entry or probe, is ended as soon as its stderr shows the print-mode fallback after silent auth
-fails (`Print mode: silent auth failed`, `triggering interactive OAuth`, `consumerOAuth: starting
+child that loads the run's configuration, entry or probe, is ended as soon as its stderr shows the
+print-mode fallback after silent auth fails (the probes' `agy --version` and `agy --help` reads
+carry no stop line: #3714) (`Print mode: silent auth failed`, `triggering interactive OAuth`, `consumerOAuth: starting
 OAuth`), before a browser sign-in can open. An entry ended that way is a host failure, which the
 outage pause acts on. A probe ended that way reads UNKNOWN. Google documents that a run with no
 terminal exits instead (https://antigravity.google/docs/cli/headless/). panopticon's children already
