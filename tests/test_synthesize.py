@@ -1108,6 +1108,186 @@ class TestScoutToolDisclosure(unittest.TestCase):
                 report = json.load(fh)
             self.assertEqual(report["meta"]["coverage"]["scout_profiles_seen"], 0)
 
+class TestManifestlessCertification(unittest.TestCase):
+    """#3766. A tools directory with NO tools-manifest.json, and no run id: the
+    standalone `synthesize` call. The runner's selection is unknown there, so the
+    only required set was the scout's request -- and an adapter whose capture was
+    ingested and recorded `failed` was required by nobody. The report read PASS,
+    certified, while disclosing the failure two keys away."""
+
+    EMPTY_SARIF = json.dumps({"version": "2.1.0", "runs": [
+        {"tool": {"driver": {"name": "bandit", "rules": []}}, "results": []}]}).encode()
+
+    def _run(self, d, captures, extra=(), manifest=None, scout=None):
+        td = os.path.join(d, "tools")
+        os.makedirs(td)
+        for name, payload in captures.items():
+            with open(os.path.join(td, name), "wb") as fh:
+                fh.write(payload)
+        if manifest is not None:
+            with open(os.path.join(d, "tools-manifest.json"), "w", encoding="utf-8") as fh:
+                json.dump(manifest, fh)
+        if scout is not None:
+            with open(os.path.join(d, "scout-COD.json"), "w", encoding="utf-8") as fh:
+                json.dump({"tools": list(scout)}, fh)
+        fp = os.path.join(d, "findings-g1-COD.json")
+        with open(fp, "w", encoding="utf-8") as fh:
+            json.dump({"findings": []}, fh)
+        out = os.path.join(d, "r.json")
+        err = io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = syn.main(["--repo", "--target", "src", "--run-dir", d, "--tools-dir", td,
+                           "--fail-on", "high", "--out", out, *extra, fp])
+        with open(out, encoding="utf-8") as fh:
+            return rc, json.load(fh), err.getvalue()
+
+    def assert_not_certified(self, rc, report, tools):
+        cov = report["meta"]["coverage"]
+        for tool in tools:
+            self.assertEqual("failed", cov["adapters"][tool]["status"])
+            self.assertEqual("produced_unusable", cov["divergence"]["tools"][tool])
+            self.assertNotIn(tool, cov["tools_ran"])
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+        self.assertEqual(2, rc)
+
+    def test_a_failed_adapter_cannot_certify_without_a_manifest(self):
+        # The two paths the reviews reached this by: a capture that cannot be parsed,
+        # and pip-audit's refusal to audit (an EMPTY capture, exit 2; #3706).
+        for label, captures in (
+                ("unparseable", {"bandit.sarif": b"not JSON"}),
+                ("pip-audit refused", {"pip-audit.json": b""}),
+                ("one of two", {"bandit.sarif": self.EMPTY_SARIF, "pip-audit.json": b""}),
+                ("both", {"bandit.sarif": b"{", "pip-audit.json": b""})):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as d:
+                rc, report, _err = self._run(d, captures)
+                failed = sorted(name.split(".")[0] for name, payload in captures.items()
+                                if payload != self.EMPTY_SARIF)
+                self.assert_not_certified(rc, report, failed)
+                self.assertEqual(failed, sorted(report["meta"]["coverage"]["divergence"]["tools"]))
+                self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
+
+    def test_an_adapter_that_raises_while_parsing_cannot_certify(self):
+        import scripts.ingest_tools as ingest_tools
+        adapter = ingest_tools.ADAPTERS["bandit"]
+        hook = ("parse_with_file_coverage" if hasattr(adapter, "parse_with_file_coverage")
+                else "parse")
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(adapter, hook, side_effect=RuntimeError("boom")):
+            rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF})
+        self.assert_not_certified(rc, report, ["bandit"])
+
+    def test_a_clean_run_on_the_same_path_is_unchanged(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF})
+        cov = report["meta"]["coverage"]
+        self.assertEqual("empty", cov["adapters"]["bandit"]["status"])
+        self.assertEqual(["bandit"], cov["tools_ran"])
+        self.assertEqual({}, cov["divergence"]["tools"])
+        self.assertTrue(report["summary"]["coverage_certified"])
+        self.assertEqual("PASS", report["summary"]["gate"])
+        self.assertEqual(0, rc)
+
+    def test_the_scouts_request_still_gates_and_a_failed_one_says_why(self):
+        # Requested and failed: `produced_unusable`, the more exact reason, not
+        # `requested_absent`. Requested and never produced: `requested_absent`, as before.
+        with tempfile.TemporaryDirectory() as d:
+            rc, report, _err = self._run(d, {"bandit.sarif": b"not JSON"},
+                                         scout=("bandit", "semgrep"))
+        cov = report["meta"]["coverage"]
+        self.assertEqual({"bandit": "produced_unusable", "semgrep": "requested_absent"},
+                         cov["divergence"]["tools"])
+        self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+        self.assertEqual(2, rc)
+
+    def test_a_no_surface_scan_is_still_disclosed_and_not_gated(self):
+        # #1335, unchanged on this path: `noscan` is not lost coverage.
+        import scripts.ingest_tools as ingest_tools
+        real = ingest_tools.ingest_dir_detailed
+
+        def noscan(*args, **kwargs):
+            findings, dispositions = real(*args, **kwargs)
+            dispositions["bandit"] = {"status": "noscan", "findings": 0,
+                                      "reason": "scanned 0 files"}
+            return findings, dispositions
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(ingest_tools, "ingest_dir_detailed", side_effect=noscan):
+            rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF})
+        cov = report["meta"]["coverage"]
+        self.assertEqual({"bandit": "produced_noscan"}, cov["divergence"]["tools"])
+        self.assertTrue(report["summary"]["coverage_certified"])
+        self.assertEqual(0, rc)
+
+    def test_an_empty_run_id_does_not_turn_the_receipt_requirement_off(self):
+        # The driver passes `--run-id <manifest run_id or "">`. A run manifest that
+        # carries no run_id therefore sent "", which read as "no run id": no receipt
+        # was required and a MISSING tools manifest took the permissive path above.
+        # An empty run id is a run that cannot be bound to its tool output.
+        for label, captures in (("clean", {"bandit.sarif": self.EMPTY_SARIF}),
+                                ("failed", {"bandit.sarif": b"not JSON"})):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as d:
+                rc, report, err = self._run(d, captures, extra=("--run-id", ""))
+                self.assertFalse(report["summary"]["coverage_certified"])
+                self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+                self.assertEqual(2, rc)
+                reason = report["meta"]["integrity"]["tools_manifest_invalid"]
+                self.assertIn("run id", reason)
+                self.assertIn("tool coverage is NOT certified", err)
+                # Nothing in the tools directory is bound to this run, so none is read.
+                self.assertEqual([], report["meta"]["coverage"]["tools_ran"])
+        # ... and a manifest that IS there cannot be bound to a run with no id either,
+        # whether or not it names one itself.
+        for run_id in ("rid-1", None):
+            with self.subTest(manifest_run_id=run_id), tempfile.TemporaryDirectory() as d:
+                td = os.path.join(d, "tools")
+                manifest = {"schema_version": 1, "selected": ["bandit"], "produced": ["bandit"],
+                            "missing": [], "outputs": ["bandit.sarif"]}
+                if run_id is not None:
+                    manifest["run_id"] = run_id
+                rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
+                                             extra=("--run-id", ""), manifest=manifest)
+                self.assertTrue(os.path.isdir(td))
+                self.assertFalse(report["summary"]["coverage_certified"])
+                self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+                self.assertIn("run id", report["meta"]["integrity"]["tools_manifest_invalid"])
+
+    def test_an_empty_run_id_asks_nothing_of_a_run_with_no_tools(self):
+        # `--tools-skipped` (the operator's --no-tools) and a call with no tools
+        # directory have no tool output to bind, with or without a run id.
+        with tempfile.TemporaryDirectory() as d:
+            rc, report, _err = self._run(d, {}, extra=("--run-id", "", "--tools-skipped"))
+        self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
+        with tempfile.TemporaryDirectory() as d:
+            fp = os.path.join(d, "findings-g1-COD.json")
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump({"findings": []}, fh)
+            out = os.path.join(d, "r.json")
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = syn.main(["--repo", "--target", "src", "--run-dir", d, "--run-id", "",
+                               "--fail-on", "high", "--out", out, fp])
+            with open(out, encoding="utf-8") as fh:
+                report = json.load(fh)
+        self.assertEqual(0, rc)
+        self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
+
+    def test_the_driver_sends_an_empty_run_id_for_a_run_manifest_without_one(self):
+        # The fact the test above rests on, pinned where it is decided: the read
+        # keeps a run manifest whose run_id is absent, and the synthesize phase
+        # threads `run_id or ""`.
+        import scripts.run_manifest as run_manifest
+        import scripts.phases.synthesize as phase
+        with tempfile.TemporaryDirectory() as d:
+            path = run_manifest.manifest_path(d)
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"schema_version": 1, "target": d}, fh)
+            loaded = run_manifest.load_manifest(d)
+        self.assertIsInstance(loaded, dict)
+        self.assertNotIn("run_id", loaded)
+        self.assertIn('"--run-id", manifest.get("run_id") or ""', inspect.getsource(phase))
+
+
 class TestUnusableScannerCertification(unittest.TestCase):
     """#1512 / Codex BR-02, end to end on real artifacts.
 
