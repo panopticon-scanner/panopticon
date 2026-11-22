@@ -57,14 +57,22 @@ class Unlistable(Exception):
 
 def shown(directory):
     """`directory` as a diagnostic prints it: each control character spelled out
-    (`scripts.inert`), so the path stays on its one line. A backslash is doubled
-    first, so a name that holds the four characters `\\x0a` and a name that holds
-    a newline are not printed alike."""
+    (`scripts.inert`), so the path stays on its one line. No two names are printed
+    alike. A backslash is doubled first, so the four characters `\\x0a` are not a
+    newline's spelling. A lone surrogate, which is what a byte that is not UTF-8
+    becomes in a file name, is spelled `\\udcNN` here: `scripts.inert` writes it
+    `U+DCNN` with no backslash, for readers of a path, and that is also six
+    characters a name can simply hold."""
     return _spelled(os.fspath(directory))
 
 
+_SURROGATE = re.compile("[%c-%c]" % (inert.SURROGATES[0], inert.SURROGATES[-1]))
+
+
 def _spelled(text):
-    return inert.inert_spelling(text.replace("\\", "\\\\"))
+    text = text.replace("\\", "\\\\")
+    text = _SURROGATE.sub(lambda found: "\\u%04x" % ord(found.group()), text)
+    return inert.inert_spelling(text)
 
 
 def under(directory, *pattern):

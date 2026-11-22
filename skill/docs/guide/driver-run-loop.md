@@ -614,8 +614,11 @@ on Claude hooks, and always uses the return-persist path.
   its row holds `usage: {}` (a Kimi reply whose wire file is missing or whose directory cannot be
   listed, a host that timed out before it printed its figures), and the document counts it in
   `unmeasured_rows`, split in `unmeasured_by_host` and `unmeasured_by_phase`. It adds to no figure.
-  When that count is not zero, `total_is_lower_bound` is true and `total` is a floor; when nothing
-  at all was measured `total` is null, and so is a phase's figure when none of its launches was.
+  When that count is not zero and at least one launch was measured, `total_is_lower_bound` is true
+  and `total` is a floor. When nothing at all was measured, `total` is null and the flag is false:
+  there is no total to bound. A phase's figure is null the same way when none of its launches was
+  measured. A row holds only the counters its host reported as numbers; a null, or a usage object
+  with no counter in it, is not a zero.
   The rows an interrupt writes are not launches and are not counted. Neither is an entry the
   runner refused before it launched anything (an unregistered enforcement shell, a model the host
   does not list): its row carries `launched: false`, written only then. A failure that cannot say

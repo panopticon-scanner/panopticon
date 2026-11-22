@@ -662,7 +662,18 @@ class PipAuditAdapter:
         root = target_root_cv.get()
         if not root:
             return DEFAULT_MANIFEST
-        req = self._find_requirement(root)
+        try:
+            req = self._find_requirement(root)
+        except safe_glob.Unlistable as exc:
+            # #3706 five gates: this lookup only LABELS findings that are already in hand.
+            # It raised out of the parse, ingest recorded the tool as failed with nothing
+            # found, and a captured advisory was gone from the report. A label is never
+            # worth a finding: the root cannot say which requirements file was audited,
+            # so the findings keep the location this method gives a tree with none
+            # (which is what it gave before the listing could fail), and say why once.
+            print("pip-audit: %s; its findings are kept, and which requirements file "
+                  "they came from is not known" % exc, file=sys.stderr)
+            req = None
         if req:
             return os.path.relpath(req, root)
         # `invoke`'s other branch: no requirements file, audit the PEP 621 deps.

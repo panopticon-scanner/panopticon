@@ -56,6 +56,27 @@ def _measured_model_fields(details):
 UNKNOWN_HOST = "unknown"
 
 
+def _counter(value):
+    """A usage counter a host measured: an integer. Null, a boolean, a string and any
+    other shape are not a measurement (`collect_usage._add` draws the same line)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _recorded_usage(usage):
+    """What a row holds for a result's usage: the counters the host measured, and
+    nothing else. `{}` when it measured none, which the reader counts as an unmeasured
+    launch (#3764).
+
+    The writer used to fill all four counters from any non-empty usage, so an envelope
+    whose usage held only nulls, or only fields that are not counters, was written as
+    four zeros: a launch nobody measured, published as an exact zero. A counter the
+    host did not report is left out of the row instead; the reader adds nothing for
+    it, and the row is measured by the counters it does hold."""
+    if not isinstance(usage, dict):
+        return {}
+    return {k: usage[k] for k in USAGE_FIELDS if _counter(usage.get(k))}
+
+
 def _measured_usage(row):
     """The row's four usage figures, or None when it holds none: `record` writes
     `usage: {}` for a launch whose usage was not measured, which is not zero (#3764)."""
@@ -224,7 +245,7 @@ class Ledger:
                 # reconstruct the classifier's host_error input from the
                 # operator-facing error string. Persist the loop's verdict.
                 "failure_class": outage.landed_class(result, refusal),
-                "usage": {k: int(result.usage.get(k, 0) or 0) for k in USAGE_FIELDS} if result.usage else {},
+                "usage": _recorded_usage(result.usage),
                 "cost_usd": result.cost_usd, "duration_ms": duration_ms,
                 "started_at": timing.get("started_at"), "finished_at": timing.get("finished_at"),
                 "session_id": result.session_id,

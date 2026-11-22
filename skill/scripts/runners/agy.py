@@ -227,11 +227,36 @@ def _safe_int(value):
         return 0
 
 
+#: The counters `_extract_usage_and_model` reads from an envelope's `usage` object, and
+#: from one model's `tokens` object under `stats.models`.
+_USAGE_COUNTERS = ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                   "cache_read_tokens", "cache_creation_input_tokens", "cache_write_tokens",
+                   "thinking_tokens", "reasoning_tokens", "total_tokens")
+_MODEL_COUNTERS = ("input", "candidates", "cached", "thoughts", "total")
+
+
+def _reports_a_count(record, names):
+    """Whether `record` holds a number under any of `names`. `_safe_int` reads a null,
+    a boolean and anything that is not a number as 0, which is right for one counter
+    beside others that were reported and wrong for a record that reports none: usage
+    nobody measured must not reach the ledger as four zeros (#3764)."""
+    for name in names:
+        value = record.get(name)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            int(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        return True
+    return False
+
+
 def _extract_usage_and_model(doc):
     usage = {}
     model = doc.get("model") if isinstance(doc.get("model"), str) else None
     raw_usage = doc.get("usage")
-    if isinstance(raw_usage, dict):
+    if isinstance(raw_usage, dict) and _reports_a_count(raw_usage, _USAGE_COUNTERS):
         inp = _safe_int(raw_usage.get("input_tokens"))
         out = _safe_int(raw_usage.get("output_tokens"))
         cache_read = (_safe_int(raw_usage.get("cache_read_input_tokens"))
@@ -255,17 +280,19 @@ def _extract_usage_and_model(doc):
     models = stats.get("models") if isinstance(stats, dict) else None
     if isinstance(models, dict) and models:
         inp = out = cache_read = thinking = total = 0
+        counted = False
         for slug, mdata in models.items():
             if model is None and isinstance(slug, str) and slug:
                 model = slug
             tok = mdata.get("tokens") if isinstance(mdata, dict) else None
             if isinstance(tok, dict):
+                counted = counted or _reports_a_count(tok, _MODEL_COUNTERS)
                 inp += _safe_int(tok.get("input"))
                 out += _safe_int(tok.get("candidates"))
                 cache_read += _safe_int(tok.get("cached"))
                 thinking += _safe_int(tok.get("thoughts"))
                 total += _safe_int(tok.get("total"))
-        if not usage:
+        if not usage and counted:
             usage = {
                 "input_tokens": inp,
                 "output_tokens": out,

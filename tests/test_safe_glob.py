@@ -14,6 +14,7 @@ caller to what that means for it.
 """
 import ast
 import contextlib
+import contextvars
 import errno
 import glob
 import io
@@ -24,7 +25,7 @@ from pathlib import Path
 import unittest
 from unittest import mock
 
-from tests._test_helpers import REPO_ROOT
+from tests._test_helpers import REPO_ROOT, adopt_panopticon
 
 import scripts.collect_usage as collect_usage
 import scripts.diff_map as diff_map
@@ -374,6 +375,21 @@ class TestUnder(unittest.TestCase):
         self.assertEqual(4, len(shown))
         self.assertEqual([], [line for line in shown if "\n" in line])
 
+    def test_a_byte_that_is_not_utf8_is_not_printed_like_text_a_name_can_hold(self):
+        """Five gates at 908f005e, item 5. A file name with a byte that is not UTF-8
+        reaches us with a lone surrogate in it, and `scripts.inert` spells that
+        `U+DCE9`, which is also six characters a name can hold. Here it is `\\udce9`."""
+        undecodable, text = os.fsdecode(b"caf\xe9"), "cafU+DCE9"
+        self.assertEqual("caf\udce9", undecodable)
+        self.assertEqual(("caf\\udce9", "cafU+DCE9", "caf\\\\udce9"),
+                         (safe_glob.shown(undecodable), safe_glob.shown(text),
+                          safe_glob.shown("caf\\udce9")))
+        self.assertEqual("\\ud800\\udfff", safe_glob.shown("\ud800\udfff"))
+        # What is printed can always be encoded: no surrogate survives in it.
+        message = str(safe_glob.Unlistable(undecodable, OSError(undecodable)))
+        self.assertEqual("caf\\udce9 could not be listed: caf\\udce9", message)
+        message.encode("utf-8")
+
     def test_a_directory_under_a_wildcard_that_cannot_be_listed_raises(self):
         seen = self.make("home", "sessions", "d1", "s1", "wire.jsonl")
         locked = os.path.dirname(os.path.dirname(
@@ -710,6 +726,88 @@ class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
             self.assertEqual((b"", 2), pip_audit.PipAuditAdapter().invoke(self.target))
         self.assertEqual("pip-audit: %s could not be listed: Permission denied; "
                          "nothing was audited\n" % self.target, err.getvalue())
+
+    def synthesize_a_captured_advisory(self, manifest, locked, advisories=1):
+        """(exit code, stderr, report) of a synthesis over a pip-audit capture made while
+        the target could be listed: `requirements-dev.txt` and CRITICAL advisories."""
+        target = os.path.join(self.base, "audited-%d" % len(os.listdir(self.base)))
+        run = os.path.join(target, ".panopticon")
+        self.write(target, "requirements-dev.txt", "leftpad==1.0\n")
+        self.write(run, os.path.join("tools", "pip-audit.json"), {"fixes": [], "dependencies": [{
+            "name": "leftpad", "version": "1.0", "vulns": [
+                {"id": "PYSEC-2026-%d" % n, "severity": "CRITICAL", "description": "RCE",
+                 "fix_versions": ["2.0"], "aliases": []} for n in range(advisories)]}]})
+        adopt_panopticon(target)
+        if manifest:
+            tools_manifest.write_manifest(
+                os.path.join(run, "tools-manifest.json"), ["pip-audit"],
+                [os.path.join(run, "tools", "pip-audit.json")], run_id="R")
+        out, err = os.path.join(self.base, "report-%d.json" % len(os.listdir(self.base))), io.StringIO()
+        # A run id makes the manifest's output receipt owed, so it is given only with one.
+        argv = ["--repo", "--root", target, "--target", "t", "--run-dir", run,
+                "--tools-dir", os.path.join(run, "tools"), "--fail-on", "critical",
+                "--gate-unverified", "--out", out] + (["--run-id", "R"] if manifest else [])
+        with contextlib.ExitStack() as stack:
+            if locked:
+                stack.enter_context(unlistable(target))
+            stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+            stack.enter_context(contextlib.redirect_stderr(err))
+            # In a context of its own, as the host's parse is in a process of its own:
+            # an `invoke` earlier in this process must not have chosen the manifest.
+            rc = contextvars.Context().run(synthesize_script.main, argv)
+        with open(out, encoding="utf-8") as fh:
+            return target, rc, err.getvalue(), json.load(fh)
+
+    def test_a_captured_audit_survives_a_target_that_cannot_be_listed_at_synthesis(self):
+        """#3706 five gates, item 1 (CRITICAL). pip-audit runs in the tools container and
+        its capture is parsed on the host, where one lookup only labels each finding with
+        the requirements file it came from. That lookup raised when the target could not
+        be listed, ingest recorded the tool as failed with nothing found, and a captured
+        CRITICAL advisory left the report: the gate passed where it had failed."""
+        for manifest in (False, True):
+            with self.subTest(manifest=manifest):
+                _target, rc, err, seen = self.synthesize_a_captured_advisory(manifest, locked=False)
+                target, locked_rc, locked_err, kept = self.synthesize_a_captured_advisory(
+                    manifest, locked=True)
+                self.assertEqual((1, 1), (rc, locked_rc), locked_err)          # the gate: FAIL
+                self.assertEqual(["requirements-dev.txt"],
+                                 [f["location"]["file"] for f in seen["findings"]], err)
+                # Kept, at the location a tree with no requirements file is given.
+                self.assertEqual([("tool:pip-audit", "PYSEC-2026-0", "CRITICAL", "requirements.txt")],
+                                 [(f["source"], f["tool_evidence"]["rule_id"], f["severity"],
+                                   f["location"]["file"]) for f in kept["findings"]], locked_err)
+                self.assertEqual(seen["findings"][0]["title"], kept["findings"][0]["title"])
+                self.assertEqual(1, locked_err.count(
+                    "pip-audit: %s could not be listed: Permission denied; its findings are "
+                    "kept, and which requirements file they came from is not known\n" % target))
+                self.assertNotIn("ingest error", locked_err)
+
+    def test_the_labelling_lookup_is_said_once_however_many_findings_it_labels(self):
+        _target, rc, err, report = self.synthesize_a_captured_advisory(
+            manifest=False, locked=True, advisories=3)
+        self.assertEqual((1, 3), (rc, len(report["findings"])), err)
+        self.assertEqual(1, err.count("which requirements file they came from is not known"))
+
+    def test_the_label_falls_back_as_it_does_for_a_tree_with_no_requirements_file(self):
+        """The lookup's own two answers, with the target unlistable: `pyproject.toml`
+        when there is one, the default when there is not, and the reason once each."""
+        adapter = pip_audit.PipAuditAdapter()
+
+        def located():
+            pip_audit.target_root_cv.set(self.target)
+            err = io.StringIO()
+            with unlistable(self.target), contextlib.redirect_stderr(err):
+                return adapter._located_at(), err.getvalue()
+
+        self.write(self.target, "requirements-dev.txt", "x==1\n")
+        said = ("pip-audit: %s could not be listed: Permission denied; its findings are kept, "
+                "and which requirements file they came from is not known\n" % self.target)
+        self.assertEqual(("requirements.txt", said), contextvars.Context().run(located))
+        self.write(self.target, "pyproject.toml", '[project]\nname = "p"\nversion = "1"\n')
+        self.assertEqual(("pyproject.toml", said), contextvars.Context().run(located))
+        # `requirements.txt` is found by name, so nothing is listed and nothing is said.
+        self.write(self.target, "requirements.txt", "x==1\n")
+        self.assertEqual(("requirements.txt", ""), contextvars.Context().run(located))
 
     def test_pip_audit_needs_no_listing_when_requirements_txt_is_there(self):
         """`requirements.txt` is preferred over anything the listing would add, so a

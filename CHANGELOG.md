@@ -29,7 +29,10 @@
       not applicable, and the report showed no gap. The Python ecosystem now reads as
       applicable and pip-audit is selected. Where pip-audit cannot list the target either, it
       fails with the reason, and the report shows the ecosystem as applicable with nothing
-      produced for it;
+      produced for it. A result pip-audit already captured is never lost to this: when the
+      host parses it and cannot list the target to see which requirements file was audited,
+      every finding is kept, located at `requirements.txt` (or `pyproject.toml` when there is
+      one), and the reason is printed once;
     - `--reset`: it left every flat artifact in place and said nothing. It now stops with
       `unsafe reset cleanup: <directory> could not be listed: <reason>; nothing was cleared`
       and a non-zero exit, before removing anything;
@@ -48,7 +51,8 @@
       to us or not.
   - Each of those lines is one line whatever the directory is named: a newline or an escape
     sequence in the path is spelled out (`\x0a`, `\x1b`), not printed. A backslash in the path
-    is doubled, so two different names never print alike.
+    is doubled and a byte that is not UTF-8 is spelled `\udcNN`, so two different names never
+    print alike.
   - The helper refuses a pattern that would leave its directory: an empty, absolute, `.` or
     `..` part, no pattern at all, or an empty directory is a `ValueError`. So is a part that
     holds a backslash or starts with a drive (`C:`), on every platform.
@@ -62,6 +66,12 @@
     (`unmeasured_by_host`) and by phase (`unmeasured_by_phase`). They add to no figure.
   - `total_is_lower_bound` is true when `total` leaves some launches out. When no launch at all
     was measured, `total` is null, not 0; the same holds for one phase's figure in `by_phase`.
+  - The ledger row itself now holds only the counters the host reported as numbers. A Claude
+    envelope whose usage held only nulls, or no counter at all, was written as four zeros and
+    read back as an exact 0; it is written as `usage: {}` and counted as unmeasured. A counter
+    that was not reported is left out of the row. The agy and Gemini runners read a missing
+    counter as 0, and for the same reason no longer hand over a usage when the envelope
+    reported no counter at all.
   - A run that launched nothing still reads 0, and a launch that measured zero still counts as
     measured. The rows an interrupt writes are not launches and are not counted.
   - An entry the runner refused before it launched anything spent nothing, so it is not counted
@@ -72,6 +82,7 @@
     that does not match), which are raised beside the launch and carry no such mark.
   - `meta.cost.tokens` is that document unchanged, so a reader that summed `total` or a
     `by_phase` value must now expect null there. No finding, gate or certification reads it.
+
 - **Maven and Gradle advisories always stay with the advisor (#3623, owner rulings).** Like Go,
   neither has a first-party marker. A gradle.lockfile lists only resolved external modules,
   never the build's own projects, so no lock entry is a local project a manifest proves. A Maven
