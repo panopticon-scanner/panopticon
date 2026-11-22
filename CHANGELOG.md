@@ -26,8 +26,9 @@
     (`/Cargo.lock`), and a `file://` URI with an authority is kept whole. A SARIF result's
     relative `uri` is now resolved against its `uriBaseId` through the run's
     `originalUriBaseIds`, which is how Trivy writes a location: a base that is not the scan
-    mount puts the file outside, and a base that cannot be resolved gives
-    `/unresolved-uri-base/<id>/<uri>`. An absolute `uri` ignores its base, as semgrep's does.
+    mount puts the file outside, and a base the run defines but that cannot be read gives
+    `/unresolved-uri-base/<id>/<uri>`. A base the run never defines (semgrep's `%SRCROOT%`
+    with no table) leaves the path as it was. An absolute `uri` ignores its base, as semgrep's does.
     Findings, the file-coverage ledger and the legacy SARIF reader now share one spelling.
     **Output change:** a finding a scanner located outside the mount reports that path with
     its leading slash, so its `location.file`, fingerprint and reconcile key change once; a

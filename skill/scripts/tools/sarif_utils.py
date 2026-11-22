@@ -149,9 +149,10 @@ def resolve_artifact_uri(artifact, run):
     base in the run's ``originalUriBaseIds``. Read alone, that uri is the review root's
     file whatever the base says. So a relative uri that names a base is joined onto
     it: a base that is the scan mount keeps the file inside, any other puts it
-    outside. A base that cannot be resolved -- no table, no entry, no string uri, a
-    relative or chained base -- names no place in the tree, and the result is an
-    absolute ``/unresolved-uri-base/<id>/<uri>``. An absolute uri ignores its base, as
+    outside. A base the run DEFINES but that cannot be read -- no string uri, a
+    relative or chained base, a table that is not an object -- names no place in the
+    tree, and the result is an absolute ``/unresolved-uri-base/<id>/<uri>``. A base the
+    run never defines is a bare symbol and leaves the uri as it is. An absolute uri ignores its base, as
     SARIF says (semgrep writes ``/src/...`` with ``%SRCROOT%`` and no table)."""
     if not isinstance(artifact, dict):
         return None
@@ -160,6 +161,11 @@ def resolve_artifact_uri(artifact, run):
             or uri.startswith("/") or _URI_SCHEME.match(uri)):
         return uri
     bases = run.get("originalUriBaseIds") if isinstance(run, dict) else None
+    if bases is None or (isinstance(bases, dict) and isinstance(base_id, str)
+                         and base_id not in bases):
+        # A bare symbol the run never defines (semgrep and CodeQL write `%SRCROOT%`
+        # with no table). The run says nothing about where it is: read as no base.
+        return uri
     entry = bases.get(base_id) if isinstance(bases, dict) and isinstance(base_id, str) else None
     base = entry.get("uri") if isinstance(entry, dict) and "uriBaseId" not in entry else None
     if not isinstance(base, str) or not (base.startswith("/") or _URI_SCHEME.match(base)):
