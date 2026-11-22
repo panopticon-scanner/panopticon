@@ -757,6 +757,39 @@ class TestAFileThatChangesWhileItIsRead(_Case):
         self.assertEqual([False, False], [evidence.is_first_party_advisory(f) for f in findings])
         self.assertEqual(1, dispositions["osv-scanner"]["advisory_manifest_changed_during_read"])
 
+    def test_the_count_is_published_when_every_finding_is_filtered_out(self):
+        # Third gates, M83. The count is taken where the file is read, before
+        # exclusions and suppression; a lock under a fixture path or an excluded glob
+        # leaves no finding, and the count is still disclosed.
+        real = safe_write._drain
+
+        def drain(path, stream, limit):
+            raw = real(path, stream, limit)
+            if os.path.basename(path) == "Cargo.lock":
+                os.utime(path, ns=(1, 1))
+            return raw
+        for label, sub, kwargs in (
+                ("a fixture path", os.path.join("tests", "fixtures"), {}),
+                ("an excluded glob", "sub", {"exclude_globs": ["sub/**"]}),
+                ("kept", "kept", {})):
+            with self.subTest(case=label):
+                d = tempfile.TemporaryDirectory()
+                self.addCleanup(d.cleanup)
+                root = os.path.realpath(d.name)
+                os.makedirs(os.path.join(root, sub))
+                _write_lock(os.path.join(root, sub))
+                _write_manifest(os.path.join(root, sub))
+                tools = tempfile.mkdtemp(prefix="tools-out-", dir=root)
+                rel = sub.replace(os.sep, "/")
+                with open(os.path.join(tools, "osv-scanner.json"), "w", encoding="utf-8") as fh:
+                    json.dump(_osv(CARGO, "crates.io", "/src/%s/Cargo.lock" % rel), fh)
+                with mock.patch.object(safe_write, "_drain", side_effect=drain):
+                    findings, dispositions = ingest_tools.ingest_dir_detailed(
+                        tools, "g1", target_root=root, **kwargs)
+                self.assertEqual(1 if label == "kept" else 0, len(findings))
+                self.assertEqual(1, dispositions["osv-scanner"].get(
+                    "advisory_manifest_changed_during_read"))
+
     def test_a_quiet_ingest_discloses_no_count(self):
         root = _tree(self, "Cargo.lock")
         tools = tempfile.mkdtemp(prefix="tools-out-", dir=root)
@@ -862,12 +895,16 @@ class TestAPathOutsideTheScanMount(_Case):
                     "file:////Cargo.lock", "/etc/passwd", "/srcx/Cargo.lock", "/src", "/",
                     "file:///", "//src/Cargo.lock", "file:////src/Cargo.lock", "///src/x",
                     "file://Cargo.lock", "file://host/src/Cargo.lock", "file://src/x",
-                    "file://localhost/src/x", "file://", "/SRC/x", "/tmp/elsewhere/uv.lock"):
+                    "file://localhost/src/x", "file://", "/SRC/x", "/tmp/elsewhere/uv.lock",
+                    # The scheme is compared without case (third gates).
+                    "FiLe://host/Cargo.lock", "FILE://Cargo.lock", "FILE:///Cargo.lock",
+                    "File:////src/Cargo.lock"):
             with self.subTest(outside=uri):
                 self.assertIs(True, outside(uri))
         for uri in ("/src/Cargo.lock", "file:///src/Cargo.lock", "/src/a/b.py", "/src/",
                     "/src//x", "Cargo.lock", "a/b.py", "src/Cargo.lock", "", "./x", "../x",
                     "x:y/z", "https://example.invalid/x", "file:x", "file:/x",
+                    "FILE:///src/Cargo.lock", "File:///src/a/b.py",
                     None, 7, ["/x"], b"/x"):
             with self.subTest(inside=uri):
                 self.assertIs(False, outside(uri))
@@ -903,8 +940,17 @@ class TestAPathOutsideTheScanMount(_Case):
                 ({"uri": "file:///a.py", "uriBaseId": "ROOTPATH"}, True),
                 ({"uri": "/a.py"}, True), ({"uri": "//src/a.py"}, True),
                 ({"uri": "file://host/a.py"}, True),
-                # A scheme that is not a file path: its base is not applied.
+                # A scheme that is not a file path: its base is not applied. A scheme
+                # may hold digits, `+`, `-` and `.` after its first letter.
                 ({"uri": "https://example.invalid/a.py", "uriBaseId": "ELSEWHERE"}, False),
+                ({"uri": "a1:b/a.py", "uriBaseId": "ELSEWHERE"}, False),
+                ({"uri": "git+ssh:repo/a.py", "uriBaseId": "ELSEWHERE"}, False),
+                ({"uri": "a-b:c/a.py", "uriBaseId": "ELSEWHERE"}, False),
+                ({"uri": "a.b:c/a.py", "uriBaseId": "ELSEWHERE"}, False),
+                # ... and must begin with a letter: these are relative paths.
+                ({"uri": "1a:b/a.py", "uriBaseId": "ELSEWHERE"}, True),
+                ({"uri": "+a:b/a.py", "uriBaseId": "ELSEWHERE"}, True),
+                ({"uri": ":a/a.py", "uriBaseId": "ELSEWHERE"}, True),
                 # Nothing located: nothing to be outside.
                 ({}, False), ({"uri": 7}, False), ({"uri": None, "uriBaseId": "ELSEWHERE"}, False),
                 ({"uriBaseId": "ELSEWHERE"}, False),
@@ -1123,6 +1169,95 @@ class TestAPathOutsideTheScanMount(_Case):
                     self.assert_first_party(findings)
                     self.assertNotIn("uri_base", findings[0]["tool_evidence"])
 
+    def test_each_result_is_judged_by_its_own_run_and_its_primary_location(self):
+        # Third gates, the survivors M01, M24, M87 and M88.
+        def location(uri, base_id=None):
+            artifact = {"uri": uri}
+            if base_id is not None:
+                artifact["uriBaseId"] = base_id
+            return {"physicalLocation": {"artifactLocation": artifact,
+                                         "region": {"startLine": 1}}}
+
+        def flags(document):
+            return [f["tool_evidence"].get("uri_base") for f in
+                    sarif_utils.sarif_to_findings(document, "trivy", "g1", "XX")]
+        # Two runs define one id differently: each result is read against ITS run.
+        for first, second, expected in (("file:///src/", "file:///etc/", [None, "outside"]),
+                                        ("file:///etc/", "file:///src/", ["outside", None])):
+            with self.subTest(runs=(first, second)):
+                one = _trivy(CARGO, "Cargo.lock", base_id="ROOTPATH",
+                             bases={"ROOTPATH": {"uri": first}})
+                two = _trivy(REGISTRY_COPY, "Cargo.lock", base_id="ROOTPATH",
+                             bases={"ROOTPATH": {"uri": second}})
+                one["runs"].append(two["runs"][0])
+                self.assertEqual(expected, flags(one))
+        # The primary (first) location decides; a later one is not consulted.
+        for uris, expected in ((("Cargo.lock", "/Cargo.lock"), [None]),
+                               (("/Cargo.lock", "Cargo.lock"), ["outside"]),
+                               (("/src/Cargo.lock", "file://host/x", "/etc/x"), [None])):
+            with self.subTest(locations=uris):
+                document = _trivy(CARGO, "x")
+                document["runs"][0]["results"][0]["locations"] = [location(u) for u in uris]
+                self.assertEqual(expected, flags(document))
+        # A result with no location is not outside anything, and an outside result
+        # before it does not leave its flag behind.
+        document = _trivy_pair(_trivy(CARGO, "/Cargo.lock"), _trivy(REGISTRY_COPY, "Cargo.lock"))
+        for locations in ([], None):
+            with self.subTest(no_location=locations):
+                doc = copy.deepcopy(document)
+                if locations is None:
+                    del doc["runs"][0]["results"][1]["locations"]
+                else:
+                    doc["runs"][0]["results"][1]["locations"] = locations
+                findings = sarif_utils.sarif_to_findings(doc, "trivy", "g1", "XX")
+                self.assertEqual(["outside", None],
+                                 [f["tool_evidence"].get("uri_base") for f in findings])
+                self.assertEqual("", findings[1]["location"]["file"])
+        # The legacy located-path reader goes on past a result it cannot read.
+        import scripts.tools.legacy_sarif as legacy_sarif
+        document = _trivy_pair(_trivy(CARGO, "a.py"), _trivy(REGISTRY_COPY, "b.py"))
+        for unreadable in ("x", 7, None, [], {"uri": 7}):
+            with self.subTest(unreadable=unreadable):
+                doc = copy.deepcopy(document)
+                doc["runs"][0]["results"][0]["locations"][0]["physicalLocation"][
+                    "artifactLocation"] = unreadable
+                self.assertEqual({"b.py"}, legacy_sarif._result_paths(doc))
+
+    def test_every_osv_finding_of_a_result_carries_its_own_flag(self):
+        # Third gates, M86: two packages, two advisories each, at one outside path;
+        # then a result inside the mount, which must not inherit the flag.
+        root = _tree(self, "Cargo.lock")
+        document = _osv_pair("/Cargo.lock", (CARGO, "LOW"), (REGISTRY_COPY, "LOW"))
+        for package in document["results"][0]["packages"]:
+            package["vulnerabilities"].append({"id": "GHSA-aaaa-bbbb-cccc", "summary": "other",
+                                               "database_specific": {"severity": "LOW"}})
+        document["results"].append(
+            _osv(("left-pad", "1.3.0"), "crates.io", "/src/Cargo.lock")["results"][0])
+        document["results"].append(
+            _osv(("right-pad", "1.0.0"), "crates.io", "//Cargo.lock")["results"][0])
+        findings = _ingest(root, "osv-scanner.json", document)
+        self.assertEqual(["outside"] * 4 + [None, "outside"],
+                         [f["tool_evidence"].get("uri_base") for f in findings])
+        self.assertEqual(["Cargo.lock"] * 6, [f["location"]["file"] for f in findings])
+
+    def test_the_flag_reaches_the_queue_and_the_report(self):
+        # Third gates, M93: a field the schema mis-declares is dropped on the way.
+        root = _tree(self, "Cargo.lock")
+        for name, document in (("trivy.sarif", _trivy(CARGO, "/Cargo.lock")),
+                               ("osv-scanner.json", _osv(CARGO, "crates.io", "/Cargo.lock"))):
+            with self.subTest(tool=name):
+                findings = _ingest(root, name, document)
+                entries, _cut = evidence.build_verify_queue(copy.deepcopy(findings))
+                self.assertEqual(["outside"], [entry["finding"]["tool_evidence"].get("uri_base")
+                                               for entry in entries])
+                report = report_mod.build_report(report_mod.ReportInputs(
+                    run=report_mod.RunConfig(target="project", fail_on="high",
+                                             timestamp="2026-11-22T00:00:00Z"),
+                    findings=findings_mod.FindingSet(findings=copy.deepcopy(findings),
+                                                     verdicts={}, verdicts_supplied=True)))
+                self.assertEqual(["outside"], [f["tool_evidence"].get("uri_base")
+                                               for f in report["findings"]])
+
     def test_the_flag_is_not_part_of_a_findings_identity_and_is_in_the_schema(self):
         root = _tree(self, "Cargo.lock")
         flagged = _ingest(root, "trivy.sarif", _trivy(CARGO, "/Cargo.lock"))[0]
@@ -1150,6 +1285,7 @@ class TestAPathOutsideTheScanMount(_Case):
         self.assertTrue(entries)
         for entry in entries:
             self.assertEqual(["outside"], entry["enum"])
+            self.assertEqual("string", entry["type"])
 
     def test_nothing_else_about_an_outside_result_changes(self):
         # The location a suppression, the coverage ledger and the legacy reader see is
@@ -1205,6 +1341,8 @@ class TestAPathOutsideTheScanMount(_Case):
         root = os.path.realpath(d.name)
         cut = chr(0x2026)                       # inert_text's mark for a cut value
         plain = ("sub", os.path.join("sub", "x:y"), "a b", "a+b", "a@b", "caf" + chr(0xe9),
+                 # Not a scheme: it does not begin with a letter.
+                 "1a:b", "+a:b", ":a",
                  # Not the surrogate spelling: too few digits, lower case, no plus.
                  "U+D80", "u+d800", "U+d800", "U+dce9x", "UD800", "U+",
                  # Gates item 5: outside D800-DFFF, `U+XXXX` is an ordinary name.
@@ -1212,6 +1350,7 @@ class TestAPathOutsideTheScanMount(_Case):
                  "U+D8ab", "U+D8", "U+Dx00",
                  "a.b", "~a", "a=b&c", "[a]")
         refused = ("xU+D800", "U+DCE9", "aU+DFFFb", "U+DBFF", "U+DC00", "U+D8AB", "U+DFAB",
+                   "a1:b", "git+ssh:repo", "a-b:x", "a.b:x",
                    "x:y", "C:", "a%20b", "%2e%2e", "a?b", "a#b", "a\\b", "a\\x0a",
                    "a\nb", "a\tb", "a\x1fb", "a\x01b", "a\x7fb", "a" + cut,
                    os.path.join("sub", "a%b"), os.path.join("sub", "a" + cut))
@@ -1316,6 +1455,213 @@ class TestAPathOutsideTheScanMount(_Case):
             self.assertEqual(("INCONCLUSIVE", ["tool_reported"]), _verdict(findings))
             self.assertEqual(("FAIL", ["tool_confirmed"]), _verdict(findings, "CONFIRMED"))
             self.assertEqual("PASS", _verdict(findings, "REJECTED")[0])
+
+
+REGISTRY_COPY = (WORKSPACE_NAME, "0.9.0")       # a registry package of the same name
+
+
+def _trivy_pair(first, second):
+    """One Trivy run holding both results under one advisory id. The second result's
+    rule is a second entry of the same id, named by `ruleIndex`, so the two can
+    carry different severities."""
+    document = copy.deepcopy(first)
+    run, other = document["runs"][0], second["runs"][0]
+    run["tool"]["driver"]["rules"].append(copy.deepcopy(other["tool"]["driver"]["rules"][0]))
+    run["results"][0]["ruleIndex"] = 0
+    result = copy.deepcopy(other["results"][0])
+    result["ruleIndex"] = 1
+    run["results"].append(result)
+    return document
+
+
+def _osv_pair(path, first, second, ecosystem="crates.io"):
+    """One osv result at `path`: two packages of one name under one advisory id.
+    Each is (package, severity)."""
+    document = _osv(first[0], ecosystem, path, severity=first[1])
+    document["results"][0]["packages"].append(
+        _osv(second[0], ecosystem, path, severity=second[1])["results"][0]["packages"][0])
+    return document
+
+
+def _version_named(finding):
+    version = finding["tool_evidence"].get("vulnerable_versions")
+    if version:
+        return version
+    return finding["title"].split("Installed Version: ")[1].split()[0]
+
+
+class TestOneAnswerSettlesOneAdvisory(_Case):
+    """Third gate run, required item 1. `aggregate_tool_findings` kept the project's own
+    `workspace-app 1.2.3` apart from a registry `workspace-app 0.9.0` by the first-party
+    mark alone. Every refusal this change adds takes the mark away, the two became one
+    finding with `occurrences: 2`, and one advisor answer settled both."""
+
+    HIGH = {"tags": ("vulnerability", "security", "HIGH"), "severity": "8.1"}
+    LOW = {"tags": ("vulnerability", "security", "LOW"), "severity": "2.0"}
+
+    def _judge(self, findings, answers):
+        """The report for `findings` when the advisor answered only the records whose
+        named version is in `answers` ({version: verdict})."""
+        grouped = findings_mod.aggregate_tool_findings(copy.deepcopy(findings))
+        entries, _cut = evidence.build_verify_queue(copy.deepcopy(grouped))
+        verdicts = {}
+        for entry in entries:
+            answer = answers.get(_version_named(entry["finding"]))
+            if answer is not None:
+                verdicts[entry["queue_id"]] = {"finding_id": entry["finding"]["id"],
+                                               "verdict": answer, "reasoning": "checked"}
+        report = report_mod.build_report(report_mod.ReportInputs(
+            run=report_mod.RunConfig(target="project", fail_on="high",
+                                     timestamp="2026-11-22T00:00:00Z"),
+            findings=findings_mod.FindingSet(findings=copy.deepcopy(findings),
+                                             verdicts=verdicts, verdicts_supplied=True)))
+        rows = sorted((_version_named(f), f["severity"], f["evidence"]["status"],
+                       f.get("occurrences", 1)) for f in report["findings"])
+        return report["summary"]["gate"], rows, grouped, entries
+
+    def _two_advisories(self, findings, own="1.2.3", other="0.9.0",
+                        own_level="HIGH", other_level="HIGH"):
+        """`findings` holds two different advisories: each is its own group, each is
+        queued, and an answer for one leaves the other outstanding."""
+        self.assertEqual(2, len(findings))
+        gate, rows, grouped, entries = self._judge(findings, {})
+        self.assertEqual(2, len(grouped))
+        self.assertEqual([1, 1], [g["occurrences"] for g in grouped])
+        self.assertEqual(sorted([own, other]), sorted(_version_named(g) for g in grouped))
+        self.assertEqual(2, len(entries))
+        self.assertEqual(2, len({entry["queue_id"] for entry in entries}))
+        self.assertEqual("INCONCLUSIVE", gate)
+        self.assertEqual(sorted([(own, own_level, "tool_reported", 1),
+                                 (other, other_level, "tool_reported", 1)]), rows)
+        # Reject either one: the other is still owed an answer.
+        for rejected, left, level in ((other, own, own_level), (own, other, other_level)):
+            gate, rows, _grouped, _entries = self._judge(findings, {rejected: "REJECTED"})
+            self.assertIn((left, level, "tool_reported", 1), rows)
+            self.assertEqual("INCONCLUSIVE", gate)
+        # Both rejected: a PASS that two answers earned.
+        self.assertEqual("PASS", self._judge(
+            findings, {own: "REJECTED", other: "REJECTED"})[0])
+        # Confirm one: it is confirmed at ITS severity, and the other is not.
+        for confirmed, level, left, left_level in ((own, own_level, other, other_level),
+                                                   (other, other_level, own, own_level)):
+            gate, rows, _grouped, _entries = self._judge(findings, {confirmed: "CONFIRMED"})
+            self.assertIn((confirmed, level, "tool_confirmed", 1), rows)
+            self.assertIn((left, left_level, "tool_reported", 1), rows)
+            self.assertNotIn("PASS", gate)
+
+    def test_an_outside_record_and_an_in_tree_registry_record(self):
+        root = _tree(self, "Cargo.lock")
+        for name, document in (
+                ("trivy.sarif", _trivy_pair(_trivy(CARGO, "/Cargo.lock", **self.HIGH),
+                                            _trivy(REGISTRY_COPY, "Cargo.lock", **self.HIGH))),
+                ("trivy.sarif", _trivy_pair(
+                    _trivy(CARGO, "Cargo.lock", base_id="ROOTPATH",
+                           bases={"ROOTPATH": {"uri": "file:///etc/"}}, **self.HIGH),
+                    _trivy(REGISTRY_COPY, "Cargo.lock", **self.HIGH))),
+                ("osv-scanner.json", {"results": [
+                    _osv(CARGO, "crates.io", "/Cargo.lock", severity="HIGH")["results"][0],
+                    _osv(REGISTRY_COPY, "crates.io", "/src/Cargo.lock",
+                         severity="HIGH")["results"][0]]})):
+            with self.subTest(tool=name):
+                findings = _ingest(root, name, document)
+                self.assertEqual(["Cargo.lock", "Cargo.lock"],
+                                 [f["location"]["file"] for f in findings])
+                self._two_advisories(findings)
+
+    def test_the_same_version_inside_and_outside_is_two_advisories(self):
+        # Only `uri_base` differs: the same package and version, one record located in
+        # the tree and one outside it.
+        root = _tree(self, "Cargo.lock")
+        for name, document in (
+                ("trivy.sarif", _trivy_pair(_trivy(REGISTRY_COPY, "/Cargo.lock", **self.HIGH),
+                                            _trivy(REGISTRY_COPY, "Cargo.lock", **self.HIGH))),
+                ("osv-scanner.json", {"results": [
+                    _osv(REGISTRY_COPY, "crates.io", "/Cargo.lock", severity="HIGH")["results"][0],
+                    _osv(REGISTRY_COPY, "crates.io", "/src/Cargo.lock",
+                         severity="HIGH")["results"][0]]})):
+            with self.subTest(tool=name):
+                findings = _ingest(root, name, document)
+                grouped = findings_mod.aggregate_tool_findings(copy.deepcopy(findings))
+                self.assertEqual(2, len(grouped))
+                self.assertEqual([1, 1], [g["occurrences"] for g in grouped])
+                self.assertEqual(["outside"], [g["tool_evidence"]["uri_base"] for g in grouped
+                                               if "uri_base" in g["tool_evidence"]])
+                self.assertEqual(2, len(evidence.build_verify_queue(grouped)[0]))
+
+    def test_a_lock_that_changes_while_it_is_read(self):
+        # No outside record at all. The lock's times change during the read, so the
+        # project's own 1.2.3 is not marked, and it sat in the registry 0.9.0's group.
+        root = _tree(self, "Cargo.lock")
+        real = safe_write._drain
+
+        def drain(path, stream, limit):
+            raw = real(path, stream, limit)
+            if os.path.basename(path) == "Cargo.lock":
+                os.utime(path, ns=(1, 1))
+            return raw
+        for name, document in (
+                ("trivy.sarif", _trivy_pair(_trivy(CARGO, "Cargo.lock", **self.HIGH),
+                                            _trivy(REGISTRY_COPY, "Cargo.lock", **self.HIGH))),
+                ("osv-scanner.json", _osv_pair("/src/Cargo.lock", (CARGO, "HIGH"),
+                                               (REGISTRY_COPY, "HIGH")))):
+            with self.subTest(tool=name):
+                with mock.patch.object(safe_write, "_drain", side_effect=drain):
+                    findings = _ingest(root, name, document)
+                self.assertEqual([False, False],
+                                 [evidence.is_first_party_advisory(f) for f in findings])
+                self._two_advisories(findings)
+
+    def test_a_low_confirmation_does_not_publish_as_high(self):
+        # Reversed: the outside record is LOW, the registry one HIGH. Confirming the
+        # LOW one confirmed the group, at the worst hit's severity.
+        root = _tree(self, "Cargo.lock")
+        # osv only: a Trivy rule id has one severity, so two Trivy records under one
+        # advisory cannot differ in it (the SARIF builder looks the rule up by id).
+        for name, document in (
+                ("osv-scanner.json", {"results": [
+                    _osv(CARGO, "crates.io", "/Cargo.lock", severity="LOW")["results"][0],
+                    _osv(REGISTRY_COPY, "crates.io", "/src/Cargo.lock",
+                         severity="HIGH")["results"][0]]}),
+                ("osv-scanner.json", _osv_pair("/Cargo.lock", (CARGO, "LOW"),
+                                               (REGISTRY_COPY, "HIGH")))):
+            with self.subTest(tool=name):
+                findings = _ingest(root, name, document)
+                self.assertEqual(["LOW", "HIGH"], [f["severity"] for f in findings])
+                self._two_advisories(findings, own_level="LOW", other_level="HIGH")
+                gate, rows, _grouped, _entries = self._judge(findings, {"1.2.3": "CONFIRMED"})
+                self.assertEqual([("0.9.0", "HIGH", "tool_reported", 1),
+                                  ("1.2.3", "LOW", "tool_confirmed", 1)], rows)
+                self.assertEqual("INCONCLUSIVE", gate)
+
+    def test_records_that_are_one_advisory_are_still_one_group(self):
+        # The same record twice (two lines of one file) is one finding, as before.
+        root = _tree(self, "Cargo.lock")
+        first = _trivy(REGISTRY_COPY, "Cargo.lock", **self.HIGH)
+        second = copy.deepcopy(first)
+        second["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"] = {
+            "startLine": 9}
+        findings = _ingest(root, "trivy.sarif", _trivy_pair(first, second))
+        grouped = findings_mod.aggregate_tool_findings(copy.deepcopy(findings))
+        self.assertEqual([2], [g["occurrences"] for g in grouped])
+        findings = _ingest(root, "osv-scanner.json", _osv_pair(
+            "/src/Cargo.lock", (REGISTRY_COPY, "HIGH"), (REGISTRY_COPY, "HIGH")))
+        grouped = findings_mod.aggregate_tool_findings(copy.deepcopy(findings))
+        self.assertEqual([2], [g["occurrences"] for g in grouped])
+        # ... and so are two outside records of one version.
+        findings = _ingest(root, "trivy.sarif", _trivy_pair(
+            _trivy(REGISTRY_COPY, "/Cargo.lock", **self.HIGH),
+            _trivy(REGISTRY_COPY, "//Cargo.lock", **self.HIGH)))
+        grouped = findings_mod.aggregate_tool_findings(copy.deepcopy(findings))
+        self.assertEqual([2], [g["occurrences"] for g in grouped])
+
+    def test_a_first_party_record_is_still_apart_from_a_registry_one(self):
+        # #3655, unchanged: quiet files, the project's own package marked.
+        root = _tree(self, "Cargo.lock")
+        findings = _ingest(root, "osv-scanner.json", _osv_pair(
+            "/src/Cargo.lock", (CARGO, "HIGH"), (REGISTRY_COPY, "HIGH")))
+        self.assertEqual([True, False], [evidence.is_first_party_advisory(f) for f in findings])
+        grouped = findings_mod.aggregate_tool_findings(copy.deepcopy(findings))
+        self.assertEqual([1, 1], [g["occurrences"] for g in grouped])
 
 
 class TestATrivyRecordThatIsNotAVulnerability(_Case):
