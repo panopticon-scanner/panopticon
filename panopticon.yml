@@ -266,6 +266,7 @@ groups:
       - tests/test_first_party_advisories.py
       - tests/test_first_party_advisories_go.py
       - tests/test_first_party_advisories_jvm.py
+      - tests/test_first_party_shared_readers.py
       - tests/tools/test_prefix_registry.py
       - tests/tools/test_egress.py
       - tests/tools/test_adapter_cwd_confinement.py
