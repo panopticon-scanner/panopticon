@@ -28,7 +28,6 @@ treats as allow. The shells' tool allowlists stay the primary control. And
 ledger's token figures are the honest cost signal.
 """
 import atexit
-import glob
 import json
 import os
 import re
@@ -48,6 +47,7 @@ import scripts.runners.base as base
 # `kimi_home_mod`, not `kimi_home`: `wire_path`'s first parameter and
 # `Runner.kimi_home` already own that name in this file.
 import scripts.runners.kimi_home as kimi_home_mod
+import scripts.safe_glob as safe_glob
 
 
 class _SignalStripper(Protocol):
@@ -137,9 +137,8 @@ def wire_path(kimi_home, session_id):
     """The child session's wire file under the per-run home, or None."""
     if not isinstance(session_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", session_id):
         return None
-    pattern = os.path.join(glob.escape(kimi_home), "sessions", "*",
-                           session_id, "agents", "main", "wire.jsonl")
-    found = sorted(glob.glob(pattern))
+    found = sorted(safe_glob.under(kimi_home, "sessions", "*", session_id,
+                                   "agents", "main", "wire.jsonl"))
     return found[0] if found else None
 
 
@@ -541,20 +540,20 @@ class Runner(base.HostRunner):
                 return base.refuse_unregistered_agent(entry, roles=self.roles)
             shell = self._shell_path(entry)
             if shell is None:
-                return base.RunResult.failed(
+                return base.RunResult.refused(
                     entry_id, "entry's enforcement shell resolves outside the registered "
                     "shell directory %s: %r"
                     % (hosts.spec(self.host).registration_dir,
                        redact.redact(str(entry.get("agent"))[:200])))
             if not os.path.isfile(shell):
-                return base.RunResult.failed(
+                return base.RunResult.refused(
                     entry_id, "enforcement shell not registered at %s "
                     "(run dispatch.py --emit-host-agents kimi)" % shell)
         alias = None
         if entry.get("model"):
             alias = resolve_cli_alias(entry["model"], self.configured or set())
             if alias is None:
-                return base.RunResult.failed(
+                return base.RunResult.refused(
                     entry_id, "entry model %r does not resolve to a model alias "
                     "the installed Kimi CLI has configured" % entry["model"])
         launcher = self.launcher(self.runner, DEFAULT_RUNNER)
@@ -587,7 +586,15 @@ class Runner(base.HostRunner):
             return parsed
         text, session_id = parsed
         usage, model = {}, None
-        wire = wire_path(self.kimi_home, session_id)
+        try:
+            wire = wire_path(self.kimi_home, session_id)
+        except safe_glob.Unlistable as exc:
+            # #3706: the reply is in hand. A wire directory that cannot be listed costs
+            # the token count, never the review: usage stays unknown (empty, not zero),
+            # and the reason is said once. `run_entry` never raises (spec 4.4).
+            print("kimi: %s; the reply is kept and its token usage is unknown" % exc,
+                  file=sys.stderr, flush=True)
+            wire = None
         if wire:
             usage, model = parse_wire(wire)
         return base.RunResult(entry_id=entry_id, ok=True, text=text,

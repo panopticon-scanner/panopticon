@@ -1,4 +1,6 @@
+import contextlib
 import dataclasses
+import io
 import json
 import os
 import subprocess
@@ -7,13 +9,16 @@ import unittest
 from unittest import mock
 
 import scripts.hosts as hosts
+import scripts.ledger as ledger_mod
 import scripts.runners.base as base
 import scripts.runners.kimi as kimi_runner
 import scripts.runners.outage as outage
+import scripts.synth.cost as cost_mod
 from tests._test_helpers import (kimi_fixture_home as _fixture_home,
                            prepared_kimi as _prepared)
 
 from tests.runners.kimi_support import CONFIGURED, STREAM, _entry
+from tests.test_safe_glob import unlistable
 
 class TestCommand(unittest.TestCase):
     def setUp(self):
@@ -228,6 +233,69 @@ class TestRunEntry(unittest.TestCase):
         self.assertEqual(res.model, "kimi-code/k3")
         self.assertIsNone(res.cost_usd)                       # no USD metering on OAuth
 
+    def test_a_reply_survives_a_wire_directory_that_cannot_be_listed(self):
+        # #3706 review round 2, item 1. The wire file is where the token count comes
+        # from, and it is looked for after the reply is in hand. When its directory
+        # could not be listed the lookup raised, `run_entry` raised with it, and the
+        # runner seam turned a finished, paid review into a failed entry. A retry
+        # failed the same way. The reply is kept; its usage is unknown, and says why.
+        with tempfile.TemporaryDirectory() as d, \
+             mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+            r = kimi_runner.Runner("kimi", runner=self._fake_run({}))
+            r.prepare(os.path.join(d, "run"), review_root=d)
+            self.addCleanup(r.teardown, "complete")
+            sessions = os.path.join(r.kimi_home, "sessions")
+            wire = os.path.join(sessions, "wd_x_1", "session_test-1", "agents", "main",
+                                "wire.jsonl")
+            os.makedirs(os.path.dirname(wire))
+            with open(wire, "w", encoding="utf-8") as fh:
+                fh.write(json.dumps(
+                    {"type": "usage.record", "model": "kimi-code/k3", "usageScope": "turn",
+                     "usage": {"inputOther": 42, "output": 7,
+                               "inputCacheRead": 100, "inputCacheCreation": 3}}) + "\n")
+            measured = r.run_entry(_entry(False), self._env())
+            err = io.StringIO()
+            with unlistable(sessions), contextlib.redirect_stderr(err):
+                res = r.run_entry(_entry(False), self._env())
+            # #3764, five-gate review item 1: carried to what the run publishes. The
+            # ledger summed this row as zero, and `usage.json` and `meta.cost.tokens`
+            # said the review had cost nothing.
+            run = os.path.join(d, "ledgered")
+            os.makedirs(run)
+            ledger = ledger_mod.Ledger(run)
+            ledger.record({"id": "review-a"}, "review", res, "headless", "kimi")
+            alone = self._published(run, ledger)
+            ledger.record({"id": "review-b"}, "review", measured, "headless", "kimi")
+            beside_a_measured_one = self._published(run, ledger)
+        self.assertEqual(42, measured.usage["input_tokens"])
+        self.assertTrue(res.ok, res.error)
+        self.assertIsNone(res.error)
+        self.assertEqual((measured.text, measured.session_id), (res.text, res.session_id))
+        self.assertTrue(res.text)
+        # Unknown, not zero: an empty usage is "not measured" to the ledger.
+        self.assertEqual(({}, None, None), (res.usage, res.model, res.cost_usd))
+        self.assertEqual("kimi: %s could not be listed: Permission denied; the reply is kept "
+                         "and its token usage is unknown\n" % sessions, err.getvalue())
+        self.assertEqual((None, False, 1, {"kimi": 1}),
+                         (alone["total"], alone["total_is_lower_bound"],
+                          alone["unmeasured_rows"], alone["unmeasured_by_host"]))
+        self.assertIsNone(alone["by_phase"]["review"])
+        self.assertEqual((152, True, 1, {"kimi": 1}),
+                         (beside_a_measured_one["total"],
+                          beside_a_measured_one["total_is_lower_bound"],
+                          beside_a_measured_one["unmeasured_rows"],
+                          beside_a_measured_one["unmeasured_by_host"]))
+
+    def _published(self, run, ledger):
+        """`meta.cost.tokens` as a report of this run would hold it: the ledger's
+        document, written where the loop writes it and read back by synthesis."""
+        document = ledger.usage_document()
+        with open(os.path.join(run, "usage.json"), "w", encoding="utf-8") as fh:
+            json.dump(document, fh)
+        tokens = cost_mod.cost_section(cost_mod.CostInputs.load(run, None, []), 0, 0)["tokens"]
+        self.assertEqual(document, tokens)
+        return tokens
+
     def test_an_enforced_entry_without_a_registered_shell_fails_closed(self):
         with tempfile.TemporaryDirectory() as d, \
              mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
@@ -237,8 +305,15 @@ class TestRunEntry(unittest.TestCase):
                 r.prepare(os.path.join(d, "run"), review_root=d)
                 self.addCleanup(r.teardown, "complete")
                 res = r.run_entry(_entry(True), self._env())
+                # The registered name resolving outside the registration directory is
+                # the same refusal one step earlier.
+                with mock.patch.object(r, "_shell_path", return_value=None):
+                    outside = r.run_entry(_entry(True), self._env())
         self.assertFalse(res.ok)
         self.assertIn("not registered", res.error)
+        self.assertIs(False, res.launched)             # #3764: refused, never launched
+        self.assertIn("resolves outside the registered shell directory", outside.error)
+        self.assertEqual((False, False), (outside.ok, outside.launched))
 
     def test_an_unresolvable_entry_model_fails_closed(self):
         with tempfile.TemporaryDirectory() as d, \
@@ -249,6 +324,7 @@ class TestRunEntry(unittest.TestCase):
             res = r.run_entry(_entry(False, model="bogus-tier"), self._env())
         self.assertFalse(res.ok)
         self.assertIn("does not resolve", res.error)
+        self.assertIs(False, res.launched)             # #3764: refused, never launched
 
     def test_a_timed_out_launch_keeps_the_stream_it_had_printed(self):
         # D10 ruling 5. Kimi's usage comes from the session wire file, not from
@@ -269,6 +345,24 @@ class TestRunEntry(unittest.TestCase):
         self.assertIn("timed out after", res.error)
         self.assertEqual(partial, res.text)
         self.assertEqual({}, res.usage)
+        self.assertIs(True, res.launched)              # #3764: spent, and not measured
+
+    def test_a_launch_that_raised_is_not_a_refusal(self):
+        """#3764: a launch that raised may have started a child, so its row is
+        counted as unmeasured. Only a return that precedes the launch is `refused`."""
+        for error, said in ((FileNotFoundError("kimi"), "could not launch kimi"),
+                            (ValueError("bad args"), "launch raised ValueError")):
+            def raising(cmd, error=error, **kw):
+                raise error
+            with tempfile.TemporaryDirectory() as d, \
+                 mock.patch.dict(os.environ, {"KIMI_CODE_HOME": _fixture_home(d)}):
+                r = kimi_runner.Runner("kimi", runner=raising)
+                r.prepare(os.path.join(d, "run"), review_root=d)
+                self.addCleanup(r.teardown, "complete")
+                res = r.run_entry(_entry(False), {})
+            self.assertFalse(res.ok)
+            self.assertIn(said, res.error)
+            self.assertIs(True, res.launched)
 
     def test_a_timed_out_launch_carries_the_killed_childs_stderr(self):
         # #1732 fix round 2: the `TimeoutExpired` path kept the partial stream

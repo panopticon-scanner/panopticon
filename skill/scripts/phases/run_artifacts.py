@@ -5,7 +5,6 @@ reached the 700-line ceiling.  ``requests`` re-exports both private names so
 the review, verify, synthesize, and test call sites keep one stable seam.
 The --reset sweep (``_RESET_GLOBS``, ``_clear_run_artifacts``) moved whole from driver.py.
 """
-import glob as _glob
 import json
 import os
 import shutil
@@ -15,6 +14,7 @@ import scripts.group_runner as group_runner
 import scripts.loop_batch as loop_batch
 import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
+import scripts.safe_glob as safe_glob
 import scripts.safe_write as safe_write
 import scripts.tolerant_json as tolerant_json
 from . import coverage
@@ -149,11 +149,17 @@ def _clear_run_artifacts(review_root):
     # The report.json SYMLINK points at the durable tag-named report and is kept; only a STALE FLAT
     # report.json (a real file -- pre-5.1 or a corrupt/orphaned state) is swept, preserving the I1
     # no-resume-on-stale-data invariant. The tag-named reports themselves are never in _RESET_GLOBS.
-    for pat in _RESET_GLOBS:
-        for path in _glob.glob(os.path.join(base, pat)):
-            if os.path.basename(path) == "report.json" and os.path.islink(path):
-                continue
-            paths.append(path)
+    # #3706: a `.panopticon/` that cannot be listed stops the reset here, before the first
+    # removal, with the reason: both callers report a `DriverError` and exit non-zero. It
+    # used to remove the run folder, leave every flat artifact, and say nothing.
+    try:
+        for pat in _RESET_GLOBS:
+            for path in safe_glob.under(base, pat):
+                if os.path.basename(path) == "report.json" and os.path.islink(path):
+                    continue
+                paths.append(path)
+    except safe_glob.Unlistable as exc:
+        raise runio.DriverError("%s; nothing was cleared" % exc) from exc
     dirs = [os.path.join(base, sub) for sub in ("tools", "verdicts")]
     candidates = [run_dir, latest] + paths + dirs if run_dir else paths + dirs
     for path in candidates:

@@ -23,14 +23,25 @@ import scripts.runners.schema as schema_argv_rules
 DEFAULT_RUNNER = None
 
 
+#: The fields of a turn's `usage` that feed the four counters the ledger sums.
+_USAGE_COUNTERS = ("input_tokens", "cached_input_tokens", "output_tokens")
+
+
 def _usage_fields(reported):
-    """Validate a completed turn before adding its disjoint token counts."""
+    """Validate a completed turn before adding its disjoint token counts.
+
+    A usage that holds none of the counters this reads measured nothing the ledger
+    sums, and adds nothing (#3764): `{"total_tokens": 500}` used to be written as four
+    zeros, because each absent counter defaults to 0. With one of them present the
+    others still default to 0, as before."""
     if reported is None or reported == {}:
         return {}
     if not isinstance(reported, dict):
         raise ValueError("usage is not an object")
+    if not any(name in reported for name in _USAGE_COUNTERS):
+        return {}
     values = {}
-    for name in ("input_tokens", "cached_input_tokens", "output_tokens"):
+    for name in _USAGE_COUNTERS:
         value = reported.get(name, 0)
         if type(value) is not int or value < 0:
             raise ValueError("invalid %s" % name)

@@ -221,10 +221,14 @@ terminal status. An unchanged resume reproduces the same bytes; a run with no di
 older failure log, so stale failures cannot follow a clean X0X.
 The complete `synthesize` status list is: `0` for a valid PASS (and for a pass-1 verify-queue
 emission), `1` for a valid FAIL, `2` for a valid INCONCLUSIVE or a pre-report CLI/compare usage
-error, `3` for invalid input such as an unreadable OCRDb bundle or tools manifest, and `4` when a
+error, `3` for invalid input such as an unreadable OCRDb bundle or tools manifest, or a run folder
+that could not be listed (#3701), and `4` when a
 report, split part, discarded-claims sibling, X0X, X0X failure log, or HTML page cannot be
 published or when a written JSON artifact fails its published schema. Discarding a locus-free X0X
 finding never changes the status selected by the report's gate.
+A status of `3`, or any status not in this list, publishes no report. The driver ends the run in
+`error` with the step's last line, keeps its retry marker, and does not take a report that an
+earlier attempt of the run left on disk for this attempt's.
 Validation is **fail-closed**: an uninstallable `jsonschema` (a declared runtime dependency) or an
 unreadable schema file is an error, never a silent pass, because "we could not check" and "we
 checked and it passed" must not look the same. **The schema pins the *controller's* output:** every

@@ -20,6 +20,7 @@ import scripts.redact as redact
 import scripts.repo_config as repo_config
 import scripts.run_manifest as run_manifest
 import scripts.safe_git as safe_git
+import scripts.safe_glob as safe_glob
 import scripts.safe_write as safe_write
 import scripts.tolerant_json as tolerant_json
 
@@ -85,6 +86,15 @@ def _pano(review_root, *parts):
         if tag is not None:
             return os.path.join(base, "runs", tag, *parts)
     return os.path.join(base, *parts)
+
+def _findings_files(review_root):
+    """This run's findings files, sorted. A run folder that is there and cannot be
+    listed is a `DriverError` (#3706): the run stops with the reason, where it used
+    to go on as a run with no findings."""
+    try:
+        return sorted(safe_glob.under(*os.path.split(_pano(review_root, "findings-*.json"))))
+    except safe_glob.Unlistable as exc:
+        raise DriverError(str(exc)) from exc
 
 def _report_out(review_root):
     """The durable, top-level, tag-named report path passed to synthesize as --out;

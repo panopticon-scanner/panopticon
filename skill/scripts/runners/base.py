@@ -175,6 +175,11 @@ class RunResult:
                                    # that route does not list); None when it launched as asked
     model_substitution: object = None  # #3582: the fallback record when a ladder rung was
                                        # bound in place of the requested model, else None
+    launched: bool = True          # #3764: False only on a refusal the runner made before it
+                                   # launched anything (`refused`). Such an entry spent nothing,
+                                   # so its empty usage is exact; every other empty usage is
+                                   # unmeasured. True does not promise a child ran: a failure
+                                   # that cannot say is left True, which reads worse, not better.
 
     def __post_init__(self):
         """Classify any result that did not say (#1623).
@@ -206,6 +211,22 @@ class RunResult:
         return cls(entry_id=entry_id, ok=False, text=text, usage=usage or {}, cost_usd=None,
                     model=None, session_id=None, denials=[], error=str(error),
                     host_error=host_error, failure_class=failure_class, stderr=stderr)
+
+    @classmethod
+    def refused(cls, entry_id, error, host_error=None, failure_class=None):
+        """A failed entry the runner refused BEFORE it launched anything (#3764).
+
+        The ledger counts a row with no usage as a launch whose usage went
+        unmeasured, and marks the run's total a lower bound. An entry that was
+        never launched spent nothing, so this result says so (`launched` False)
+        and the total stays exact. Use it only where the return precedes the
+        launch by construction. A timeout, a crash, a launch that raised: those
+        are `failed`, and are counted as unmeasured, because nobody can say
+        what they spent. This is the one place that clears `launched`: `failed`
+        takes no such argument, and a test reads every runner to hold that."""
+        return dataclasses.replace(
+            cls.failed(entry_id, error, host_error=host_error, failure_class=failure_class),
+            launched=False)
 
 
 class HostRunner(children.ChildProcesses):
@@ -668,10 +689,10 @@ def refuse_unregistered_agent(entry, roles=None):
     entry_id = entry.get("id") if isinstance(entry, dict) else None
     shown = redact.redact_diagnostic(str(value), 200)
     if roles is None:
-        return RunResult.failed(entry_id, UNREGISTERED_AGENT % shown)
+        return RunResult.refused(entry_id, UNREGISTERED_AGENT % shown)
     allowed = ", ".join(sorted(allowed_agent_names(roles))) or "none"
-    return RunResult.failed(entry_id,
-                            UNREGISTERED_AGENT_FOR_CHECKPOINT % (allowed, shown))
+    return RunResult.refused(entry_id,
+                             UNREGISTERED_AGENT_FOR_CHECKPOINT % (allowed, shown))
 
 
 def _headless_module(host):

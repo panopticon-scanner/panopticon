@@ -1,6 +1,9 @@
 """#2930: a failed synthesis attempt cannot become complete on plain resume."""
+import contextlib
 from copy import deepcopy
+import errno
 from functools import partial
+import io
 import json
 import os
 from pathlib import Path
@@ -12,6 +15,7 @@ import pytest
 import scripts.driver as driver
 import scripts.phases.run_artifacts as run_artifacts
 import scripts.run_manifest as run_manifest
+import scripts.safe_glob as safe_glob
 import scripts.safe_write as safe_write
 import scripts.synthesize as synthesize_cli
 from scripts.phases import child, engine, runio, synthesize, validate
@@ -299,3 +303,97 @@ def test_pending_clear_failure_keeps_the_run_in_error(review):
     assert "marker read only" in status["message"]
     assert _pending(root).is_file()
     assert not synthesize.synthesize_done(root, manifest)
+
+
+def test_a_retry_the_child_refuses_does_not_pass_off_the_earlier_report(review):
+    """#3706 five gates at 590d2946, item 1. The synthesize child exits 3 when a
+    directory it must list cannot be listed, and writes no report. The driver looked
+    only for a usable report on disk, found the one an earlier attempt of this run had
+    left, cleared the pending marker and returned `complete`: a stale verdict, certified,
+    for an attempt that never produced one."""
+    root, manifest, valid_report = review
+    # What an earlier attempt of this run left: a usable report, and the marker that
+    # says the attempt did not finish.
+    _write(_report(root), valid_report)
+    _write(_pending(root), {"run_id": manifest["run_id"]})
+    before = _report(root).read_bytes()
+    flat = Path(runio._pano(root, "report.json"))
+    assert not os.path.lexists(flat)
+    run_folder = os.path.dirname(runio._pano(root, "verdicts"))
+    statuses = []
+
+    def the_child_itself(cmd, **kwargs):
+        """The real `synthesize.py`, in this process, with one listing failing under it.
+        (A directory that stays unlistable never gets this far: first contact, the
+        driver's and the child's own, refuses it by name.)"""
+        real_under = safe_glob.under
+
+        def under(directory, *parts):
+            if os.path.realpath(directory) == os.path.realpath(run_folder):
+                raise safe_glob.Unlistable(directory, PermissionError(
+                    errno.EACCES, "Permission denied"))
+            return real_under(directory, *parts)
+
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(safe_glob, "under", under), \
+                contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            statuses.append(synthesize_cli.main(cmd[2:]))
+        return subprocess.CompletedProcess(cmd, statuses[-1], out.getvalue(), err.getvalue())
+
+    with mock.patch.object(child, "_run_child", side_effect=the_child_itself):
+        refused = _resume(root)
+    assert statuses == [3]
+    assert refused["status"] == "error", refused
+    assert refused["message"].endswith(
+        "synthesize wrote no report (rc=3): synthesize: %s could not be listed: "
+        "Permission denied" % run_folder), refused["message"]
+    assert refused["advanced"] == []
+    assert _pending(root).is_file()                      # the attempt is still owed
+    assert not synthesize.synthesize_done(root, manifest)
+    assert not validate.validate_done(root, manifest)
+    assert _report(root).read_bytes() == before          # and the old report is only old:
+    assert not os.path.lexists(flat)                     # nothing is pointed at it
+    repaired = _resume(root)
+    assert repaired["status"] == "complete", repaired
+    assert repaired["advanced"] == ["synthesize", "validate"]
+    assert not _pending(root).exists()
+
+
+@pytest.mark.parametrize("returncode", [3, 5, 70, -9, 255])
+def test_a_child_status_that_publishes_nothing_is_an_error_beside_an_old_report(review, returncode):
+    """Only the statuses the child returns after publishing (the three gate outcomes,
+    and 4 for an artifact that failed validation) may be followed by a look for a
+    report. The reason given is the child's last line, on one line."""
+    root, manifest, valid_report = review
+    _write(_report(root), valid_report)
+    before = _report(root).read_bytes()
+    said = "synthesize: warming up\n\nsynthesize: no such thing to read\n\n"
+
+    def died(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, returncode, "", said)
+
+    with mock.patch.object(child, "_run_child", side_effect=died), \
+            pytest.raises(runio.DriverError) as refused:
+        synthesize.synthesize_execute(root, manifest)
+    assert str(refused.value) == ("synthesize wrote no report (rc=%s): "
+                                  "synthesize: no such thing to read" % returncode)
+    assert _pending(root).is_file()
+    assert _report(root).read_bytes() == before
+    assert not os.path.lexists(runio._pano(root, "report.json"))
+    assert not synthesize.synthesize_done(root, manifest)
+
+
+def test_a_child_that_died_silently_still_gets_a_reason(review):
+    root, manifest, valid_report = review
+    _write(_report(root), valid_report)
+    token = "ghp_" + "A" * 36
+    for stdout, stderr, said in (("", "", "it said nothing"), ("on stdout\n", "", "on stdout"),
+                                 ("on stdout\n", " \n", "on stdout"),
+                                 ("on stdout\n", "on stderr\n", "on stderr"),
+                                 # Redacted and bounded, like every child line the driver relays.
+                                 ("", "first\nread %s\n" % token, "read [REDACTED_TOKEN]"),
+                                 ("", "x" * 500, "x" * 400)):
+        with mock.patch.object(child, "_run_child", return_value=subprocess.CompletedProcess(
+                [], 3, stdout, stderr)), pytest.raises(runio.DriverError) as refused:
+            synthesize.synthesize_execute(root, manifest)
+        assert str(refused.value) == "synthesize wrote no report (rc=3): %s" % said

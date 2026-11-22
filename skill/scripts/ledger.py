@@ -50,6 +50,42 @@ def _measured_model_fields(details):
             and cost >= 0 and (not isinstance(cost, float) or math.isfinite(cost))):
         fields["cost_usd"] = cost
     return fields
+
+
+# #3764: the host a row with no measured usage is counted under when the row names none.
+UNKNOWN_HOST = "unknown"
+
+
+def _counter(value):
+    """A usage counter a host measured: an integer. Null, a boolean, a string and any
+    other shape are not a measurement (`collect_usage._add` draws the same line)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _recorded_usage(usage):
+    """What a row holds for a result's usage: the counters the host measured, and
+    nothing else. `{}` when it measured none, which the reader counts as an unmeasured
+    launch (#3764).
+
+    The writer used to fill all four counters from any non-empty usage, so an envelope
+    whose usage held only nulls, or only fields that are not counters, was written as
+    four zeros: a launch nobody measured, published as an exact zero. A counter the
+    host did not report is left out of the row instead; the reader adds nothing for
+    it, and the row is measured by the counters it does hold."""
+    if not isinstance(usage, dict):
+        return {}
+    return {k: usage[k] for k in USAGE_FIELDS if _counter(usage.get(k))}
+
+
+def _measured_usage(row):
+    """The row's four usage figures, or None when it holds none: `record` writes
+    `usage: {}` for a launch whose usage was not measured, which is not zero (#3764)."""
+    usage = row.get("usage")
+    if not isinstance(usage, dict) or all(usage.get(k) is None for k in USAGE_FIELDS):
+        return None
+    return {k: int(usage.get(k, 0) or 0) for k in USAGE_FIELDS}
+
+
 # #1662: the two `status` values the interrupt's own rows carry -- `CANCELLED`
 # for an entry it cut before it completed, `ROLLED_BACK` for the marker beside
 # an entry that HAD completed and whose artifacts were then taken back. One
@@ -209,7 +245,7 @@ class Ledger:
                 # reconstruct the classifier's host_error input from the
                 # operator-facing error string. Persist the loop's verdict.
                 "failure_class": outage.landed_class(result, refusal),
-                "usage": {k: int(result.usage.get(k, 0) or 0) for k in USAGE_FIELDS} if result.usage else {},
+                "usage": _recorded_usage(result.usage),
                 "cost_usd": result.cost_usd, "duration_ms": duration_ms,
                 "started_at": timing.get("started_at"), "finished_at": timing.get("finished_at"),
                 "session_id": result.session_id,
@@ -276,6 +312,11 @@ class Ledger:
             line["reply_via"] = result.reply_via
         if _self_write_failed(entry, result, refusal) and result.text:
             line["result_head"] = redact.redact(str(result.text))[:runners_base.STDERR_HEAD]
+        if getattr(result, "launched", True) is False:
+            # #3764: a refusal made before anything was launched. Written only when
+            # set, as the keys above are. `usage_document` leaves such a row out of
+            # its unmeasured count: nothing was spent, so nothing went unmeasured.
+            line["launched"] = False
         if status is not None:
             line["status"] = status
         if rolled_back:
@@ -414,10 +455,30 @@ class Ledger:
         return money.sum_costs(self._rows())
 
     def usage_document(self):
-        by_phase = {p: 0 for p in PHASES}
-        by_field = {k: 0 for k in USAGE_FIELDS}
+        """The run's token figures, from the rows.
+
+        #3764: a launch whose usage could not be measured is not a launch that used
+        nothing. Its row holds `usage: {}` (Kimi's wire file missing, or its directory
+        unlistable; a host that timed out before printing its figures), and summing
+        that as zero published a total that was too low and did not say so. Such a
+        row is counted in `unmeasured_rows`, by host and by phase, and adds to no
+        figure. A figure with unmeasured rows behind it is a floor
+        (`total_is_lower_bound`); one with nothing measured behind it at all is null,
+        never zero.
+
+        An interrupt's marker rows are not launches and stay invisible here, as they
+        are to every other reader (`rollback_rows`). Neither is a row the runner
+        marked as refused before launch (`launched: false`, `RunResult.refused`):
+        it spent nothing. A failure with no such mark is counted, whether or not a
+        child ever started, because the row cannot say."""
+        by_phase: dict[str, int | None] = {p: 0 for p in PHASES}
+        by_field: dict[str, int | None] = {k: 0 for k in USAGE_FIELDS}
         by_model_tokens: dict[str, dict[str, int]] = {}
         by_model_costs: dict[str, Decimal] = {}
+        measured_phases: set[str] = set()
+        unmeasured_by_host: dict[str, int] = {}
+        unmeasured_by_phase: dict[str, int] = {}
+        total = 0
         corrupt = 0
         for _line_no, row, reason in self._rows():
             # #1648: tokens are not dollars. A row whose MONEY is unreadable still
@@ -432,11 +493,20 @@ class Ledger:
             # errored entry is often the most expensive one in a run. Skipping them made
             # usage.json (and meta.cost.tokens, which is read straight off it) under-report what
             # the run cost, which is the one thing an honest ledger must never do.
-            usage = row.get("usage") or {}
-            n = sum(int(usage.get(k, 0) or 0) for k in USAGE_FIELDS)
-            by_phase[row.get("phase") or "unattributed"] = by_phase.get(row.get("phase") or "unattributed", 0) + n
-            for k in USAGE_FIELDS:
-                by_field[k] += int(usage.get(k, 0) or 0)
+            phase = row.get("phase") or "unattributed"
+            usage = _measured_usage(row)
+            if usage is not None:
+                n = sum(usage.values())
+                total += n
+                by_phase[phase] = (by_phase.get(phase) or 0) + n
+                measured_phases.add(phase)
+                for k in USAGE_FIELDS:
+                    by_field[k] = (by_field[k] or 0) + usage[k]
+            elif not row.get("rolled_back") and row.get("launched") is not False:
+                host = row.get("host")
+                host = host if isinstance(host, str) and host else UNKNOWN_HOST
+                unmeasured_by_host[host] = unmeasured_by_host.get(host, 0) + 1
+                unmeasured_by_phase[phase] = unmeasured_by_phase.get(phase, 0) + 1
             models = row.get("models")
             if isinstance(models, dict):
                 for name, details in models.items():
@@ -454,10 +524,24 @@ class Ledger:
             name: dict(fields) for name, fields in by_model_tokens.items()}
         for name, cost in by_model_costs.items():
             by_model[name]["cost_usd"] = float(cost)
-        return {"schema_version": 1, "total": sum(by_phase.values()), "by_phase": by_phase,
+        unmeasured = sum(unmeasured_by_host.values())
+        for phase in unmeasured_by_phase:
+            if phase not in measured_phases:
+                by_phase[phase] = None
+        if unmeasured and not measured_phases:
+            by_field = dict.fromkeys(USAGE_FIELDS)
+        return {"schema_version": 1,
+                "total": total if measured_phases or not unmeasured else None,
+                "total_is_lower_bound": bool(unmeasured and measured_phases),
+                "by_phase": by_phase,
                 "by_field": by_field, "by_model": by_model,
                 "source": runners_base.LEDGER_FILE,
                 "corrupt_rows": corrupt,
+                "unmeasured_rows": unmeasured,
+                "unmeasured_by_host": unmeasured_by_host,
+                "unmeasured_by_phase": unmeasured_by_phase,
                 "definition": "every token the host's envelope reported for each entry "
                               "launch, failed launches included, summed over the four "
-                              "usage fields"}
+                              "usage fields; a launch whose usage was not measured is "
+                              "in unmeasured_rows and in no figure, and a figure with "
+                              "nothing measured behind it is null"}

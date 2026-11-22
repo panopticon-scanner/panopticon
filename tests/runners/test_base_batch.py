@@ -35,6 +35,8 @@ class TestRunBatch(unittest.TestCase):
         self.assertTrue(out[0].ok and out[2].ok)
         self.assertFalse(out[1].ok)
         self.assertIn("launch failed", out[1].error)
+        # #3764: a runner that crashed may have started a child. Not a refusal.
+        self.assertEqual([True, True, True], [x.launched for x in out])
         self.assertEqual(sorted(c[0] for c in r.calls), ["a", "boom", "c"])
         self.assertEqual(next(c[1] for c in r.calls if c[0] == "a"), {"E": "a"})
 

@@ -41,7 +41,11 @@ The seam's contract, in `skill/scripts/runners/base.py`:
 - `Runner.run_entry(entry, env) -> RunResult` launches one entry as a child
   process and returns `RunResult(entry_id, ok, text, usage, cost_usd, model,
   session_id, denials, error)`. It never raises: a crash is
-  `RunResult.failed(entry_id, error)`. `denials` is a field the three families
+  `RunResult.failed(entry_id, error)`. A refusal your runner makes before it
+  launches anything is `RunResult.refused(entry_id, error)` instead (#3764):
+  the usage ledger counts a failed row with no usage as a launch it could not
+  measure, and an entry that never launched spent nothing. Use it only where
+  the return precedes the launch by construction. `denials` is a field the three families
   already fill from three DIFFERENT surfaces (#2241): Claude's
   `permission_denials` verbatim, Codex's failed `mcp_tool_call` items (its own
   `panopticon_scope` read broker's, so read-scope refusals included), and
