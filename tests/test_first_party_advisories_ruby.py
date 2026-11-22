@@ -1055,6 +1055,13 @@ class TestTheSecondReview(TestTheReviewProbes):
                  good.replace("remote: https://rubygems.org/", "remote: https:rubygems.org")),
                 ("a GEM remote that is only a scheme",
                  good.replace("remote: https://rubygems.org/", "remote: https://")),
+                # Seat review at d0d7027d: the URL must START the remote, not sit in it.
+                ("a GEM remote with text before the URL",
+                 good.replace("remote: https://rubygems.org/", "remote: x_https://rubygems.org/")),
+                ("a GEM remote with a slash before the URL",
+                 good.replace("remote: https://rubygems.org/", "remote: /https://rubygems.org/")),
+                ("a GEM remote with a digit before the scheme",
+                 good.replace("remote: https://rubygems.org/", "remote: 1https://rubygems.org/")),
                 ("a dependency before any spec",
                  good + "\nGIT\n  remote: https://example.invalid/x.git\n  specs:\n"
                         "      rack\n")):
