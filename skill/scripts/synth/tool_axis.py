@@ -146,7 +146,7 @@ class ToolAxis:
         if unbound_run and manifest_invalid is None:
             manifest_invalid = ("this run has no run id, so tools-manifest.json and the "
                                 "tool output cannot be bound to it")
-            manifest, allowed_outputs = None, ()
+            manifest = None                 # and so, below, no output is allowed
         if manifest is not None:
             try:
                 allowed_outputs = tools_manifest.output_receipt(

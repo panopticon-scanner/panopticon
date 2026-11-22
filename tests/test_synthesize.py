@@ -1250,6 +1250,21 @@ class TestManifestlessCertification(unittest.TestCase):
                 self.assertFalse(report["summary"]["coverage_certified"])
                 self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
                 self.assertIn("run id", report["meta"]["integrity"]["tools_manifest_invalid"])
+                # The manifest is not used: its receipt admits no output, and its
+                # selection certifies nothing.
+                self.assertEqual([], report["meta"]["coverage"]["tools_ran"])
+                self.assertEqual(["bandit.sarif"],
+                                 report["meta"]["integrity"]["unbound_tool_outputs"])
+        # A manifest that is unreadable keeps its own, more exact reason.
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "tools-manifest.json"), "w", encoding="utf-8") as fh:
+                fh.write("not JSON")
+            rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
+                                         extra=("--run-id", ""))
+        reason = report["meta"]["integrity"]["tools_manifest_invalid"]
+        self.assertIn("unreadable", reason)
+        self.assertNotIn("run id", reason)
+        self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
 
     def test_an_empty_run_id_asks_nothing_of_a_run_with_no_tools(self):
         # `--tools-skipped` (the operator's --no-tools) and a call with no tools
