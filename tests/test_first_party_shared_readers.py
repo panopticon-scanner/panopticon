@@ -51,22 +51,31 @@ def _tree(test, lock_name):
     return root
 
 
+_NO_BASES = object()
+
+
 def _trivy(package, uri, *, tags=("vulnerability", "security", "LOW"), severity="2.0",
-           text=None):
+           text=None, base_id=None, bases=_NO_BASES):
     advisory = "CVE-2099-12345"
     if text is None:
         text = ("Package: %s\nInstalled Version: %s\nVulnerability %s\nSeverity: LOW"
                 % (package[0], package[1], advisory))
     properties = {"security-severity": severity}
     if tags is not None:
-        properties["tags"] = list(tags)
-    return {"runs": [{
+        properties["tags"] = list(tags) if isinstance(tags, tuple) else tags
+    artifact = {"uri": uri}
+    if base_id is not None:
+        artifact["uriBaseId"] = base_id
+    run = {
         "tool": {"driver": {"name": "trivy", "rules": [{"id": advisory,
                                                         "properties": properties}]}},
         "results": [{"ruleId": advisory, "level": "note", "message": {"text": text},
                      "locations": [{"physicalLocation": {
-                         "artifactLocation": {"uri": uri},
-                         "region": {"startLine": 1}}}]}]}]}
+                         "artifactLocation": artifact,
+                         "region": {"startLine": 1}}}]}]}
+    if bases is not _NO_BASES:
+        run["originalUriBaseIds"] = bases
+    return {"runs": [run]}
 
 
 def _osv(package, ecosystem, path, severity="LOW"):
@@ -329,6 +338,61 @@ class TestAFileThatChangesWhileItIsRead(_Case):
         first_party_advisory.mark([finding], root, first_party_advisory.IngestCache())
         self.assertEqual("first_party", finding["tool_evidence"]["package_origin"])
 
+    def test_the_count_is_of_advisories_an_unstable_read_decided(self):
+        # Seat item 4. (a) Two tools at one unstable lock are each denied, and each
+        # says so, though only the first one's read saw the change.
+        root = _tree(self, "Cargo.lock")
+        tools = tempfile.mkdtemp(prefix="tools-out-", dir=root)
+        with open(os.path.join(tools, "osv-scanner.json"), "w", encoding="utf-8") as fh:
+            json.dump(_osv(CARGO, "crates.io", "/src/Cargo.lock"), fh)
+        with open(os.path.join(tools, "trivy.sarif"), "w", encoding="utf-8") as fh:
+            json.dump(_trivy(CARGO, "Cargo.lock"), fh)
+        real = safe_write._drain
+
+        def unstable(name):
+            def drain(path, stream, limit):
+                raw = real(path, stream, limit)
+                if os.path.basename(path) == name:
+                    os.utime(path, ns=(1, 1))
+                return raw
+            return mock.patch.object(safe_write, "_drain", side_effect=drain)
+        with unstable("Cargo.lock"):
+            findings, dispositions = ingest_tools.ingest_dir_detailed(
+                tools, "g1", target_root=root)
+        self.assertEqual([False, False],
+                         [evidence.is_first_party_advisory(f) for f in findings])
+        self.assertEqual({"osv-scanner": 1, "trivy": 1},
+                         {tool: row.get("advisory_manifest_changed_during_read")
+                          for tool, row in dispositions.items()})
+        # (b) An unstable manifest that decides nothing is not counted: the npm root's
+        # package.json is unstable, the MEMBER's is quiet, and the member is confirmed.
+        root = _tree(self, "package-lock.json")
+        member_manifest = os.path.join(root, "packages", "lib", "package.json")
+        self.assertTrue(os.path.isfile(member_manifest), os.listdir(root))
+        root_manifest = os.path.join(root, "package.json")
+        real_drain = safe_write._drain
+
+        def only(target):
+            def drain(path, stream, limit):
+                raw = real_drain(path, stream, limit)
+                if os.path.realpath(path) == target:
+                    os.utime(path, ns=(1, 1))
+                return raw
+            return mock.patch.object(safe_write, "_drain", side_effect=drain)
+        document = _osv(NPM_MEMBER, "npm", "/src/package-lock.json")
+        for target, confirmed, count in ((root_manifest, True, None),
+                                         (member_manifest, False, 1)):
+            with self.subTest(unstable=os.path.relpath(target, root)):
+                tools = tempfile.mkdtemp(prefix="tools-out-", dir=root)
+                with open(os.path.join(tools, "osv-scanner.json"), "w", encoding="utf-8") as fh:
+                    json.dump(document, fh)
+                with only(target):
+                    findings, dispositions = ingest_tools.ingest_dir_detailed(
+                        tools, "g1", target_root=root)
+                self.assertEqual(confirmed, evidence.is_first_party_advisory(findings[0]))
+                self.assertEqual(count, dispositions["osv-scanner"].get(
+                    "advisory_manifest_changed_during_read"))
+
     def test_the_tool_disposition_counts_its_own_unstable_reads(self):
         # Per output file, a delta: the second tool's quiet reads are not charged with
         # the first one's.
@@ -435,6 +499,148 @@ class TestAPathOutsideTheScanMount(_Case):
                     self.assert_first_party(findings)
                     self.assertEqual(lock_name, findings[0]["location"]["file"])
 
+    def test_a_relative_uri_is_resolved_against_its_base(self):
+        # Seat review at da20a72b, item 1: real Trivy writes a RELATIVE uri with
+        # `uriBaseId: ROOTPATH` and the base in the run's `originalUriBaseIds`. A base
+        # that is not the scan mount puts the file outside, as an absolute path is.
+        for lock_name, _ecosystem, package in LOCKS:
+            root = _tree(self, lock_name)
+            for base in ("file:///", "file:///etc/", "file:///srcx/", "file:///src",
+                         "/", "/etc/", "https://example.invalid/", "file://host/src/",
+                         "relative/", "src/", "", 7, None, ["file:///src/"]):
+                with self.subTest(lock=lock_name, base=base):
+                    findings = _ingest(root, "trivy.sarif", _trivy(
+                        package, lock_name, base_id="ROOTPATH",
+                        bases={"ROOTPATH": {"uri": base}}))
+                    self.assert_advisor_path(findings)
+                    self.assertNotEqual(lock_name, findings[0]["location"]["file"])
+            for label, bases in (("no table", _NO_BASES), ("an empty table", {}),
+                                 ("another id", {"SRCROOT": {"uri": "file:///src/"}}),
+                                 ("a table that is a list", ["file:///src/"]),
+                                 ("an entry that is a string", {"ROOTPATH": "file:///src/"}),
+                                 ("an entry with no uri", {"ROOTPATH": {}}),
+                                 ("a chained base", {"ROOTPATH": {"uri": "src/", "uriBaseId": "TOP"},
+                                                     "TOP": {"uri": "file:///"}})):
+                with self.subTest(lock=lock_name, unresolved=label):
+                    findings = _ingest(root, "trivy.sarif", _trivy(
+                        package, lock_name, base_id="ROOTPATH", bases=bases))
+                    self.assert_advisor_path(findings)
+                    self.assertNotEqual(lock_name, findings[0]["location"]["file"])
+            for base in ("file:///src/", "/src/", "file:///src//"):
+                with self.subTest(lock=lock_name, inside=base):
+                    findings = _ingest(root, "trivy.sarif", _trivy(
+                        package, lock_name, base_id="ROOTPATH",
+                        bases={"ROOTPATH": {"uri": base}}))
+                    self.assert_first_party(findings)
+                    self.assertEqual(lock_name, findings[0]["location"]["file"])
+
+    def test_a_base_does_not_move_an_absolute_uri(self):
+        # SARIF applies uriBaseId to a relative uri only. semgrep writes an absolute
+        # `/src/...` uri with `uriBaseId: %SRCROOT%` and no table: that stays inside.
+        root = _tree(self, "Cargo.lock")
+        for uri, base_id, bases, inside in (
+                ("/src/Cargo.lock", "%SRCROOT%", _NO_BASES, True),
+                ("file:///src/Cargo.lock", "ROOTPATH", {"ROOTPATH": {"uri": "file:///"}}, True),
+                ("/Cargo.lock", "ROOTPATH", {"ROOTPATH": {"uri": "file:///src/"}}, False),
+                ("file:///Cargo.lock", "ROOTPATH", {"ROOTPATH": {"uri": "file:///src/"}},
+                 False)):
+            with self.subTest(uri=uri):
+                findings = _ingest(root, "trivy.sarif", _trivy(
+                    CARGO, uri, base_id=base_id, bases=bases))
+                (self.assert_first_party if inside else self.assert_advisor_path)(findings)
+
+    def test_resolve_artifact_uri(self):
+        resolve = sarif_utils.resolve_artifact_uri
+        table = {"ROOTPATH": {"uri": "file:///src/"}, "ELSEWHERE": {"uri": "file:///etc/"},
+                 "NOSLASH": {"uri": "file:///src"}}
+        run = {"originalUriBaseIds": table}
+        for artifact, expected in (
+                ({"uri": "a/b.py"}, "a/b.py"),
+                ({"uri": "a/b.py", "uriBaseId": "ROOTPATH"}, "file:///src/a/b.py"),
+                ({"uri": "a/b.py", "uriBaseId": "ELSEWHERE"}, "file:///etc/a/b.py"),
+                # No trailing slash: the last segment is replaced, as a URI reference is.
+                ({"uri": "a/b.py", "uriBaseId": "NOSLASH"}, "file:///a/b.py"),
+                ({"uri": "/src/a.py", "uriBaseId": "%SRCROOT%"}, "/src/a.py"),
+                ({"uri": "file:///src/a.py", "uriBaseId": "ELSEWHERE"}, "file:///src/a.py"),
+                ({"uri": "a.py", "uriBaseId": ""}, "a.py"),
+                ({"uri": "a.py", "uriBaseId": None}, "a.py"),
+                ({}, None), ({"uri": 7}, 7), ({"uri": None, "uriBaseId": "ROOTPATH"}, None)):
+            with self.subTest(artifact=artifact):
+                self.assertEqual(expected, resolve(artifact, run))
+        # An id that cannot be resolved names no place in the tree.
+        for artifact in ({"uri": "a.py", "uriBaseId": "MISSING"},
+                         {"uri": "a.py", "uriBaseId": 7}):
+            with self.subTest(unresolved=artifact):
+                resolved = resolve(artifact, run)
+                self.assertTrue(resolved.startswith("/"))
+                self.assertTrue(sarif_utils.norm_uri(resolved).startswith("/"))
+                self.assertTrue(resolved.endswith("/a.py"))
+        self.assertTrue(resolve({"uri": "a.py", "uriBaseId": "ROOTPATH"}, {}).startswith("/"))
+
+    def test_the_golden_captures_keep_their_paths(self):
+        # Trivy's own capture (ROOTPATH = file:///src/) and semgrep's (%SRCROOT%, no
+        # table) both resolve inside the mount, exactly as before.
+        here = os.path.dirname(os.path.abspath(__file__))
+        for name, tool in (("trivy.raw", "trivy"), ("semgrep.raw", "semgrep")):
+            with self.subTest(golden=name):
+                with open(os.path.join(here, "goldens", "tool-raw", name), encoding="utf-8") as fh:
+                    document = json.load(fh)
+                findings = sarif_utils.sarif_to_findings(document, tool, "g1", "XX")
+                self.assertTrue(findings)
+                for finding in findings:
+                    path = finding["location"]["file"]
+                    self.assertFalse(path.startswith(("/", "file:")), path)
+                    self.assertNotIn("unresolved", path)
+
+    def test_one_spelling_everywhere_and_it_is_idempotent(self):
+        # Seat item 3.
+        norm = sarif_utils.norm_uri
+        for uri in ("/", "//", "file:///", "file:////", ""):
+            with self.subTest(empty=uri):
+                self.assertEqual("", norm(uri))
+        for uri, expected in (("//src/x", "x"), ("/src//x", "x"), ("///src///x", "x"),
+                              ("file:////src/x", "x"), ("/src/", ""), ("/src", "/src")):
+            with self.subTest(uri=uri):
+                self.assertEqual(expected, norm(uri))
+        for uri in ("/Cargo.lock", "//Cargo.lock", "file:///Cargo.lock", "//src/x", "/src//x",
+                    "/src/x", "x", "a/b", "file://host/x", "file://Cargo.lock", "/", "",
+                    "/src", "/srcx/y", "file:///etc/passwd", "src/x"):
+            with self.subTest(idempotent=uri):
+                once = norm(uri)
+                self.assertEqual(once, norm(once))
+        # The coverage ledger and the legacy SARIF reader spell a path as findings do.
+        import scripts.tools.legacy_sarif as legacy_sarif
+        for uri in ("/Cargo.lock", "//Cargo.lock", "file:///Cargo.lock", "/src/a/b.py",
+                    "file:///src/a.py", "a.py", "//src/x", "file://host/x"):
+            with self.subTest(spelled=uri):
+                coverage = sarif_utils.CaptureCoverage()
+                self.assertEqual(sarif_utils.repo_path(uri), coverage.seen(uri))
+                self.assertEqual(sarif_utils.repo_path(uri), legacy_sarif._sarif_path(uri))
+                self.assertEqual(norm(uri), sarif_utils.repo_path(uri))
+        coverage = sarif_utils.CaptureCoverage()
+        for empty in ("/", "file:///", "", None, 7):
+            self.assertIsNone(coverage.seen(empty))
+        self.assertEqual(set(), coverage.paths)
+
+    def test_an_osv_record_at_the_bare_root_has_no_source_path(self):
+        root = _tree(self, "Cargo.lock")
+        for path in ("/", "file:///", "//"):
+            with self.subTest(path=path):
+                findings = _ingest(root, "osv-scanner.json", _osv(CARGO, "crates.io", path))
+                self.assertEqual("manifest (crates.io)", findings[0]["location"]["file"])
+                self.assert_advisor_path(findings)
+
+    def test_an_outside_path_is_rendered_inertly(self):
+        # Seat item 2: the outside branch goes through the same neutraliser.
+        from scripts.inert_text import inert_text
+        for uri in ("/a\x1b[31mb/Cargo.lock", "file:///a\x00b/Cargo.lock", "/a\nb", "/a\u202eb",
+                    "file://ho\x1bst/x"):
+            with self.subTest(uri=uri):
+                out = sarif_utils.norm_uri(uri)
+                self.assertEqual(inert_text(out, mode="path"), out)
+                for raw in ("\x1b", "\x00", "\n", "\u202e"):
+                    self.assertNotIn(raw, out)
+
     def test_an_osv_source_outside_the_mount_is_not_the_roots_lock(self):
         for lock_name, ecosystem, package in LOCKS:
             root = _tree(self, lock_name)
@@ -484,6 +690,13 @@ class TestATrivyRecordThatIsNotAVulnerability(_Case):
                            (("license", "security"), None), (("security", "LOW"), None),
                            ((), None), (None, None), (("Vulnerability",), None),
                            (("vulnerability-ish",), None),
+                           # Seat item 2: the tag is exact, and tags is a list.
+                           ((" vulnerability",), None), (("vulnerability ",), None),
+                           (("x vulnerability",), None), (("vulnerability security",), None),
+                           (("x", "vulnerabilit", "y"), None),
+                           ({"vulnerability": True}, None), ("vulnerability", None),
+                           ("vulnerability security", None), (("vulnerability", 7, None),
+                                                              "vulnerability"),
                            (("secret", "security", "HIGH"), "secret"),
                            (("vulnerability", "secret"), "secret")):
             with self.subTest(tags=tags):
@@ -510,7 +723,9 @@ class TestATrivyRecordThatIsNotAVulnerability(_Case):
         for lock_name, _ecosystem, package in LOCKS:
             root = _tree(self, lock_name)
             for tags in (("misconfiguration", "security", "LOW"), ("license", "security"),
-                         ("security", "LOW"), (), None, ("Vulnerability",)):
+                         ("security", "LOW"), (), None, ("Vulnerability",),
+                         (" vulnerability",), ("vulnerability ",), ("x vulnerability",),
+                         {"vulnerability": True}, "vulnerability"):
                 with self.subTest(lock=lock_name, tags=tags):
                     self.assert_advisor_path(
                         _ingest(root, "trivy.sarif", _trivy(package, lock_name, tags=tags)))
