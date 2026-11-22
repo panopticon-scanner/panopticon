@@ -1673,9 +1673,12 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
                 ("alone", entry),
                 ("beside its twin", entry + _uv_entry(PY_MEMBER[0], huge + ".0", _UV_REGISTRY)),
                 ("an epoch past the limit",
-                 _uv_entry(PY_MEMBER[0], "9" * 5000 + "!1.0", '{ editable = "packages/lib" }'))):
+                 _uv_entry(PY_MEMBER[0], "9" * 5000 + "!1.0", '{ editable = "packages/lib" }')),
+                ("spelled with a v and padding",
+                 _uv_entry(PY_MEMBER[0], " V" + huge + " ", '{ editable = "packages/lib" }'))):
             with self.subTest(case=label):
-                version = huge if label != "an epoch past the limit" else "9" * 5000 + "!1.0"
+                version = {"an epoch past the limit": "9" * 5000 + "!1.0",
+                           "spelled with a v and padding": " V" + huge + " "}.get(label, huge)
                 _py_tree(self.root, member=_pyproject(PY_MEMBER[0], version),
                          lock=_uv_lock(member=None, extra=extra))
                 self.assertIsNone(self._origin((PY_MEMBER[0], version)))
@@ -1699,6 +1702,12 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
                  lock=_uv_lock(member=None, extra=_uv_entry(
                      PY_MEMBER[0], odd, '{ editable = "packages/lib" }')))
         self.assertEqual("first_party", self._origin((PY_MEMBER[0], odd)))
+        keyed = first_party_advisory._pep440_keyed
+        self.assertEqual((huge, True), keyed(" %s " % huge))
+        self.assertEqual(("v" + huge, True), keyed(" V%s " % huge))
+        self.assertEqual(("not-a-version", False), keyed(" Not-A-Version "))
+        self.assertIs(False, keyed("1.0")[1])
+        self.assertEqual(keyed("1.0")[0], first_party_advisory._pep440_key("1.0.0"))
 
     def test_the_pep_440_key_agrees_only_on_equal_releases(self):
         key = first_party_advisory._pep440_key
