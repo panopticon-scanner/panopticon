@@ -263,11 +263,18 @@ SINKING entry in that section (`synth/integrity.INTEGRITY_KEYS` says which do), 
 INCONCLUSIVE, and sets `summary.coverage_certified: false`
 with a `coverage_note` saying *tools manifest unreadable or invalid*. A run-bound tool ingest also
 requires the manifest's exact output receipt (#2070); a missing, malformed, or foreign receipt takes
-this same fail-closed path. It is deliberately NOT softer than that:
+this same fail-closed path, and so does a run with no run id to bind to (#3766): `--run-id ""`,
+which the driver sends for a run manifest that carries no `run_id`, is not the same as no
+`--run-id` at all. It is deliberately NOT softer than that:
 exempting it from the gate would have made corrupting one byte of a target-writable file the
 cheapest way to turn an INCONCLUSIVE run into a PASS on identical findings. An ABSENT manifest when
 no run-bound tool ingest was requested (a pre-#1031 run, `--no-tools`) is a different fact and keeps
-the scout-derived gate, and a manifest
+the scout-derived gate. What that gate may certify over a tools directory (#3766, a standalone
+`synthesize` call with no `--run-id`): the runner's selection is unknown, so the required set is the
+scout's request plus every adapter whose capture was present and could not be used. A `failed`
+adapter is lost coverage (`produced_unusable`) whoever asked for it, and the gate goes INCONCLUSIVE;
+a scanner that never ran and that the scout never requested leaves no trace there and cannot be
+missed, which is what a manifest is for. A manifest
 that parses with malformed FIELDS is a third, repaired at the read (`meta.tools.sanitized` /
 `network`) where a bad row costs a warning and the row, never the run. The three are independent: a
 run can complete, write a valid artifact and still be `INCONCLUSIVE`; it can pass its gate and still

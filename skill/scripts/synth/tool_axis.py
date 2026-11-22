@@ -133,6 +133,20 @@ class ToolAxis:
         receipt_required = bool(getattr(args, "run_id", None)
                                 and getattr(args, "tools_dir", None)
                                 and not getattr(args, "tools_skipped", False))
+        # #3766: an EMPTY run id is not "no run id". The driver threads
+        # `manifest.get("run_id") or ""`, and `run_manifest.load_manifest` keeps a run
+        # manifest that carries none, so a driver run could arrive here with "" --
+        # which read as a standalone call, required no receipt, and sent a missing
+        # (or deleted) tools manifest down the permissive branch of `reconcile`. A
+        # caller that names a run and cannot say which has tool output nobody can
+        # bind: nothing in the tools directory is this run's.
+        unbound_run = (getattr(args, "run_id", None) == ""
+                       and bool(getattr(args, "tools_dir", None))
+                       and not getattr(args, "tools_skipped", False))
+        if unbound_run and manifest_invalid is None:
+            manifest_invalid = ("this run has no run id, so tools-manifest.json and the "
+                                "tool output cannot be bound to it")
+            manifest, allowed_outputs = None, ()
         if manifest is not None:
             try:
                 allowed_outputs = tools_manifest.output_receipt(
@@ -349,6 +363,18 @@ def reconcile(plan, tools, resolved, run=None):
     else:
         tools_absent = sorted(set(plan.scout_requested or []) - produced)
         tool_divergence = {t: "requested_absent" for t in tools_absent}
+        # #3766: with no manifest the runner's selection is unknown, and the scout's
+        # request was the only required set. An adapter nobody requested, whose capture
+        # was there and could not be used, was then required by no one: the run read
+        # PASS, certified, with `failed` in its own dispositions. What ingest found
+        # and could not use is lost coverage whoever asked for it -- the rule the
+        # manifest branch has had since #1512, here without a selection to bound it.
+        # The reason is the exact one (`produced_unusable`) even for a tool the scout
+        # also requested.
+        unusable = sorted(name for name, d in (tools.dispositions or {}).items()
+                          if isinstance(d, dict) and d.get("status") == "failed")
+        tools_absent = sorted(set(tools_absent) | set(unusable))
+        tool_divergence.update({t: "produced_unusable" for t in unusable})
     # #1899: certify on the `network` table `meta.tools.network` publishes.
     network_excluded = ingest_tools.network_exclusions({"network": network})
     tools_absent = sorted(set(tools_absent) | set(network_excluded))

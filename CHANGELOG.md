@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- **A failed scanner blocks certification when there is no tools manifest too (#3766).** With a
+  tools directory and no `tools-manifest.json`, the only required scanners were the ones the scout
+  had requested. A scanner nobody requested, whose output was there and could not be used
+  (unparseable, an adapter that raised while parsing, pip-audit's empty capture when it refuses to
+  audit), was recorded as `failed` and the run still read PASS, certified.
+  - Every adapter with a `failed` disposition now counts as lost coverage on that path, reported
+    as `produced_unusable` in `meta.coverage.divergence.tools`, and the gate is INCONCLUSIVE
+    (exit 2). A clean run on the same path is unchanged.
+  - **An empty `--run-id` no longer reads as no run id.** The driver passes the run manifest's
+    `run_id`, or an empty string when the manifest carries none, and the empty string turned off
+    the requirement that a tools manifest and its output receipt exist. Such a run now reports
+    `meta.integrity.tools_manifest_invalid` ("this run has no run id ..."), reads none of the tool
+    output, and is INCONCLUSIVE. A call with no `--run-id` at all, and a `--tools-skipped` run,
+    are unchanged.
+  - Exposure: a driver run always passes a run id unless its run manifest has lost the key, so
+    in practice this was a standalone `synthesize` call. What that call may certify is stated in
+    the output guide: the scout's request plus every capture that could not be used.
+
 - **A target whose path holds `[`, `*` or `?` is reviewed like any other (#3701).** The run looked
   for its own files with `glob`, and passed the run folder's path as part of the pattern. Under a
   review root such as `repo[x]/`, `[x]` was read as a character class, so nothing matched: the
