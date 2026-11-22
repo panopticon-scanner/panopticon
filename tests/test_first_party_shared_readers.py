@@ -185,6 +185,31 @@ class TestAFileThatChangesWhileItIsRead(_Case):
                 with self._during(change), self.assertRaises(safe_write.UnstableFileError):
                     safe_write.read_stable_regular_bytes(self.path, 64)
 
+    def test_a_symlink_swapped_in_for_the_file_is_refused(self):
+        # The path must still name the FILE that was read, not a link back to it.
+        kept = os.path.join(self.dir, "kept")
+
+        def link():
+            os.rename(self.path, kept)
+            os.symlink(kept, self.path)
+        with self._during(link), self.assertRaises(safe_write.UnstableFileError):
+            safe_write.read_stable_regular_bytes(self.path, 64)
+
+    def test_stability_is_judged_before_the_size_limit(self):
+        # A file that grew past the limit while it was read is unstable, not oversized:
+        # the two refusals are charged differently.
+        def grow():
+            with open(self.path, "ab") as fh:
+                fh.write(b"x" * 64)
+        with self._during(grow), self.assertRaises(safe_write.UnstableFileError):
+            safe_write.read_stable_regular_bytes(self.path, 14)
+
+    def test_each_part_of_the_files_state_is_compared(self):
+        status = os.stat(self.path)
+        state = safe_write._file_state(status)
+        self.assertEqual((status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns,
+                          status.st_ctime_ns), state)
+
     def test_it_keeps_the_plain_readers_refusals(self):
         with self.assertRaises(safe_write.ReadLimitExceeded):
             safe_write.read_stable_regular_bytes(self.path, 13)
@@ -255,6 +280,36 @@ class TestAFileThatChangesWhileItIsRead(_Case):
         # A fresh ingest of the now-quiet file classifies, as before.
         first_party_advisory.mark([finding], root, first_party_advisory.IngestCache())
         self.assertEqual("first_party", finding["tool_evidence"]["package_origin"])
+
+    def test_the_tool_disposition_counts_its_own_unstable_reads(self):
+        # Per output file, a delta: the second tool's quiet reads are not charged with
+        # the first one's.
+        root = _tree(self, "Cargo.lock")
+        tools = tempfile.mkdtemp(prefix="tools-out-", dir=root)
+        with open(os.path.join(tools, "osv-scanner.json"), "w", encoding="utf-8") as fh:
+            json.dump(_osv(CARGO, "crates.io", "/src/Cargo.lock"), fh)
+        with open(os.path.join(tools, "trivy.sarif"), "w", encoding="utf-8") as fh:
+            json.dump(_trivy(CARGO, "Cargo.lock"), fh)
+        _findings, quiet = ingest_tools.ingest_dir_detailed(tools, "g1", target_root=root)
+        for tool in ("osv-scanner", "trivy"):
+            self.assertNotIn("advisory_manifest_changed_during_read", quiet[tool])
+        real = safe_write._drain
+        touched = []
+
+        def drain(path, stream, limit):
+            raw = real(path, stream, limit)
+            if not touched:                                # the first read of the ingest
+                touched.append(path)
+                os.utime(path, ns=(1, 1))
+            return raw
+        with mock.patch.object(safe_write, "_drain", side_effect=drain):
+            findings, dispositions = ingest_tools.ingest_dir_detailed(
+                tools, "g1", target_root=root)
+        self.assertEqual(2, len(findings))
+        counts = {tool: row.get("advisory_manifest_changed_during_read")
+                  for tool, row in dispositions.items()}
+        self.assertEqual([1], [n for n in counts.values() if n is not None])
+        self.assertEqual({"ok"}, {row["status"] for row in dispositions.values()})
 
     def test_a_manifest_that_changes_while_it_is_read_grants_nothing(self):
         for lock_name, ecosystem, package in LOCKS:
@@ -388,6 +443,20 @@ class TestATrivyRecordThatIsNotAVulnerability(_Case):
                 self.assertEqual(1, len(findings))
                 self.assertEqual(kind, findings[0]["tool_evidence"].get("kind"))
         self.assertEqual("vulnerability", sarif_utils.VULNERABILITY_KIND)
+
+    def test_the_kind_is_trivys_alone(self):
+        # Another SARIF adapter's rule tagged `vulnerability` gets no kind: the tag is
+        # Trivy's vocabulary, and the marker never reads a message for another tool.
+        root = _tree(self, "Cargo.lock")
+        document = _trivy(CARGO, "Cargo.lock")
+        document["runs"][0]["tool"]["driver"]["name"] = "semgrep"
+        for name in ("semgrep.sarif", "gosec.sarif"):
+            with self.subTest(output=name):
+                findings = _ingest(root, name, document)
+                self.assertEqual(1, len(findings))
+                for finding in findings:
+                    self.assertNotIn("kind", finding["tool_evidence"])
+                    self.assertFalse(evidence.is_first_party_advisory(finding))
 
     def test_a_non_vulnerability_record_with_matching_text_is_not_first_party(self):
         for lock_name, _ecosystem, package in LOCKS:
