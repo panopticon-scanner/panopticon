@@ -17,9 +17,9 @@
     read: after a scanner's own in-source suppressions (a result suppressed in the source is
     never parsed into a finding, so it is never counted), and before path exclusions,
     fixture and vendored-path suppression and the finding cap, so it can exceed the findings
-    the report shows, and is published even when none of them is left; a failure to look at the file again after the read counts as a change;
-    and it names what happened to the file, not why the advisory stayed (it may have stayed
-    for another reason as well).
+    the report shows, and is published even when none of them is left; a failure to look at
+    the file again after the read counts as a change; and it names what happened to the file,
+    not why the advisory stayed (it may have stayed for another reason as well).
     **What this does not do:** it catches a file SEEN changing; it narrows, and does not
     remove, a file changed between two reads that each look consistent. A reader cannot close
     that race. In the reviewer's measurement, a writer flipping a lock between an ambiguous
