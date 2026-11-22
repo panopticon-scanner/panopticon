@@ -189,6 +189,13 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
     "unbound_tool_outputs": IntegrityKey(
         True, "UNBOUND TOOL OUTPUT — %s (not named by this run's exact output "
               "receipt, so it was not ingested; run not certified)"),
+    # #3766: a tools directory that was given, is there, and could not be listed.
+    # Its captures were present and unreadable; an empty listing is what "no scanner
+    # output" looks like, so without this the run certified over them.
+    "tools_dir_unlistable": IntegrityKey(
+        True, "TOOLS DIRECTORY UNREADABLE — %s (it could not be listed, so no "
+              "scanner output in it was read and tool coverage is unknown; run "
+              "not certified)"),
     # #2013 fix round 1: a delta whose scope was chosen by a suppressed
     # comparison -- raw worktree bytes against a filtered index blob.
     "delta_scope_suppressed_git_drivers": IntegrityKey(

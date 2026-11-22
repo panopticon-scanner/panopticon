@@ -269,12 +269,15 @@ which the driver sends for a run manifest that carries no `run_id`, is not the s
 exempting it from the gate would have made corrupting one byte of a target-writable file the
 cheapest way to turn an INCONCLUSIVE run into a PASS on identical findings. An ABSENT manifest when
 no run-bound tool ingest was requested (a pre-#1031 run, `--no-tools`) is a different fact and keeps
-the scout-derived gate. What that gate may certify over a tools directory (#3766, a standalone
-`synthesize` call with no `--run-id`): the runner's selection is unknown, so the required set is the
-scout's request plus every adapter whose capture was present and could not be used. A `failed`
-adapter is lost coverage (`produced_unusable`) whoever asked for it, and the gate goes INCONCLUSIVE;
-a scanner that never ran and that the scout never requested leaves no trace there and cannot be
-missed, which is what a manifest is for. A manifest
+the scout-derived gate. What that gate certifies over a tools directory (#3766, a standalone
+`synthesize` call with no `--run-id`, with or without a manifest beside it, since nothing binds a
+manifest to such a call): every scout-requested adapter ended `ok`, `empty` or `noscan`, and every
+capture in the tools directory was usable. A `failed` capture is lost coverage (`produced_unusable`)
+whoever asked for it, selected by a manifest or not, and the gate goes INCONCLUSIVE. Nothing is said
+about a scanner that never ran and was not requested: it leaves no trace there, which is what a
+run-bound manifest is for. A tools directory that is given, is there, and cannot be listed is lost
+coverage on every path (`meta.integrity.tools_dir_unlistable`, INCONCLUSIVE): its captures were
+present and could not be read. One that is not there is no tool axis at all, as before. A manifest
 that parses with malformed FIELDS is a third, repaired at the read (`meta.tools.sanitized` /
 `network`) where a bad row costs a warning and the row, never the run. The three are independent: a
 run can complete, write a valid artifact and still be `INCONCLUSIVE`; it can pass its gate and still

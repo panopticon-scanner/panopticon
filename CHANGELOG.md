@@ -16,9 +16,19 @@
     `meta.integrity.tools_manifest_invalid` ("this run has no run id ..."), reads none of the tool
     output, and is INCONCLUSIVE. A call with no `--run-id` at all, and a `--tools-skipped` run,
     are unchanged.
+  - The same holds beside a manifest that no run id binds: on a call with no `--run-id`, a
+    failed capture counts whether or not the manifest's `selected` names it. A run with a run id
+    is unchanged; there an unselected capture is unbound and never read.
+  - **A tools directory that cannot be listed is lost coverage.** A `--tools-dir` that is there
+    and whose entries cannot be read looked like a directory with no scanner output, and the run
+    was certified. It now reports the new `meta.integrity.tools_dir_unlistable` (the directory
+    and the error, redacted) and is INCONCLUSIVE, on every path. A directory that is not there
+    is unchanged. The report schema gains the key.
   - Exposure: a driver run always passes a run id unless its run manifest has lost the key, so
-    in practice this was a standalone `synthesize` call. What that call may certify is stated in
-    the output guide: the scout's request plus every capture that could not be used.
+    in practice this was a standalone `synthesize` call. What that call certifies is stated in
+    the output guide: every scout-requested adapter ended `ok`, `empty` or `noscan`, and every
+    capture in the tools directory was usable; nothing is said about a scanner that never ran
+    and was not requested.
 
 - **A target whose path holds `[`, `*` or `?` is reviewed like any other (#3701).** The run looked
   for its own files with `glob`, and passed the run folder's path as part of the pattern. Under a

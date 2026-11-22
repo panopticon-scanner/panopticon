@@ -1259,6 +1259,10 @@
               "type": ["string", "null"],
               "description": "#1644/#2070: this run's tools-manifest.json could not be read or cannot bind its exact output receipt to the current run — the reason, else null. With the runner's selected set or receipt untrusted, tool coverage cannot be certified; this sinking integrity fact forces INCONCLUSIVE unless a finding already forces FAIL. An absent manifest stays benign only when no run-bound tool ingest was requested. Other optional malformed fields are repaired at the read (see meta.tools.sanitized / network)."
             },
+            "tools_dir_unlistable": {
+              "type": ["string", "null"],
+              "description": "#3766: the tools directory this run was given exists and could not be listed -- the directory and the error, redacted and bounded, else null. No scanner output in it was read, so tool coverage is unknown; this sinking integrity fact forces INCONCLUSIVE unless a finding already forces FAIL. A tools directory that was not given, or is not there, is null."
+            },
             "unbound_tool_outputs": {
               "type": "array",
               "items": {"type": "string"},

@@ -89,6 +89,7 @@ class TestIntegrity(unittest.TestCase):
         self.assertEqual(r["meta"]["integrity"],
                          dict(integ, tools_manifest_invalid=None,
                               unbound_tool_outputs=[],
+                              tools_dir_unlistable=None,
                               delta_scope_suppressed_git_drivers=None,
                               unknown_severity_findings=[], sec_less_groups=[]))
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
@@ -137,6 +138,8 @@ class TestIntegrity(unittest.TestCase):
         "discovery_git_failure", "discovery_files_truncated",
         "tools_manifest_invalid",
         "unbound_tool_outputs",
+        # #3766: appended by reconcile beside the two above.
+        "tools_dir_unlistable",
         # #2013 fix round 1: appended by reconcile beside the key above, and
         # stated on every report for the same reason.
         "delta_scope_suppressed_git_drivers",
@@ -179,6 +182,8 @@ class TestIntegrity(unittest.TestCase):
                 # was clean (or there was none), never "not measured".
                 "tools_manifest_invalid": None,
                 "unbound_tool_outputs": [],
+                # #3766: None means the tools directory was listed, or not given.
+                "tools_dir_unlistable": None,
                 # #2013 fix round 1: None means this run was not delta-scoped,
                 # or nothing was suppressed -- never "not measured".
                 "delta_scope_suppressed_git_drivers": None,
@@ -215,6 +220,8 @@ class TestIntegrity(unittest.TestCase):
                 # was clean (or there was none), never "not measured".
                 "tools_manifest_invalid": None,
                 "unbound_tool_outputs": [],
+                # #3766: None means the tools directory was listed, or not given.
+                "tools_dir_unlistable": None,
                 # #2013 fix round 1: None means this run was not delta-scoped,
                 # or nothing was suppressed -- never "not measured".
                 "delta_scope_suppressed_git_drivers": None,
@@ -321,7 +328,7 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         "malformed_findings_files", "coverage_files_skipped", "unreadable_name_files", "empty_dispatch_plans",
         "dispatch_plan_missing", "dispatch_plan_mismatched",
         "invalid_dispatch_plans", "invalid_verify_queue",
-        "tools_manifest_invalid", "unbound_tool_outputs",
+        "tools_manifest_invalid", "unbound_tool_outputs", "tools_dir_unlistable",
         "delta_scope_suppressed_git_drivers"})
     # Published beside them and read by no gate: a counter, a disclosure, or
     # (cross_domain_findings) a deliberate report-only signal.
@@ -349,6 +356,7 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
     # `integrity_section` never publishes them and the table's membership test
     # below has to name them explicitly.
     RECONCILE_ADDS = frozenset({"tools_manifest_invalid", "unbound_tool_outputs",
+                                "tools_dir_unlistable",
                                 "delta_scope_suppressed_git_drivers",
                                 "unknown_severity_findings", "sec_less_groups"})
     # One truthy value per key, in the shape the key really carries.
@@ -387,6 +395,7 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         "write_guard_covers_bash": True,
         "tools_manifest_invalid": "tools-manifest.json is not an object",
         "unbound_tool_outputs": ["semgrep.sarif"],
+        "tools_dir_unlistable": "tools: Permission denied",
         "delta_scope_suppressed_git_drivers": ["diff.external"],
         # #2271: git's own stderr, which is target-influenced free text.
         "discovery_git_failure": "exit 128: fatal: <ROOT>/.git: not a directory",
@@ -439,7 +448,9 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
                 manifest_invalid=(self.TRUTHY[key]
                                   if key == "tools_manifest_invalid" else None),
                 unbound_outputs=(self.TRUTHY[key]
-                                 if key == "unbound_tool_outputs" else None)))
+                                 if key == "unbound_tool_outputs" else None),
+                dir_unlistable=(self.TRUTHY[key]
+                                if key == "tools_dir_unlistable" else None)))
 
     def _integrity_ok(self, key=None):
         """reconcile's OWN `integrity_ok`, never re-spelled here: a test that

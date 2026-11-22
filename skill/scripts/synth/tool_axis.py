@@ -24,6 +24,7 @@ import scripts.app_trace as app_trace
 import scripts.groups_schema as groups_schema
 import scripts.ingest_tools as ingest_tools
 import scripts.native_unparsed as native_unparsed
+import scripts.redact as redact
 import scripts.tools_image as tools_image
 import scripts.tools_manifest as tools_manifest
 from scripts.tools import EXECUTES_TARGET_BUILD
@@ -36,6 +37,24 @@ from . import validate_schema as validate_schema_mod
 
 class ToolManifestError(ValueError):
     """A stale or foreign tool manifest cannot be used for synthesis."""
+
+
+def tools_dir_unlistable(tools_dir):
+    """Why a tools directory that is THERE could not be listed, else None (#3766).
+
+    `ingest_tools._output_files` turns a failed listing into an empty one, which is
+    what a directory holding no scanner output looks like: the run then certified
+    over captures that were present and could not be read. A directory that was not
+    given, or is not there, has no output to lose and says nothing, as before. The
+    reason names the directory and the error, redacted and bounded."""
+    if not tools_dir or not os.path.lexists(tools_dir):
+        return None
+    try:
+        with os.scandir(tools_dir):
+            return None
+    except OSError as exc:
+        return redact.redact_diagnostic(
+            "%s: %s" % (tools_dir, exc.strerror or type(exc).__name__), 400)
 
 
 @dataclass(frozen=True)
@@ -56,6 +75,8 @@ class ToolAxis:
     # corrupt are different facts and only one of them is an integrity failure.
     manifest_invalid: str | None = None
     unbound_outputs: list | None = None
+    # #3766: why the tools directory this run was given could not be listed, or None.
+    dir_unlistable: str | None = None
     suppressed: dict | None = None   # {reason: count} source-scope drops
     # #1701/#3269 G4: source-scope drops this run's GATE must still count -- non-empty
     # only under `--security redteam`. Carried beside `suppressed` rather than
@@ -176,9 +197,15 @@ class ToolAxis:
         if manifest_state is None:
             manifest_state = cls.manifest_state(args, run_dir)
         manifest, manifest_invalid, _allowed_outputs = manifest_state
+        unlistable = tools_dir_unlistable(getattr(args, "tools_dir", None))
+        if unlistable:
+            print("synthesize: the tools directory cannot be listed (%s) -- no scanner "
+                  "output in it was read, so tool coverage is NOT certified."
+                  % unlistable, file=sys.stderr)
         return cls(policy_mode=plan_mod.derive_tool_policy_mode(plans=plan_lists),
                    tools_ran=tools_ran, dispositions=dispositions, manifest=manifest,
                    ingested_paths=args.files, manifest_invalid=manifest_invalid,
+                   dir_unlistable=unlistable,
                    unbound_outputs=list(unbound_outputs or []),
                    suppressed=suppressed,                     # #1578
                    gated_suppressed=list(gated_suppressed or []),   # #1701
@@ -286,6 +313,12 @@ def _merged_tallies(tallied, extra):
     return out
 
 
+def _unusable(dispositions):
+    """Adapters whose capture ingest read and could not use (`failed`), sorted."""
+    return sorted(name for name, d in (dispositions or {}).items()
+                  if isinstance(d, dict) and d.get("status") == "failed")
+
+
 def reconcile(plan, tools, resolved, run=None):
     """The plan-reconciliation cluster (WS-0 S2): meta.coverage and
     meta.integrity from the dispatch plan, the tool layer and the resolved
@@ -358,6 +391,15 @@ def reconcile(plan, tools, resolved, run=None):
                 {t: "produced_unusable" if info["kind"] == "unusable"
                  else "requested_absent"
                  for t, info in lost.items()})
+            # #3766: and every capture ingest read and could not use, selected or
+            # not. `lost_required_coverage` reads only the manifest's `selected`, so on
+            # a call that requires no receipt a manifest selecting nothing switched
+            # the rule below off again: a manifest there is no more bound to the run
+            # than its absence is. With a receipt (a run id) nothing changes: an
+            # unselected capture is unbound, never parsed, and has no disposition.
+            unusable = _unusable(tools.dispositions)
+            tools_absent = sorted(set(tools_absent) | set(unusable))
+            tool_divergence.update({t: "produced_unusable" for t in unusable})
         unavailable = sorted(set(plan.scout_requested or []) - selected_m - produced_m)
         tool_divergence.update({t: "requested_unavailable" for t in unavailable})
     else:
@@ -371,8 +413,7 @@ def reconcile(plan, tools, resolved, run=None):
         # manifest branch has had since #1512, here without a selection to bound it.
         # The reason is the exact one (`produced_unusable`) even for a tool the scout
         # also requested.
-        unusable = sorted(name for name, d in (tools.dispositions or {}).items()
-                          if isinstance(d, dict) and d.get("status") == "failed")
+        unusable = _unusable(tools.dispositions)
         tools_absent = sorted(set(tools_absent) | set(unusable))
         tool_divergence.update({t: "produced_unusable" for t in unusable})
     # #1899: certify on the `network` table `meta.tools.network` publishes.
@@ -462,6 +503,9 @@ def reconcile(plan, tools, resolved, run=None):
     integrity = dict(integrity)
     integrity["tools_manifest_invalid"] = tools.manifest_invalid
     integrity["unbound_tool_outputs"] = list(tools.unbound_outputs or [])
+    # #3766: always present, like the two above; None when the directory was listed,
+    # was not given, or is not there.
+    integrity["tools_dir_unlistable"] = tools.dir_unlistable
     # #2013 fix round 1 (review I1): suppressing the target's clean filter makes
     # git compare RAW worktree bytes against a FILTERED index blob, so paths
     # nobody touched read as modified. On a full-repo scan that costs
