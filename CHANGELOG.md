@@ -2,6 +2,72 @@
 
 ## Unreleased
 
+- **Three shared-reader faults behind first-party advisory marking are closed (#3765).** Each
+  could put a scanner finding on the advisor-free path without having earned it, for every
+  lock the marker reads (Cargo, npm, Python).
+  - **A file seen changing while it is read grants nothing.** A lock or manifest was read
+    once and believed. A writer racing the read could show a complete-looking prefix, or swap
+    another file in and back, and the finding was confirmed. The reader now compares the
+    file's identity, size, modification time and change time before and after the read, and
+    checks that the path still names the file it read (`safe_write.read_stable_regular_bytes`).
+    A mismatch discards the bytes and leaves the advisory with the advisor; the bytes read
+    are still charged to the ingest's byte budget. Each tool's disposition counts, as
+    `advisory_manifest_changed_during_read`, its advisories whose lock, or a manifest
+    consulted for their package, could not be read stably. It is counted where the file is
+    read: after a scanner's own in-source suppressions (a result suppressed in the source is
+    never parsed into a finding, so it is never counted), and before path exclusions,
+    fixture and vendored-path suppression and the finding cap, so it can exceed the findings
+    the report shows, and is published even when none of them is left; a failure to look at
+    the file again after the read counts as a change; and it names what happened to the file,
+    not why the advisory stayed (it may have stayed for another reason as well).
+    **What this does not do:** it catches a file SEEN changing; it narrows, and does not
+    remove, a file changed between two reads that each look consistent. A reader cannot close
+    that race. In the reviewer's measurement, a writer flipping a lock between an ambiguous
+    full lock and a local-only prefix still got a finding wrongly confirmed in 15% of ingests
+    by atomic replace (30% before) and 42% by in-place rewrite (46% before). The checkout must
+    not be written to during a run.
+  - **A finding a scanner located outside the scan mount is never matched against a lock.**
+    `/Cargo.lock`, `//Cargo.lock`, `file:///Cargo.lock` and the authority form
+    `file://Cargo.lock` are normalized to the review root's own `Cargo.lock`, and so is a
+    SARIF result whose relative `uri` sits under a `uriBaseId` that is not the scan mount
+    (which is how Trivy writes a location). The location is unchanged: `location.file`, the
+    fingerprint, the reconcile key, suppression and file coverage are exactly what they were.
+    The scanner adapter now records the fact beside it, `tool_evidence.uri_base: "outside"`,
+    and the marker refuses a finding that carries it before any lock is read.
+    Nothing is resolved: a SARIF base is inside only when it is exactly the scan mount
+    (`file:///src/` or `/src/`: no authority, query, fragment, percent-escape or control
+    character), and any other base the run defines is outside. A base the run never defines
+    (semgrep's `%SRCROOT%` with no table) is read as no base, and an absolute `uri` ignores
+    its base. Separately, a location is matched against a lock only when it is a plain
+    relative path: one with a scheme, a `%`, `?`, `#`, a backslash, a control character or
+    lone surrogate (or the escape one is shown as) or a `..` segment stays with the advisor.
+    **Output change:** such findings gain `tool_evidence.uri_base` (Trivy and osv-scanner
+    set it), and the report schema gains the field. Nothing else about them changes.
+    One file-coverage detail does change, for every SARIF adapter the legacy reader serves:
+    a result whose path is empty (`""`, `/`, `file:///`, `/src/`) is no longer counted as a
+    parsed file, so `parsed_files` can read one lower for such a capture.
+  - **Two advisories that differ in version, or in where the scanner located them, are never
+    one finding.** Findings at one file under one advisory id were grouped by package name and
+    the first-party mark. That mark was all that kept the project's own `workspace-app 1.2.3`
+    apart from a registry `workspace-app 0.9.0` in the same lock, and anything that withheld
+    it (a lock that changed while it was read, a record located outside the mount, an
+    ambiguous identity, an exhausted budget) merged the two into one finding with
+    `occurrences: 2`: one advisor answer then settled both, and a confirmation of the LOW one
+    published at the HIGH one's severity. Both collapse stages now also key on the installed
+    version the record names (for Trivy, the package and version of its message) and on
+    `tool_evidence.uri_base`. **Output change:** two such records are two findings, each
+    queued for its own answer. They share one fingerprint, as two findings at one file under
+    one advisory id already could. No committed scanner capture groups differently.
+  - **Only a Trivy vulnerability record is matched against a lock.** Trivy's package and
+    version are parsed from its message, and a misconfiguration or licence record can carry
+    the same text. `tool_evidence.kind` is now `vulnerability` when the record's rule carries
+    Trivy's own `vulnerability` tag (`secret` still wins), and the marker requires it. That
+    check replaces the marker's separate refusal of `kind: secret`, which it made unreachable:
+    only Trivy sets a kind, and a secret record's kind is never `vulnerability`.
+    **Output change:** Trivy vulnerability findings gain `tool_evidence.kind: "vulnerability"`
+    and the report schema's `kind` enum gains that value. It is not part of the fingerprint
+    or reconcile key.
+
 - **A target whose path holds `[`, `*` or `?` is reviewed like any other (#3701).** The run looked
   for its own files with `glob`, and passed the run folder's path as part of the pattern. Under a
   review root such as `repo[x]/`, `[x]` was read as a character class, so nothing matched: the

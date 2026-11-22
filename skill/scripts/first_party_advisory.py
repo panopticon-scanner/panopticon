@@ -54,8 +54,8 @@ import tomllib
 
 from scripts import evidence, safe_write
 from scripts.tools import ADVISORY_ADAPTERS
-from scripts.tools.base import inert_text
-from scripts.tools.sarif_utils import SECRET_KIND
+from scripts.tools.base import INERT_CUT, inert_text
+from scripts.tools.sarif_utils import VULNERABILITY_KIND
 
 
 # Cargo.lock is controller input to the exact first-party package check, not
@@ -112,11 +112,35 @@ class IngestCache:
         self.manifest_bytes_remaining = MAX_CARGO_MANIFEST_INGEST_BYTES
         self.manifest_budget_exhausted = False
         self.budget_exhaustion_count = 0
+        # #3765: every lock or manifest that changed while it was read, in order. Such a
+        # read grants nothing; the count is disclosed per tool at ingest.
+        self.unstable_reads: list[str] = []
+        # How many times a refused file was consulted, the first read and every cached
+        # miss after it: a loop reads this before and after proving one identity to
+        # learn whether an unstable file decided it.
+        self.unstable_touches = 0
+        # Advisories left with the advisor whose lock, or a manifest consulted for
+        # their identity, was an unstable read. Not a cause: a registry copy of the
+        # same identity keeps it with the advisor too. Disclosed per tool as a delta.
+        self.unstable_denials = 0
 
 
 def _cargo_lock_path(target_root, finding):
     """Return a confined Cargo.lock path for *finding*, else None."""
     return _lock_path(target_root, finding, ("Cargo.lock",))
+
+
+# #3765, the gate ruling: a location is matched against a lock only when it is a plain
+# relative path. A scheme, a percent-escape, a query or a fragment is a URI this code
+# does not interpret, and reading it as a directory name reads some other directory.
+# A backslash or the cut mark means the path may have been rewritten to be shown
+# (`inert_text` spells a control character as backslash-x-NN, and that text names a
+# different, real directory; a lone surrogate, U+D800 to U+DFFF, is spelled `U+XXXX`
+# with no backslash, `inert.spelled`, and only that range is). All of these stay with
+# the advisor.
+_NOT_PLAIN = re.compile(r"\A[A-Za-z][A-Za-z0-9+.-]*:|[\x00-\x1f\x7f%?#\\]|"
+                        r"U\+D[89A-F][0-9A-F]{2}|"
+                        + re.escape(INERT_CUT))
 
 
 def _lock_path(target_root, finding, names):
@@ -128,6 +152,8 @@ def _lock_path(target_root, finding, names):
     # Finding paths use `/`; on POSIX a backslash is a literal filename byte
     # (#2988), while on Windows it is the platform separator.
     rel = rel.replace(os.sep, "/")
+    if _NOT_PLAIN.search(rel):
+        return None
     while rel.startswith("./"):
         rel = rel[2:]
     if (not rel or rel.startswith("/") or os.path.basename(rel) not in names
@@ -165,7 +191,11 @@ def _manifest_path(target_root, base, package_dir):
 
 
 def _read_budgeted_bytes(path, file_limit, cache: IngestCache):
-    """Read one file while charging the shared advisory-ingest byte budget."""
+    """Read one file while charging the shared advisory-ingest byte budget.
+
+    Through ``safe_write.read_stable_regular_bytes`` (#3765): a file that changes, or
+    is swapped, while it is read is a named refusal (``cache.unstable_reads``), and
+    its bytes are never parsed. Every lock and manifest reader comes through here."""
     if cache.manifest_budget_exhausted or cache.manifest_bytes_remaining <= 0:
         cache.manifest_bytes_remaining = 0
         cache.manifest_budget_exhausted = True
@@ -174,7 +204,16 @@ def _read_budgeted_bytes(path, file_limit, cache: IngestCache):
 
     limit = min(file_limit, cache.manifest_bytes_remaining)
     try:
-        raw = safe_write.read_regular_bytes(path, limit)
+        raw = safe_write.read_stable_regular_bytes(path, limit)
+    except safe_write.UnstableFileError as exc:
+        cache.unstable_reads.append(path)
+        cache.unstable_touches += 1
+        # The bytes were read, so they are charged, like any other read.
+        cache.manifest_bytes_remaining -= min(exc.bytes_read, limit)
+        if cache.manifest_bytes_remaining == 0:
+            cache.manifest_budget_exhausted = True
+            cache.budget_exhaustion_count += 1
+        return None
     except safe_write.ReadLimitExceeded:
         cache.manifest_bytes_remaining -= limit
         if cache.manifest_bytes_remaining == 0:
@@ -198,6 +237,7 @@ def _read_toml(path, target_root, cache: IngestCache):
         return None
     key = ("toml", real_path)
     if key in cache.manifests:
+        cache.unstable_touches += real_path in cache.unstable_reads
         return cache.manifests[key]
     raw = _read_budgeted_bytes(real_path, MAX_CARGO_MANIFEST_BYTES, cache)
     if raw is None:
@@ -439,6 +479,7 @@ def _cargo_package_origins(path, target_root, cache: IngestCache):
     if not isinstance(packages, list):
         cache.package_origins[path] = origins
         return origins
+    touched = cache.unstable_touches
     publishable = _publishable_manifest_identities(path, target_root, cache)
     for package in packages:
         if not isinstance(package, dict):
@@ -449,8 +490,10 @@ def _cargo_package_origins(path, target_root, cache: IngestCache):
             continue
         identity = (name, version)
         if "source" not in package:
-            origin = (evidence.FIRST_PARTY_PACKAGE_ORIGIN
-                      if identity in publishable else "unknown")
+            # Cargo's manifests are read as one set, so an unstable one could have
+            # been the manifest of any identity the set does not prove.
+            origin = (evidence.FIRST_PARTY_PACKAGE_ORIGIN if identity in publishable
+                      else _UNSTABLE if cache.unstable_touches > touched else "unknown")
         elif isinstance(package.get("source"), str) and package["source"]:
             origin = "external"
         else:
@@ -478,6 +521,7 @@ def _read_json(path, file_limit, target_root, cache: IngestCache):
         return None
     key = ("json", real_path)
     if key in cache.manifests:
+        cache.unstable_touches += real_path in cache.unstable_reads
         return cache.manifests[key]
     raw = _read_budgeted_bytes(real_path, file_limit, cache)
     document = None
@@ -492,6 +536,9 @@ def _read_json(path, file_limit, target_root, cache: IngestCache):
 
 
 _URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+# An origin that is unknown because the manifest that would have proved it changed
+# while it was read (#3765). Never first-party; kept apart only to be counted.
+_UNSTABLE = "unstable"
 
 
 def _npm_node_modules_name(key):
@@ -602,10 +649,11 @@ def _npm_package_origins(lock_path, target_root, cache: IngestCache):
             continue
         identity = (name, version)
         fact = None
+        touched = cache.unstable_touches
         if key == "" or os.path.normpath(key) in linked:
             fact = _npm_manifest_fact(os.path.join(lock_dir, key), target_root, cache)
         origin = (evidence.FIRST_PARTY_PACKAGE_ORIGIN if fact == (identity, True)
-                  else "unknown")
+                  else _UNSTABLE if cache.unstable_touches > touched else "unknown")
         found.setdefault(identity, set()).add(origin)
     origins.update(found)
     return origins
@@ -869,10 +917,11 @@ def _python_package_origins(lock_path, target_root, cache: IngestCache):
     if len(local) > MAX_CARGO_MANIFESTS:
         return origins
     for identity, kind, path in local:
+        touched = cache.unstable_touches
         fact = _python_manifest_fact(os.path.join(lock_dir, path), target_root, cache,
                                      virtual=kind == "virtual")
         origin = (evidence.FIRST_PARTY_PACKAGE_ORIGIN if fact == (identity, True)
-                  else "unknown")
+                  else _UNSTABLE if cache.unstable_touches > touched else "unknown")
         found.setdefault(identity, set()).add(origin)
         # Confirmation stays an exact match; another spelling of the same release
         # only makes the identity ambiguous.
@@ -945,7 +994,21 @@ def _mark_finding(finding, target_root, cache):
     if tool not in ADVISORY_ADAPTERS and tool != "trivy":
         return
     tool_evidence = finding.get("tool_evidence")
-    if not isinstance(tool_evidence, dict) or tool_evidence.get("kind") == SECRET_KIND:
+    if not isinstance(tool_evidence, dict):
+        return
+    # #3765: the scanner located this finding outside the scan mount (an absolute path
+    # off the mount, an authority, or a SARIF base that is not the mount). Its
+    # `location.file` is spelled as it always was, which can be the name of a lock in
+    # the tree, so the fact is carried here and decides before any lock is read. Any
+    # value refuses: only a scanner adapter writes the key, and only to say this.
+    if "uri_base" in tool_evidence:
+        return
+    # #3765: Trivy's identity is parsed from its message, and a misconfiguration,
+    # licence or secret record can carry the same text. Only a record Trivy itself
+    # tagged a vulnerability may be matched against a lock. (This replaces the earlier
+    # `kind == secret` refusal: Trivy is the only adapter that sets a kind, and a
+    # secret record's kind is never `vulnerability`.)
+    if tool == "trivy" and tool_evidence.get("kind") != VULNERABILITY_KIND:
         return
     package = _advisory_package(finding)
     if package is None:
@@ -977,6 +1040,9 @@ def _mark_finding(finding, target_root, cache):
         ecosystem, member = "npm", "workspace/local package"
         origins = _npm_package_origins(lock_path, target_root, cache).get(package, set())
     if origins != {evidence.FIRST_PARTY_PACKAGE_ORIGIN}:
+        # #3765: count it when an unstable read was involved -- the lock's own, or a
+        # manifest consulted for this identity.
+        cache.unstable_denials += lock_path in cache.unstable_reads or _UNSTABLE in origins
         return
     name, version = package
     marked = dict(tool_evidence)

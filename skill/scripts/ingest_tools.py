@@ -887,7 +887,9 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         # and synthesis ingest through this one point, so the marker and the
         # resulting queue exemption cannot drift between them.
         prior_budget_exhaustions = cargo_advisory_cache.budget_exhaustion_count
+        prior_unstable_denials = cargo_advisory_cache.unstable_denials
         first_party_advisory.mark(parsed, root, cargo_advisory_cache)
+        unstable_denials = cargo_advisory_cache.unstable_denials - prior_unstable_denials
         budget_exhaustions = (
             cargo_advisory_cache.budget_exhaustion_count
             - prior_budget_exhaustions
@@ -923,6 +925,13 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         if budget_exhaustions:
             dispositions[tool]["advisory_manifest_budget_exhausted"] = (
                 budget_exhaustions)
+        if unstable_denials:
+            # #3765: this tool's advisories whose lock, or a manifest consulted for
+            # their package, could not be read stably. Counted here, before
+            # exclusions, suppression and the cap, and per advisory, so a second tool
+            # at the same lock says so too. What happened to the file, not why the
+            # advisory stayed.
+            dispositions[tool]["advisory_manifest_changed_during_read"] = unstable_denials
         if policy["suppressed_in_source"]:
             # #1839: what this mode honoured, per tool. Absent means nothing
             # was suppressed in the tree's own source -- deliberately not the

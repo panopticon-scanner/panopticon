@@ -190,10 +190,12 @@ def _result_paths(sarif):
         results = run.get("results") if isinstance(run, dict) else None
         for result in results if isinstance(results, list) else []:
             try:
-                located.add(_sarif_path(result["locations"][0]["physicalLocation"]
-                                        ["artifactLocation"]["uri"]))
+                path = _sarif_path(result["locations"][0]["physicalLocation"]
+                                   ["artifactLocation"]["uri"])
             except (KeyError, IndexError, TypeError, AttributeError):
-                pass
+                continue
+            if path:                 # an empty path locates nothing (#3765)
+                located.add(path)
     return located
 
 

@@ -651,7 +651,7 @@ def aggregate_tool_findings(findings):
                 str(f.get("title") or ""))
 
     out = []
-    groups: dict[tuple[str, str, str, str, str | None, bool],
+    groups: dict[tuple[str, str, str, str, str | None, bool, str | None, str | None],
                  list[dict[str, Any]]] = {}
     order = []
     for f in findings:
@@ -672,10 +672,17 @@ def aggregate_tool_findings(findings):
         # project's own `workspace-app 1.2.3` AND a registry `workspace-app 0.9.0`;
         # keyed by name alone both copies landed in one group and one was dropped --
         # by input order (osv, both at line 1), or by an agent's line (Trivy).
+        #
+        # #3765: and so are the installed version the record names and the scanner's
+        # `uri_base`. The mark is the only thing that kept those two copies apart, and
+        # every refusal to mark (a lock that changed while it was read, a record located
+        # outside the scan mount, an ambiguous identity, an exhausted budget) removes
+        # it: the two became one finding, and one advisor answer settled both. Records
+        # that name different versions, or that differ in where the scanner located
+        # them, are different advisories whatever the marker made of them.
         key = (f.get("panel"), f.get("category"),
                evidence_mod.norm_path(((f.get("location") or {}).get("file"))),
-               str(rule), evidence_mod.artifact_term(f),
-               evidence_mod.is_first_party_advisory(f))
+               str(rule), *evidence_mod.advisory_terms(f))
         if key not in groups:
             groups[key] = []
             order.append(key)

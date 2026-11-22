@@ -168,14 +168,19 @@ def _by_package(members):
     a package name, and an unnamed member must not be folded into an artifact it
     was never reported against.
     """
-    buckets: dict[tuple[str | None, bool], list[dict[str, Any]]] = {}
+    buckets: dict[tuple[str | None, bool, str | None, str | None],
+                  list[dict[str, Any]]] = {}
     order = []
     for m in members:
         # `evidence.artifact_term` is the one reading of the term, shared with
         # both identity functions and `findings.aggregate_tool_findings` (#2352).
         # #3655 review: so is the first-party mark -- the project's own package and
         # a registry copy of the same name are two artifacts, never one bucket.
-        key = (evidence_mod.artifact_term(m), evidence_mod.is_first_party_advisory(m))
+        # #3765: and the installed version and the scanner's `uri_base`. Without
+        # them, two advisories that `aggregate_tool_findings` kept apart (a record
+        # the marker refused, and a registry record of another version) met again
+        # here and the more severe one survived alone.
+        key = evidence_mod.advisory_terms(m)
         if key not in buckets:
             buckets[key] = []
             order.append(key)

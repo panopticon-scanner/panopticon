@@ -6,7 +6,7 @@ from .base import (cve_ids, cvss_bucket, has_any_file, make_finding,
                    omit_none, parse_json_bytes, scratch_cwd,
                    _cvss_v3_score)
 from .exec import run_tool
-from .sarif_utils import CaptureCoverage, _norm_uri
+from .sarif_utils import URI_BASE_OUTSIDE, CaptureCoverage, _norm_uri, path_outside_mount
 
 
 _DATABASE_SEVERITIES = {"CRITICAL": "CRITICAL", "HIGH": "HIGH",
@@ -161,6 +161,9 @@ class OsvScannerAdapter:
                 coverage.malformed(record + ".source.path", "expected_path")
             coverage.seen(path)
             src_path = _norm_uri(path) if isinstance(path, str) else ""
+            # #3765: `/Cargo.lock` is normalised to `Cargo.lock`, as it always was;
+            # that it was reported OUTSIDE the scan mount is recorded beside it.
+            outside = path_outside_mount(path)
             packages = coverage.array(result.get("packages"), record + ".packages", path)
             for pi, pkg_entry in enumerate(packages):
                 package_record = record + ".packages[%d]" % pi
@@ -235,6 +238,7 @@ class OsvScannerAdapter:
                             "vulnerable_versions": pkg.get("version"),
                             "ecosystem": pkg.get("ecosystem"),
                             "cvss_max_severity": vuln_score,
+                            "uri_base": URI_BASE_OUTSIDE if outside else None,
                         }),
                     ))
                     n += 1

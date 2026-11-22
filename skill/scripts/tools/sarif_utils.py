@@ -8,6 +8,7 @@ import math
 import os
 import re
 import sys
+from urllib.parse import urlsplit
 
 from scripts.provenance import tool_provenance
 from .base import TARGET_MOUNT, SEV_MAP, cvss_bucket, inert_text, new_finding_id
@@ -43,6 +44,9 @@ SECRET_ADAPTERS = frozenset({"gitleaks"})
 # Trivy's scanner-owned `secret` tag gets this per-finding kind. The value is a
 # finding-kind tag, not a credential, so Bandit's B105 is a false positive.
 SECRET_KIND = "secret"  # nosec B105
+# #3765: the positive class the first-party advisory marker requires of a Trivy
+# record before it reads a package identity out of that record's message.
+VULNERABILITY_KIND = "vulnerability"
 # The SARIF toolComponent name a CWE taxonomy uses. gosec names its taxonomy
 # "CWE" and puts a BARE number under it, which is why `CWE_TAG` cannot see it.
 CWE_TAXONOMY = "CWE"
@@ -107,6 +111,92 @@ def _is_fixture_path(path):
 
 is_test_path = _is_test_path
 is_fixture_path = _is_fixture_path
+
+
+_URI_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def is_scan_mount(base):
+    """True only for a base uri that IS the scan mount (#3765, the gate ruling).
+
+    Not a resolver, and deliberately so: an earlier draft of this change joined a uri
+    onto its base by hand, and each review found another spelling it read differently
+    from a real one (a query, a fragment, a scheme with no ``//``, a percent-escape,
+    a control character). The runner scans one
+    mount, so one base is inside and every other is outside. The standard library
+    parses it; the base must have the scheme ``file`` or none, no authority, and a
+    path that is exactly the mount with its trailing slash -- which, since nothing is
+    decoded, also means no percent sign. A ``?`` or ``#`` anywhere (so no query and
+    no fragment, not even an empty one), or a control character or space (which a
+    URL parser strips before it looks), refuses it unparsed."""
+    if not isinstance(base, str) or any(ch in "?#" or ord(ch) <= 0x20 for ch in base):
+        return False
+    try:
+        parts = urlsplit(base)
+    except ValueError:
+        return False
+    return parts.scheme in ("", "file") and not parts.netloc and parts.path == _TARGET_PREFIX
+
+
+URI_BASE_OUTSIDE = "outside"
+
+
+def path_outside_mount(uri):
+    """True when a scanner path names a place outside the scan mount (#3765).
+
+    ``norm_uri`` strips a leading slash, so ``/Cargo.lock`` and the authority form
+    ``file://Cargo.lock`` both read as the review root's ``Cargo.lock``, a file the
+    scanner never named. The location is left exactly as it has always been spelled
+    -- other readers key on it -- and this FACT is recorded beside it instead
+    (``tool_evidence.uri_base``), for the one reader that confirms a finding on the
+    strength of its path.
+
+    Outside: an absolute path that does not begin with the mount (``/x``, ``//src/x``,
+    ``/src``, ``/``), and a ``file://`` uri with an authority. A relative path is not
+    outside by itself; a SARIF base can make it so (``artifact_outside_mount``)."""
+    if not isinstance(uri, str):
+        return False
+    if uri[:len("file://")].lower() == "file://":     # a scheme has no case
+        uri = uri[len("file://"):]
+        if not uri.startswith("/"):
+            return True                       # an authority: not a local path at all
+    return uri.startswith("/") and not uri.startswith(_TARGET_PREFIX)
+
+
+def artifact_outside_mount(artifact, run):
+    """True when a SARIF ``artifactLocation`` names a place outside the scan mount.
+
+    Trivy writes a RELATIVE uri (``Cargo.lock``) with ``uriBaseId: ROOTPATH`` and the
+    base in the run's ``originalUriBaseIds``; read alone, that uri is the review
+    root's file whatever the base says. Nothing is joined or resolved:
+
+    - an absolute uri is judged for itself (``path_outside_mount``) and ignores its
+      base, as SARIF says;
+    - a relative uri under the scan mount itself (``is_scan_mount``) is inside;
+    - under any other base the run DEFINES, whatever it says, or one that cannot be
+      read (no string uri, a chained base, a table that is not an object, an id
+      that is not a string), it is outside;
+    - a base the run never defines (no table, a null table, no entry for the id) is
+      a bare symbol -- semgrep and CodeQL write ``%SRCROOT%`` so -- and is read as
+      no base.
+
+    A non-object, or one with no string uri, locates nothing and is not outside."""
+    if not isinstance(artifact, dict):
+        return False
+    uri, base_id = artifact.get("uri"), artifact.get("uriBaseId")
+    if not isinstance(uri, str):
+        return False
+    if uri.startswith("/") or _URI_SCHEME.match(uri):
+        return path_outside_mount(uri)
+    if base_id is None:
+        return False
+    bases = run.get("originalUriBaseIds") if isinstance(run, dict) else None
+    if bases is None or (isinstance(bases, dict) and isinstance(base_id, str)
+                         and base_id not in bases):
+        return False
+    entry = bases.get(base_id) if isinstance(bases, dict) and isinstance(base_id, str) else None
+    base = entry.get("uri") if isinstance(entry, dict) and "uriBaseId" not in entry else None
+    return not is_scan_mount(base)
 
 
 def norm_uri(uri):
@@ -432,19 +522,25 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1,
                 # (ingest prune, reconcile's location_file, the delta gate) all
                 # already treat "" as "no file".
                 loc = {"file": "", "line_start": None}
+                outside = False
                 locs = res.get("locations") or []
                 if locs:
                     phys = locs[0].get("physicalLocation", {})
+                    outside = artifact_outside_mount(phys.get("artifactLocation"), run)
                     loc = {"file": _norm_uri(phys.get("artifactLocation", {}).get("uri")),
                            "line_start": phys.get("region", {}).get("startLine")}
                 rule_props = _properties(rule.get("properties"))
                 result_props = _properties(res.get("properties"))
                 rule_tags = rule_props.get("tags")
                 tags = " ".join(str(t) for t in rule_tags) if isinstance(rule_tags, list) else ""
-                finding_kind = (SECRET_KIND if tool_name == "trivy"
-                                and isinstance(rule_tags, list)
-                                and any(tag == SECRET_KIND for tag in rule_tags)
-                                else None)
+                finding_kind = None
+                if tool_name == "trivy" and isinstance(rule_tags, list):
+                    # Trivy's own exact tags. `secret` wins: such a record is never
+                    # an advisory, whatever else it is tagged.
+                    if any(tag == SECRET_KIND for tag in rule_tags):
+                        finding_kind = SECRET_KIND
+                    elif any(tag == VULNERABILITY_KIND for tag in rule_tags):
+                        finding_kind = VULNERABILITY_KIND
                 blob = " ".join([res.get("ruleId", ""), tags,
                                  json.dumps(result_props, default=str)])
                 # #1578 I1: the tag scrape, UNION the rule's CWE taxonomy
@@ -468,6 +564,11 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1,
                 tool_evidence = {"rule_id": inert_rule_id}
                 if finding_kind is not None:
                     tool_evidence["kind"] = finding_kind
+                if outside:
+                    # #3765: the scanner located this outside the scan mount. The
+                    # location above is spelled as it always was; the marker reads
+                    # this and never matches the finding against a lock.
+                    tool_evidence["uri_base"] = URI_BASE_OUTSIDE
                 finding = {
                     "id": new_finding_id(prefix, n),
                     # The message is target-derived text on its way to an

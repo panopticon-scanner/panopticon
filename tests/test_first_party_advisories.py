@@ -80,6 +80,10 @@ def _raw_advisory_finding(*, path="Cargo.lock", source="tool:osv-scanner",
     ecosystem = _OSV_ECOSYSTEMS.get(os.path.basename(path)) if isinstance(path, str) else None
     if source == "tool:osv-scanner" and ecosystem is not None:
         tool_evidence["ecosystem"] = ecosystem
+    if source == "tool:trivy" and kind is None:
+        # #3765: the class Trivy's vulnerability records carry; without it the marker
+        # reads no identity from a Trivy finding.
+        tool_evidence["kind"] = "vulnerability"
     if kind is not None:
         tool_evidence["kind"] = kind
     return {
@@ -574,14 +578,14 @@ class TestCargoFirstPartyAdvisoryIngest(unittest.TestCase):
                 json.dump(document, fh)
 
         reads = []
-        read_regular_bytes = first_party_advisory.safe_write.read_regular_bytes
+        read_stable = first_party_advisory.safe_write.read_stable_regular_bytes
 
         def counted_read(path, limit):
             reads.append(os.path.realpath(path))
-            return read_regular_bytes(path, limit)
+            return read_stable(path, limit)
 
         with mock.patch.object(
-                first_party_advisory.safe_write, "read_regular_bytes",
+                first_party_advisory.safe_write, "read_stable_regular_bytes",
                 side_effect=counted_read):
             findings = ingest_tools.ingest_dir(
                 tools, "g1", target_root=root.name)
@@ -2115,9 +2119,12 @@ class TestFirstPartyAdvisoryStability(unittest.TestCase):
             self.assertEqual({"file": "Cargo.lock", "line_start": 5,
                               "shown_hit_severity": "LOW"}, out[0]["severity_from"])
 
-    def test_a_full_tie_is_broken_by_the_reported_version_then_the_title(self):
+    def test_a_full_tie_is_broken_by_the_title_and_two_versions_are_two_findings(self):
         # Every member of a group shares one fingerprint, so only content left over --
-        # the version, then the title -- separates two copies at one locus.
+        # the title -- separates two copies at one locus.
+        # #3765 (third gate run): the reported version used to be the first tie-break,
+        # which meant two records naming DIFFERENT versions were one group and one
+        # advisor answer settled both. They are two findings now, in either order.
         osv = [f for f in self._ingest(["osv-scanner.json"])
                if evidence.tool_rule_id(f) == "RUSTSEC-2099-0002"][0]
         older = dict(osv, tool_evidence=dict(osv["tool_evidence"], vulnerable_versions="0.8.0"),
@@ -2125,12 +2132,16 @@ class TestFirstPartyAdvisoryStability(unittest.TestCase):
         newer = dict(osv, tool_evidence=dict(osv["tool_evidence"], vulnerable_versions="0.9.0"),
                      title="a")
         retitled = dict(older, title="a")
-        for pair, expected in (([older, newer], ("0.8.0", "z")),
-                               ([older, retitled], ("0.8.0", "a"))):
-            for members in (pair, pair[::-1]):
-                out = findings_mod.aggregate_tool_findings([dict(f) for f in members])
-                self.assertEqual([expected], [(f["tool_evidence"]["vulnerable_versions"],
-                                               f["title"]) for f in out])
+        for members in ([older, retitled], [retitled, older]):
+            out = findings_mod.aggregate_tool_findings([dict(f) for f in members])
+            self.assertEqual([("0.8.0", "a", 2)],
+                             [(f["tool_evidence"]["vulnerable_versions"], f["title"],
+                               f["occurrences"]) for f in out])
+        for members in ([older, newer], [newer, older]):
+            out = findings_mod.aggregate_tool_findings([dict(f) for f in members])
+            self.assertEqual([("0.8.0", "z", 1), ("0.9.0", "a", 1)],
+                             sorted((f["tool_evidence"]["vulnerable_versions"], f["title"],
+                                     f["occurrences"]) for f in out))
 
     def test_an_ordinary_tool_agent_pair_still_collapses(self):
         # The exemption is the first-party mark and nothing else: a registry advisory
@@ -2339,6 +2350,8 @@ class TestTheAdvisoryEcosystemMustAgreeWithItsLock(unittest.TestCase):
     def _finding(lock_name, package, source="tool:osv-scanner", **tool_evidence):
         body = {"rule_id": "GHSA-xxxx-yyyy-zzzz", "package_name": package[0],
                 "vulnerable_versions": package[1]}
+        if source == "tool:trivy":
+            body["kind"] = "vulnerability"             # #3765: as Trivy reports one
         body.update(tool_evidence)
         return {"id": "OS-001", "title": "%s %s: GHSA-xxxx-yyyy-zzzz" % package,
                 "source": source, "severity": "MEDIUM", "confidence": "CERTAIN",
