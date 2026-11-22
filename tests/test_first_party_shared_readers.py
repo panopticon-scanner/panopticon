@@ -474,6 +474,41 @@ class TestAFileThatChangesWhileItIsRead(_Case):
                     return raw
                 with mock.patch.object(safe_write, "_drain", side_effect=drain):
                     self.assert_advisor_path(_ingest(root, "osv-scanner.json", document))
+                # ... and each ecosystem's loop says an unstable manifest decided it.
+                tools = tempfile.mkdtemp(prefix="tools-out-", dir=root)
+                with open(os.path.join(tools, "osv-scanner.json"), "w", encoding="utf-8") as fh:
+                    json.dump(document, fh)
+                with mock.patch.object(safe_write, "_drain", side_effect=drain):
+                    _findings, dispositions = ingest_tools.ingest_dir_detailed(
+                        tools, "g1", target_root=root)
+                self.assertEqual(1, dispositions["osv-scanner"].get(
+                    "advisory_manifest_changed_during_read"))
+
+    def test_an_identity_unproved_for_its_own_reason_is_not_counted(self):
+        # Seat r2 survivor: with every file quiet, a local package its manifest does not
+        # prove stays with the advisor and no unstable read is claimed.
+        for lock_name, ecosystem, package in LOCKS:
+            with self.subTest(lock=lock_name):
+                d = tempfile.TemporaryDirectory()
+                self.addCleanup(d.cleanup)
+                root = os.path.realpath(d.name)
+                if lock_name == "Cargo.lock":
+                    _write_lock(root)
+                    _write_manifest(root, '[package]\nname = "%s"\nversion = "9.9.9"\n'
+                                    % WORKSPACE_NAME)
+                elif lock_name == "package-lock.json":
+                    _npm_tree(root, member={"name": NPM_MEMBER[0], "version": "9.9.9"})
+                else:
+                    _py_tree(root, member='[project]\nname = "acme_lib"\nversion = "9.9.9"\n')
+                tools = tempfile.mkdtemp(prefix="tools-out-", dir=root)
+                with open(os.path.join(tools, "osv-scanner.json"), "w", encoding="utf-8") as fh:
+                    json.dump(_osv(package, ecosystem, "/src/" + lock_name), fh)
+                findings, dispositions = ingest_tools.ingest_dir_detailed(
+                    tools, "g1", target_root=root)
+                self.assertEqual([False], [evidence.is_first_party_advisory(f)
+                                           for f in findings])
+                self.assertNotIn("advisory_manifest_changed_during_read",
+                                 dispositions["osv-scanner"])
 
     def test_every_lock_and_manifest_goes_through_the_stable_reader(self):
         for lock_name, ecosystem, package in LOCKS:
@@ -543,7 +578,12 @@ class TestAPathOutsideTheScanMount(_Case):
             root = _tree(self, lock_name)
             for base in ("file:///", "file:///etc/", "file:///srcx/", "file:///src",
                          "/", "/etc/", "https://example.invalid/", "file://host/src/",
-                         "relative/", "src/", "", 7, None, ["file:///src/"]):
+                         "relative/", "src/", "", 7, None, ["file:///src/"],
+                         # Seat r2 item 1: a scheme and no slash is not a place either.
+                         "C:\\repo\\", "urn:outside", "x:", "file:", "mailto:a@b",
+                         # Seat r2 item 2: two leading slashes are an authority.
+                         "//src/", "file:////src/",
+                         "src/a:b/", "./:/"):
                 with self.subTest(lock=lock_name, base=base):
                     findings = _ingest(root, "trivy.sarif", _trivy(
                         package, lock_name, base_id="ROOTPATH",
@@ -583,6 +623,50 @@ class TestAPathOutsideTheScanMount(_Case):
                     self.assert_first_party(findings)
                     self.assertEqual(lock_name, findings[0]["location"]["file"])
 
+    def test_two_leading_slashes_are_an_authority_and_stay_whole(self):
+        # Seat r2 item 2: `//src/x` is authority `src`, as `file://src/x` is. It is not
+        # the mount, whatever follows.
+        norm = sarif_utils.norm_uri
+        for uri in ("//src/Cargo.lock", "file:////src/Cargo.lock", "//Cargo.lock",
+                    "file:////Cargo.lock", "//src/x", "//", "file:////", "file://src/x"):
+            with self.subTest(uri=uri):
+                self.assertEqual(uri, sarif_utils.repo_path(uri))
+                self.assertEqual(norm(uri), norm(norm(uri)))
+                self.assertNotEqual("Cargo.lock", norm(uri))
+        # One slash, or three and more, is a plain absolute path.
+        for uri, expected in (("/src//Cargo.lock", "Cargo.lock"), ("/src/Cargo.lock", "Cargo.lock"),
+                              ("///src/Cargo.lock", "Cargo.lock"), ("///Cargo.lock", "/Cargo.lock"),
+                              ("file://///src/Cargo.lock", "Cargo.lock")):
+            with self.subTest(uri=uri):
+                self.assertEqual(expected, norm(uri))
+        for lock_name, _ecosystem, package in LOCKS:
+            root = _tree(self, lock_name)
+            for uri in ("//src/" + lock_name, "file:////src/" + lock_name, "//" + lock_name):
+                with self.subTest(lock=lock_name, uri=uri):
+                    findings = _ingest(root, "trivy.sarif", _trivy(package, uri))
+                    self.assert_advisor_path(findings)
+                    self.assertEqual(uri, findings[0]["location"]["file"])
+
+    def test_an_empty_id_the_run_defines_still_decides(self):
+        # Seat r2 survivor: a falsy id is an id. Defined as outside, it is outside.
+        root = _tree(self, "Cargo.lock")
+        for base, inside in (("file:///etc/", False), ("file:///src/", True)):
+            with self.subTest(base=base):
+                findings = _ingest(root, "trivy.sarif", _trivy(
+                    CARGO, "Cargo.lock", base_id="", bases={"": {"uri": base}}))
+                (self.assert_first_party if inside else self.assert_advisor_path)(findings)
+        self.assertEqual("file:///etc/a.py", sarif_utils.resolve_artifact_uri(
+            {"uri": "a.py", "uriBaseId": ""}, {"originalUriBaseIds": {"": {"uri": "file:///etc/"}}}))
+
+    def test_the_legacy_located_paths_resolve_the_base_too(self):
+        import scripts.tools.legacy_sarif as legacy_sarif
+        document = _trivy(CARGO, "Cargo.lock", base_id="ROOTPATH",
+                          bases={"ROOTPATH": {"uri": "file:///etc/"}})
+        self.assertEqual({"/etc/Cargo.lock"}, legacy_sarif._result_paths(document))
+        document = _trivy(CARGO, "a/b.py", base_id="ROOTPATH",
+                          bases={"ROOTPATH": {"uri": "file:///src/"}})
+        self.assertEqual({"a/b.py"}, legacy_sarif._result_paths(document))
+
     def test_a_base_does_not_move_an_absolute_uri(self):
         # SARIF applies uriBaseId to a relative uri only. semgrep writes an absolute
         # `/src/...` uri with `uriBaseId: %SRCROOT%` and no table: that stays inside.
@@ -613,13 +697,22 @@ class TestAPathOutsideTheScanMount(_Case):
                 ({"uri": "file:///src/a.py", "uriBaseId": "ELSEWHERE"}, "file:///src/a.py"),
                 ({"uri": "a.py", "uriBaseId": ""}, "a.py"),
                 ({"uri": "a.py", "uriBaseId": None}, "a.py"),
-                ({}, None), ({"uri": 7}, 7), ({"uri": None, "uriBaseId": "ROOTPATH"}, None)):
+                ({}, None), ({"uri": 7}, 7), ({"uri": None, "uriBaseId": "ROOTPATH"}, None),
+                # Not an object at all: no uri, and no error.
+                ("a.py", None), (["a.py"], None), (None, None), (7, None)):
             with self.subTest(artifact=artifact):
                 self.assertEqual(expected, resolve(artifact, run))
         # A base the run defines but that cannot be read names no place in the tree.
         for artifact, table in (({"uri": "a.py", "uriBaseId": 7}, table),
                                 ({"uri": "a.py", "uriBaseId": "X"}, {"X": "file:///src/"}),
                                 ({"uri": "a.py", "uriBaseId": "X"}, {"X": {"uri": "src/"}}),
+                                # A colon is not a scheme, and a scheme with no slash
+                                # is not a place.
+                                ({"uri": "a.py", "uriBaseId": "X"}, {"X": {"uri": "src/a:b/"}}),
+                                ({"uri": "a.py", "uriBaseId": "X"}, {"X": {"uri": "./:/"}}),
+                                ({"uri": "a.py", "uriBaseId": "X"}, {"X": {"uri": "urn:outside"}}),
+                                ({"uri": "a.py", "uriBaseId": "X"}, {"X": {"uri": "file:"}}),
+                                ({"uri": "a.py", "uriBaseId": "X"}, {"X": {"uri": "C:\\repo\\"}}),
                                 ({"uri": "a.py", "uriBaseId": "X"}, ["X"])):
             with self.subTest(unresolved=artifact, table=table):
                 resolved = resolve(artifact, {"originalUriBaseIds": table})
@@ -663,11 +756,11 @@ class TestAPathOutsideTheScanMount(_Case):
     def test_one_spelling_everywhere_and_it_is_idempotent(self):
         # Seat item 3.
         norm = sarif_utils.norm_uri
-        for uri in ("/", "//", "file:///", "file:////", ""):
+        for uri in ("/", "file:///", "///", ""):
             with self.subTest(empty=uri):
                 self.assertEqual("", norm(uri))
-        for uri, expected in (("//src/x", "x"), ("/src//x", "x"), ("///src///x", "x"),
-                              ("file:////src/x", "x"), ("/src/", ""), ("/src", "/src")):
+        for uri, expected in (("/src//x", "x"), ("///src///x", "x"),
+                              ("/src/", ""), ("/src", "/src")):
             with self.subTest(uri=uri):
                 self.assertEqual(expected, norm(uri))
         for uri in ("/Cargo.lock", "//Cargo.lock", "file:///Cargo.lock", "//src/x", "/src//x",
@@ -692,7 +785,7 @@ class TestAPathOutsideTheScanMount(_Case):
 
     def test_an_osv_record_at_the_bare_root_has_no_source_path(self):
         root = _tree(self, "Cargo.lock")
-        for path in ("/", "file:///", "//"):
+        for path in ("/", "file:///", "///"):
             with self.subTest(path=path):
                 findings = _ingest(root, "osv-scanner.json", _osv(CARGO, "crates.io", path))
                 self.assertEqual("manifest (crates.io)", findings[0]["location"]["file"])
