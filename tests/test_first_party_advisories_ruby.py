@@ -1599,6 +1599,9 @@ class TestTheBundlerSweep(TestTheReviewProbes):
         self.assertEqual("first_party", self._probe(other % "gems/bar" + self.GOOD))
         # A `~` that does not start the remote is a file name.
         self.assertEqual("first_party", self._probe(other % "gems/~bar" + self.GOOD))
+        # Only a PATH remote is expanded; a GIT remote may be a home-relative clone.
+        self.assertEqual("first_party", self._probe(self.GOOD.replace(
+            "remote: https://example.invalid/x.git", "remote: ~/src/x.git")))
 
     def test_the_five_guards_a_mutant_survived(self):
         # Item 3.

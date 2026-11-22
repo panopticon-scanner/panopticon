@@ -977,10 +977,10 @@ def _gem_remote_url_ok(value):
     letters, digits, ``.`` and ``-``; the path adds ``_~/@!$&'()*+,;=:``. No userinfo,
     query, fragment, ``%`` or brackets: Ruby refuses those unless they are well
     formed, and no lock needs them."""
-    scheme, mark, rest = value.partition("://")
+    scheme, _mark, rest = value.partition("://")           # no `://` leaves no host
     authority, slash, path = rest.partition("/")
     host, colon, port = authority.partition(":")
-    return (bool(mark) and bool(_GEM_URL_SCHEME.match(scheme)) and value.isascii()
+    return (bool(_GEM_URL_SCHEME.match(scheme)) and value.isascii()
             and bool(host) and all(ch.isalnum() or ch in ".-" for ch in host)
             and (not colon or port.isdigit())
             and all(ch.isalnum() or ch in _GEM_URL_PATH_CHARS for ch in path))
@@ -1095,7 +1095,7 @@ def _gem_lock_sections(text):
                 raise ValueError("malformed Gemfile.lock option")
             if option[1] != "remote":
                 current.options.add(option[1])
-            elif (current.remote is not None or " " in option[2]
+            elif (current.remote is not None
                   or (line_header == "GEM" and not _gem_remote_url_ok(option[2]))
                   or (line_header == "PATH" and option[2].startswith("~"))):
                 # Bundler raises on a GEM remote that is not a URL (round 3), and on a
@@ -1380,11 +1380,11 @@ def _gemspec_fact(package_dir, target_root, cache: IngestCache):
 
 def _bundler_reads_here(remote):
     """True when Bundler's ``expand_path`` of a PATH remote is the plain join this
-    reader makes: relative, no URL scheme, no ``~`` (which is ``$HOME``) and no ``..``
-    component (which is lexical, so a symlink below it would be read differently)."""
+    reader makes: relative, no URL scheme and no ``..`` component (which is lexical,
+    so a symlink below it would be read differently). A leading ``~``, which is
+    ``$HOME``, has already failed the whole lock in ``_gem_lock_sections``."""
     return (isinstance(remote, str) and not os.path.isabs(remote)
-            and not _URL_SCHEME.match(remote) and not remote.startswith("~")
-            and ".." not in remote.split("/"))
+            and not _URL_SCHEME.match(remote) and ".." not in remote.split("/"))
 
 
 def _ruby_package_origins(lock_path, target_root, cache: IngestCache):
