@@ -28,8 +28,8 @@ import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
 import scripts.tools.sarif_utils as sarif_utils
 from tests.test_first_party_advisories import (
-    NPM_MEMBER, PY_MEMBER, WORKSPACE_NAME, WORKSPACE_VERSION, _npm_tree, _py_tree,
-    _write_lock, _write_manifest)
+    NPM_MEMBER, PY_MEMBER, WORKSPACE_NAME, WORKSPACE_VERSION, _npm_tree, _poetry_lock,
+    _py_tree, _write_lock, _write_manifest)
 
 CARGO = (WORKSPACE_NAME, WORKSPACE_VERSION)
 # One lock per ecosystem the marker reads, with its OSV ecosystem and local package.
@@ -379,7 +379,14 @@ class TestAFileThatChangesWhileItIsRead(_Case):
                     os.utime(path, ns=(1, 1))
                 return raw
             return mock.patch.object(safe_write, "_drain", side_effect=drain)
+        # A registry package beside it stays with the advisor for its own reason, and
+        # is never counted, whichever manifest was unstable.
         document = _osv(NPM_MEMBER, "npm", "/src/package-lock.json")
+        document["results"][0]["packages"].append({
+            "package": {"name": "left-pad", "version": "1.3.0", "ecosystem": "npm"},
+            "vulnerabilities": [{"id": "GHSA-aaaa-bbbb-cccc", "summary": "affected",
+                                 "database_specific": {"severity": "LOW"}}],
+            "groups": []})
         for target, confirmed, count in ((root_manifest, True, None),
                                          (member_manifest, False, 1)):
             with self.subTest(unstable=os.path.relpath(target, root)):
@@ -389,9 +396,56 @@ class TestAFileThatChangesWhileItIsRead(_Case):
                 with only(target):
                     findings, dispositions = ingest_tools.ingest_dir_detailed(
                         tools, "g1", target_root=root)
-                self.assertEqual(confirmed, evidence.is_first_party_advisory(findings[0]))
+                self.assertEqual(2, len(findings))
+                by_name = {f["tool_evidence"]["package_name"]: f for f in findings}
+                self.assertEqual(confirmed,
+                                 evidence.is_first_party_advisory(by_name[NPM_MEMBER[0]]))
+                self.assertFalse(evidence.is_first_party_advisory(by_name["left-pad"]))
                 self.assertEqual(count, dispositions["osv-scanner"].get(
                     "advisory_manifest_changed_during_read"))
+
+    def test_a_manifest_refused_once_still_decides_through_the_cache(self):
+        # Two locks reach one member manifest. Its read is unstable once and cached;
+        # the second lock's advisory is denied by that same refusal and is counted too.
+        for first, second, ecosystem, package, manifest, build in (
+                ("package-lock.json", "npm-shrinkwrap.json", "npm", NPM_MEMBER,
+                 "packages/lib/package.json", "npm"),
+                ("uv.lock", "poetry.lock", "PyPI", PY_MEMBER,
+                 "packages/lib/pyproject.toml", "python")):
+            with self.subTest(locks=(first, second)):
+                root = _tree(self, first)
+                if build == "npm":
+                    _npm_tree(root, lock_name=second)
+                else:
+                    _py_tree(root, lock=_poetry_lock(), lock_name=second)
+                target = os.path.join(root, manifest)
+                document = _osv(package, ecosystem, "/src/" + first)
+                document["results"].append(
+                    _osv(package, ecosystem, "/src/" + second)["results"][0])
+                tools = tempfile.mkdtemp(prefix="tools-out-", dir=root)
+                with open(os.path.join(tools, "osv-scanner.json"), "w", encoding="utf-8") as fh:
+                    json.dump(document, fh)
+                findings, quiet = ingest_tools.ingest_dir_detailed(
+                    tools, "g1", target_root=root)
+                self.assertEqual([True, True],
+                                 [evidence.is_first_party_advisory(f) for f in findings])
+                real = safe_write._drain
+                reads = []
+
+                def drain(path, stream, limit, target=target):
+                    raw = real(path, stream, limit)
+                    if os.path.realpath(path) == target:
+                        reads.append(path)
+                        os.utime(path, ns=(1, 1))
+                    return raw
+                with mock.patch.object(safe_write, "_drain", side_effect=drain):
+                    findings, dispositions = ingest_tools.ingest_dir_detailed(
+                        tools, "g1", target_root=root)
+                self.assertEqual(1, len(reads))                    # read once, then cached
+                self.assertEqual([False, False],
+                                 [evidence.is_first_party_advisory(f) for f in findings])
+                self.assertEqual(2, dispositions["osv-scanner"][
+                    "advisory_manifest_changed_during_read"])
 
     def test_a_quiet_ingest_discloses_no_count(self):
         root = _tree(self, "Cargo.lock")
@@ -502,7 +556,12 @@ class TestAPathOutsideTheScanMount(_Case):
                                  ("an entry that is a string", {"ROOTPATH": "file:///src/"}),
                                  ("an entry with no uri", {"ROOTPATH": {}}),
                                  ("a chained base", {"ROOTPATH": {"uri": "src/", "uriBaseId": "TOP"},
-                                                     "TOP": {"uri": "file:///"}})):
+                                                     "TOP": {"uri": "file:///"}}),
+                                 # A base that names another base is not followed, even
+                                 # when its own uri is the mount.
+                                 ("a chained mount", {"ROOTPATH": {"uri": "file:///src/",
+                                                                   "uriBaseId": "TOP"},
+                                                      "TOP": {"uri": "file:///"}})):
                 with self.subTest(lock=lock_name, unresolved=label):
                     findings = _ingest(root, "trivy.sarif", _trivy(
                         package, lock_name, base_id="ROOTPATH", bases=bases))
