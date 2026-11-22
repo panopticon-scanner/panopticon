@@ -229,6 +229,16 @@ finding never changes the status selected by the report's gate.
 A status of `3`, or any status not in this list, publishes no report. The driver ends the run in
 `error` with the step's last line, keeps its retry marker, and does not take a report that an
 earlier attempt of the run left on disk for this attempt's.
+The same holds for a step that dies under a status that is in the list (#3769): an uncaught
+exception exits `1`, and several refusals exit `2` or `4` before a report is built. Before the step
+runs, the driver moves what an earlier attempt of the run published (the report, its HTML page, the
+X0X and its failure log) into `.panopticon/runs/<tag>/earlier-attempt/`. A report found afterwards
+is therefore this attempt's, and a step that publishes none ends the run in `error`. Until this
+attempt publishes, the `.panopticon/report.json` and `report.json.html` links an earlier attempt
+made point at nothing. A file that cannot be moved stops the attempt before the step runs. Only
+regular files are moved: a link, a directory or a FIFO at one of those names is left for the step,
+which refuses it as before, and the driver takes no report through a link. Split parts and a
+discarded-claims file of the earlier attempt are left in place: only a report names them.
 Validation is **fail-closed**: an uninstallable `jsonschema` (a declared runtime dependency) or an
 unreadable schema file is an error, never a silent pass, because "we could not check" and "we
 checked and it passed" must not look the same. **The schema pins the *controller's* output:** every

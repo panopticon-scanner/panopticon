@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **A synthesis retry that dies without writing a report no longer ends the run on an earlier
+  attempt's (#3769).** The driver took any usable report at the run's report path for the one its
+  synthesize step had just written. When an attempt had published a report and then not finished
+  (an artifact that failed validation, a marker that could not be cleared, an interrupt), the
+  retry's step could die before writing anything, with an uncaught exception (status 1) or a
+  refusal (status 2), and the driver read that as a gate FAIL or INCONCLUSIVE beside a report:
+  it cleared its retry marker and finished `complete` on the earlier attempt's verdict. A status 4
+  without a report ended in `error`, with `.panopticon/report.json` pointed at the earlier report.
+  #3706 closed this for status 3 and for statuses outside the list.
+  - Before the step runs, the driver now moves what an earlier attempt published (the report,
+    its HTML page, the X0X and its failure log) into `.panopticon/runs/<tag>/earlier-attempt/`.
+    A report found afterwards is this attempt's. A step that publishes none ends the run in
+    `error`, with the retry marker kept, whatever its status.
+  - Until the retry publishes, the `report.json` and `report.json.html` links of the earlier
+    attempt point at nothing. The earlier files are kept in the run folder, which `--reset`
+    clears; a later retry replaces them.
+  - A file that cannot be moved stops the attempt before the step runs:
+    `synthesize could not set aside an earlier attempt's <file>: <reason>`. Only regular
+    files are moved. A link, a directory or a FIFO at one of those names is left for the
+    step, which refuses it as before, and the driver takes no report through a link.
+  - Not changed: split parts and a discarded-claims file of the earlier attempt stay where they
+    are. Only a report names them.
 - **A target whose path holds `[`, `*` or `?` is reviewed like any other (#3701).** The run looked
   for its own files with `glob`, and passed the run folder's path as part of the pattern. Under a
   review root such as `repo[x]/`, `[x]` was read as a character class, so nothing matched: the

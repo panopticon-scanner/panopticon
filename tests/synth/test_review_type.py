@@ -148,7 +148,8 @@ def test_scope_refusal_cannot_advance_the_driver_using_an_old_report(tmp_path, m
     output.write_bytes(previous)
     with pytest.raises(runio.DriverError, match="review scope refused"):
         phase.synthesize_execute(str(tmp_path), {"host": "codex", "flags": {}})
-    assert output.read_bytes() == previous
+    assert not output.exists()                    # #3769: set aside before the step ran
+    assert (pano / "earlier-attempt" / "report.json").read_bytes() == previous
 
 
 @pytest.mark.parametrize("mode, reason", [

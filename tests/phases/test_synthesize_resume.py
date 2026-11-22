@@ -38,6 +38,19 @@ def _report(root):
     return Path(runio._report_out(root))
 
 
+def _aside(root, path):
+    """Where the driver moves `path`, a file an earlier attempt published (#3769)."""
+    return Path(runio._pano(root, "earlier-attempt")) / Path(path).name
+
+
+def _published(root):
+    """Every file the synthesize child can publish for this run's report."""
+    report = _report(root)
+    x0x = report.with_name(report.stem + "-x0x.json")
+    return {"report": report, "page": Path(str(report) + ".html"), "x0x": x0x,
+            "x0x failures": x0x.with_name(x0x.stem + "-failures.json")}
+
+
 def _manifest(root):
     adopt_panopticon(root)           # #3271: a run of OURS, resuming
     manifest = run_manifest.build_manifest(
@@ -125,7 +138,8 @@ def test_real_scope_refusal_keeps_old_report_failed_until_repaired(review):
     resumed = _resume(root)
     assert resumed["status"] == "error", resumed
     assert "review scope refused" in resumed["message"]
-    assert _report(root).read_bytes() == before
+    assert not os.path.lexists(_report(root))            # #3769: kept, and not as the report
+    assert _aside(root, _report(root)).read_bytes() == before
     assert not validate.validate_done(root, manifest)
     _write(runio._pano(root, "groups.json"), {"mode": "repo", "groups": []})
     repaired = _resume(root)
@@ -351,8 +365,9 @@ def test_a_retry_the_child_refuses_does_not_pass_off_the_earlier_report(review):
     assert _pending(root).is_file()                      # the attempt is still owed
     assert not synthesize.synthesize_done(root, manifest)
     assert not validate.validate_done(root, manifest)
-    assert _report(root).read_bytes() == before          # and the old report is only old:
-    assert not os.path.lexists(flat)                     # nothing is pointed at it
+    assert not os.path.lexists(_report(root))            # and the old report is only old:
+    assert _aside(root, _report(root)).read_bytes() == before        # set aside (#3769),
+    assert not os.path.lexists(flat)                     # with nothing pointed at it
     repaired = _resume(root)
     assert repaired["status"] == "complete", repaired
     assert repaired["advanced"] == ["synthesize", "validate"]
@@ -378,7 +393,8 @@ def test_a_child_status_that_publishes_nothing_is_an_error_beside_an_old_report(
     assert str(refused.value) == ("synthesize wrote no report (rc=%s): "
                                   "synthesize: no such thing to read" % returncode)
     assert _pending(root).is_file()
-    assert _report(root).read_bytes() == before
+    assert not os.path.lexists(_report(root))
+    assert _aside(root, _report(root)).read_bytes() == before
     assert not os.path.lexists(runio._pano(root, "report.json"))
     assert not synthesize.synthesize_done(root, manifest)
 
@@ -397,3 +413,196 @@ def test_a_child_that_died_silently_still_gets_a_reason(review):
                 [], 3, stdout, stderr)), pytest.raises(runio.DriverError) as refused:
             synthesize.synthesize_execute(root, manifest)
         assert str(refused.value) == "synthesize wrote no report (rc=3): %s" % said
+
+
+def _the_real_child(cmd, **kwargs):
+    """The real `synthesize.py`, run in this process as the driver's child."""
+    out, err = io.StringIO(), io.StringIO()
+    with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        status = synthesize_cli.main(cmd[2:])
+    return subprocess.CompletedProcess(cmd, status, out.getvalue(), err.getvalue())
+
+
+def _an_attempt_that_published_and_is_still_owed(root):
+    """A first attempt, through the driver: the real child publishes, the driver points
+    the flat paths at its report, and then cannot clear its marker."""
+    remove = safe_write.remove_artifact
+
+    def keep_the_marker(path):
+        if Path(path) == _pending(root):
+            raise OSError("marker read only")
+        return remove(path)
+
+    with mock.patch.object(child, "_run_child", side_effect=_the_real_child), \
+            mock.patch.object(safe_write, "remove_artifact", side_effect=keep_the_marker):
+        first = _resume(root)
+    assert first["status"] == "error" and "marker read only" in first["message"], first
+    assert _pending(root).is_file()
+
+
+@pytest.mark.parametrize("returncode", [0, 1, 2, 3, 4])
+def test_a_retry_that_dies_without_writing_is_not_given_the_earlier_report(review, returncode):
+    """#3769. A synthesize child that dies before it publishes can exit with any status:
+    an uncaught exception is 1, a usage refusal 2, a scope refusal 4, and those are also
+    what a gate FAIL, an INCONCLUSIVE and an invalid artifact exit with. The driver looked
+    for a usable report on disk, found the one an earlier attempt had published, and for
+    0, 1 and 2 cleared the marker and ended the run `complete` on it; for 4 it pointed
+    the flat paths at it."""
+    root, manifest, _valid_report = review
+    _an_attempt_that_published_and_is_still_owed(root)
+    published = _published(root)
+    _write(published["x0x failures"], {"discarded_findings": [{"left": "by that attempt"}]})
+    before = {name: path.read_bytes() for name, path in published.items()}
+    flat = {name: Path(runio._pano(root, link))
+            for name, link in (("report", "report.json"), ("page", "report.json.html"))}
+    for name, link in flat.items():
+        assert link.resolve() == published[name].resolve()
+    assert not os.path.lexists(runio._pano(root, "earlier-attempt"))
+
+    died = subprocess.CompletedProcess(
+        [], returncode, "", "Traceback (most recent call last):\nRuntimeError: it broke\n")
+    with mock.patch.object(child, "_run_child", return_value=died) as launched:
+        retried = _resume(root)
+    assert launched.call_count == 1
+    assert retried["status"] == "error", retried
+    assert "(rc=%s)" % returncode in retried["message"]
+    assert "RuntimeError: it broke" in retried["message"]
+    assert retried["advanced"] == []
+    assert _pending(root).is_file()                      # the attempt is still owed
+    assert not synthesize.synthesize_done(root, manifest)
+    assert not validate.validate_done(root, manifest)
+    for name, path in published.items():                 # kept, and not as this run's report
+        assert not os.path.lexists(path), name
+        assert _aside(root, path).read_bytes() == before[name], name
+    for name, link in flat.items():                      # the flat paths point at nothing
+        assert link.is_symlink() and not link.exists(), name
+
+    with mock.patch.object(child, "_run_child", side_effect=_the_real_child):
+        repaired = _resume(root)
+    assert repaired["status"] == "complete", repaired
+    assert repaired["advanced"] == ["synthesize", "validate"]
+    assert not _pending(root).exists()
+    for name, link in flat.items():
+        assert link.resolve() == published[name].resolve() and link.is_file(), name
+    assert not os.path.lexists(published["x0x failures"])
+
+
+def test_a_later_set_aside_replaces_the_one_before_it(review):
+    root, manifest, valid_report = review
+    _write(_pending(root), {"run_id": manifest["run_id"]})
+    died = subprocess.CompletedProcess([], 1, "", "it broke")
+    for attempt in ("first", "second"):
+        _write(_report(root), dict(valid_report, left_by=attempt))
+        left = _report(root).read_bytes()
+        with mock.patch.object(child, "_run_child", return_value=died):
+            assert _resume(root)["status"] == "error"
+        assert not os.path.lexists(_report(root))
+        assert _aside(root, _report(root)).read_bytes() == left
+
+
+@pytest.mark.parametrize("owed", [True, False], ids=["owed", "unusable"])
+def test_a_report_that_cannot_be_set_aside_stops_the_attempt_before_the_child(review, owed):
+    root, manifest, valid_report = review
+    if owed:
+        _write(_report(root), valid_report)
+        _write(_pending(root), {"run_id": manifest["run_id"]})
+    else:                                                # no marker yet: this attempt writes it
+        _write(_report(root), {"findings": []})
+    before = _report(root).read_bytes()
+    in_the_way = _aside(root, _report(root))
+    _write(in_the_way / "something", {})                 # a directory that is not empty
+    with mock.patch.object(child, "_run_child") as launched:
+        stopped = _resume(root)
+    assert stopped["status"] == "error", stopped
+    assert ("synthesize could not set aside an earlier attempt's %s: " % _report(root).name
+            in stopped["message"])
+    assert "still there" not in stopped["message"]       # the move's own reason
+    assert not launched.called
+    assert _pending(root).is_file()                      # written first: the attempt is owed
+    assert _report(root).read_bytes() == before
+    assert not synthesize.synthesize_done(root, manifest)
+
+
+def test_the_reason_a_report_could_not_be_set_aside_is_redacted_and_bounded(review):
+    root, manifest, valid_report = review
+    _write(_pending(root), {"run_id": manifest["run_id"]})
+    token = "ghp_" + "A" * 36
+    replace = os.replace
+    for reason, said in (("read %s" % token, "read [REDACTED_TOKEN]"), ("x" * 500, "x" * 400)):
+        _write(_report(root), valid_report)
+
+        def refuse(source, destination, **kwargs):
+            if Path(source) == _report(root):
+                raise OSError(reason)
+            return replace(source, destination, **kwargs)
+
+        with mock.patch.object(os, "replace", side_effect=refuse), \
+                mock.patch.object(child, "_run_child") as launched:
+            stopped = _resume(root)
+        assert stopped["message"].endswith(
+            "synthesize could not set aside an earlier attempt's %s: %s"
+            % (_report(root).name, said)), stopped["message"]
+        assert not launched.called
+
+
+@pytest.mark.parametrize("returncode", [0, 1, 2])
+@pytest.mark.parametrize("target", ["a report elsewhere", "nothing"])
+def test_a_link_at_the_reports_name_is_neither_moved_nor_taken_for_a_report(
+        review, tmp_path, target, returncode):
+    """Only a regular file is something an attempt published. A link is left for the
+    child, which refuses it by name, and the report it leads to is not this attempt's.
+    First contact refuses such a link when a run starts, so this is one that appears
+    during the run."""
+    root, manifest, valid_report = review
+    _write(_pending(root), {"run_id": manifest["run_id"]})
+    elsewhere = tmp_path / "elsewhere.json"
+    if target == "a report elsewhere":
+        _write(elsewhere, valid_report)
+    _report(root).symlink_to(elsewhere)
+    died = subprocess.CompletedProcess([], returncode, "", "it broke")
+    with mock.patch.object(child, "_run_child", return_value=died), \
+            pytest.raises(runio.DriverError, match="produced no usable report.json"):
+        synthesize.synthesize_execute(root, manifest)
+    assert os.readlink(_report(root)) == str(elsewhere)
+    assert not os.path.lexists(_aside(root, _report(root)).parent)
+    assert elsewhere.exists() == (target == "a report elsewhere")
+    assert _pending(root).is_file()
+    assert not os.path.lexists(runio._pano(root, "report.json"))
+
+
+def test_a_move_that_leaves_the_report_in_place_stops_the_attempt_before_the_child(review):
+    """The run folder's `earlier-attempt` as a link back to `.panopticon/`: the move is
+    then onto the report itself, which succeeds and moves nothing. First contact
+    refuses such a link when a run starts, so this is one that appears during the run."""
+    root, manifest, valid_report = review
+    _write(_report(root), valid_report)
+    _write(_pending(root), {"run_id": manifest["run_id"]})
+    before = _report(root).read_bytes()
+    aside = _aside(root, _report(root)).parent
+    aside.symlink_to(os.path.join(os.pardir, os.pardir), target_is_directory=True)
+    assert aside.resolve() == _report(root).parent.resolve()
+    with mock.patch.object(child, "_run_child") as launched, \
+            pytest.raises(runio.DriverError) as stopped:
+        synthesize.synthesize_execute(root, manifest)
+    assert str(stopped.value) == (
+        "synthesize could not set aside an earlier attempt's %s: it is still there after "
+        "the move to %s" % (_report(root).name, aside))
+    assert not launched.called
+    assert _pending(root).is_file()
+    assert _report(root).read_bytes() == before
+
+
+def test_setting_aside_refuses_a_run_folder_entry_redirected_outside(review, tmp_path):
+    root, manifest, valid_report = review
+    _write(_report(root), valid_report)
+    _write(_pending(root), {"run_id": manifest["run_id"]})
+    before = _report(root).read_bytes()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    _aside(root, _report(root)).parent.symlink_to(outside, target_is_directory=True)
+    with mock.patch.object(child, "_run_child") as launched, \
+            pytest.raises(ValueError, match="escapes .panopticon"):
+        synthesize.synthesize_execute(root, manifest)       # as the marker's own refusals
+    assert not launched.called
+    assert list(outside.iterdir()) == []
+    assert _report(root).read_bytes() == before

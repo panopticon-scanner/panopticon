@@ -308,6 +308,47 @@ def _last_line(*streams):
     return "it said nothing"
 
 
+#: Where an earlier attempt's published files go, in the run folder (#3769).
+_EARLIER = "earlier-attempt"
+
+
+def _published_at(report):
+    """Every name the child publishes at whenever it publishes `report`: the report, its
+    page, the X0X and the X0X failure log."""
+    stem = report[:-len(".json")] if report.endswith(".json") else report
+    x0x = stem + "-x0x.json"
+    return (report, report + ".html", x0x, x0x_report.failure_log_path(x0x))
+
+
+def _set_aside_earlier_attempt(review_root, report):
+    """Move what an earlier attempt of this run published into the run folder, before
+    the child runs (#3769). A report found afterwards is then this child's: the child
+    can die with any status, a gate's 1 or 2 included, and leave nothing to be taken
+    for its own. The files are kept, under names no reader takes for a report, and the
+    flat `report.json` of an earlier attempt points at nothing until this one
+    publishes. A file that cannot be moved, or is still there afterwards, stops the
+    attempt before the child. Only a regular file is an attempt's: a link, a directory
+    or a FIFO at one of the names is left as it is for the child, which refuses it by
+    name, and `synthesize_execute` takes no report through one."""
+    aside = runio._pano(review_root, _EARLIER)
+    for path in _published_at(report):
+        if not _regular_file(path):
+            continue
+        name = os.path.basename(path)
+        safe_write.confine_artifact_path(aside)
+        try:
+            os.makedirs(aside, exist_ok=True)
+            os.replace(path, os.path.join(aside, name))
+        except OSError as exc:
+            raise runio.DriverError(
+                "synthesize could not set aside an earlier attempt's %s: %s"
+                % (name, redact.redact_diagnostic(str(exc), 400))) from exc
+        if os.path.lexists(path):
+            raise runio.DriverError(
+                "synthesize could not set aside an earlier attempt's %s: it is still "
+                "there after the move to %s" % (name, aside))
+
+
 def synthesize_execute(review_root, manifest):
     # #5.0-16 fallback: guarantee both integrity artifacts exist once, after
     # review and before synthesize, even when the verify phase was vacuously
@@ -510,20 +551,20 @@ def synthesize_execute(review_root, manifest):
     except OSError as exc:
         raise runio.DriverError("synthesize could not write pending marker: %s" %
                                redact.redact_diagnostic(str(exc), 400)) from exc
+    # #3769: after the marker, so an attempt stopped here is still owed.
+    _set_aside_earlier_attempt(review_root, report)
     proc = child._run_child(cmd, review_root=review_root, phase="synthesize")
     # #3706: a status the child returns only when it has published a report is the one
     # kind this phase may look for a report after. Any other (3 is "invalid input": a
-    # scope it refuses, a directory it could not list) is a child that wrote none, and
-    # the report on disk is then an EARLIER attempt's. Accepting it cleared the marker
-    # and ended the run `complete`, on a verdict this attempt never reached. Raised
-    # before the relink below, with the marker left: the attempt is still owed.
+    # scope it refuses, a directory it could not list) is a child that wrote none.
+    # Raised before the relink below, with the marker left: the attempt is still owed.
     if proc.returncode not in _PUBLISHED_STATUSES:
         raise runio.DriverError("synthesize wrote no report (rc=%s): %s"
                                 % (proc.returncode, _last_line(proc.stderr, proc.stdout)))
     # Gate failures still publish usable reports. Keep the report-shape check
     # shared with done(), but independent of the pending marker: a successful
     # retry must validate its output before clearing that marker (#2930).
-    if not _usable_report(review_root):
+    if not (_regular_file(report) and _usable_report(review_root)):
         raise runio.DriverError("synthesize produced no usable report.json (rc=%s): %s"
                           % (proc.returncode, redact.redact_diagnostic(proc.stderr or proc.stdout, 400)))
     loop_progress.relay_summary(proc.stdout)      # #3232: `loop` only; the child stdout is captured
