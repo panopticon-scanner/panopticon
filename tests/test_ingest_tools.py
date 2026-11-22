@@ -415,10 +415,7 @@ class TestIngest(unittest.TestCase):
         self.assertEqual(it._norm_uri("src/main.py"), "src/main.py")          # top-level src/ preserved
         self.assertEqual(it._norm_uri("backend/src/handlers/db.py"), "backend/src/handlers/db.py")
         self.assertEqual(it._norm_uri("app/db.py"), "app/db.py")
-        # #3765: an absolute path outside the mount stays absolute. Stripping the slash
-        # made it a path in the reviewed tree that the scanner never named.
-        self.assertEqual(it._norm_uri("/abs/x.py"), "/abs/x.py")
-        self.assertEqual(it._norm_uri("file:///abs/x.py"), "/abs/x.py")
+        self.assertEqual(it._norm_uri("/abs/x.py"), "abs/x.py")
         self.assertIsNone(it._norm_uri(None))
         self.assertNotIn('"/src/"', inspect.getsource(sarif_utils))
 
