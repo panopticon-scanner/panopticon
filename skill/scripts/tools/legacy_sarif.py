@@ -194,7 +194,7 @@ def _result_paths(sarif):
                                    ["artifactLocation"]["uri"])
             except (KeyError, IndexError, TypeError, AttributeError):
                 continue
-            if isinstance(path, str) and path:     # no file, or an empty path: nothing
+            if path:                 # an empty path locates nothing (#3765)
                 located.add(path)
     return located
 
