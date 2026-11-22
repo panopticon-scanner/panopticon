@@ -550,9 +550,7 @@ class TestAPathOutsideTheScanMount(_Case):
                         bases={"ROOTPATH": {"uri": base}}))
                     self.assert_advisor_path(findings)
                     self.assertNotEqual(lock_name, findings[0]["location"]["file"])
-            for label, bases in (("no table", _NO_BASES), ("an empty table", {}),
-                                 ("another id", {"SRCROOT": {"uri": "file:///src/"}}),
-                                 ("a table that is a list", ["file:///src/"]),
+            for label, bases in (("a table that is a list", ["file:///src/"]),
                                  ("an entry that is a string", {"ROOTPATH": "file:///src/"}),
                                  ("an entry with no uri", {"ROOTPATH": {}}),
                                  ("a chained base", {"ROOTPATH": {"uri": "src/", "uriBaseId": "TOP"},
@@ -572,6 +570,16 @@ class TestAPathOutsideTheScanMount(_Case):
                     findings = _ingest(root, "trivy.sarif", _trivy(
                         package, lock_name, base_id="ROOTPATH",
                         bases={"ROOTPATH": {"uri": base}}))
+                    self.assert_first_party(findings)
+                    self.assertEqual(lock_name, findings[0]["location"]["file"])
+            # A base the run never defines is a bare symbol (semgrep and CodeQL write
+            # `%SRCROOT%` with no table): the run says nothing about where it is, so
+            # the uri reads as it does with no base at all.
+            for label, bases in (("no table", _NO_BASES), ("an empty table", {}),
+                                 ("another id", {"SRCROOT": {"uri": "file:///etc/"}})):
+                with self.subTest(lock=lock_name, undefined=label):
+                    findings = _ingest(root, "trivy.sarif", _trivy(
+                        package, lock_name, base_id="ROOTPATH", bases=bases))
                     self.assert_first_party(findings)
                     self.assertEqual(lock_name, findings[0]["location"]["file"])
 
@@ -608,15 +616,34 @@ class TestAPathOutsideTheScanMount(_Case):
                 ({}, None), ({"uri": 7}, 7), ({"uri": None, "uriBaseId": "ROOTPATH"}, None)):
             with self.subTest(artifact=artifact):
                 self.assertEqual(expected, resolve(artifact, run))
-        # An id that cannot be resolved names no place in the tree.
-        for artifact in ({"uri": "a.py", "uriBaseId": "MISSING"},
-                         {"uri": "a.py", "uriBaseId": 7}):
-            with self.subTest(unresolved=artifact):
-                resolved = resolve(artifact, run)
-                self.assertTrue(resolved.startswith("/"))
+        # A base the run defines but that cannot be read names no place in the tree.
+        for artifact, table in (({"uri": "a.py", "uriBaseId": 7}, table),
+                                ({"uri": "a.py", "uriBaseId": "X"}, {"X": "file:///src/"}),
+                                ({"uri": "a.py", "uriBaseId": "X"}, {"X": {"uri": "src/"}}),
+                                ({"uri": "a.py", "uriBaseId": "X"}, ["X"])):
+            with self.subTest(unresolved=artifact, table=table):
+                resolved = resolve(artifact, {"originalUriBaseIds": table})
+                self.assertTrue(resolved.startswith("/unresolved-uri-base/"))
                 self.assertTrue(sarif_utils.norm_uri(resolved).startswith("/"))
                 self.assertTrue(resolved.endswith("/a.py"))
-        self.assertTrue(resolve({"uri": "a.py", "uriBaseId": "ROOTPATH"}, {}).startswith("/"))
+        # A base the run never defines leaves the uri as it is.
+        self.assertEqual("a.py", resolve({"uri": "a.py", "uriBaseId": "MISSING"}, run))
+        self.assertEqual("a.py", resolve({"uri": "a.py", "uriBaseId": "ROOTPATH"}, {}))
+        self.assertEqual("a.py", resolve({"uri": "a.py", "uriBaseId": "ROOTPATH"},
+                                         {"originalUriBaseIds": {}}))
+        self.assertEqual("a.py", resolve({"uri": "a.py", "uriBaseId": "ROOTPATH"}, None))
+
+    def test_a_symbolic_base_with_no_table_keeps_a_relative_path(self):
+        # The repo's own semgrep fixture: a relative uri, `%SRCROOT%`, no table.
+        here = os.path.dirname(os.path.abspath(__file__))
+        with open(os.path.join(here, "fixtures", "semgrep.sarif"), encoding="utf-8") as fh:
+            document = json.load(fh)
+        document["runs"][0]["results"][0]["locations"][0]["physicalLocation"][
+            "artifactLocation"] = {"uri": "tests/fixtures/vulnerable.py",
+                                   "uriBaseId": "%SRCROOT%"}
+        self.assertNotIn("originalUriBaseIds", document["runs"][0])
+        findings = sarif_utils.sarif_to_findings(document, "semgrep", "g1", "XX")
+        self.assertEqual("tests/fixtures/vulnerable.py", findings[0]["location"]["file"])
 
     def test_the_golden_captures_keep_their_paths(self):
         # Trivy's own capture (ROOTPATH = file:///src/) and semgrep's (%SRCROOT%, no
