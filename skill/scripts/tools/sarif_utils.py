@@ -157,7 +157,7 @@ def resolve_artifact_uri(artifact, run):
     if not isinstance(artifact, dict):
         return None
     uri, base_id = artifact.get("uri"), artifact.get("uriBaseId")
-    if (not isinstance(uri, str) or base_id is None or base_id == ""
+    if (not isinstance(uri, str) or base_id is None
             or uri.startswith("/") or _URI_SCHEME.match(uri)):
         return uri
     bases = run.get("originalUriBaseIds") if isinstance(run, dict) else None
