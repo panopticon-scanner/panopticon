@@ -65,7 +65,7 @@ def _ingest_document(root, filename, document, *, name_root=True):
 # so the module's table is checked against it.
 _OSV_ECOSYSTEMS = {"Cargo.lock": "crates.io", "package-lock.json": "npm",
                    "npm-shrinkwrap.json": "npm", "uv.lock": "PyPI", "poetry.lock": "PyPI",
-                   "pdm.lock": "PyPI"}
+                   "pdm.lock": "PyPI", "Gemfile.lock": "RubyGems"}
 
 
 def _raw_advisory_finding(*, path="Cargo.lock", source="tool:osv-scanner",
@@ -2339,6 +2339,8 @@ class TestTheAdvisoryEcosystemMustAgreeWithItsLock(unittest.TestCase):
         ("uv.lock", "PyPI", PY_MEMBER),
         ("poetry.lock", "PyPI", PY_MEMBER),
         ("pdm.lock", "PyPI", PY_MEMBER),
+        # #3692 review item 10: Ruby joins the table once #3696's check is on main.
+        ("Gemfile.lock", "RubyGems", ("acme-lib", "1.2.0")),
     )
     OTHERS = ("Maven", "maven", "MAVEN", "Go", "RubyGems", "Packagist", "NuGet", "")
 
@@ -2351,6 +2353,13 @@ class TestTheAdvisoryEcosystemMustAgreeWithItsLock(unittest.TestCase):
             _write_manifest(root)
         elif lock_name in first_party_advisory.NPM_LOCKS:
             _npm_tree(root, lock_name=lock_name)
+        elif lock_name == "Gemfile.lock":
+            _write_text(os.path.join(root, "Gemfile.lock"),
+                        "PATH\n  remote: gems/acme-lib\n  specs:\n    acme-lib (1.2.0)\n\n"
+                        "GEM\n  remote: https://rubygems.org/\n  specs:\n    rack (2.2.3)\n")
+            _write_text(os.path.join(root, "gems", "acme-lib", "acme-lib.gemspec"),
+                        'Gem::Specification.new do |s|\n  s.name = "acme-lib"\n'
+                        '  s.version = "1.2.0"\nend\n')
         else:
             lock = {"uv.lock": _uv_lock, "poetry.lock": _poetry_lock,
                     "pdm.lock": _pdm_lock}[lock_name]()
@@ -2445,7 +2454,7 @@ class TestTheAdvisoryEcosystemMustAgreeWithItsLock(unittest.TestCase):
         every = sorted({ecosystem for _lock, ecosystem, _package in self.CASES})
         for lock_name, own, package in self.CASES:
             root = self._tree(lock_name)
-            wrong = self.OTHERS + tuple(e for e in every if e != own) + (
+            wrong = tuple(e for e in self.OTHERS + tuple(every) if e != own) + (
                 own.upper() if own.upper() != own else own.lower(), own + " ", " " + own,
                 own + ":1")
             # Under every adapter: a declared ecosystem is checked whoever declares it.

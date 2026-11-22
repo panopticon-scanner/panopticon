@@ -88,13 +88,18 @@ def _tree(root, *, lock=None, member=None, top=None, lock_name="Gemfile.lock"):
 
 
 def _finding(package, *, path="Gemfile.lock", source="tool:osv-scanner"):
+    tool_evidence = {"rule_id": "GHSA-xxxx-yyyy-zzzz", "package_name": package[0],
+                     "vulnerable_versions": package[1]}
+    if source == "tool:osv-scanner":
+        # #3760: osv-scanner always declares the ecosystem, and one without it is
+        # refused. RubyGems whatever the path, as osv-scanner reports a Ruby advisory.
+        tool_evidence["ecosystem"] = "RubyGems"
     return {
         "id": "OS-001",
         "title": "%s %s: GHSA-xxxx-yyyy-zzzz" % package,
         "source": source,
         "location": {"file": path, "line_start": 1},
-        "tool_evidence": {"rule_id": "GHSA-xxxx-yyyy-zzzz", "package_name": package[0],
-                          "vulnerable_versions": package[1]},
+        "tool_evidence": tool_evidence,
     }
 
 
@@ -943,8 +948,15 @@ class TestTheSecondReview(TestTheReviewProbes):
                                "inside": self._spec("  " + comment + "\n" + lit),
                                "after": self._spec(lit) + comment + "\n"}[where]
                     self.assertIsNone(self._probe(self.PATH, gemspec=gemspec))
+        # Round 3 note 1: a space BEFORE the separator is not a declaration Ruby loads
+        # (`# coding =utf-8` makes Gem::Specification.load return nil).
+        for comment in ("# coding =utf-8", "# coding : utf-8", "# -*- coding : utf-8 -*-",
+                        "# encoding  =  Utf-8", "# coding\x20\x20:utf-8"):
+            with self.subTest(spaced=comment):
+                self.assertIsNone(self._probe(
+                    self.PATH, gemspec=comment + "\n" + self._spec(lit)))
         for comment in ("# coding: utf-8", "# encoding: UTF-8", "#coding:utf-8",
-                        "# -*- coding : utf-8 -*-", "# encoding  =  Utf-8",
+                        "# -*- coding: utf-8 -*-", "# encoding=  Utf-8", "# coding=utf-8",
                         "# vim: set fileencoding=utf-8 :", "# coding: utf-8 encoding: utf-8",
                         "# nothing about it"):
             with self.subTest(utf8=comment):
@@ -1034,6 +1046,15 @@ class TestTheSecondReview(TestTheReviewProbes):
                 ("a spaced GEM remote",
                  good.replace("remote: https://rubygems.org/", "remote: https://rubygems.org/ junk")),
                 ("a spaced PATH remote", good.replace("remote: gems/foo", "remote: gems/foo x")),
+                # Round 3 note 2: Bundler raises on a GEM remote that is not a URL.
+                ("a GEM remote that is a word",
+                 good.replace("remote: https://rubygems.org/", "remote: other")),
+                ("a GEM remote that is a path",
+                 good.replace("remote: https://rubygems.org/", "remote: gems/foo")),
+                ("a GEM remote with a scheme and no slashes",
+                 good.replace("remote: https://rubygems.org/", "remote: https:rubygems.org")),
+                ("a GEM remote that is only a scheme",
+                 good.replace("remote: https://rubygems.org/", "remote: https://")),
                 ("a dependency before any spec",
                  good + "\nGIT\n  remote: https://example.invalid/x.git\n  specs:\n"
                         "      rack\n")):
@@ -1205,6 +1226,19 @@ class TestTheSecondReview(TestTheReviewProbes):
             with self.subTest(char=label):
                 self.assertIsNone(self._probe(self.PATH + skipped % (char + "x")))
                 self.assertIsNone(self._probe(self.PATH + skipped % char))
+
+    def test_gem_remotes_bundler_accepts_still_parse(self):
+        good = self.PATH + self._gem("    rack (2.0)\n")
+        for remote in ("https://rubygems.org/", "http://gems.example.invalid",
+                       "https://user:pw@gems.example.invalid/private/",
+                       "HTTPS://RUBYGEMS.ORG/"):
+            with self.subTest(remote=remote):
+                self.assertEqual("first_party", self._probe(
+                    good.replace("remote: https://rubygems.org/", "remote: " + remote)))
+        # A GIT or PATH remote is not a URL and need not be.
+        git = ("GIT\n  remote: git@example.invalid:acme/x.git\n  revision: abc\n  specs:\n"
+               "    x (1.0)\n\n")
+        self.assertEqual("first_party", self._probe(git + good))
 
     def test_a_plugin_source_copy_is_external(self):
         # Item 9: PLUGIN SOURCE is never local, even with a relative in-tree remote.
