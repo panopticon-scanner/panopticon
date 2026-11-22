@@ -1230,7 +1230,7 @@ class TestTheSecondReview(TestTheReviewProbes):
     def test_gem_remotes_bundler_accepts_still_parse(self):
         good = self.PATH + self._gem("    rack (2.0)\n")
         for remote in ("https://rubygems.org/", "http://gems.example.invalid",
-                       "https://user:pw@gems.example.invalid/private/",
+                       "https://gems.example.invalid:8443/private/",
                        "HTTPS://RUBYGEMS.ORG/"):
             with self.subTest(remote=remote):
                 self.assertEqual("first_party", self._probe(
