@@ -174,7 +174,13 @@ def read_stable_regular_bytes(path, limit):
         with os.fdopen(fd, "rb") as stream:
             fd = -1
             raw = _drain(path, stream, limit)
-            after = os.fstat(stream.fileno())
+            try:
+                after = os.fstat(stream.fileno())
+            except OSError as exc:
+                # The bytes were read; a caller that budgets its reads is told so.
+                failed = UnstableFileError(errno.ESTALE, "the file changed while it was read")
+                failed.bytes_read = len(raw)
+                raise failed from exc
     finally:
         if fd >= 0:
             os.close(fd)

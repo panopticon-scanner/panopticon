@@ -116,44 +116,13 @@ is_fixture_path = _is_fixture_path
 _URI_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
 
 
-def repo_path(uri):
-    """A scanner path in the findings' path space, at full identity and NOT yet inert.
-
-    The one spelling every reader shares (#3765): findings (``norm_uri``), the
-    coverage ledger (``CaptureCoverage.seen``) and the legacy SARIF reader.
-
-    - Inside the scan mount: the path below it, relative.
-    - Absolute and OUTSIDE the mount: still absolute, with one leading slash.
-      Stripping that slash turned ``/Cargo.lock`` into the review root's own
-      ``Cargo.lock``, a file the scanner never named.
-    - ``/`` alone: no path, the empty string.
-    - A ``file://`` URI with an authority, or a path with exactly two leading
-      slashes (the same thing without the scheme): not a local path; kept whole.
-    - Anything else: a relative path, unchanged.
-
-    Idempotent: a result is relative, absolute-outside or whole, and each of those
-    maps to itself."""
-    if not isinstance(uri, str):
-        return uri
-    path = uri[len("file://"):] if uri.startswith("file://") else uri
-    if path.startswith("//") and not path.startswith("///"):
-        # Exactly two leading slashes: an authority (`//src/x` is host `src`), as
-        # `file://src/x` is. Not a local path, whatever follows; kept whole.
-        return uri
-    if path.startswith("/"):
-        path = "/" + path.lstrip("/")
-        if path.startswith(_TARGET_PREFIX):
-            return path[len(_TARGET_PREFIX):].lstrip("/")
-        return "" if path == "/" else path
-    return path if path == uri else uri
-
-
 def is_scan_mount(base):
     """True only for a base uri that IS the scan mount (#3765, the gate ruling).
 
-    Not a resolver, and deliberately so: three reviews each found another spelling a
-    hand-written join read differently from a real one (a query, a fragment, a scheme
-    with no ``//``, a percent-escape, a control character). The runner scans one
+    Not a resolver, and deliberately so: an earlier draft of this change joined a uri
+    onto its base by hand, and each review found another spelling it read differently
+    from a real one (a query, a fragment, a scheme with no ``//``, a percent-escape,
+    a control character). The runner scans one
     mount, so one base is inside and every other is outside. The standard library
     parses it; the base must have the scheme ``file`` or none, no authority, and a
     path that is exactly the mount with its trailing slash -- which, since nothing is
@@ -169,48 +138,65 @@ def is_scan_mount(base):
     return parts.scheme in ("", "file") and not parts.netloc and parts.path == _TARGET_PREFIX
 
 
-_NOT_ID_SAFE = re.compile(r"[^A-Za-z0-9._-]")
+URI_BASE_OUTSIDE = "outside"
 
 
-def artifact_uri(artifact, run):
-    """A SARIF ``artifactLocation``'s uri, read with its ``uriBaseId`` (#3765).
+def path_outside_mount(uri):
+    """True when a scanner path names a place outside the scan mount (#3765).
+
+    ``norm_uri`` strips a leading slash, so ``/Cargo.lock`` and the authority form
+    ``file://Cargo.lock`` both read as the review root's ``Cargo.lock``, a file the
+    scanner never named. The location is left exactly as it has always been spelled
+    -- other readers key on it -- and this FACT is recorded beside it instead
+    (``tool_evidence.uri_base``), for the one reader that confirms a finding on the
+    strength of its path.
+
+    Outside: an absolute path that does not begin with the mount (``/x``, ``//src/x``,
+    ``/src``, ``/``), and a ``file://`` uri with an authority. A relative path is not
+    outside by itself; a SARIF base can make it so (``artifact_outside_mount``)."""
+    if not isinstance(uri, str):
+        return False
+    if uri.startswith("file://"):
+        uri = uri[len("file://"):]
+        if not uri.startswith("/"):
+            return True                       # an authority: not a local path at all
+    return uri.startswith("/") and not uri.startswith(_TARGET_PREFIX)
+
+
+def artifact_outside_mount(artifact, run):
+    """True when a SARIF ``artifactLocation`` names a place outside the scan mount.
 
     Trivy writes a RELATIVE uri (``Cargo.lock``) with ``uriBaseId: ROOTPATH`` and the
-    base in the run's ``originalUriBaseIds``. Read alone, that uri is the review root's
-    file whatever the base says. Nothing is joined or resolved here:
+    base in the run's ``originalUriBaseIds``; read alone, that uri is the review
+    root's file whatever the base says. Nothing is joined or resolved:
 
-    - the base is the scan mount itself (``is_scan_mount``): the uri, as it is;
-    - any other base the run DEFINES, whatever it says, and one that cannot be read
-      (no string uri, a chained base, a table that is not an object, an id that is
-      not a string): outside, as the absolute ``/unresolved-uri-base.<id>/<uri>``,
-      the id made one inert segment;
-    - a base the run never defines (no table, a null table, no entry for the id) is a
-      bare symbol -- semgrep and CodeQL write ``%SRCROOT%`` so -- and the uri is read
-      as it is;
-    - an absolute uri ignores its base, as SARIF says.
+    - an absolute uri is judged for itself (``path_outside_mount``) and ignores its
+      base, as SARIF says;
+    - a relative uri under the scan mount itself (``is_scan_mount``) is inside;
+    - under any other base the run DEFINES, whatever it says, or one that cannot be
+      read (no string uri, a chained base, a table that is not an object, an id
+      that is not a string), it is outside;
+    - a base the run never defines (no table, a null table, no entry for the id) is
+      a bare symbol -- semgrep and CodeQL write ``%SRCROOT%`` so -- and is read as
+      no base.
 
-    Whether a relative path is plain enough to be matched against a lock is the
-    marker's question (``first_party_advisory._lock_path``), asked of every
-    location whichever adapter wrote it. A non-object has no uri: ``None``."""
+    A non-object, or one with no string uri, locates nothing and is not outside."""
     if not isinstance(artifact, dict):
-        return None
+        return False
     uri, base_id = artifact.get("uri"), artifact.get("uriBaseId")
-    if (not isinstance(uri, str) or base_id is None
-            or uri.startswith("/") or _URI_SCHEME.match(uri)):
-        return uri
+    if not isinstance(uri, str):
+        return False
+    if uri.startswith("/") or _URI_SCHEME.match(uri):
+        return path_outside_mount(uri)
+    if base_id is None:
+        return False
     bases = run.get("originalUriBaseIds") if isinstance(run, dict) else None
     if bases is None or (isinstance(bases, dict) and isinstance(base_id, str)
                          and base_id not in bases):
-        return uri
+        return False
     entry = bases.get(base_id) if isinstance(bases, dict) and isinstance(base_id, str) else None
     base = entry.get("uri") if isinstance(entry, dict) and "uriBaseId" not in entry else None
-    if is_scan_mount(base):
-        return uri
-    # The id is the scanner's text. As path segments of its own it could spell a
-    # directory a suppression knows (`tests/fixtures`, `vendor`), and the finding
-    # would be dropped as a fixture or vendored path. So it is fused into ONE segment
-    # behind a fixed prefix, with every character outside [A-Za-z0-9._-] replaced.
-    return "/unresolved-uri-base.%s/%s" % (_NOT_ID_SAFE.sub("_", str(base_id)), uri)
+    return not is_scan_mount(base)
 
 
 def norm_uri(uri):
@@ -219,8 +205,6 @@ def norm_uri(uri):
     Strips the file:// scheme and the shared container-mount prefix, so tool
     findings share the same path space as agent findings. A plain relative
     path whose first component matches the mount basename is returned unchanged.
-    An absolute path OUTSIDE the mount stays absolute, and a file URI with an
-    authority is kept whole (#3765): neither is a path in the reviewed tree.
 
     The path is TARGET-authored text and lands in `location.file`, which the
     terminal summary prints, so it comes back INERT (#1829 SEC-4277410777): this
@@ -231,7 +215,13 @@ def norm_uri(uri):
     """
     if not isinstance(uri, str):
         return uri
-    return inert_text(repo_path(uri), mode="path")
+    if uri.startswith("file://"):
+        uri = uri[len("file://"):]
+    if uri.startswith(_TARGET_PREFIX):
+        uri = uri[len(_TARGET_PREFIX):]
+    else:
+        uri = uri.lstrip("/")
+    return inert_text(uri, mode="path")
 
 
 _norm_uri = norm_uri
@@ -258,7 +248,7 @@ class CaptureCoverage:
             return None
         # Keep full identities for counting; bound and neutralize display text
         # only when publishing it. A shared long prefix must not merge files.
-        path = repo_path(path)                 # the findings' own spelling (#3765)
+        path = path.removeprefix("file://").removeprefix(_TARGET_PREFIX).lstrip("/")
         if not path:
             return None
         self.paths.add(path)
@@ -532,11 +522,12 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1,
                 # (ingest prune, reconcile's location_file, the delta gate) all
                 # already treat "" as "no file".
                 loc = {"file": "", "line_start": None}
+                outside = False
                 locs = res.get("locations") or []
                 if locs:
                     phys = locs[0].get("physicalLocation", {})
-                    loc = {"file": _norm_uri(artifact_uri(
-                               phys.get("artifactLocation"), run)),
+                    outside = artifact_outside_mount(phys.get("artifactLocation"), run)
+                    loc = {"file": _norm_uri(phys.get("artifactLocation", {}).get("uri")),
                            "line_start": phys.get("region", {}).get("startLine")}
                 rule_props = _properties(rule.get("properties"))
                 result_props = _properties(res.get("properties"))
@@ -573,6 +564,11 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1,
                 tool_evidence = {"rule_id": inert_rule_id}
                 if finding_kind is not None:
                     tool_evidence["kind"] = finding_kind
+                if outside:
+                    # #3765: the scanner located this outside the scan mount. The
+                    # location above is spelled as it always was; the marker reads
+                    # this and never matches the finding against a lock.
+                    tool_evidence["uri_base"] = URI_BASE_OUTSIDE
                 finding = {
                     "id": new_finding_id(prefix, n),
                     # The message is target-derived text on its way to an

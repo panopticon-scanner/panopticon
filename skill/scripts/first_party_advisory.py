@@ -135,9 +135,11 @@ def _cargo_lock_path(target_root, finding):
 # does not interpret, and reading it as a directory name reads some other directory.
 # A backslash or the cut mark means the path may have been rewritten to be shown
 # (`inert_text` spells a control character as backslash-x-NN, and that text names a
-# different, real directory; a lone surrogate is spelled `U+XXXX`, with no backslash,
-# `inert.spelled`). All of these stay with the advisor.
-_NOT_PLAIN = re.compile(r"\A[A-Za-z][A-Za-z0-9+.-]*:|[\x00-\x1f\x7f%?#\\]|U\+[0-9A-F]{4}|"
+# different, real directory; a lone surrogate, U+D800 to U+DFFF, is spelled `U+XXXX`
+# with no backslash, `inert.spelled`, and only that range is). All of these stay with
+# the advisor.
+_NOT_PLAIN = re.compile(r"\A[A-Za-z][A-Za-z0-9+.-]*:|[\x00-\x1f\x7f%?#\\]|"
+                        r"U\+D[89A-F][0-9A-F]{2}|"
                         + re.escape(INERT_CUT))
 
 
@@ -993,6 +995,13 @@ def _mark_finding(finding, target_root, cache):
         return
     tool_evidence = finding.get("tool_evidence")
     if not isinstance(tool_evidence, dict):
+        return
+    # #3765: the scanner located this finding outside the scan mount (an absolute path
+    # off the mount, an authority, or a SARIF base that is not the mount). Its
+    # `location.file` is spelled as it always was, which can be the name of a lock in
+    # the tree, so the fact is carried here and decides before any lock is read. Any
+    # value refuses: only a scanner adapter writes the key, and only to say this.
+    if "uri_base" in tool_evidence:
         return
     # #3765: Trivy's identity is parsed from its message, and a misconfiguration,
     # licence or secret record can carry the same text. Only a record Trivy itself

@@ -1076,19 +1076,25 @@ class TestAPathOutsideTheScanMount(_Case):
         # The scanner adapters set it, for each lock, and only then.
         for lock_name, ecosystem, package in LOCKS:
             root = _tree(self, lock_name)
-            for document, name in (
-                    (_trivy(package, "/" + lock_name), "trivy.sarif"),
-                    (_trivy(package, "file://" + lock_name), "trivy.sarif"),
+            for document, name, uri in (
+                    (_trivy(package, "/" + lock_name), "trivy.sarif", "/" + lock_name),
+                    (_trivy(package, "file://" + lock_name), "trivy.sarif", lock_name),
                     (_trivy(package, lock_name, base_id="ROOTPATH",
-                            bases={"ROOTPATH": {"uri": "file:///etc/"}}), "trivy.sarif"),
-                    (_osv(package, ecosystem, "/" + lock_name), "osv-scanner.json"),
-                    (_osv(package, ecosystem, "//src/" + lock_name), "osv-scanner.json"),
-                    (_osv(package, ecosystem, "file://" + lock_name), "osv-scanner.json")):
-                with self.subTest(lock=lock_name, tool=name):
+                            bases={"ROOTPATH": {"uri": "file:///etc/"}}), "trivy.sarif",
+                     lock_name),
+                    (_osv(package, ecosystem, "/" + lock_name), "osv-scanner.json",
+                     "/" + lock_name),
+                    (_osv(package, ecosystem, "//" + lock_name), "osv-scanner.json",
+                     "//" + lock_name),
+                    (_osv(package, ecosystem, "//src/" + lock_name), "osv-scanner.json",
+                     "//src/" + lock_name),
+                    (_osv(package, ecosystem, "file://" + lock_name), "osv-scanner.json",
+                     lock_name)):
+                with self.subTest(lock=lock_name, tool=name, uri=uri):
                     findings = _ingest(root, name, document)
                     self.assert_advisor_path(findings)
                     self.assertEqual("outside", findings[0]["tool_evidence"]["uri_base"])
-                    self.assertEqual(lock_name, findings[0]["location"]["file"])    # as main
+                    self.assertEqual(_main_location(uri), findings[0]["location"]["file"])
             for document, name in (
                     (_trivy(package, lock_name), "trivy.sarif"),
                     (_trivy(package, "/src/" + lock_name), "trivy.sarif"),
@@ -1137,7 +1143,7 @@ class TestAPathOutsideTheScanMount(_Case):
         for uri, expected in (("/abs/x.py", "abs/x.py"), ("file:///abs/x.py", "abs/x.py"),
                               ("//Cargo.lock", "Cargo.lock"), ("/src/a/b.py", "a/b.py"),
                               ("file:///src/a.py", "a.py"), ("a.py", "a.py"),
-                              ("file://host/x", "host/x"), ("/src//x", "x")):
+                              ("file://host/x", "host/x"), ("//src/x", "src/x")):
             with self.subTest(uri=uri):
                 self.assertEqual(expected, sarif_utils.norm_uri(uri))
                 self.assertEqual(expected, _main_location(uri))
@@ -1188,6 +1194,7 @@ class TestAPathOutsideTheScanMount(_Case):
                  "U+D80", "u+d800", "U+d800", "U+dce9x", "UD800", "U+",
                  # Gates item 5: outside D800-DFFF, `U+XXXX` is an ordinary name.
                  "U+0041", "U+D7FF", "U+E000", "U+FFFF", "U+C800", "xU+0041y",
+                 "U+D8ab", "U+D8", "U+Dx00",
                  "a.b", "~a", "a=b&c", "[a]")
         refused = ("xU+D800", "U+DCE9", "aU+DFFFb", "U+DBFF", "U+DC00", "U+D8AB", "U+DFAB",
                    "x:y", "C:", "a%20b", "%2e%2e", "a?b", "a#b", "a\\b", "a\\x0a",

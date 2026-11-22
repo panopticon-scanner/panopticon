@@ -12,38 +12,35 @@
     checks that the path still names the file it read (`safe_write.read_stable_regular_bytes`).
     A mismatch discards the bytes and leaves the advisory with the advisor; the bytes read
     are still charged to the ingest's byte budget. Each tool's disposition counts, as
-    `advisory_manifest_changed_during_read`, its advisories that stayed with the advisor and
-    whose lock, or a manifest consulted for their package, changed while it was read. That is
-    what is counted, not a cause: such an advisory may have stayed with the advisor for
-    another reason as well.
+    `advisory_manifest_changed_during_read`, its advisories whose lock, or a manifest
+    consulted for their package, could not be read stably. It is counted where the file is
+    read, before exclusions, suppression and the finding cap, so it can exceed the findings
+    the report shows; a failure to look at the file again after the read counts as a change;
+    and it names what happened to the file, not why the advisory stayed (it may have stayed
+    for another reason as well).
     **What this does not do:** it catches a file SEEN changing; it narrows, and does not
     remove, a file changed between two reads that each look consistent. A reader cannot close
     that race. In the reviewer's measurement, a writer flipping a lock between an ambiguous
     full lock and a local-only prefix still got a finding wrongly confirmed in 15% of ingests
     by atomic replace (30% before) and 42% by in-place rewrite (46% before). The checkout must
     not be written to during a run.
-  - **A scanner path outside the scan mount stays outside.** `/Cargo.lock`,
-    `//Cargo.lock` and `file:///Cargo.lock` had their leading slashes stripped and became the
-    review root's own `Cargo.lock`. An absolute path outside the mount now stays absolute
-    (`/Cargo.lock`), and a `file://` URI with an authority is kept whole. A SARIF result's
-    relative `uri` is now read with its `uriBaseId` and the run's `originalUriBaseIds`, which
-    is how Trivy writes a location. Nothing is resolved: the base is inside only when it is
-    exactly the scan mount (`file:///src/` or `/src/`: no authority, query, fragment,
-    percent-escape or control character), and any other base the run defines puts the result
-    outside, reported as `/unresolved-uri-base.<id>/<uri>`. A base the run never defines
-    (semgrep's `%SRCROOT%` with no table) leaves the path as it was, and an absolute `uri`
-    ignores its base, as semgrep's does. A location is matched against a lock only when it is
-    a plain relative path: one with a scheme, a `%`, `?`, `#`, a backslash, a control
-    character or lone surrogate (or the escape one is shown as) or a `..` segment stays with
-    the advisor,
-    whichever scanner wrote it; its reported `location.file` is unchanged.
-    Findings, the file-coverage ledger and the legacy SARIF reader now share one spelling.
-    **Output change:** a finding a scanner located outside the mount reports that path with
-    its leading slash, so its `location.file`, fingerprint and reconcile key change once; a
-    bare `/` is no path, and a path with exactly two leading slashes (`//src/x`, an
-    authority) is kept whole. Relative paths with no base are unchanged, and so are paths
-    inside the mount, with one exception: repeated slashes after the mount no longer leave an
-    absolute remainder (`/src//x` was `/x` and is now `x`).
+  - **A finding a scanner located outside the scan mount is never matched against a lock.**
+    `/Cargo.lock`, `//Cargo.lock`, `file:///Cargo.lock` and the authority form
+    `file://Cargo.lock` are normalized to the review root's own `Cargo.lock`, and so is a
+    SARIF result whose relative `uri` sits under a `uriBaseId` that is not the scan mount
+    (which is how Trivy writes a location). The location is unchanged: `location.file`, the
+    fingerprint, the reconcile key, suppression and file coverage are exactly what they were.
+    The scanner adapter now records the fact beside it, `tool_evidence.uri_base: "outside"`,
+    and the marker refuses a finding that carries it before any lock is read.
+    Nothing is resolved: a SARIF base is inside only when it is exactly the scan mount
+    (`file:///src/` or `/src/`: no authority, query, fragment, percent-escape or control
+    character), and any other base the run defines is outside. A base the run never defines
+    (semgrep's `%SRCROOT%` with no table) is read as no base, and an absolute `uri` ignores
+    its base. Separately, a location is matched against a lock only when it is a plain
+    relative path: one with a scheme, a `%`, `?`, `#`, a backslash, a control character or
+    lone surrogate (or the escape one is shown as) or a `..` segment stays with the advisor.
+    **Output change:** such findings gain `tool_evidence.uri_base` (Trivy and osv-scanner
+    set it), and the report schema gains the field. Nothing else about them changes.
   - **Only a Trivy vulnerability record is matched against a lock.** Trivy's package and
     version are parsed from its message, and a misconfiguration or licence record can carry
     the same text. `tool_evidence.kind` is now `vulnerability` when the record's rule carries
