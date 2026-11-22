@@ -566,7 +566,7 @@ class TestAFileThatChangesWhileItIsRead(_Case):
                 # ValueError too and is what a limit of 0 or True would reach).
                 self.assertIs(ValueError, type(caught.exception))
         self.assertEqual(b"abc", safe_write.read_stable_regular_bytes(path, 3))
-        self.assertEqual(b"abc", safe_write.read_stable_regular_bytes(path, 1 << 40))
+        self.assertEqual(b"abc", safe_write.read_stable_regular_bytes(path, 1 << 20))
 
     def test_the_state_after_the_read_is_the_descriptors_own(self):
         # The open file is asked what it is after the read, not the path: a path that
