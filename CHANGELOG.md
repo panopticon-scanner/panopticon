@@ -22,22 +22,26 @@
     `Dir[...]`, a `require`, a conditional, a second statement or a trailing comment on a
     line, `platform`, `date`, an unknown field, a number, a comment mentioning `coding` that
     is not exactly a UTF-8 declaration (`coding:` or `coding=` with no space before the
-    separator), and whitespace other than spaces.
+    separator), and whitespace other than spaces. A CRLF line ending is read as a line
+    ending; any other carriage return is refused.
   - **Publishable (R2):** a literal `allowed_push_host` other than `https://rubygems.org` (bare
-    or with one trailing `/`) is private-only, and that key may appear only as that one
-    metadata line. The review root is exempt; a member is not.
-  - **The gemspec is Bundler's:** the one file its glob `{,*,*/*}.gemspec` finds (this
-    directory and one level down, no dot-prefixed names, any letter case). More than one
-    refuses.
+    or with one trailing `/`) is private-only, and the text `allowed_push_host` may appear only
+    as that one metadata line (so a summary that mentions it refuses; the word `metadata`
+    alone does not). The review root is exempt; a member is not.
+  - **The gemspec is Bundler's:** the one file its glob `{,*,*/*}.gemspec` finds: this
+    directory and one level down, any letter case, no dot-prefixed name except the literal
+    file `.gemspec` in the source directory, which the glob's empty alternative names. More
+    than one refuses.
   - **Fails closed:** a copy of the same name at a version RubyGems reads as equal, under any
     source or platform (`1.2` beside `1.2.0`, `foo (1.0-java)` beside `foo (1.0)`); an
     outside-tree or symlinked-out source; a remote Bundler would expand elsewhere (`~`, a `..`
     component, a URL, an absolute path); a `PATH` source with any option besides `remote`
     (such as `glob:`); a version mismatch; and a malformed lock. The lock parser is an
     allowlist too: only the known headers, options at two spaces, a `remote:` (with no space
-    in it, and a URL for a `GEM` source) before the bare `specs:` marker, specs at four with a RubyGems-valid version, and
-    dependencies at six. Any other line, and
-    whitespace other than spaces (a tab, `\r`, U+2028, a BOM), fails the whole lock.
+    in it, and a URL for a `GEM` source) before the bare `specs:` marker, specs at four with a
+    RubyGems-valid version of at most 32 segments, and dependencies at six whose requirements
+    RubyGems can parse. Any other line, and whitespace other than spaces (a tab, `\r` and so
+    a CRLF lock, U+2028, a BOM), fails the whole lock.
     bundler-audit and `gems.locked` stay with the advisor.
   - **The confirmation names what matched:** a first-party advisory's exported reasoning said
     "Cargo member" for every ecosystem. It now says `Cargo member`, `npm workspace package`,

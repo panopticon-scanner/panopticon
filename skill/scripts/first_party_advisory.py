@@ -904,7 +904,7 @@ _GEM_SECTIONS = {"PATH": "local", "GEM": "external", "GIT": "external",
 _GEM_SKIPPED = frozenset(("PLATFORMS", "DEPENDENCIES", "CHECKSUMS", "RUBY VERSION",
                           "BUNDLED WITH"))
 _GEM_SPEC = re.compile(r"    ([^ ()]+) \(([^ ()]+)\)\Z")
-_GEM_DEPENDENCY = re.compile(r"      [^ ()!]+(?: \([^()]+\))?\Z")
+_GEM_DEPENDENCY = re.compile(r"      [^ ()!]+(?: \(([^()]*)\))?\Z")
 _GEM_OPTION = re.compile(r"  ([a-z_]+): (.+)\Z")
 _GEM_SPECS_MARKER = "  specs:"
 _GEM_REMOTE_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^ ]")
@@ -937,10 +937,16 @@ def _gem_release(version):
     return release, platform
 
 
+# No real version comes near this; it bounds what one line of a lock can cost.
+MAX_GEM_VERSION_SEGMENTS = 32
+
+
 def _gem_version_ok(version):
     """True for a spec version RubyGems accepts: ``[0-9]+(\\.[0-9a-zA-Z]+)*``, then an
     optional ``-platform`` of letters, digits, ``_``, ``.`` and ``-``."""
     release, dash, platform = version.partition("-")
+    if release.count(".") >= MAX_GEM_VERSION_SEGMENTS:
+        return False                                   # bounded before it is split
     segments = release.split(".")
     if not (segments[0].isdigit() and all(_ascii_alnum(segment) for segment in segments)):
         return False
@@ -971,11 +977,11 @@ def _gem_canonical(release):
     runs: list[int | str] = [int(run) if run.isdigit() else run
                              for run in re.findall(r"[0-9]+|[A-Za-z]+", release)]
     head = next((i for i, run in enumerate(runs) if isinstance(run, str)), len(runs))
-    parts = []
-    for part in (runs[:head], runs[head:]):
-        while part and part[-1] == 0:
-            part = part[:-1]
-        parts.extend(part)
+    parts: list[int | str] = []
+    for start, stop in ((0, head), (head, len(runs))):
+        while stop > start and runs[stop - 1] == 0:    # by index: linear in the length
+            stop -= 1
+        parts.extend(runs[start:stop])
     return tuple(parts)
 
 
@@ -986,7 +992,8 @@ def _gem_lock_sections(text):
     ``_GEM_SKIPPED`` header, whose contents are skipped. Inside a source a line is
     exactly one of: an option at two spaces (``  name: value``), the marker ``  specs:``
     with nothing after it, a spec at four (``    name (version)``, a RubyGems-valid
-    version) or a spec's dependency at six (``      name`` or ``      name (...)``).
+    version) or a spec's dependency at six (``      name`` or ``      name (reqs)``,
+    each comma-separated requirement one RubyGems can parse).
     Any other header or indent, any whitespace but plain spaces (a tab, ``\r``,
     U+2028, a BOM, ...), an indented line before the first header, an option after
     ``specs:``, a spec before it, a dependency with no spec above it, a ``specs:``
@@ -1020,7 +1027,11 @@ def _gem_lock_sections(text):
         if current is None:
             raise ValueError("Gemfile.lock line outside a section")
         if indent == 6:
-            if not (in_specs and current.specs and _GEM_DEPENDENCY.match(line)):
+            dependency = _GEM_DEPENDENCY.match(line)
+            # #3692 five gates: the requirement text too, not only the line's shape.
+            if not (in_specs and current.specs and dependency) or (
+                    dependency[1] is not None
+                    and not all(_gem_requirement_ok(part) for part in dependency[1].split(","))):
                 raise ValueError("malformed Gemfile.lock dependency")
         elif indent == 4:
             match = _GEM_SPEC.match(line)
@@ -1233,9 +1244,8 @@ def _gemspec_document(text):
             if "allowed_push_host" in document:
                 return None
             document["allowed_push_host"] = statement[2]
-        elif "allowed_push_host" in line or (statement[0] != "metadata"
-                                             and "metadata" in line):
-            return None
+        elif "allowed_push_host" in line:
+            return None                # that key only as that metadata line
         if statement[0] == "set" and statement[1] in ("name", "version"):
             value = statement[2][1]                 # a string: GEMSPEC_FIELDS says so
             if statement[1] in document or not value:
