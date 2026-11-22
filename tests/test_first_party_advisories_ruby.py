@@ -1269,5 +1269,230 @@ class TestTheSecondReview(TestTheReviewProbes):
                 self.assertNotIn("Cargo", reasoning)
 
 
+class TestTheFiveGates(TestTheReviewProbes):
+    """#3692 five-gate review at 41c3affe: a dependency's requirement text is validated,
+    and each refusing-side guard a mutant survived has a test of its own."""
+
+    LIT = '  s.name = "foo"\n  s.version = "1.0"\n'
+
+    for _name in [n for n in dir(TestTheReviewProbes) if n.startswith("test_")]:
+        locals()[_name] = None
+    del _name
+
+    def test_a_dependency_requirement_rubygems_cannot_parse_fails_the_lock(self):
+        # Item 1: the dependency line's shape was checked, its requirement text never.
+        good = ("PATH\n  remote: gems/foo\n  specs:\n    foo (1.0)\n      rack (~> 2.2)\n\n"
+                + self._gem("    rack (2.2.3)\n      webrick (>= 1.0, < 3)\n"))
+        self.assertEqual("first_party", self._probe(good))
+        for requirement in (">= potato", "=> 1", ">= 1, nonsense", "", " ", ">= 1,", ", >= 1",
+                            ">= 1,, < 2", ">= 1 < 2", "~> 2.2;", ">= 1.0-x", "potato",
+                            ">= " + chr(0x663), ">= 1,< 2 x"):
+            for where in ("PATH", "GEM"):
+                with self.subTest(requirement=requirement, where=where):
+                    old = {"PATH": "      rack (~> 2.2)\n",
+                           "GEM": "      webrick (>= 1.0, < 3)\n"}[where]
+                    lock = good.replace(old, "      dep (%s)\n" % requirement)
+                    self.assertNotEqual(good, lock)
+                    self.assertIsNone(self._probe(lock))
+        for requirement in ("~> 2.2", ">= 1.0, < 3", "= 1.0", "!= 1.5", ">= 1.0.0.rc1",
+                            ">=1,<2", "2.0", "> 0, <= 9"):
+            with self.subTest(valid=requirement):
+                self.assertEqual("first_party", self._probe(good.replace(
+                    "      webrick (>= 1.0, < 3)\n", "      dep (%s)\n" % requirement)))
+
+    def test_a_source_directory_that_resolves_outside_the_tree_is_refused(self):
+        # Item 2: an in-tree directory symlink to an outside directory whose gemspec
+        # links back inside. No `..` in the remote, so only the realpath check refuses.
+        outside = tempfile.mkdtemp(prefix="outside-")
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        _write(os.path.join(self.root, "real", "foo.gemspec"), _gemspec(*self.FOO))
+        os.symlink(os.path.join(self.root, "real", "foo.gemspec"),
+                   os.path.join(outside, "foo.gemspec"))
+        os.makedirs(os.path.join(self.root, "gems"), exist_ok=True)
+        os.symlink(outside, os.path.join(self.root, "gems", "linked"))
+        self.assertIsNone(self._probe(
+            self.PATH.replace("remote: gems/foo", "remote: gems/linked")))
+        # The same gemspec reached through an in-tree directory is the control.
+        self.assertEqual("first_party", self._probe(
+            self.PATH.replace("remote: gems/foo", "remote: real")))
+
+    def test_a_listing_that_fails_part_way_is_not_trusted(self):
+        # Item 2: foo.gemspec is found, then listing a sibling directory raises.
+        base = os.path.join(self.root, "gems", "foo")
+        _write(os.path.join(base, "sub", "x.rb"), "x")
+        self._probe(self.PATH)
+        self.assertEqual("first_party", self._origin(self.FOO))
+        real_scandir = os.scandir
+
+        def scandir(path):
+            if os.path.basename(os.fspath(path)) == "sub":
+                raise PermissionError(13, "denied", os.fspath(path))
+            return real_scandir(path)
+
+        with mock.patch.object(first_party_advisory.os, "scandir", side_effect=scandir):
+            self.assertIsNone(self._origin(self.FOO))
+
+    def test_a_directory_with_no_gemspec_is_cached_as_no_listing(self):
+        # Item 2: never as a path spelled "None".
+        os.makedirs(os.path.join(self.root, "empty"))
+        self._probe(self.PATH.replace("remote: gems/foo", "remote: empty"))
+        cache = first_party_advisory.IngestCache()
+        self._mark(self.FOO, cache=cache)
+        key = ("gemspec-dir", os.path.join(self.root, "empty"))
+        self.assertIn(key, cache.manifests)
+        self.assertIsNone(cache.manifests[key])
+
+    def test_bytes_that_are_not_utf_8_are_refused_not_replaced(self):
+        # Item 2: in places a replacement character would be inert.
+        good_lock = self.PATH + "PLATFORMS\n  ruby\n"
+        self.assertEqual("first_party", self._probe(good_lock))
+        with open(os.path.join(self.root, "Gemfile.lock"), "wb") as fh:
+            fh.write(self.PATH.encode() + b"PLATFORMS\n  ruby\xff\n")
+        self.assertIsNone(self._origin(self.FOO))
+        for where, body in (("a comment", b"# caf\xe9\n" + self._spec(self.LIT).encode()),
+                            ("a string", self._spec(
+                                self.LIT + '  s.summary = "caf?"\n').encode().replace(b"?", b"\xe9"))):
+            with self.subTest(where=where):
+                self._probe(self.PATH)
+                with open(os.path.join(self.root, "gems", "foo", "foo.gemspec"), "wb") as fh:
+                    fh.write(body)
+                self.assertIsNone(self._origin(self.FOO))
+
+    def test_a_git_source_is_never_local(self):
+        # Item 2: even shaped like a PATH source, with a relative in-tree remote.
+        git = "GIT\n  remote: gems/foo\n  specs:\n    foo (1.0)\n\n"
+        self.assertIsNone(self._probe(git))
+        self.assertIsNone(self._probe(self.PATH + git))
+        self.assertEqual("first_party", self._probe(
+            self.PATH + git.replace("foo (1.0)", "bar (1.0)")))
+
+    def test_every_literal_delimiter_is_required(self):
+        # Item 2.
+        lit = self.LIT
+        for label, line in (
+                ("a missing closing quote", '  s.summary = "a\n'),
+                ("a missing opening quote", '  s.summary = a"\n'),
+                ("a semicolon between array items", '  s.files = ["a"; "b"]\n'),
+                ("no opening bracket", '  s.files = "a"]\n'),
+                ("no closing bracket", '  s.files = ["a"\n'),
+                ("a dependency with no opening parenthesis", '  s.add_dependency "a")\n'),
+                ("a dependency with no closing parenthesis", '  s.add_dependency("a"\n'),
+                ("a dependency with two closing parentheses", '  s.add_dependency("a"))\n'),
+                ("a metadata key with no closing bracket", '  s.metadata["a" = "b"\n'),
+                ("a metadata key with no quotes", '  s.metadata[a] = "b"\n')):
+            with self.subTest(delimiter=label):
+                self.assertIsNone(self._probe(self.PATH, gemspec=self._spec(lit + line)))
+
+    def test_odd_whitespace_inside_a_string_or_comment_refuses_the_gemspec(self):
+        # Item 2: where no statement shape breaks, so only the whitespace rule refuses.
+        lit = self.LIT
+        for label, char in (("tab", "\t"), ("form feed", "\x0c"), ("vertical tab", "\x0b"),
+                            ("nbsp", chr(0xA0)), ("line separator", chr(0x2028)),
+                            ("bom", chr(0xFEFF)), ("lone carriage return", "\r")):
+            for where, gemspec in (
+                    ("a string", self._spec(lit + '  s.summary = "a%sb"\n' % char)),
+                    ("a comment", self._spec(lit + "  # a%sb\n" % char))):
+                with self.subTest(char=label, where=where):
+                    self.assertIsNone(self._probe(self.PATH, gemspec=gemspec))
+
+    def test_a_platform_holds_only_its_own_characters(self):
+        # Item 2.
+        good = self.PATH + self._gem("    json (2.0-java)\n")
+        self.assertEqual("first_party", self._probe(good))
+        for platform in ("ja!va", "ja/va", "ja+va", "ja:va", "ja,va", "ja=va", "ja~va",
+                         "jav" + chr(0xE9), "ja\\va", "ja*va"):
+            with self.subTest(platform=platform):
+                self.assertIsNone(self._probe(good.replace("2.0-java", "2.0-" + platform)))
+
+    def test_the_byte_caps_are_these_numbers(self):
+        # Item 2: the cap tests patch the constants, so pin the constants.
+        self.assertEqual(16 * 1024 * 1024, first_party_advisory.MAX_RUBY_LOCK_BYTES)
+        self.assertEqual(1024 * 1024, first_party_advisory.MAX_GEMSPEC_BYTES)
+
+    def test_trivy_classification_leaves_the_identity_alone(self):
+        # Item 2: the parsed pair goes to `advisory_package`, never `package_name`, so
+        # the fingerprint and the reconcile key are what they were before marking.
+        self._probe(self.PATH)
+        finding = {
+            "id": "TV-001", "title": "Package: foo Installed Version: 1.0 CVE-2099-1",
+            "source": "tool:trivy", "severity": "HIGH", "confidence": "CERTAIN",
+            "panel": "security", "category": "dependency_vulnerability",
+            "location": {"file": "Gemfile.lock", "line_start": 1},
+            "tool_evidence": {"rule_id": "CVE-2099-1"}}
+        before = (evidence.finding_fingerprint(finding), evidence.reconcile_key(finding))
+        first_party_advisory.mark([finding], self.root, first_party_advisory.IngestCache())
+        self.assertEqual("first_party", finding["tool_evidence"].get("package_origin"))
+        self.assertEqual({"name": "foo", "version": "1.0"},
+                         finding["tool_evidence"]["advisory_package"])
+        self.assertNotIn("package_name", finding["tool_evidence"])
+        self.assertNotIn("vulnerable_versions", finding["tool_evidence"])
+        self.assertEqual(before, (evidence.finding_fingerprint(finding),
+                                  evidence.reconcile_key(finding)))
+
+    def test_the_confirmation_reads_a_windows_path(self):
+        # Item 2.
+        for path, form in (("sub\\Gemfile.lock", "Ruby path gem"),
+                           ("a\\b\\Cargo.lock", "Cargo member"),
+                           ("a/b\\uv.lock", "Python workspace package")):
+            with self.subTest(path=path):
+                self.assertEqual(form, evidence.first_party_package_form(
+                    {"location": {"file": path}}))
+
+    def test_one_unreadable_gemspec_does_not_stop_its_neighbours(self):
+        # Item 3: an unknown field refuses that gemspec, without an exception that
+        # would stop every other gem in the lock classifying.
+        _write(os.path.join(self.root, "gems", "bar", "bar.gemspec"),
+               self._spec('  s.name = "bar"\n  s.version = "2.0"\n  s.bogus = "x"\n'))
+        lock = self.PATH + "PATH\n  remote: gems/bar\n  specs:\n    bar (2.0)\n\n"
+        self.assertEqual("first_party", self._probe(lock))
+        self.assertIsNone(self._origin(("bar", "2.0")))
+        self.assertIsNone(first_party_advisory._gemspec_statement('bogus = "x"'))
+        self.assertIsNone(first_party_advisory._gemspec_statement("bogus"))
+
+    def test_a_block_variable_ending_in_a_digit_is_a_name(self):
+        # Item 3: only `_1` to `_9` are reserved.
+        for var in ("s1", "a9", "spec2", "x_1", "__1", "_1a"):
+            with self.subTest(var=var):
+                gemspec = ("Gem::Specification.new do |%s|\n" % var
+                           + self.LIT.replace("s.", var + ".") + "end\n")
+                self.assertEqual("first_party", self._probe(self.PATH, gemspec=gemspec))
+
+    def test_the_word_metadata_is_not_the_metadata_setter(self):
+        # Item 4: the rule is about `x.metadata`, not the text.
+        lit = self.LIT
+        for label, gemspec in (
+                ("in a summary", self._spec(lit + '  s.summary = "metadata"\n')),
+                ("in a comment", self._spec(lit + "  # metadata follows\n")),
+                ("a dependency on it", self._spec(lit + '  s.add_dependency "metadata"\n')),
+                ("in a file list", self._spec(lit + '  s.files = ["lib/metadata.rb"]\n'))):
+            with self.subTest(metadata=label):
+                self.assertEqual("first_party", self._probe(self.PATH, gemspec=gemspec))
+        # A gem named metadata.
+        lock = self.PATH.replace("foo (1.0)", "metadata (1.0)")
+        self.assertEqual("first_party", self._probe(
+            lock, gemspec=_gemspec("metadata", "1.0"), package=("metadata", "1.0")))
+        # The setter itself is still literal-only.
+        for line in ('  s.metadata = "x"\n', "  s.metadata = {}\n",
+                     '  s.metadata.merge!("a" => "b")\n', '  s.metadata["a"] = B\n'):
+            with self.subTest(setter=line):
+                self.assertIsNone(self._probe(self.PATH, gemspec=self._spec(lit + line)))
+
+    def test_a_version_has_a_bounded_number_of_segments(self):
+        # Item 5: canonicalisation is linear, and the segment count is capped.
+        cap = first_party_advisory.MAX_GEM_VERSION_SEGMENTS
+        self.assertEqual(32, cap)
+        good = self.PATH + self._gem("    json (2.0)\n")
+        at_cap = ".".join(["1"] + ["0"] * (cap - 1))
+        self.assertEqual("first_party", self._probe(good.replace("(2.0)", "(%s)" % at_cap)))
+        self.assertIsNone(self._probe(good.replace("(2.0)", "(%s)" % (at_cap + ".0"))))
+        self.assertIsNone(self._probe(good.replace(
+            "(2.0)", "(%s)" % ".".join(["1"] + ["0"] * 200000))))
+        canonical = first_party_advisory._gem_canonical
+        self.assertEqual(canonical("1"), canonical(at_cap))
+        self.assertEqual((1, "a"), canonical("1.0.0.a.0.0"))
+        self.assertEqual((1, 0, 2), canonical("1.0.2.0"))
+        self.assertEqual((), canonical("0.0"))
+
+
 if __name__ == "__main__":
     unittest.main()
