@@ -156,7 +156,7 @@ def path_outside_mount(uri):
     outside by itself; a SARIF base can make it so (``artifact_outside_mount``)."""
     if not isinstance(uri, str):
         return False
-    if uri.startswith("file://"):
+    if uri[:len("file://")].lower() == "file://":     # a scheme has no case
         uri = uri[len("file://"):]
         if not uri.startswith("/"):
             return True                       # an authority: not a local path at all

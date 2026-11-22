@@ -2119,9 +2119,12 @@ class TestFirstPartyAdvisoryStability(unittest.TestCase):
             self.assertEqual({"file": "Cargo.lock", "line_start": 5,
                               "shown_hit_severity": "LOW"}, out[0]["severity_from"])
 
-    def test_a_full_tie_is_broken_by_the_reported_version_then_the_title(self):
+    def test_a_full_tie_is_broken_by_the_title_and_two_versions_are_two_findings(self):
         # Every member of a group shares one fingerprint, so only content left over --
-        # the version, then the title -- separates two copies at one locus.
+        # the title -- separates two copies at one locus.
+        # #3765 (third gate run): the reported version used to be the first tie-break,
+        # which meant two records naming DIFFERENT versions were one group and one
+        # advisor answer settled both. They are two findings now, in either order.
         osv = [f for f in self._ingest(["osv-scanner.json"])
                if evidence.tool_rule_id(f) == "RUSTSEC-2099-0002"][0]
         older = dict(osv, tool_evidence=dict(osv["tool_evidence"], vulnerable_versions="0.8.0"),
@@ -2129,12 +2132,16 @@ class TestFirstPartyAdvisoryStability(unittest.TestCase):
         newer = dict(osv, tool_evidence=dict(osv["tool_evidence"], vulnerable_versions="0.9.0"),
                      title="a")
         retitled = dict(older, title="a")
-        for pair, expected in (([older, newer], ("0.8.0", "z")),
-                               ([older, retitled], ("0.8.0", "a"))):
-            for members in (pair, pair[::-1]):
-                out = findings_mod.aggregate_tool_findings([dict(f) for f in members])
-                self.assertEqual([expected], [(f["tool_evidence"]["vulnerable_versions"],
-                                               f["title"]) for f in out])
+        for members in ([older, retitled], [retitled, older]):
+            out = findings_mod.aggregate_tool_findings([dict(f) for f in members])
+            self.assertEqual([("0.8.0", "a", 2)],
+                             [(f["tool_evidence"]["vulnerable_versions"], f["title"],
+                               f["occurrences"]) for f in out])
+        for members in ([older, newer], [newer, older]):
+            out = findings_mod.aggregate_tool_findings([dict(f) for f in members])
+            self.assertEqual([("0.8.0", "z", 1), ("0.9.0", "a", 1)],
+                             sorted((f["tool_evidence"]["vulnerable_versions"], f["title"],
+                                     f["occurrences"]) for f in out))
 
     def test_an_ordinary_tool_agent_pair_still_collapses(self):
         # The exemption is the first-party mark and nothing else: a registry advisory

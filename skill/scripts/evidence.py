@@ -265,6 +265,53 @@ def artifact_term(finding):
     return pkg if isinstance(pkg, str) and pkg else None
 
 
+# Trivy's generic SARIF adapter records no package: its message is the only place the
+# installed version is written. The same text the first-party marker reads.
+_TRIVY_INSTALLED = re.compile(r"(?:^|\s)Package:\s*(\S+)\s+Installed Version:\s*(\S+)(?:\s|$)")
+
+
+def advisory_version_term(finding):
+    """The installed version a tool advisory names, else None (#3765).
+
+    `tool_evidence.vulnerable_versions` where the adapter recorded one (osv-scanner
+    writes the installed version there; npm-audit a range, which is still what tells
+    two of its records apart); for Trivy, whose adapter records neither a package nor
+    a version, the `Package: <name> Installed Version: <version>` pair of its message,
+    as `<name>@<version>`. Only a tool-sourced finding has one. Used to keep two
+    advisories apart when they collapse (`synth.findings.aggregate_tool_findings`);
+    NOT part of the fingerprint or the reconcile key."""
+    if not is_tool_sourced(finding):
+        return None
+    version = _tool_evidence(finding).get("vulnerable_versions")
+    if isinstance(version, str) and version:
+        return version
+    if tool_name(finding) != "trivy":
+        return None
+    title = finding.get("title")
+    match = _TRIVY_INSTALLED.search(title) if isinstance(title, str) else None
+    return "%s@%s" % match.groups() if match else None
+
+
+def uri_base_term(finding):
+    """`tool_evidence.uri_base` of a tool-sourced finding as a key term, else None
+    (#3765): a record the scanner located outside the scan mount is not the same
+    advisory as one it located in the tree, though both normalize to one path."""
+    if not is_tool_sourced(finding):
+        return None
+    value = _tool_evidence(finding).get("uri_base")
+    return None if value is None else str(value)
+
+
+def advisory_terms(finding):
+    """What tells two tool advisories at one locus and rule apart when they collapse:
+    the artifact, the first-party mark, the installed version and the scanner's
+    `uri_base`. ONE reading for both collapse stages (`synth.findings.
+    aggregate_tool_findings` and `synth.corroborate._by_package`), which must agree:
+    a pair the first keeps apart and the second merges is one finding again."""
+    return (artifact_term(finding), is_first_party_advisory(finding),
+            advisory_version_term(finding), uri_base_term(finding))
+
+
 # #3368: on a finding whose `category` the report filled in from the catalog. Ours, never an agent's.
 CATEGORY_SOURCE = "category_source"
 

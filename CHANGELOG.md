@@ -14,8 +14,10 @@
     are still charged to the ingest's byte budget. Each tool's disposition counts, as
     `advisory_manifest_changed_during_read`, its advisories whose lock, or a manifest
     consulted for their package, could not be read stably. It is counted where the file is
-    read, before exclusions, suppression and the finding cap, so it can exceed the findings
-    the report shows; a failure to look at the file again after the read counts as a change;
+    read: after a scanner's own in-source suppressions (a result suppressed in the source is
+    never parsed into a finding, so it is never counted), and before path exclusions,
+    fixture and vendored-path suppression and the finding cap, so it can exceed the findings
+    the report shows, and is published even when none of them is left; a failure to look at the file again after the read counts as a change;
     and it names what happened to the file, not why the advisory stayed (it may have stayed
     for another reason as well).
     **What this does not do:** it catches a file SEEN changing; it narrows, and does not
@@ -41,6 +43,21 @@
     lone surrogate (or the escape one is shown as) or a `..` segment stays with the advisor.
     **Output change:** such findings gain `tool_evidence.uri_base` (Trivy and osv-scanner
     set it), and the report schema gains the field. Nothing else about them changes.
+    One file-coverage detail does change, for every SARIF adapter the legacy reader serves:
+    a result whose path is empty (`""`, `/`, `file:///`, `/src/`) is no longer counted as a
+    parsed file, so `parsed_files` can read one lower for such a capture.
+  - **Two advisories that differ in version, or in where the scanner located them, are never
+    one finding.** Findings at one file under one advisory id were grouped by package name and
+    the first-party mark. That mark was all that kept the project's own `workspace-app 1.2.3`
+    apart from a registry `workspace-app 0.9.0` in the same lock, and anything that withheld
+    it (a lock that changed while it was read, a record located outside the mount, an
+    ambiguous identity, an exhausted budget) merged the two into one finding with
+    `occurrences: 2`: one advisor answer then settled both, and a confirmation of the LOW one
+    published at the HIGH one's severity. Both collapse stages now also key on the installed
+    version the record names (for Trivy, the package and version of its message) and on
+    `tool_evidence.uri_base`. **Output change:** two such records are two findings, each
+    queued for its own answer. They share one fingerprint, as two findings at one file under
+    one advisory id already could. No committed scanner capture groups differently.
   - **Only a Trivy vulnerability record is matched against a lock.** Trivy's package and
     version are parsed from its message, and a misconfiguration or licence record can carry
     the same text. `tool_evidence.kind` is now `vulnerability` when the record's rule carries
