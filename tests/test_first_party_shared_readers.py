@@ -196,13 +196,61 @@ class TestAFileThatChangesWhileItIsRead(_Case):
             safe_write.read_stable_regular_bytes(self.path, 64)
 
     def test_stability_is_judged_before_the_size_limit(self):
-        # A file that grew past the limit while it was read is unstable, not oversized:
-        # the two refusals are charged differently.
-        def grow():
-            with open(self.path, "ab") as fh:
-                fh.write(b"x" * 64)
-        with self._during(grow), self.assertRaises(safe_write.UnstableFileError):
-            safe_write.read_stable_regular_bytes(self.path, 14)
+        # An oversized file that also changed is unstable, not oversized: the two
+        # refusals are charged differently, and an unstable size proves nothing.
+        def touch():
+            os.utime(self.path, ns=(1, 1))
+        with self._during(touch), self.assertRaises(safe_write.UnstableFileError):
+            safe_write.read_stable_regular_bytes(self.path, 13)
+        with self.assertRaises(safe_write.ReadLimitExceeded):
+            safe_write.read_stable_regular_bytes(self.path, 13)
+
+    def _in_a_directory(self):
+        """The file one directory down, so the DIRECTORY can be swapped: that changes
+        which file the path names without touching the file that was read."""
+        first = os.path.join(self.dir, "d")
+        os.makedirs(first)
+        path = os.path.join(first, "lock")
+        with open(path, "wb") as fh:
+            fh.write(b"full contents\n")
+        return first, path
+
+    def test_a_path_that_names_another_file_afterwards_is_refused(self):
+        first, path = self._in_a_directory()
+        second = os.path.join(self.dir, "d2")
+        os.makedirs(second)
+        with open(os.path.join(second, "lock"), "wb") as fh:
+            fh.write(b"full contents\n")              # same size; another file
+
+        def swap():
+            os.rename(first, os.path.join(self.dir, "gone"))
+            os.rename(second, first)
+        with self._during(swap), self.assertRaises(safe_write.UnstableFileError):
+            safe_write.read_stable_regular_bytes(path, 64)
+
+    def test_a_path_that_names_nothing_afterwards_is_refused(self):
+        first, path = self._in_a_directory()
+
+        def remove():
+            os.rename(first, os.path.join(self.dir, "gone"))
+        with self._during(remove), self.assertRaises(safe_write.UnstableFileError):
+            safe_write.read_stable_regular_bytes(path, 64)
+
+    def test_a_path_that_is_a_link_to_the_file_afterwards_is_refused(self):
+        # The same file, but no longer AT the path: a link stands there instead.
+        first, path = self._in_a_directory()
+        gone = os.path.join(self.dir, "gone")
+        second = os.path.join(self.dir, "d2")
+        os.makedirs(second)
+        os.symlink(os.path.join(gone, "lock"), os.path.join(second, "lock"))
+
+        def swap():
+            os.rename(first, gone)
+            os.rename(second, first)
+        with self._during(swap), self.assertRaises(safe_write.UnstableFileError):
+            safe_write.read_stable_regular_bytes(path, 64)
+        self.assertEqual(b"full contents\n", safe_write.read_regular_bytes(
+            os.path.join(gone, "lock"), 64))
 
     def test_each_part_of_the_files_state_is_compared(self):
         status = os.stat(self.path)
@@ -217,8 +265,10 @@ class TestAFileThatChangesWhileItIsRead(_Case):
             safe_write.read_stable_regular_bytes(os.path.join(self.dir, "absent"), 64)
         link = os.path.join(self.dir, "link")
         os.symlink(self.path, link)
-        with self.assertRaises(OSError):
+        with self.assertRaises(OSError) as refused:
             safe_write.read_stable_regular_bytes(link, 64)
+        # Refused at open, before a byte is read; not read and then found unstable.
+        self.assertNotIsInstance(refused.exception, safe_write.UnstableFileError)
         with self.assertRaises(safe_write.NonRegularFileError):
             safe_write.read_stable_regular_bytes(self.dir, 64)
         for limit in (0, -1, 1.5, True, None):
