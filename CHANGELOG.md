@@ -66,12 +66,18 @@
     (`unmeasured_by_host`) and by phase (`unmeasured_by_phase`). They add to no figure.
   - `total_is_lower_bound` is true when `total` leaves some launches out. When no launch at all
     was measured, `total` is null, not 0; the same holds for one phase's figure in `by_phase`.
-  - The ledger row itself now holds only the counters the host reported as numbers. A Claude
-    envelope whose usage held only nulls, or no counter at all, was written as four zeros and
-    read back as an exact 0; it is written as `usage: {}` and counted as unmeasured. A counter
-    that was not reported is left out of the row. The agy and Gemini runners read a missing
-    counter as 0, and for the same reason no longer hand over a usage when the envelope
-    reported no counter at all.
+  - One rule decides whether a launch was measured, for every host: at least one of the four
+    counters the ledger sums was reported as a number. A usage that held only nulls, only a
+    total or a thinking count, or no counter at all was written as four zeros and read back as
+    an exact 0. It is now written as `usage: {}` and counted as unmeasured, for a Claude
+    envelope, a Codex turn, and an agy or Gemini envelope. Kimi's wire reader already worked
+    this way.
+  - What a measured row holds differs by host. A Claude row holds only the counters its envelope
+    reported as integers; one that was not reported is left out. Codex, Kimi, agy and Gemini
+    build all four from their own fields, so on a measured launch a counter they did not report
+    reads 0.
+  - A ledger written before this change is read as it was: a row that already holds four zeros
+    is an exact zero, on a resumed run too.
   - A run that launched nothing still reads 0, and a launch that measured zero still counts as
     measured. The rows an interrupt writes are not launches and are not counted.
   - An entry the runner refused before it launched anything spent nothing, so it is not counted

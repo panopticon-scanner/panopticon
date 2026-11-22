@@ -23,6 +23,7 @@ import scripts.money as money
 import scripts.runners.base as base
 import scripts.runners.agy as agy_runner
 import scripts.runners.claude as claude_runner
+import scripts.runners.codex as codex_runner
 import scripts.runners.gemini as gemini_runner
 import scripts.runners.outage as outage
 import scripts.synth.cost as cost_mod
@@ -546,6 +547,116 @@ class TestUnmeasuredUsage(LoopCase):
                 self.assertEqual((35, True, len(unmeasured)),
                                  (doc["total"], doc["total_is_lower_bound"],
                                   doc["unmeasured_rows"]))
+
+    #: Seat review at 89cf0c5d: ONE rule for "measured", in every family. A launch is
+    #: measured when at least one of the four counters the ledger sums was reported as a
+    #: number. These are the fields that feed those four, per family, spelled here so a
+    #: name cannot leave a family's tuple unseen; and beside them, fields a host reports
+    #: that feed none of the four.
+    FEEDS_THE_LEDGER = {
+        "agy": (("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_read_tokens",
+                 "cache_creation_input_tokens", "cache_write_tokens"),
+                ("input", "candidates", "cached")),
+        "gemini": (("input_tokens", "output_tokens", "cache_read_input_tokens",
+                    "cache_read_tokens", "cache_creation_input_tokens", "cache_write_tokens"),
+                   ("input", "prompt", "candidates", "cached", "thoughts")),
+    }
+    FEEDS_NOTHING = {
+        "agy": (("total_tokens", "thinking_tokens", "reasoning_tokens", "note"),
+                ("total", "thoughts", "prompt", "tool")),
+        "gemini": (("total_tokens", "thinking_tokens", "reasoning_tokens", "note"),
+                   ("total", "tool")),
+    }
+
+    def _family_result(self, host, doc):
+        if host == "gemini":
+            return gemini_runner.parse_envelope(json.dumps(dict(doc, response="reply")), 0,
+                                                entry_id="e")
+        return agy_runner.parse_envelope(json.dumps(dict(
+            doc, status="SUCCESS", response="reply", conversation_id="c")), 0, entry_id="e")
+
+    def _recorded(self, host, result):
+        """(the row's usage, the document) after this one result is recorded alone."""
+        ledger = self._ledger()
+        ledger.record({"id": "review-a"}, "review", result, "headless", host)
+        return ledger.lines()[0]["usage"], ledger.usage_document()
+
+    def test_each_field_that_feeds_the_ledger_makes_a_launch_measured(self):
+        for host, module in (("agy", agy_runner), ("gemini", gemini_runner)):
+            usage_names, model_names = self.FEEDS_THE_LEDGER[host]
+            self.assertEqual((usage_names, model_names),
+                             (module._USAGE_COUNTERS, module._MODEL_COUNTERS))
+            # A number is what the family's own reader takes for one: `"12"` is twelve.
+            for count, read_as in ((7, 7), (0, 0), ("12", 12), (7.0, 7)):
+                shapes = ([({"usage": {name: count}}, name) for name in usage_names]
+                          + [({"stats": {"models": {"m": {"tokens": {name: count}}}}}, name)
+                             for name in model_names])
+                for doc, name in shapes:
+                    with self.subTest(host=host, name=name, count=count):
+                        result = self._family_result(host, doc)
+                        row, document = self._recorded(host, result)
+                        self.assertEqual((True, read_as, 4), (result.ok, sum(row.values()), len(row)))
+                        self.assertEqual((read_as, False, 0),
+                                         (document["total"], document["total_is_lower_bound"],
+                                          document["unmeasured_rows"]))
+
+    def test_a_field_that_feeds_nothing_the_ledger_sums_measures_nothing(self):
+        """`{"total_tokens": 500}`, or a thinking count alone, was written as four zeros."""
+        for host in ("agy", "gemini"):
+            usage_names, model_names = self.FEEDS_NOTHING[host]
+            shapes = ([{"usage": {name: 500}} for name in usage_names]
+                      + [{"usage": dict.fromkeys(usage_names, 500)}]
+                      + [{"stats": {"models": {"m": {"tokens": {name: 500}}}}}
+                         for name in model_names]
+                      + [{"stats": {"models": {"m": {"tokens": dict.fromkeys(model_names, 500)}}}}])
+            for doc in shapes:
+                with self.subTest(host=host, doc=doc):
+                    result = self._family_result(host, doc)
+                    row, document = self._recorded(host, result)
+                    self.assertEqual((True, {}, {}), (result.ok, result.usage, row))
+                    self.assertEqual((None, 1, {host: 1}),
+                                     (document["total"], document["unmeasured_rows"],
+                                      document["unmeasured_by_host"]))
+
+    def _codex_result(self, *usages):
+        events = [{"type": "item.completed",
+                   "item": {"type": "agent_message", "text": '{"domains": []}'}}]
+        events += [{"type": "turn.completed", "usage": usage} for usage in usages]
+        return codex_runner.Runner.parse_envelope(
+            "e", "\n".join(json.dumps(event) for event in events), 0)
+
+    def test_codex_measures_a_turn_by_its_own_three_counters(self):
+        """A `turn.completed` usage holding only other fields was written as four zeros,
+        because each counter Codex reads defaults to 0 when it is absent."""
+        self.assertEqual(("input_tokens", "cached_input_tokens", "output_tokens"),
+                         codex_runner._USAGE_COUNTERS)
+        for usage in ({"reasoning_tokens": 40}, {"total_tokens": 500},
+                      {"reasoning_tokens": 40, "total_tokens": 500}, {}, None):
+            with self.subTest(usage=usage):
+                result = self._codex_result(usage)
+                row, document = self._recorded("codex", result)
+                self.assertEqual((True, {}, {}), (result.ok, result.usage, row), result.error)
+                self.assertEqual((None, 1, {"codex": 1}),
+                                 (document["total"], document["unmeasured_rows"],
+                                  document["unmeasured_by_host"]))
+        for usage, tokens in (({"input_tokens": 7}, 7), ({"output_tokens": 7}, 7),
+                              ({"input_tokens": 0}, 0), ({"output_tokens": 0}, 0),
+                              ({"cached_input_tokens": 0}, 0),
+                              ({"input_tokens": 9, "cached_input_tokens": 2}, 9),
+                              ({"output_tokens": 3, "total_tokens": 500}, 3)):
+            with self.subTest(usage=usage):
+                result = self._codex_result(usage)
+                row, document = self._recorded("codex", result)
+                self.assertEqual((True, tokens, 4), (result.ok, sum(row.values()), len(row)))
+                self.assertEqual((tokens, 0), (document["total"], document["unmeasured_rows"]))
+        # A turn that measured nothing adds nothing to one that did, either way round.
+        for usages in (({"total_tokens": 500}, {"output_tokens": 5}),
+                       ({"output_tokens": 5}, {"total_tokens": 500})):
+            self.assertEqual(5, sum(self._codex_result(*usages).usage.values()))
+        # A counter that is present and is not a count is still a broken envelope.
+        for usage in ({"cached_input_tokens": 7}, {"input_tokens": None}, {"output_tokens": "5"}):
+            self.assertEqual((False, {}), (self._codex_result(usage).ok,
+                                           self._codex_result(usage).usage), usage)
 
     def test_a_launch_with_no_host_is_counted_under_unknown(self):
         """Five gates at 908f005e, item 3. The bucket is the word `unknown`, and a host

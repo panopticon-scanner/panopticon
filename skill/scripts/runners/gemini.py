@@ -118,12 +118,14 @@ def _safe_int(value):
         return 0
 
 
-#: The counters `_extract_usage_and_model` reads from an envelope's `usage` object, and
-#: from one model's `tokens` object under `stats.models`.
+#: The fields that feed the four counters the ledger sums (`collect_usage.USAGE_FIELDS`):
+#: in an envelope's `usage` object, and in one model's `tokens` object under
+#: `stats.models`. A launch is measured when one of them is reported as a number (#3764).
+#: A total, or a thinking count, alone is not one: nothing the ledger sums comes from it
+#: (a model's `thoughts` are part of this family's `output_tokens`, so they are one).
 _USAGE_COUNTERS = ("input_tokens", "output_tokens", "cache_read_input_tokens",
-                   "cache_read_tokens", "cache_creation_input_tokens", "cache_write_tokens",
-                   "thinking_tokens", "reasoning_tokens", "total_tokens")
-_MODEL_COUNTERS = ("input", "prompt", "candidates", "cached", "thoughts", "total")
+                   "cache_read_tokens", "cache_creation_input_tokens", "cache_write_tokens")
+_MODEL_COUNTERS = ("input", "prompt", "candidates", "cached", "thoughts")
 
 
 def _reports_a_count(record, names):

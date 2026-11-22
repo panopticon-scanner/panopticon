@@ -617,8 +617,11 @@ on Claude hooks, and always uses the return-persist path.
   When that count is not zero and at least one launch was measured, `total_is_lower_bound` is true
   and `total` is a floor. When nothing at all was measured, `total` is null and the flag is false:
   there is no total to bound. A phase's figure is null the same way when none of its launches was
-  measured. A row holds only the counters its host reported as numbers; a null, or a usage object
-  with no counter in it, is not a zero.
+  measured. A launch is measured when its host reported at least one of the four summed counters
+  as a number; a null, a total alone, or a usage object with no counter in it is not a zero. A
+  Claude row holds only the counters that were reported; Codex, Kimi, agy and Gemini fill the rest
+  of a measured row with 0. A row written before #3764 that holds four zeros still reads as an
+  exact zero, on a resumed run too.
   The rows an interrupt writes are not launches and are not counted. Neither is an entry the
   runner refused before it launched anything (an unregistered enforcement shell, a model the host
   does not list): its row carries `launched: false`, written only then. A failure that cannot say
