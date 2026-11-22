@@ -1247,15 +1247,15 @@ class TestTheSecondReview(TestTheReviewProbes):
                "    x (1.0)\n\n")
         self.assertEqual("first_party", self._probe(git + good))
 
-    def test_a_plugin_source_copy_is_external(self):
+    def test_a_plugin_source_copy_is_never_local(self):
         # Item 9: PLUGIN SOURCE is never local, even with a relative in-tree remote.
+        # (Since the Bundler sweep a plugin source fails the whole lock; see
+        # TestTheBundlerSweep.)
         plugin = "PLUGIN SOURCE\n  remote: gems/foo\n  type: path\n  specs:\n    foo (1.0)\n\n"
         self.assertIsNone(self._probe(self.PATH + plugin))
         self.assertIsNone(self._probe(plugin))
         # Even shaped exactly like a PATH source: no option but `remote`.
         self.assertIsNone(self._probe(plugin.replace("  type: path\n", "")))
-        self.assertEqual("first_party", self._probe(
-            self.PATH + plugin.replace("foo (1.0)", "bar (1.0)")))
 
     def test_the_confirmation_names_ruby_not_cargo(self):
         # Item 6: the exported reasoning named Cargo for every ecosystem.
@@ -1492,6 +1492,140 @@ class TestTheFiveGates(TestTheReviewProbes):
         self.assertEqual((1, "a"), canonical("1.0.0.a.0.0"))
         self.assertEqual((1, 0, 2), canonical("1.0.2.0"))
         self.assertEqual((), canonical("0.0"))
+
+
+class TestTheBundlerSweep(TestTheReviewProbes):
+    """#3692 seat review at 4091ca0e: what a sweep of malformed locks against
+    Bundler::LockfileParser 1.17.2 found the reader accepting and Bundler rejecting,
+    by line kind; and the five guards a mutant still survived."""
+
+    LIT = '  s.name = "foo"\n  s.version = "1.0"\n'
+    GOOD = ("PATH\n  remote: gems/foo\n  specs:\n    foo (1.0)\n      rack (~> 2.2)\n\n"
+            "GIT\n  remote: https://example.invalid/x.git\n  revision: abc123\n  specs:\n"
+            "    x (0.1)\n\n"
+            "GEM\n  remote: https://rubygems.org/\n  specs:\n    rack (2.2.3)\n\n"
+            "PLATFORMS\n  ruby\n\n"
+            "DEPENDENCIES\n  foo!\n  rack (~> 2.2)\n  x!\n\n"
+            "BUNDLED WITH\n   1.17.2\n")
+
+    for _name in [n for n in dir(TestTheReviewProbes) if n.startswith("test_")]:
+        locals()[_name] = None
+    del _name
+
+    def test_the_base_lock_classifies(self):
+        self.assertEqual("first_party", self._probe(self.GOOD))
+
+    def test_a_dependencies_line_is_parsed_as_bundler_parses_it(self):
+        # Item 1: the section was skipped unread.
+        for line in ("rack (=> 1)", "rack (>= potato)", "rack (>= 1, nonsense)", "rack ()",
+                     "rack ( )", "rack (>= 1,)", "rack (, >= 1)", "rack (>= 1 < 2)",
+                     "rack (~> 2.2;)", "rack (>= 1.0-x)", "rack (potato)", "rack (~> 2.2) x",
+                     "rack (~> 2.2))", "rack (~> 2.2", "rack ~> 2.2)", "rack (~> 2.2)!!",
+                     "rack!!", "!", "rack !", "rack (~> 2.2) !", "two words", "(~> 2.2)",
+                     "rack (>= " + chr(0x663) + ")"):
+            with self.subTest(dependency=line):
+                lock = self.GOOD.replace("  rack (~> 2.2)\n  x!", "  %s\n  x!" % line)
+                self.assertNotEqual(self.GOOD, lock)
+                self.assertIsNone(self._probe(lock))
+        for indent in (1, 3, 4, 6):
+            with self.subTest(indent=indent):
+                self.assertIsNone(self._probe(self.GOOD.replace(
+                    "  rack (~> 2.2)\n  x!", " " * indent + "rack (~> 2.2)\n  x!")))
+        for line in ("rack", "rack!", "rack (~> 2.2)", "rack (~> 2.2)!", "rack (>= 1.0, < 3)",
+                     "rack (= 2.2.3)", "rack-attack (>=1)", "a.b_c-d (!= 1.5)"):
+            with self.subTest(valid=line):
+                self.assertEqual("first_party", self._probe(self.GOOD.replace(
+                    "  rack (~> 2.2)\n  x!", "  %s\n  x!" % line)))
+
+    def test_an_option_value_bundler_cannot_use_fails_the_lock(self):
+        # Item 2: a control or zero-width character, and the two values Bundler reads
+        # as booleans, in any option of any source.
+        for label, char in (("NUL", "\x00"), ("ESC", "\x1b"), ("DEL", "\x7f"),
+                            ("zero-width space", chr(0x200B)), ("unit separator", "\x1f")):
+            for old in ("remote: gems/foo", "remote: https://example.invalid/x.git",
+                        "remote: https://rubygems.org/", "revision: abc123"):
+                for where in ("end", "middle"):
+                    with self.subTest(char=label, option=old, where=where):
+                        new = old + char if where == "end" else old[:-3] + char + old[-3:]
+                        self.assertIsNone(self._probe(self.GOOD.replace(old, new)))
+        for value in ("true", "false"):
+            for old in ("remote: gems/foo", "remote: https://example.invalid/x.git",
+                        "remote: https://rubygems.org/", "revision: abc123"):
+                with self.subTest(value=value, option=old):
+                    self.assertIsNone(self._probe(
+                        self.GOOD.replace(old, old.split(": ")[0] + ": " + value)))
+        # Other words are just values.
+        self.assertEqual("first_party", self._probe(
+            self.GOOD.replace("revision: abc123", "revision: truely")))
+
+    def test_a_gem_remote_is_a_url_ruby_can_parse(self):
+        ok = first_party_advisory._gem_remote_url_ok
+        for url in ("https://rubygems.org/", "https://rubygems.org", "http://gems.example.invalid",
+                    "https://gems.example.invalid:8443/private/", "HTTPS://RUBYGEMS.ORG/",
+                    "https://a-b.example.invalid/x/y_z~1/", "git+ssh://example.invalid/x"):
+            with self.subTest(valid=url):
+                self.assertTrue(ok(url))
+                self.assertEqual("first_party", self._probe(
+                    self.GOOD.replace("https://rubygems.org/", url)))
+        for url in ("other", "gems/foo", "https:rubygems.org", "https://", "https:///x",
+                    "x_https://rubygems.org/", "/https://rubygems.org/", "1https://rubygems.org/",
+                    "https://:rubygems.org/", "https://rubygems:.org/", "https://rubygems.org:/",
+                    "https://rubygems.org:80a/", "https://ruby:gems.org/", "https://rubygems.org/%",
+                    "https://rubygems.org/[", "https://rubygems.org/]", "https://rubygems.org/?a",
+                    "https://rubygems.org/#a", "https://u@rubygems.org/", "https://rubygems.org/\\",
+                    "https://rubygems.org/" + chr(0xE9), "https://ruby_gems.org/", "://rubygems.org/",
+                    "https://rubygems.org/a b", "https://rubygems.org/<", "https://rubygems.org/\""):
+            with self.subTest(invalid=url):
+                self.assertFalse(ok(url))
+                self.assertIsNone(self._probe(self.GOOD.replace("https://rubygems.org/", url)))
+
+    def test_a_lock_that_needs_a_plugin_classifies_nothing(self):
+        # Bundler raises on a PLUGIN SOURCE unless that plugin is installed, which the
+        # reader cannot know. (Earlier rounds read it as an external source.)
+        plugin = "PLUGIN SOURCE\n  remote: https://example.invalid/p\n  type: custom\n  specs:\n" \
+                 "    p (1.0)\n\n"
+        self.assertIsNone(self._probe(plugin + self.GOOD))
+        self.assertIsNone(self._probe(self.GOOD.replace("PLATFORMS\n", plugin + "PLATFORMS\n")))
+        self.assertIsNone(self._probe(self.GOOD + "\nPLUGIN SOURCE\n"))
+
+    def test_a_home_directory_remote_fails_the_lock(self):
+        # Bundler raises on `~nobody`, so every gem in that lock is unread, not only
+        # the one under that source.
+        other = "PATH\n  remote: %s\n  specs:\n    bar (2.0)\n\n"
+        for remote in ("~nobody/gems/bar", "~", "~/gems/bar", "~gems/bar"):
+            with self.subTest(remote=remote):
+                self.assertIsNone(self._probe(other % remote + self.GOOD))
+        _write(os.path.join(self.root, "gems", "bar", "bar.gemspec"), _gemspec("bar", "2.0"))
+        self.assertEqual("first_party", self._probe(other % "gems/bar" + self.GOOD))
+        # A `~` that does not start the remote is a file name.
+        self.assertEqual("first_party", self._probe(other % "gems/~bar" + self.GOOD))
+
+    def test_the_five_guards_a_mutant_survived(self):
+        # Item 3.
+        lit = self.LIT
+        for label, line in (
+                ("text before an array's closing bracket only", '  s.files = x"a"]\n'),
+                ("a dependency with text before its closing parenthesis only",
+                 '  s.add_dependency_"rack")\n'),
+                ("a dependency with text after its opening parenthesis only",
+                 '  s.add_dependency("rack"x\n'),
+                ("a dependency with a letter where the parenthesis goes",
+                 '  s.add_dependencyx"rack")\n')):
+            with self.subTest(gemspec=label):
+                self.assertIsNone(self._probe(self.GOOD, gemspec=self._spec(lit + line)))
+        for label, lock in (
+                ("an option with a capital",
+                 self.GOOD.replace("  remote: https://rubygems.org/\n",
+                                   "  remote: https://rubygems.org/\n  Remote: x\n")),
+                ("an option that is all capitals",
+                 self.GOOD.replace("  revision: abc123\n", "  REVISION: abc123\n")),
+                ("a spec dependency with a bang",
+                 self.GOOD.replace("      rack (~> 2.2)\n", "      rack!\n")),
+                ("a spec dependency with a bang after its requirement",
+                 self.GOOD.replace("      rack (~> 2.2)\n", "      rack (~> 2.2)!\n"))):
+            with self.subTest(lock=label):
+                self.assertNotEqual(self.GOOD, lock)
+                self.assertIsNone(self._probe(lock))
 
 
 if __name__ == "__main__":
