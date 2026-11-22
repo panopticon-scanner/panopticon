@@ -2524,10 +2524,75 @@ class TestTheAdvisoryEcosystemMustAgreeWithItsLock(unittest.TestCase):
                     "groups": []}]}]}
                 findings = _ingest_document(root, "osv-scanner.json", document)
                 self.assertEqual(1, len(findings))
-                self.assertEqual(osv_scanner.NO_SOURCE_PATH, findings[0]["location"]["file"])
+                self.assertEqual("manifest (%s)" % lock_name, findings[0]["location"]["file"])
                 self.assertFalse(evidence.is_first_party_advisory(findings[0]))
         self.assertEqual("manifest", osv_scanner.NO_SOURCE_PATH)
         self.assertNotIn(osv_scanner.NO_SOURCE_PATH, first_party_advisory.LOCK_ECOSYSTEMS)
+
+    def test_the_sourceless_placeholder_is_never_a_lock_whatever_the_ecosystem_says(self):
+        # #3696 five-gate review: distinct per ecosystem, and still no lock's name --
+        # for any ecosystem string, one that is itself a lock name or a path included.
+        place = osv_scanner.no_source_path
+        self.assertEqual("manifest (npm)", place("npm"))
+        self.assertEqual("manifest (PyPI)", place("PyPI"))
+        self.assertEqual("manifest (crates.io)", place("crates.io"))
+        self.assertEqual("manifest (Debian:11)", place("Debian:11"))
+        for absent in (None, "", 7, ["npm"], {"a": 1}, True):
+            with self.subTest(absent=absent):
+                self.assertEqual("manifest", place(absent))
+        # Rendered inertly: only letters, digits and `._:-` survive, and it is bounded.
+        self.assertEqual("manifest (a_b_c_d__e_)", place("a/b\\c d\n(e)"))
+        self.assertEqual("manifest (_)", place(chr(0xE9)))
+        self.assertEqual("manifest (%s)" % ("x" * 64), place("x" * 500))
+        root = self._tree("Cargo.lock")
+        for lock in first_party_advisory.FIRST_PARTY_LOCKS:
+            for ecosystem in (lock, "x/" + lock, "../" + lock, lock + ")", "(" + lock,
+                              "manifest (%s)" % lock, " " + lock, lock + "/"):
+                with self.subTest(ecosystem=ecosystem):
+                    path = place(ecosystem)
+                    self.assertTrue(path.startswith("manifest (") and path.endswith(")"))
+                    self.assertNotIn("/", path)
+                    self.assertNotIn(path, first_party_advisory.FIRST_PARTY_LOCKS)
+                    self.assertNotIn(os.path.basename(path),
+                                     first_party_advisory.FIRST_PARTY_LOCKS)
+                    finding = self._finding(path, (WORKSPACE_NAME, WORKSPACE_VERSION),
+                                            ecosystem="crates.io")
+                    self.assertIsNone(first_party_advisory._lock_path(
+                        root, finding, first_party_advisory.FIRST_PARTY_LOCKS))
+                    origin, cache = self._mark(root, finding)
+                    self.assertIsNone(origin)
+                    self.assert_nothing_read(cache)
+
+    def test_sourceless_records_in_two_ecosystems_stay_two_findings(self):
+        # The fixed placeholder gave both one location, so they aggregated into one
+        # finding with one fingerprint, and one advisor entry was lost.
+        def record(ecosystem, version):
+            return {"package": {"name": "shared-name", "version": version,
+                                "ecosystem": ecosystem},
+                    "vulnerabilities": [{"id": "GHSA-xxxx-yyyy-zzzz", "summary": "x",
+                                         "database_specific": {"severity": "HIGH"}}],
+                    "groups": []}
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        document = {"results": [{"packages": [record("npm", "1.0.0"),
+                                              record("PyPI", "2.0.0")]}]}
+        findings = _ingest_document(os.path.realpath(d.name), "osv-scanner.json", document)
+        self.assertEqual(["manifest (PyPI)", "manifest (npm)"],
+                         sorted(f["location"]["file"] for f in findings))
+        self.assertEqual(2, len({evidence.finding_fingerprint(f) for f in findings}))
+        merged = findings_mod.aggregate_tool_findings(copy.deepcopy(findings))
+        self.assertEqual(2, len(merged))
+        self.assertEqual({"npm", "PyPI"}, {f["tool_evidence"]["ecosystem"] for f in merged})
+        self.assertEqual({"1.0.0", "2.0.0"},
+                         {f["tool_evidence"]["vulnerable_versions"] for f in merged})
+        entries, cut = evidence.build_verify_queue(merged)
+        self.assertEqual((2, 0), (len(entries), cut))
+        # Two records of ONE ecosystem are one issue at one placeholder, as before.
+        same = {"results": [{"packages": [record("npm", "1.0.0"), record("npm", "1.0.0")]}]}
+        d2 = tempfile.TemporaryDirectory()
+        self.addCleanup(d2.cleanup)
+        again = _ingest_document(os.path.realpath(d2.name), "osv-scanner.json", same)
+        self.assertEqual(1, len(findings_mod.aggregate_tool_findings(copy.deepcopy(again))))
 
 
 if __name__ == "__main__":

@@ -96,13 +96,19 @@ def _jvm_tree(root):
 
 
 def _finding(package, *, path, source):
+    tool_evidence = {"rule_id": "GHSA-xxxx-yyyy-zzzz", "package_name": package[0],
+                     "vulnerable_versions": package[1]}
+    if source == "tool:osv-scanner":
+        # As osv-scanner reports it. Without this the finding is refused for declaring
+        # no ecosystem, before any JVM manifest could be read -- which would hide a
+        # marker that reads a pom.xml and then leaves the finding unclassified.
+        tool_evidence["ecosystem"] = "Maven"
     return {
         "id": "OS-001",
         "title": "%s %s: GHSA-xxxx-yyyy-zzzz" % package,
         "source": source,
         "location": {"file": path, "line_start": 1},
-        "tool_evidence": {"rule_id": "GHSA-xxxx-yyyy-zzzz", "package_name": package[0],
-                          "vulnerable_versions": package[1]},
+        "tool_evidence": tool_evidence,
     }
 
 
