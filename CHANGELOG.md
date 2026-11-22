@@ -10,10 +10,12 @@
     another file in and back, and the finding was confirmed. The reader now compares the
     file's identity, size, modification time and change time before and after the read, and
     checks that the path still names the file it read (`safe_write.read_stable_regular_bytes`).
-    A mismatch discards the bytes and leaves the advisory with the advisor. Each tool's
-    disposition counts, as `advisory_manifest_changed_during_read`, its advisories that
-    stayed with the advisor because their lock, or a manifest that would have decided them,
-    changed.
+    A mismatch discards the bytes and leaves the advisory with the advisor; the bytes read
+    are still charged to the ingest's byte budget. Each tool's disposition counts, as
+    `advisory_manifest_changed_during_read`, its advisories that stayed with the advisor and
+    whose lock, or a manifest consulted for their package, changed while it was read. That is
+    what is counted, not a cause: such an advisory may have stayed with the advisor for
+    another reason as well.
     **What this does not do:** it catches a file SEEN changing; it narrows, and does not
     remove, a file changed between two reads that each look consistent. A reader cannot close
     that race. In the reviewer's measurement, a writer flipping a lock between an ambiguous
@@ -24,11 +26,16 @@
     `//Cargo.lock` and `file:///Cargo.lock` had their leading slashes stripped and became the
     review root's own `Cargo.lock`. An absolute path outside the mount now stays absolute
     (`/Cargo.lock`), and a `file://` URI with an authority is kept whole. A SARIF result's
-    relative `uri` is now resolved against its `uriBaseId` through the run's
-    `originalUriBaseIds`, which is how Trivy writes a location: a base that is not the scan
-    mount puts the file outside, and a base the run defines but that cannot be read gives
-    `/unresolved-uri-base/<id>/<uri>`. A base the run never defines (semgrep's `%SRCROOT%`
-    with no table) leaves the path as it was. An absolute `uri` ignores its base, as semgrep's does.
+    relative `uri` is now read with its `uriBaseId` and the run's `originalUriBaseIds`, which
+    is how Trivy writes a location. Nothing is resolved: the base is inside only when it is
+    exactly the scan mount (`file:///src/` or `/src/`: no authority, query, fragment,
+    percent-escape or control character), and any other base the run defines puts the result
+    outside, reported as `/unresolved-uri-base/<id>/<uri>`. A base the run never defines
+    (semgrep's `%SRCROOT%` with no table) leaves the path as it was, and an absolute `uri`
+    ignores its base, as semgrep's does. A location is matched against a lock only when it is
+    a plain relative path: one with a scheme, a `%`, `?`, `#`, a backslash, a control
+    character (or the escape one is shown as) or a `..` segment stays with the advisor,
+    whichever scanner wrote it; its reported `location.file` is unchanged.
     Findings, the file-coverage ledger and the legacy SARIF reader now share one spelling.
     **Output change:** a finding a scanner located outside the mount reports that path with
     its leading slash, so its `location.file`, fingerprint and reconcile key change once; a
@@ -39,7 +46,9 @@
   - **Only a Trivy vulnerability record is matched against a lock.** Trivy's package and
     version are parsed from its message, and a misconfiguration or licence record can carry
     the same text. `tool_evidence.kind` is now `vulnerability` when the record's rule carries
-    Trivy's own `vulnerability` tag (`secret` still wins), and the marker requires it.
+    Trivy's own `vulnerability` tag (`secret` still wins), and the marker requires it. That
+    check replaces the marker's separate refusal of `kind: secret`, which it made unreachable:
+    only Trivy sets a kind, and a secret record's kind is never `vulnerability`.
     **Output change:** Trivy vulnerability findings gain `tool_evidence.kind: "vulnerability"`
     and the report schema's `kind` enum gains that value. It is not part of the fingerprint
     or reconcile key.

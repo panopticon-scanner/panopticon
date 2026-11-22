@@ -60,7 +60,12 @@ class NonRegularFileError(OSError):
 
 
 class UnstableFileError(OSError):
-    """The file changed, or another took its place, while it was being read (#3765)."""
+    """The file changed, or another took its place, while it was being read (#3765).
+
+    ``bytes_read`` is how much was read before that was seen, for a caller that
+    budgets its reads: the bytes are discarded, and they were still read."""
+
+    bytes_read = 0
 
 
 class ArtifactPathError(OSError):
@@ -173,12 +178,14 @@ def read_stable_regular_bytes(path, limit):
     finally:
         if fd >= 0:
             os.close(fd)
+    unstable = UnstableFileError(errno.ESTALE, "the file changed while it was read")
+    unstable.bytes_read = len(raw)
     try:
         named = os.stat(path, follow_symlinks=False)
     except OSError as exc:
-        raise UnstableFileError(errno.ESTALE, "the file changed while it was read") from exc
+        raise unstable from exc
     if not _file_state(before) == _file_state(after) == _file_state(named):
-        raise UnstableFileError(errno.ESTALE, "the file changed while it was read")
+        raise unstable
     if len(raw) > limit:
         raise ReadLimitExceeded("over the %d-byte read limit; skipped unparsed" % limit)
     return raw

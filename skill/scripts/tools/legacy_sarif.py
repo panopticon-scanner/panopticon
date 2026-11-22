@@ -190,10 +190,12 @@ def _result_paths(sarif):
         results = run.get("results") if isinstance(run, dict) else None
         for result in results if isinstance(results, list) else []:
             try:
-                located.add(_sarif_path(su.resolve_artifact_uri(
-                    result["locations"][0]["physicalLocation"]["artifactLocation"], run)))
+                path = _sarif_path(su.artifact_uri(
+                    result["locations"][0]["physicalLocation"]["artifactLocation"], run))
             except (KeyError, IndexError, TypeError, AttributeError):
-                pass
+                continue
+            if isinstance(path, str):          # a result with no file locates nothing
+                located.add(path)
     return located
 
 

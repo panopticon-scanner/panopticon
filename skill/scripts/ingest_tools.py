@@ -926,10 +926,10 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
             dispositions[tool]["advisory_manifest_budget_exhausted"] = (
                 budget_exhaustions)
         if unstable_denials:
-            # #3765: this tool's advisories that stayed with the advisor because their
-            # lock, or a manifest that would have decided them, changed while it was
-            # read. Counted per advisory denied, so a second tool at the same lock
-            # says so too, and an unstable file that decided nothing is not counted.
+            # #3765: this tool's advisories that stayed with the advisor and whose
+            # lock, or a manifest consulted for their package, changed while it was
+            # read. Counted per advisory, so a second tool at the same lock says so
+            # too. What changed, not why the advisory stayed.
             dispositions[tool]["advisory_manifest_changed_during_read"] = unstable_denials
         if policy["suppressed_in_source"]:
             # #1839: what this mode honoured, per tool. Absent means nothing

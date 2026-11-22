@@ -8,6 +8,7 @@ import math
 import os
 import re
 import sys
+from urllib.parse import urlsplit
 
 from scripts.provenance import tool_provenance
 from .base import TARGET_MOUNT, SEV_MAP, cvss_bucket, inert_text, new_finding_id
@@ -147,18 +148,46 @@ def repo_path(uri):
     return path if path == uri else uri
 
 
-def resolve_artifact_uri(artifact, run):
-    """A SARIF ``artifactLocation``'s uri with its ``uriBaseId`` applied (#3765).
+def is_scan_mount(base):
+    """True only for a base uri that IS the scan mount (#3765, the gate ruling).
+
+    Not a resolver, and deliberately so: three reviews each found another spelling a
+    hand-written join read differently from a real one (a query, a fragment, a scheme
+    with no ``//``, a percent-escape, a control character). The runner scans one
+    mount, so one base is inside and every other is outside. The standard library
+    parses it; the base must have the scheme ``file`` or none, no authority, no query
+    and no fragment, and a path that is exactly the mount with its trailing slash.
+    A ``%``, ``?`` or ``#`` anywhere, or a control character or space (which a URL
+    parser strips before it looks), refuses it unparsed."""
+    if not isinstance(base, str) or any(ch in "%?#" or ord(ch) <= 0x20 for ch in base):
+        return False
+    try:
+        parts = urlsplit(base)
+    except ValueError:
+        return False
+    return (parts.scheme in ("", "file") and not parts.netloc and not parts.query
+            and not parts.fragment and parts.path == _TARGET_PREFIX)
+
+
+def artifact_uri(artifact, run):
+    """A SARIF ``artifactLocation``'s uri, read with its ``uriBaseId`` (#3765).
 
     Trivy writes a RELATIVE uri (``Cargo.lock``) with ``uriBaseId: ROOTPATH`` and the
     base in the run's ``originalUriBaseIds``. Read alone, that uri is the review root's
-    file whatever the base says. So a relative uri that names a base is joined onto
-    it: a base that is the scan mount keeps the file inside, any other puts it
-    outside. A base the run DEFINES but that cannot be read -- no string uri, a
-    relative or chained base, a scheme with no slash, a table that is not an object -- names no place in the
-    tree, and the result is an absolute ``/unresolved-uri-base/<id>/<uri>``. A base the
-    run never defines is a bare symbol and leaves the uri as it is. An absolute uri ignores its base, as
-    SARIF says (semgrep writes ``/src/...`` with ``%SRCROOT%`` and no table)."""
+    file whatever the base says. Nothing is joined or resolved here:
+
+    - the base is the scan mount itself (``is_scan_mount``): the uri, as it is;
+    - any other base the run DEFINES, whatever it says, and one that cannot be read
+      (no string uri, a chained base, a table that is not an object, an id that is
+      not a string): outside, as the absolute ``/unresolved-uri-base/<id>/<uri>``;
+    - a base the run never defines (no table, a null table, no entry for the id) is a
+      bare symbol -- semgrep and CodeQL write ``%SRCROOT%`` so -- and the uri is read
+      as it is;
+    - an absolute uri ignores its base, as SARIF says.
+
+    Whether a relative path is plain enough to be matched against a lock is the
+    marker's question (``first_party_advisory._lock_path``), asked of every
+    location whichever adapter wrote it. A non-object has no uri: ``None``."""
     if not isinstance(artifact, dict):
         return None
     uri, base_id = artifact.get("uri"), artifact.get("uriBaseId")
@@ -168,17 +197,12 @@ def resolve_artifact_uri(artifact, run):
     bases = run.get("originalUriBaseIds") if isinstance(run, dict) else None
     if bases is None or (isinstance(bases, dict) and isinstance(base_id, str)
                          and base_id not in bases):
-        # A bare symbol the run never defines (semgrep and CodeQL write `%SRCROOT%`
-        # with no table). The run says nothing about where it is: read as no base.
         return uri
     entry = bases.get(base_id) if isinstance(bases, dict) and isinstance(base_id, str) else None
     base = entry.get("uri") if isinstance(entry, dict) and "uriBaseId" not in entry else None
-    if (not isinstance(base, str) or "/" not in base
-            or not (base.startswith("/") or _URI_SCHEME.match(base))):
-        # No slash at all (`urn:outside`, `file:`, a Windows path): a scheme, not a place.
-        return "/unresolved-uri-base/%s/%s" % (base_id, uri)
-    # A URI reference: a base that does not end in `/` gives up its last segment.
-    return base[:base.rfind("/") + 1] + uri
+    if is_scan_mount(base):
+        return uri
+    return "/unresolved-uri-base/%s/%s" % (base_id, uri)
 
 
 def norm_uri(uri):
@@ -503,7 +527,7 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1,
                 locs = res.get("locations") or []
                 if locs:
                     phys = locs[0].get("physicalLocation", {})
-                    loc = {"file": _norm_uri(resolve_artifact_uri(
+                    loc = {"file": _norm_uri(artifact_uri(
                                phys.get("artifactLocation"), run)),
                            "line_start": phys.get("region", {}).get("startLine")}
                 rule_props = _properties(rule.get("properties"))

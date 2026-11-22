@@ -54,8 +54,8 @@ import tomllib
 
 from scripts import evidence, safe_write
 from scripts.tools import ADVISORY_ADAPTERS
-from scripts.tools.base import inert_text
-from scripts.tools.sarif_utils import SECRET_KIND, VULNERABILITY_KIND
+from scripts.tools.base import INERT_CUT, inert_text
+from scripts.tools.sarif_utils import VULNERABILITY_KIND
 
 
 # Cargo.lock is controller input to the exact first-party package check, not
@@ -119,14 +119,25 @@ class IngestCache:
         # miss after it: a loop reads this before and after proving one identity to
         # learn whether an unstable file decided it.
         self.unstable_touches = 0
-        # Advisories left with the advisor BECAUSE of an unstable read: their lock's
-        # own, or one that decided their identity. Disclosed per tool as a delta.
+        # Advisories left with the advisor whose lock, or a manifest consulted for
+        # their identity, was an unstable read. Not a cause: a registry copy of the
+        # same identity keeps it with the advisor too. Disclosed per tool as a delta.
         self.unstable_denials = 0
 
 
 def _cargo_lock_path(target_root, finding):
     """Return a confined Cargo.lock path for *finding*, else None."""
     return _lock_path(target_root, finding, ("Cargo.lock",))
+
+
+# #3765, the gate ruling: a location is matched against a lock only when it is a plain
+# relative path. A scheme, a percent-escape, a query or a fragment is a URI this code
+# does not interpret, and reading it as a directory name reads some other directory.
+# A backslash or the cut mark means the path may have been rewritten to be shown
+# (`inert_text` spells a control character as backslash-x-NN, and that text names a
+# different, real directory). All of these stay with the advisor.
+_NOT_PLAIN = re.compile(r"\A[A-Za-z][A-Za-z0-9+.-]*:|[\x00-\x1f\x7f%?#\\]|"
+                        + re.escape(INERT_CUT))
 
 
 def _lock_path(target_root, finding, names):
@@ -138,6 +149,8 @@ def _lock_path(target_root, finding, names):
     # Finding paths use `/`; on POSIX a backslash is a literal filename byte
     # (#2988), while on Windows it is the platform separator.
     rel = rel.replace(os.sep, "/")
+    if _NOT_PLAIN.search(rel):
+        return None
     while rel.startswith("./"):
         rel = rel[2:]
     if (not rel or rel.startswith("/") or os.path.basename(rel) not in names
@@ -189,9 +202,14 @@ def _read_budgeted_bytes(path, file_limit, cache: IngestCache):
     limit = min(file_limit, cache.manifest_bytes_remaining)
     try:
         raw = safe_write.read_stable_regular_bytes(path, limit)
-    except safe_write.UnstableFileError:
+    except safe_write.UnstableFileError as exc:
         cache.unstable_reads.append(path)
         cache.unstable_touches += 1
+        # The bytes were read, so they are charged, like any other read.
+        cache.manifest_bytes_remaining -= min(exc.bytes_read, limit)
+        if cache.manifest_bytes_remaining == 0:
+            cache.manifest_budget_exhausted = True
+            cache.budget_exhaustion_count += 1
         return None
     except safe_write.ReadLimitExceeded:
         cache.manifest_bytes_remaining -= limit
@@ -973,11 +991,13 @@ def _mark_finding(finding, target_root, cache):
     if tool not in ADVISORY_ADAPTERS and tool != "trivy":
         return
     tool_evidence = finding.get("tool_evidence")
-    if not isinstance(tool_evidence, dict) or tool_evidence.get("kind") == SECRET_KIND:
+    if not isinstance(tool_evidence, dict):
         return
-    # #3765: Trivy's identity is parsed from its message, and a misconfiguration or
-    # licence record can carry the same text. Only a record Trivy itself tagged a
-    # vulnerability may be matched against a lock.
+    # #3765: Trivy's identity is parsed from its message, and a misconfiguration,
+    # licence or secret record can carry the same text. Only a record Trivy itself
+    # tagged a vulnerability may be matched against a lock. (This replaces the earlier
+    # `kind == secret` refusal: Trivy is the only adapter that sets a kind, and a
+    # secret record's kind is never `vulnerability`.)
     if tool == "trivy" and tool_evidence.get("kind") != VULNERABILITY_KIND:
         return
     package = _advisory_package(finding)
@@ -1010,8 +1030,8 @@ def _mark_finding(finding, target_root, cache):
         ecosystem, member = "npm", "workspace/local package"
         origins = _npm_package_origins(lock_path, target_root, cache).get(package, set())
     if origins != {evidence.FIRST_PARTY_PACKAGE_ORIGIN}:
-        # #3765: say so when it was an unstable read that left this one with the
-        # advisor -- the lock's own, or a manifest that would have decided it.
+        # #3765: count it when an unstable read was involved -- the lock's own, or a
+        # manifest consulted for this identity.
         cache.unstable_denials += lock_path in cache.unstable_reads or _UNSTABLE in origins
         return
     name, version = package

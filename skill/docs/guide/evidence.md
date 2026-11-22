@@ -42,7 +42,8 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
   alone. Three guards hold for every lock (#3765): a lock or manifest SEEN changing while it is read
   grants nothing (this narrows a race with a writer and cannot remove it, so the checkout must not
   be written to during a run); a scanner path outside the scan mount, absolute (`/Cargo.lock`) or
-  through a SARIF `uriBaseId` that is not the mount, is not the review root's lock; and a Trivy
+  under a SARIF `uriBaseId` that is not exactly the mount, is not the review root's lock, and neither
+  is a path that is not plain (a scheme, `%`, `?`, `#`, a backslash, a control character); and a Trivy
   record is matched only when Trivy itself tagged it a vulnerability. Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
   Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
