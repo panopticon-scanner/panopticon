@@ -5,20 +5,34 @@
 - **Three shared-reader faults behind first-party advisory marking are closed (#3765).** Each
   could put a scanner finding on the advisor-free path without having earned it, for every
   lock the marker reads (Cargo, npm, Python).
-  - **A file that changes while it is read grants nothing.** A lock or manifest was read
+  - **A file seen changing while it is read grants nothing.** A lock or manifest was read
     once and believed. A writer racing the read could show a complete-looking prefix, or swap
     another file in and back, and the finding was confirmed. The reader now compares the
     file's identity, size, modification time and change time before and after the read, and
     checks that the path still names the file it read (`safe_write.read_stable_regular_bytes`).
-    A mismatch discards the bytes, leaves the advisory with the advisor, and is counted per
-    tool as `advisory_manifest_changed_during_read` in the tool dispositions.
+    A mismatch discards the bytes and leaves the advisory with the advisor. Each tool's
+    disposition counts, as `advisory_manifest_changed_during_read`, its advisories that
+    stayed with the advisor because their lock, or a manifest that would have decided them,
+    changed.
+    **What this does not do:** it catches a file SEEN changing; it narrows, and does not
+    remove, a file changed between two reads that each look consistent. A reader cannot close
+    that race. In the reviewer's measurement, a writer flipping a lock between an ambiguous
+    full lock and a local-only prefix still got a finding wrongly confirmed in 15% of ingests
+    by atomic replace (30% before) and 42% by in-place rewrite (46% before). The checkout must
+    not be written to during a run.
   - **A scanner path outside the scan mount stays outside.** `/Cargo.lock`,
     `//Cargo.lock` and `file:///Cargo.lock` had their leading slashes stripped and became the
     review root's own `Cargo.lock`. An absolute path outside the mount now stays absolute
-    (`/Cargo.lock`), and a `file://` URI with an authority is kept whole. **Output change:** a
-    finding a scanner located outside the mount reports that path with its leading slash, so
-    its `location.file`, fingerprint and reconcile key change once. Paths inside the mount,
-    and relative paths, are unchanged.
+    (`/Cargo.lock`), and a `file://` URI with an authority is kept whole. A SARIF result's
+    relative `uri` is now resolved against its `uriBaseId` through the run's
+    `originalUriBaseIds`, which is how Trivy writes a location: a base that is not the scan
+    mount puts the file outside, and a base that cannot be resolved gives
+    `/unresolved-uri-base/<id>/<uri>`. An absolute `uri` ignores its base, as semgrep's does.
+    Findings, the file-coverage ledger and the legacy SARIF reader now share one spelling.
+    **Output change:** a finding a scanner located outside the mount reports that path with
+    its leading slash, so its `location.file`, fingerprint and reconcile key change once; a
+    bare `/` is no path. Paths inside the mount, and relative paths with no base, are
+    unchanged.
   - **Only a Trivy vulnerability record is matched against a lock.** Trivy's package and
     version are parsed from its message, and a misconfiguration or licence record can carry
     the same text. `tool_evidence.kind` is now `vulnerability` when the record's rule carries

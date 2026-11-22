@@ -112,6 +112,62 @@ is_test_path = _is_test_path
 is_fixture_path = _is_fixture_path
 
 
+_URI_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def repo_path(uri):
+    """A scanner path in the findings' path space, at full identity and NOT yet inert.
+
+    The one spelling every reader shares (#3765): findings (``norm_uri``), the
+    coverage ledger (``CaptureCoverage.seen``) and the legacy SARIF reader.
+
+    - Inside the scan mount: the path below it, relative.
+    - Absolute and OUTSIDE the mount: still absolute, with one leading slash.
+      Stripping that slash turned ``/Cargo.lock`` into the review root's own
+      ``Cargo.lock``, a file the scanner never named.
+    - ``/`` alone: no path, the empty string.
+    - A ``file://`` URI with an authority: not a local path; kept whole.
+    - Anything else: a relative path, unchanged.
+
+    Idempotent: a result is relative, absolute-outside or whole, and each of those
+    maps to itself."""
+    if not isinstance(uri, str):
+        return uri
+    path = uri[len("file://"):] if uri.startswith("file://") else uri
+    if path.startswith("/"):
+        path = "/" + path.lstrip("/")
+        if path.startswith(_TARGET_PREFIX):
+            return path[len(_TARGET_PREFIX):].lstrip("/")
+        return "" if path == "/" else path
+    return path if path == uri else uri
+
+
+def resolve_artifact_uri(artifact, run):
+    """A SARIF ``artifactLocation``'s uri with its ``uriBaseId`` applied (#3765).
+
+    Trivy writes a RELATIVE uri (``Cargo.lock``) with ``uriBaseId: ROOTPATH`` and the
+    base in the run's ``originalUriBaseIds``. Read alone, that uri is the review root's
+    file whatever the base says. So a relative uri that names a base is joined onto
+    it: a base that is the scan mount keeps the file inside, any other puts it
+    outside. A base that cannot be resolved -- no table, no entry, no string uri, a
+    relative or chained base -- names no place in the tree, and the result is an
+    absolute ``/unresolved-uri-base/<id>/<uri>``. An absolute uri ignores its base, as
+    SARIF says (semgrep writes ``/src/...`` with ``%SRCROOT%`` and no table)."""
+    if not isinstance(artifact, dict):
+        return None
+    uri, base_id = artifact.get("uri"), artifact.get("uriBaseId")
+    if (not isinstance(uri, str) or base_id is None or base_id == ""
+            or uri.startswith("/") or _URI_SCHEME.match(uri)):
+        return uri
+    bases = run.get("originalUriBaseIds") if isinstance(run, dict) else None
+    entry = bases.get(base_id) if isinstance(bases, dict) and isinstance(base_id, str) else None
+    base = entry.get("uri") if isinstance(entry, dict) and "uriBaseId" not in entry else None
+    if not isinstance(base, str) or not (base.startswith("/") or _URI_SCHEME.match(base)):
+        return "/unresolved-uri-base/%s/%s" % (base_id, uri)
+    # A URI reference: a base that does not end in `/` gives up its last segment.
+    return base[:base.rfind("/") + 1] + uri
+
+
 def norm_uri(uri):
     """Normalize a SARIF artifactLocation URI to a repo-relative path.
 
@@ -130,18 +186,7 @@ def norm_uri(uri):
     """
     if not isinstance(uri, str):
         return uri
-    path = uri[len("file://"):] if uri.startswith("file://") else uri
-    if path.startswith(_TARGET_PREFIX):
-        path = path[len(_TARGET_PREFIX):]
-    elif path.startswith("/"):
-        # #3765: an absolute path OUTSIDE the mount stays absolute (one leading
-        # slash). Stripping the slash turned `/Cargo.lock` into the review root's
-        # own `Cargo.lock`, a file the scanner never named.
-        path = "/" + path.lstrip("/")
-    elif path != uri:
-        # `file://host/...`: an authority, so not a local path at all. Kept whole.
-        path = uri
-    return inert_text(path, mode="path")
+    return inert_text(repo_path(uri), mode="path")
 
 
 _norm_uri = norm_uri
@@ -168,7 +213,7 @@ class CaptureCoverage:
             return None
         # Keep full identities for counting; bound and neutralize display text
         # only when publishing it. A shared long prefix must not merge files.
-        path = path.removeprefix("file://").removeprefix(_TARGET_PREFIX).lstrip("/")
+        path = repo_path(path)                 # the findings' own spelling (#3765)
         if not path:
             return None
         self.paths.add(path)
@@ -445,7 +490,8 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1,
                 locs = res.get("locations") or []
                 if locs:
                     phys = locs[0].get("physicalLocation", {})
-                    loc = {"file": _norm_uri(phys.get("artifactLocation", {}).get("uri")),
+                    loc = {"file": _norm_uri(resolve_artifact_uri(
+                               phys.get("artifactLocation"), run)),
                            "line_start": phys.get("region", {}).get("startLine")}
                 rule_props = _properties(rule.get("properties"))
                 result_props = _properties(res.get("properties"))

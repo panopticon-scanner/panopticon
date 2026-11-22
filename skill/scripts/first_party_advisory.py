@@ -115,6 +115,13 @@ class IngestCache:
         # #3765: every lock or manifest that changed while it was read, in order. Such a
         # read grants nothing; the count is disclosed per tool at ingest.
         self.unstable_reads: list[str] = []
+        # How many times a refused file was consulted, the first read and every cached
+        # miss after it: a loop reads this before and after proving one identity to
+        # learn whether an unstable file decided it.
+        self.unstable_touches = 0
+        # Advisories left with the advisor BECAUSE of an unstable read: their lock's
+        # own, or one that decided their identity. Disclosed per tool as a delta.
+        self.unstable_denials = 0
 
 
 def _cargo_lock_path(target_root, finding):
@@ -184,6 +191,7 @@ def _read_budgeted_bytes(path, file_limit, cache: IngestCache):
         raw = safe_write.read_stable_regular_bytes(path, limit)
     except safe_write.UnstableFileError:
         cache.unstable_reads.append(path)
+        cache.unstable_touches += 1
         return None
     except safe_write.ReadLimitExceeded:
         cache.manifest_bytes_remaining -= limit
@@ -208,6 +216,7 @@ def _read_toml(path, target_root, cache: IngestCache):
         return None
     key = ("toml", real_path)
     if key in cache.manifests:
+        cache.unstable_touches += real_path in cache.unstable_reads
         return cache.manifests[key]
     raw = _read_budgeted_bytes(real_path, MAX_CARGO_MANIFEST_BYTES, cache)
     if raw is None:
@@ -449,6 +458,7 @@ def _cargo_package_origins(path, target_root, cache: IngestCache):
     if not isinstance(packages, list):
         cache.package_origins[path] = origins
         return origins
+    touched = cache.unstable_touches
     publishable = _publishable_manifest_identities(path, target_root, cache)
     for package in packages:
         if not isinstance(package, dict):
@@ -459,8 +469,10 @@ def _cargo_package_origins(path, target_root, cache: IngestCache):
             continue
         identity = (name, version)
         if "source" not in package:
-            origin = (evidence.FIRST_PARTY_PACKAGE_ORIGIN
-                      if identity in publishable else "unknown")
+            # Cargo's manifests are read as one set, so an unstable one could have
+            # been the manifest of any identity the set does not prove.
+            origin = (evidence.FIRST_PARTY_PACKAGE_ORIGIN if identity in publishable
+                      else _UNSTABLE if cache.unstable_touches > touched else "unknown")
         elif isinstance(package.get("source"), str) and package["source"]:
             origin = "external"
         else:
@@ -488,6 +500,7 @@ def _read_json(path, file_limit, target_root, cache: IngestCache):
         return None
     key = ("json", real_path)
     if key in cache.manifests:
+        cache.unstable_touches += real_path in cache.unstable_reads
         return cache.manifests[key]
     raw = _read_budgeted_bytes(real_path, file_limit, cache)
     document = None
@@ -502,6 +515,9 @@ def _read_json(path, file_limit, target_root, cache: IngestCache):
 
 
 _URL_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+# An origin that is unknown because the manifest that would have proved it changed
+# while it was read (#3765). Never first-party; kept apart only to be counted.
+_UNSTABLE = "unstable"
 
 
 def _npm_node_modules_name(key):
@@ -612,10 +628,11 @@ def _npm_package_origins(lock_path, target_root, cache: IngestCache):
             continue
         identity = (name, version)
         fact = None
+        touched = cache.unstable_touches
         if key == "" or os.path.normpath(key) in linked:
             fact = _npm_manifest_fact(os.path.join(lock_dir, key), target_root, cache)
         origin = (evidence.FIRST_PARTY_PACKAGE_ORIGIN if fact == (identity, True)
-                  else "unknown")
+                  else _UNSTABLE if cache.unstable_touches > touched else "unknown")
         found.setdefault(identity, set()).add(origin)
     origins.update(found)
     return origins
@@ -879,10 +896,11 @@ def _python_package_origins(lock_path, target_root, cache: IngestCache):
     if len(local) > MAX_CARGO_MANIFESTS:
         return origins
     for identity, kind, path in local:
+        touched = cache.unstable_touches
         fact = _python_manifest_fact(os.path.join(lock_dir, path), target_root, cache,
                                      virtual=kind == "virtual")
         origin = (evidence.FIRST_PARTY_PACKAGE_ORIGIN if fact == (identity, True)
-                  else "unknown")
+                  else _UNSTABLE if cache.unstable_touches > touched else "unknown")
         found.setdefault(identity, set()).add(origin)
         # Confirmation stays an exact match; another spelling of the same release
         # only makes the identity ambiguous.
@@ -992,6 +1010,9 @@ def _mark_finding(finding, target_root, cache):
         ecosystem, member = "npm", "workspace/local package"
         origins = _npm_package_origins(lock_path, target_root, cache).get(package, set())
     if origins != {evidence.FIRST_PARTY_PACKAGE_ORIGIN}:
+        # #3765: say so when it was an unstable read that left this one with the
+        # advisor -- the lock's own, or a manifest that would have decided it.
+        cache.unstable_denials += lock_path in cache.unstable_reads or _UNSTABLE in origins
         return
     name, version = package
     marked = dict(tool_evidence)

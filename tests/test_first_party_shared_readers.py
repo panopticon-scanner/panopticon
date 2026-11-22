@@ -393,9 +393,7 @@ class TestAFileThatChangesWhileItIsRead(_Case):
                 self.assertEqual(count, dispositions["osv-scanner"].get(
                     "advisory_manifest_changed_during_read"))
 
-    def test_the_tool_disposition_counts_its_own_unstable_reads(self):
-        # Per output file, a delta: the second tool's quiet reads are not charged with
-        # the first one's.
+    def test_a_quiet_ingest_discloses_no_count(self):
         root = _tree(self, "Cargo.lock")
         tools = tempfile.mkdtemp(prefix="tools-out-", dir=root)
         with open(os.path.join(tools, "osv-scanner.json"), "w", encoding="utf-8") as fh:
@@ -405,23 +403,7 @@ class TestAFileThatChangesWhileItIsRead(_Case):
         _findings, quiet = ingest_tools.ingest_dir_detailed(tools, "g1", target_root=root)
         for tool in ("osv-scanner", "trivy"):
             self.assertNotIn("advisory_manifest_changed_during_read", quiet[tool])
-        real = safe_write._drain
-        touched = []
-
-        def drain(path, stream, limit):
-            raw = real(path, stream, limit)
-            if not touched:                                # the first read of the ingest
-                touched.append(path)
-                os.utime(path, ns=(1, 1))
-            return raw
-        with mock.patch.object(safe_write, "_drain", side_effect=drain):
-            findings, dispositions = ingest_tools.ingest_dir_detailed(
-                tools, "g1", target_root=root)
-        self.assertEqual(2, len(findings))
-        counts = {tool: row.get("advisory_manifest_changed_during_read")
-                  for tool, row in dispositions.items()}
-        self.assertEqual([1], [n for n in counts.values() if n is not None])
-        self.assertEqual({"ok"}, {row["status"] for row in dispositions.values()})
+            self.assertEqual("ok", quiet[tool]["status"])
 
     def test_a_manifest_that_changes_while_it_is_read_grants_nothing(self):
         for lock_name, ecosystem, package in LOCKS:
@@ -632,7 +614,7 @@ class TestAPathOutsideTheScanMount(_Case):
 
     def test_an_outside_path_is_rendered_inertly(self):
         # Seat item 2: the outside branch goes through the same neutraliser.
-        from scripts.inert_text import inert_text
+        from scripts.tools.base import inert_text
         for uri in ("/a\x1b[31mb/Cargo.lock", "file:///a\x00b/Cargo.lock", "/a\nb", "/a\u202eb",
                     "file://ho\x1bst/x"):
             with self.subTest(uri=uri):

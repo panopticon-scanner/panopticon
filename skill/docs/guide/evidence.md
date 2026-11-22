@@ -39,10 +39,11 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
   declares an ecosystem other than its lock's own (`Maven` at a `Cargo.lock`) stays with the
   advisor (#3760), and so does an osv-scanner finding that declares none: osv-scanner always sets
   it, and only Trivy and the audit adapters, which carry no ecosystem, are judged by the lock
-  alone. Three guards hold for every lock (#3765): a lock or manifest that changes while it is read
-  grants nothing; a scanner path outside the scan mount (`/Cargo.lock`) is never the review root's
-  lock; and a Trivy record is matched only when Trivy itself tagged it a vulnerability.
-  Gate-eligible.
+  alone. Three guards hold for every lock (#3765): a lock or manifest SEEN changing while it is read
+  grants nothing (this narrows a race with a writer and cannot remove it, so the checkout must not
+  be written to during a run); a scanner path outside the scan mount, absolute (`/Cargo.lock`) or
+  through a SARIF `uriBaseId` that is not the mount, is not the review root's lock; and a Trivy
+  record is matched only when Trivy itself tagged it a vulnerability. Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
   Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
   by one advisor: the adversarial backup round is summoned only for primary-CONFIRMED findings in

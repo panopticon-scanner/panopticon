@@ -145,7 +145,7 @@ _SEMGREP_DISCLOSED_RULES = 100
 def _sarif_path(path):
     """A SARIF path in the findings' path space, at full identity (bounded only
     when published, so a shared long prefix cannot merge two files)."""
-    return path.removeprefix("file://").removeprefix(su._TARGET_PREFIX).lstrip("/")
+    return su.repo_path(path)
 
 
 def _notification_target_path(path):
@@ -190,8 +190,8 @@ def _result_paths(sarif):
         results = run.get("results") if isinstance(run, dict) else None
         for result in results if isinstance(results, list) else []:
             try:
-                located.add(_sarif_path(result["locations"][0]["physicalLocation"]
-                                        ["artifactLocation"]["uri"]))
+                located.add(_sarif_path(su.resolve_artifact_uri(
+                    result["locations"][0]["physicalLocation"]["artifactLocation"], run)))
             except (KeyError, IndexError, TypeError, AttributeError):
                 pass
     return located
