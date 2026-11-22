@@ -7,7 +7,10 @@
   naming an exact name and version from the review root's own `Gemfile.lock` is confirmed at
   ingest, without an advisor, when every lock entry with that identity sits under a `PATH`
   source whose realpath is inside the review root, and the one gemspec Bundler would load for
-  that source proves the same name and version.
+  that source proves the same name and version. **Expect this to fire rarely:** only a
+  hand-written gemspec made entirely of plain literals classifies. The `bundle gem` template,
+  `Dir[...]`, `git ls-files`, `.freeze`, `%w`, a `VERSION` constant, `date` and a trailing
+  comment all leave a gem with the advisor, which is the safe side to err on.
   - **Literal only (R1):** `x.name = "lit"` and `x.version = "lit"`, each exactly once, in the
     one `Gem::Specification.new do |x|` block, plain string literals. The reader allowlists
     every line of the file. Outside the block only blank lines and `#` comments are allowed.
@@ -18,8 +21,8 @@
     Everything else refuses the file: `Foo::VERSION`, interpolation, `.freeze`, `%q{}`,
     `Dir[...]`, a `require`, a conditional, a second statement or a trailing comment on a
     line, `platform`, `date`, an unknown field, a number, a comment mentioning `coding` that
-    is not exactly a UTF-8 declaration, and whitespace other than spaces. So most real gems
-    stay with the advisor, which is the ruled trade-off.
+    is not exactly a UTF-8 declaration (`coding:` or `coding=` with no space before the
+    separator), and whitespace other than spaces.
   - **Publishable (R2):** a literal `allowed_push_host` other than `https://rubygems.org` (bare
     or with one trailing `/`) is private-only, and that key may appear only as that one
     metadata line. The review root is exempt; a member is not.
@@ -32,7 +35,7 @@
     component, a URL, an absolute path); a `PATH` source with any option besides `remote`
     (such as `glob:`); a version mismatch; and a malformed lock. The lock parser is an
     allowlist too: only the known headers, options at two spaces, a `remote:` (with no space
-    in it) before the bare `specs:` marker, specs at four with a RubyGems-valid version, and
+    in it, and a URL for a `GEM` source) before the bare `specs:` marker, specs at four with a RubyGems-valid version, and
     dependencies at six. Any other line, and
     whitespace other than spaces (a tab, `\r`, U+2028, a BOM), fails the whole lock.
     bundler-audit and `gems.locked` stay with the advisor.
@@ -55,7 +58,8 @@
   parser from the lock's file name alone and never read the advisory's own ecosystem. A scanner
   record that said `Maven` (or `Go`) but named a `Cargo.lock`, an npm lock or a Python lock, with
   the name and version of a local package, was classified first-party and confirmed without an
-  advisor. A declared ecosystem must now be exactly the lock's (`crates.io`, `npm`, `PyPI`), or
+  advisor. A declared ecosystem must now be exactly the lock's (`crates.io`, `npm`, `PyPI`,
+  and `RubyGems` for `Gemfile.lock`), or
   the finding stays with the advisor, decided before the lock is read. osv-scanner always
   declares one, so an osv finding with none (or a JSON `null`) is refused too; only Trivy and
   the audit adapters, whose findings carry no ecosystem, are judged by the lock alone, as

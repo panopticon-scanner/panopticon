@@ -4,55 +4,57 @@ Findings carry two independent axes: **severity** (impact if true — rewritten 
 disclosed caps below) and **evidence.status** (how hard the claim was verified):
 - `tool_reported` — a static-analysis tool emitted it (or a tool+agent same-locus merge did); no
   advisor has checked it. NOT gate-eligible.
-- `tool_confirmed` — a tool reported it and the claim was independently confirmed. Normally that
-  is an advisor verdict. A first-party advisory is the bounded exception (Cargo, #3593; npm,
-  Python and Ruby, #3623). For Cargo, ingest
-  confirms an exact package/version match against both a sourceless workspace/path entry in
-  Cargo.lock and one confined, in-tree member manifest publishable to crates.io (`publish` absent
-  or true, or a registry list containing `crates-io`). The claim is therefore that this project's
-  own version is affected, not that a third-party dependency is used. npm follows the same rule
-  (#3623): an exact match against the review root's own `package-lock.json` /
-  `npm-shrinkwrap.json` (lockfile v2+; a nested or vendored lock is somebody else's root) entry
-  outside `node_modules` -- the root, or a workspace / `file:` package npm linked (#3653: every
-  link must name such an entry and carry no `version` or `integrity`, or the lock fails) -- whose in-tree
-  `package.json` has the same name and version and is publishable. `private: true` is npm's
-  `publish = false` (only the review root itself is exempt), and a `publishConfig.registry` other
-  than the public one is private-only. Only osv-scanner and Trivy are classified, because they
-  report the installed version; npm-audit's `vulnerable_versions` is a range, even when it
-  happens to name a single version, so its advisories stay with the advisor. Python follows it
-  too (#3623): an exact match, under PEP 503 names, against the review root's own `uv.lock`,
-  `poetry.lock` or `pdm.lock` where every entry with that identity is a local-path package (a uv
-  `editable` / `directory` / `virtual` source, a Poetry `directory` source, a PDM `path`) whose
-  realpath is inside the review root and whose own `pyproject.toml` (`[project]`, else Poetry's
-  `[tool.poetry]`) has the same name and a static version and is publishable. A `Private ::`
-  classifier, `package-mode = false`, `[tool.uv] package = false`, `[tool.pdm] distribution = false`,
-  dynamic classifiers and a uv `virtual` source are unpublishable, except for the review root
-  itself. A dynamic version, another PEP 440-equal spelling of the same release (local or not) and
-  a lock entry whose name is not a PEP 508 name fail closed. A lock (any ecosystem) must resolve to
-  a file of the name the scanner reported. `Pipfile.lock` and `requirements.txt` carry no versioned
-  local identity and stay with the advisor, and so does pip-audit, which audits an environment, not
-  the lock. Go classifies nothing (#3623): a go.mod declares no version of its own module, so a
-  main module, a go.work `use` module and a local `replace` target (whose version is the consumer's
-  `require`, not the module's) stay with the advisor under every scanner. Ruby follows it too
-  (#3623): an exact match against a `PATH` source gem in the review root's own `Gemfile.lock`, where
-  no other spec in the lock is the same name at a version RubyGems reads as equal (any source, any
-  platform), the source carries no option but `remote`, Bundler would read the remote where it is
-  written (no `~`, no `..`, not absolute, not a URL) and its realpath is inside the review root, and
-  the one gemspec Bundler's `{,*,*/*}.gemspec` glob finds proves the name and version with plain
-  string literals. Every line of that gemspec must be on an allowlist: blank lines and comments, the
-  `Gem::Specification.new do |x|` opener and its closer, and inside it `x.<field> = <literal>`,
-  `x.add_*dependency "lit", ...` and `x.metadata["key"] = "lit"`; `Foo::VERSION`, a `require`, a
-  conditional and every other line refuse the file. The lock is read the same way: known headers,
-  exact indents, the bare `specs:` marker and RubyGems-valid versions, with whitespace other than
-  spaces failing the whole lock. A literal `allowed_push_host` other than rubygems.org is
-  private-only, and that key may appear only as that metadata line; only the review root is exempt.
-  bundler-audit and `gems.locked` stay with the advisor. Maven and Gradle classify nothing (#3623):
-  a gradle.lockfile lists only external modules, never the build's own projects, and nothing shows
-  the pinned scanners report a sibling Maven reactor module, so every pom.xml and Gradle advisory
-  stays with the advisor under every scanner. In every ecosystem, a finding that declares an
-  ecosystem other than its lock's own (`Maven` at a `Cargo.lock`) stays with the advisor (#3760),
-  and so does an osv-scanner finding that declares none: osv-scanner always sets it, and only Trivy
-  and the audit adapters, which carry no ecosystem, are judged by the lock alone. Gate-eligible.
+- `tool_confirmed` — a tool reported it and the claim was independently confirmed. Normally that is
+  an advisor verdict. A first-party advisory is the bounded exception (Cargo, #3593; npm, Python and
+  Ruby, #3623). For Cargo, ingest confirms an exact package/version match against both a sourceless
+  workspace/path entry in Cargo.lock and one confined, in-tree member manifest publishable to
+  crates.io (`publish` absent or true, or a registry list containing `crates-io`). The claim is
+  therefore that this project's own version is affected, not that a third-party dependency is used.
+  npm follows the same rule (#3623): an exact match against the review root's own
+  `package-lock.json` / `npm-shrinkwrap.json` (lockfile v2+; a nested or vendored lock is somebody
+  else's root) entry outside `node_modules` -- the root, or a workspace / `file:` package npm linked
+  (#3653: every link must name such an entry and carry no `version` or `integrity`, or the lock
+  fails) -- whose in-tree `package.json` has the same name and version and is publishable. `private:
+  true` is npm's `publish = false` (only the review root itself is exempt), and a
+  `publishConfig.registry` other than the public one is private-only. Only osv-scanner and Trivy are
+  classified, because they report the installed version; npm-audit's `vulnerable_versions` is a
+  range, even when it happens to name a single version, so its advisories stay with the advisor.
+  Python follows it too (#3623): an exact match, under PEP 503 names, against the review root's own
+  `uv.lock`, `poetry.lock` or `pdm.lock` where every entry with that identity is a local-path
+  package (a uv `editable` / `directory` / `virtual` source, a Poetry `directory` source, a PDM
+  `path`) whose realpath is inside the review root and whose own `pyproject.toml` (`[project]`, else
+  Poetry's `[tool.poetry]`) has the same name and a static version and is publishable. A `Private
+  ::` classifier, `package-mode = false`, `[tool.uv] package = false`, `[tool.pdm] distribution =
+  false`, dynamic classifiers and a uv `virtual` source are unpublishable, except for the review
+  root itself. A dynamic version, another PEP 440-equal spelling of the same release (local or not)
+  and a lock entry whose name is not a PEP 508 name fail closed. A lock (any ecosystem) must resolve
+  to a file of the name the scanner reported. `Pipfile.lock` and `requirements.txt` carry no
+  versioned local identity and stay with the advisor, and so does pip-audit, which audits an
+  environment, not the lock. Go classifies nothing (#3623): a go.mod declares no version of its own
+  module, so a main module, a go.work `use` module and a local `replace` target (whose version is
+  the consumer's `require`, not the module's) stay with the advisor under every scanner. Ruby
+  follows it too (#3623): an exact match against a `PATH` source gem in the review root's own
+  `Gemfile.lock`, where no other spec in the lock is the same name at a version RubyGems reads as
+  equal (any source, any platform), the source carries no option but `remote`, Bundler would read
+  the remote where it is written (no `~`, no `..`, not absolute, not a URL) and its realpath is
+  inside the review root, and the one gemspec Bundler's `{,*,*/*}.gemspec` glob finds proves the
+  name and version with plain string literals. Every line of that gemspec must be on an allowlist:
+  blank lines and comments, the `Gem::Specification.new do |x|` opener and its closer, and inside it
+  `x.<field> = <literal>`, `x.add_*dependency "lit", ...` and `x.metadata["key"] = "lit"`;
+  `Foo::VERSION`, a `require`, a conditional and every other line refuse the file. The lock is read
+  the same way: known headers, exact indents, the bare `specs:` marker and RubyGems-valid versions,
+  with whitespace other than spaces failing the whole lock. A literal `allowed_push_host` other than
+  rubygems.org is private-only, and that key may appear only as that metadata line; only the review
+  root is exempt. bundler-audit and `gems.locked` stay with the advisor. Expect the Ruby rule to
+  fire rarely: only a hand-written gemspec made entirely of plain literals classifies, so the
+  `bundle gem` template, `Dir[...]`, `git ls-files`, `.freeze`, `%w` and a `VERSION` constant all
+  leave a gem with the advisor. Maven and Gradle classify nothing (#3623): a gradle.lockfile lists
+  only external modules, never the build's own projects, and nothing shows the pinned scanners
+  report a sibling Maven reactor module, so every pom.xml and Gradle advisory stays with the advisor
+  under every scanner. In every ecosystem, a finding that declares an ecosystem other than its
+  lock's own (`Maven` at a `Cargo.lock`) stays with the advisor (#3760), and so does an osv-scanner
+  finding that declares none: osv-scanner always sets it, and only Trivy and the audit adapters,
+  which carry no ecosystem, are judged by the lock alone. Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
   Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
   by one advisor: the adversarial backup round is summoned only for primary-CONFIRMED findings in

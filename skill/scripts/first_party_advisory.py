@@ -97,10 +97,11 @@ RUBYGEMS_HOST = "https://rubygems.org"
 # finding that declares another one is not that lock's advisory, whatever its file
 # says. A lock in the tuple with no row here refuses every declared ecosystem, and a
 # test holds the two to the same names.
-FIRST_PARTY_LOCKS = ("Cargo.lock",) + NPM_LOCKS + PYTHON_LOCKS
+FIRST_PARTY_LOCKS = ("Cargo.lock",) + NPM_LOCKS + PYTHON_LOCKS + RUBY_LOCKS
 LOCK_ECOSYSTEMS = {"Cargo.lock": "crates.io",
                    **{name: "npm" for name in NPM_LOCKS},
-                   **{name: "PyPI" for name in PYTHON_LOCKS}}
+                   **{name: "PyPI" for name in PYTHON_LOCKS},
+                   **{name: "RubyGems" for name in RUBY_LOCKS}}
 # #3696 round 2: the adapters whose findings carry no ecosystem at all. Only theirs
 # may omit it; osv-scanner always sets one, so its absence is malformed input.
 ADAPTERS_WITHOUT_ECOSYSTEM = frozenset({"trivy", "pip-audit", "npm-audit", "bundler-audit",
@@ -906,6 +907,7 @@ _GEM_SPEC = re.compile(r"    ([^ ()]+) \(([^ ()]+)\)\Z")
 _GEM_DEPENDENCY = re.compile(r"      [^ ()!]+(?: \([^()]+\))?\Z")
 _GEM_OPTION = re.compile(r"  ([a-z_]+): (.+)\Z")
 _GEM_SPECS_MARKER = "  specs:"
+_GEM_REMOTE_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^ ]")
 
 
 class _GemSection:
@@ -988,8 +990,8 @@ def _gem_lock_sections(text):
     Any other header or indent, any whitespace but plain spaces (a tab, ``\r``,
     U+2028, a BOM, ...), an indented line before the first header, an option after
     ``specs:``, a spec before it, a dependency with no spec above it, a ``specs:``
-    with no ``remote:`` above it and a remote holding a space fail the whole lock
-    (ValueError), as Bundler raises on each. Only ``remote:`` is understood; any other option is kept
+    with no ``remote:`` above it, a remote holding a space and a ``GEM`` remote that
+    is not a URL fail the whole lock (ValueError), as Bundler raises on each. Only ``remote:`` is understood; any other option is kept
     as an unknown marker."""
     if _odd_whitespace(text):
         raise ValueError("Gemfile.lock whitespace Bundler reads differently")
@@ -997,6 +999,7 @@ def _gem_lock_sections(text):
     current: _GemSection | None = None
     skipping = False
     in_specs = False
+    line_header = ""
     for line in text.split("\n"):
         if not line:
             continue
@@ -1006,6 +1009,7 @@ def _gem_lock_sections(text):
                 current, skipping = None, True
             elif line in _GEM_SECTIONS:
                 current, skipping = _GemSection(_GEM_SECTIONS[line]), False
+                line_header = line
                 sections.append(current)
             else:
                 raise ValueError("unknown Gemfile.lock header")
@@ -1035,7 +1039,9 @@ def _gem_lock_sections(text):
                 raise ValueError("malformed Gemfile.lock option")
             if option[1] != "remote":
                 current.options.add(option[1])
-            elif current.remote is not None or " " in option[2]:
+            elif (current.remote is not None or " " in option[2]
+                  or (line_header == "GEM" and not _GEM_REMOTE_URL.match(option[2]))):
+                # Bundler raises on a GEM remote that is not a URL (round 3).
                 raise ValueError("malformed Gemfile.lock remote")
             else:
                 current.remote = option[2]
@@ -1068,7 +1074,7 @@ GEMSPEC_FIELDS = {
 }
 _GEM_NAME = re.compile(r"[A-Za-z0-9_.-]+\Z")
 _GEMSPEC_DEPENDENCY = re.compile(r"add_(?:runtime_|development_)?dependency")
-_RUBY_CODING_UTF8 = re.compile(r"coding *[:=] *utf-8(?![A-Za-z0-9_.-])")
+_RUBY_CODING_UTF8 = re.compile(r"coding[:=] *utf-8(?![A-Za-z0-9_.-])")
 # Bundler's glob is `{,*,*/*}.gemspec`: bound the listing it takes to mirror it.
 MAX_GEMSPEC_SCAN_ENTRIES = 65536
 
@@ -1164,9 +1170,10 @@ def _inert_line(line):
         return True
     if not stripped.startswith("#"):
         return False
-    # #3692 round 2: Ruby's magic comment takes spaces round the separator and several
-    # names (`coding`, `encoding`, `fileencoding`), so every mention of `coding` must be
-    # exactly a UTF-8 declaration; a comment that merely contains the word is refused.
+    # #3692 rounds 2 and 3: Ruby's magic comment has several names (`coding`,
+    # `encoding`, `fileencoding`) and spellings, so every mention of `coding` must be
+    # exactly `coding:` or `coding=`, then optional spaces, then UTF-8. A space before
+    # the separator, or a comment that merely contains the word, is refused.
     lowered = stripped.lower()
     return lowered.count("coding") == len(_RUBY_CODING_UTF8.findall(lowered))
 
