@@ -25,6 +25,7 @@ import scripts.evidence as evidence
 import scripts.first_party_advisory as first_party_advisory
 import scripts.ingest_tools as ingest_tools
 import scripts.safe_write as safe_write
+import scripts.synth.corroborate as corroborate
 import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
 import scripts.tools.sarif_utils as sarif_utils
@@ -1662,6 +1663,43 @@ class TestOneAnswerSettlesOneAdvisory(_Case):
         self.assertEqual([True, False], [evidence.is_first_party_advisory(f) for f in findings])
         grouped = findings_mod.aggregate_tool_findings(copy.deepcopy(findings))
         self.assertEqual([1, 1], [g["occurrences"] for g in grouped])
+        # The mark is a term of its own: the same record marked and unmarked (a second
+        # tool that read the lock after the budget ran out, say) is two findings.
+        marked = findings[0]
+        unmarked = copy.deepcopy(marked)
+        del unmarked["tool_evidence"]["package_origin"]
+        self.assertFalse(evidence.is_first_party_advisory(unmarked))
+        self.assertEqual(evidence.advisory_terms(marked)[2:], evidence.advisory_terms(unmarked)[2:])
+        for members in ([marked, unmarked], [unmarked, marked]):
+            grouped = findings_mod.aggregate_tool_findings(copy.deepcopy(members))
+            self.assertEqual([1, 1], [g["occurrences"] for g in grouped])
+            self.assertEqual(2, len(corroborate._by_package(copy.deepcopy(members))))
+
+    def test_two_trivy_packages_at_one_version_are_two_advisories(self):
+        # Trivy's adapter records no package, so its term is the package AND the
+        # version of its message: `a 1.0.0` and `b 1.0.0` under one advisory id at one
+        # lock are two findings, as two osv records of two packages always were.
+        root = _tree(self, "Cargo.lock")
+        findings = _ingest(root, "trivy.sarif", _trivy_pair(
+            _trivy(("alpha", "1.0.0"), "Cargo.lock", **self.HIGH),
+            _trivy(("beta", "1.0.0"), "Cargo.lock", **self.HIGH)))
+        self.assertEqual(["alpha@1.0.0", "beta@1.0.0"],
+                         [evidence.advisory_version_term(f) for f in findings])
+        grouped = findings_mod.aggregate_tool_findings(copy.deepcopy(findings))
+        self.assertEqual([1, 1], [g["occurrences"] for g in grouped])
+        self.assertEqual(2, len(evidence.build_verify_queue(grouped)[0]))
+        # A message that names no package gives no term, and such records group as
+        # they always did.
+        plain = _ingest(root, "trivy.sarif", _trivy_pair(
+            _trivy(CARGO, "Cargo.lock", text="no package here", **self.HIGH),
+            _trivy(CARGO, "Cargo.lock", text="none here either", **self.HIGH)))
+        self.assertEqual([None, None], [evidence.advisory_version_term(f) for f in plain])
+        self.assertEqual([2], [g["occurrences"] for g in
+                               findings_mod.aggregate_tool_findings(copy.deepcopy(plain))])
+        # Only a tool-sourced finding has terms.
+        agent = {"source": "agent:x", "title": "Package: a Installed Version: 1",
+                 "tool_evidence": {"vulnerable_versions": "1", "uri_base": "outside"}}
+        self.assertEqual((None, False, None, None), evidence.advisory_terms(agent))
 
 
 class TestATrivyRecordThatIsNotAVulnerability(_Case):
