@@ -898,8 +898,7 @@ def _python_package_origins(lock_path, target_root, cache: IngestCache):
     return origins
 
 
-_GEM_SECTIONS = {"PATH": "local", "GEM": "external", "GIT": "external",
-                 "PLUGIN SOURCE": "external"}
+_GEM_SECTIONS = {"PATH": "local", "GEM": "external", "GIT": "external"}
 # Headers Bundler writes whose contents never name a source (#3692 review H2).
 _GEM_SKIPPED = frozenset(("PLATFORMS", "DEPENDENCIES", "CHECKSUMS", "RUBY VERSION",
                           "BUNDLED WITH"))
@@ -907,7 +906,10 @@ _GEM_SPEC = re.compile(r"    ([^ ()]+) \(([^ ()]+)\)\Z")
 _GEM_DEPENDENCY = re.compile(r"      [^ ()!]+(?: \(([^()]*)\))?\Z")
 _GEM_OPTION = re.compile(r"  ([a-z_]+): (.+)\Z")
 _GEM_SPECS_MARKER = "  specs:"
-_GEM_REMOTE_URL = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*://[^ ]")
+_GEM_URL_SCHEME = re.compile(r"[A-Za-z][A-Za-z0-9+.-]*\Z")
+_GEM_URL_PATH_CHARS = frozenset("._~/@!$&'()*+,;=:-")
+# `  name`, `  name (reqs)`, either with a trailing `!` (a pinned source).
+_GEM_TOP_DEPENDENCY = re.compile(r"  [^ ()!]+(?: \(([^()]*)\))?!?\Z")
 
 
 class _GemSection:
@@ -969,6 +971,27 @@ def _gem_requirement_ok(text):
     return "-" not in text and _gem_version_ok(text)
 
 
+def _gem_remote_url_ok(value):
+    """True for a GEM remote Ruby's URI accepts, conservatively: ``scheme://host``,
+    an optional ``:port`` of digits, then an optional ``/path``. The host is ASCII
+    letters, digits, ``.`` and ``-``; the path adds ``_~/@!$&'()*+,;=:``. No userinfo,
+    query, fragment, ``%`` or brackets: Ruby refuses those unless they are well
+    formed, and no lock needs them."""
+    scheme, mark, rest = value.partition("://")
+    authority, slash, path = rest.partition("/")
+    host, colon, port = authority.partition(":")
+    return (bool(mark) and bool(_GEM_URL_SCHEME.match(scheme)) and value.isascii()
+            and bool(host) and all(ch.isalnum() or ch in ".-" for ch in host)
+            and (not colon or port.isdigit())
+            and all(ch.isalnum() or ch in _GEM_URL_PATH_CHARS for ch in path))
+
+
+def _gem_requirements_ok(text):
+    """True for a dependency line's parenthesised text: None (no parentheses), or
+    comma-separated requirements each of which RubyGems can parse."""
+    return text is None or all(_gem_requirement_ok(part) for part in text.split(","))
+
+
 def _gem_canonical(release):
     """RubyGems' own equality key (``Gem::Version#canonical_segments``): the release
     split into digit and letter runs, with trailing zeros dropped from the numeric
@@ -988,23 +1011,34 @@ def _gem_canonical(release):
 def _gem_lock_sections(text):
     r"""Each source section of a Gemfile.lock, in order (#3692 reviews).
 
-    An allowlist: a column-0 header must be exactly a ``_GEM_SECTIONS`` source or a
-    ``_GEM_SKIPPED`` header, whose contents are skipped. Inside a source a line is
-    exactly one of: an option at two spaces (``  name: value``), the marker ``  specs:``
-    with nothing after it, a spec at four (``    name (version)``, a RubyGems-valid
-    version) or a spec's dependency at six (``      name`` or ``      name (reqs)``,
-    each comma-separated requirement one RubyGems can parse).
-    Any other header or indent, any whitespace but plain spaces (a tab, ``\r``,
-    U+2028, a BOM, ...), an indented line before the first header, an option after
-    ``specs:``, a spec before it, a dependency with no spec above it, a ``specs:``
-    with no ``remote:`` above it, a remote holding a space and a ``GEM`` remote that
-    is not a URL fail the whole lock (ValueError), as Bundler raises on each. Only ``remote:`` is understood; any other option is kept
+    An allowlist, held to Bundler's own parser by a sweep of malformed locks: the
+    reader accepts nothing ``Bundler::LockfileParser`` raises on.
+
+    - A column-0 header is exactly a ``_GEM_SECTIONS`` source or a ``_GEM_SKIPPED``
+      header. ``PLUGIN SOURCE`` fails the lock: Bundler raises unless that plugin is
+      installed, which the reader cannot know.
+    - Inside a source a line is exactly one of: an option at two spaces
+      (``  name: value``), the marker ``  specs:`` with nothing after it, a spec at four
+      (``    name (version)``, a RubyGems-valid version) or a spec's dependency at six
+      (``      name`` or ``      name (reqs)``, each comma-separated requirement one
+      RubyGems can parse).
+    - An option value holds only printable characters and is not ``true`` or
+      ``false``. A source has one ``remote:``, with no space in it, before ``specs:``;
+      a ``GEM`` remote is a URL Ruby's URI accepts, and a ``PATH`` remote does not
+      start with ``~``.
+    - Under ``DEPENDENCIES`` a line is ``  name``, optionally ``(reqs)``, optionally
+      ``!``. The other skipped sections are not read.
+
+    Anything else -- another header or indent, whitespace but plain spaces (a tab,
+    ``\r``, U+2028, a BOM, ...), an indented line before the first header, an option
+    after ``specs:``, a spec before it, a dependency with no spec above it -- fails the
+    whole lock (ValueError). Only ``remote:`` is understood; any other option is kept
     as an unknown marker."""
     if _odd_whitespace(text):
         raise ValueError("Gemfile.lock whitespace Bundler reads differently")
     sections: list[_GemSection] = []
     current: _GemSection | None = None
-    skipping = False
+    skipping = ""                    # the skipped header being read, else ""
     in_specs = False
     line_header = ""
     for line in text.split("\n"):
@@ -1013,9 +1047,13 @@ def _gem_lock_sections(text):
         indent = len(line) - len(line.lstrip(" "))
         if indent == 0:
             if line in _GEM_SKIPPED:
-                current, skipping = None, True
+                current, skipping = None, line
+            elif line == "PLUGIN SOURCE":
+                # Bundler raises unless that plugin is installed, which this reader
+                # cannot know: a lock that needs a plugin classifies nothing.
+                raise ValueError("Gemfile.lock needs a Bundler plugin")
             elif line in _GEM_SECTIONS:
-                current, skipping = _GemSection(_GEM_SECTIONS[line]), False
+                current, skipping = _GemSection(_GEM_SECTIONS[line]), ""
                 line_header = line
                 sections.append(current)
             else:
@@ -1023,15 +1061,19 @@ def _gem_lock_sections(text):
             in_specs = False
             continue
         if skipping:
+            if skipping == "DEPENDENCIES":
+                # The seat's sweep: Bundler parses these, and raises on a bad one.
+                top = _GEM_TOP_DEPENDENCY.match(line)
+                if top is None or not _gem_requirements_ok(top[1]):
+                    raise ValueError("malformed Gemfile.lock DEPENDENCIES line")
             continue
         if current is None:
             raise ValueError("Gemfile.lock line outside a section")
         if indent == 6:
             dependency = _GEM_DEPENDENCY.match(line)
             # #3692 five gates: the requirement text too, not only the line's shape.
-            if not (in_specs and current.specs and dependency) or (
-                    dependency[1] is not None
-                    and not all(_gem_requirement_ok(part) for part in dependency[1].split(","))):
+            if not (in_specs and current.specs and dependency
+                    and _gem_requirements_ok(dependency[1])):
                 raise ValueError("malformed Gemfile.lock dependency")
         elif indent == 4:
             match = _GEM_SPEC.match(line)
@@ -1046,13 +1088,18 @@ def _gem_lock_sections(text):
                 in_specs = True
                 continue
             option = _GEM_OPTION.match(line)
-            if option is None or option[1] == "specs":
+            # A value Bundler turns into a boolean, or one holding a character that is
+            # not printable (NUL, ESC, DEL, a zero-width space), makes it raise.
+            if (option is None or option[1] == "specs" or option[2] in ("true", "false")
+                    or not option[2].isprintable()):
                 raise ValueError("malformed Gemfile.lock option")
             if option[1] != "remote":
                 current.options.add(option[1])
             elif (current.remote is not None or " " in option[2]
-                  or (line_header == "GEM" and not _GEM_REMOTE_URL.match(option[2]))):
-                # Bundler raises on a GEM remote that is not a URL (round 3).
+                  or (line_header == "GEM" and not _gem_remote_url_ok(option[2]))
+                  or (line_header == "PATH" and option[2].startswith("~"))):
+                # Bundler raises on a GEM remote that is not a URL (round 3), and on a
+                # PATH remote naming a home directory it cannot expand (`~nobody`).
                 raise ValueError("malformed Gemfile.lock remote")
             else:
                 current.remote = option[2]
@@ -1348,7 +1395,7 @@ def _ruby_package_origins(lock_path, target_root, cache: IngestCache):
     source carries no option but ``remote``, the spec has no platform, the one gemspec
     Bundler would load proves the exact identity and is publishable, and no other
     spec in the lock -- under any source, platform or spelling -- is the same name at
-    a version RubyGems reads as equal (1.2 and 1.2.0). ``GEM``, ``GIT`` and plugin
+    a version RubyGems reads as equal (1.2 and 1.2.0). ``GEM`` and ``GIT``
     sources are external. A malformed lock classifies nothing."""
     if lock_path in cache.package_origins:
         return cache.package_origins[lock_path]

@@ -37,11 +37,17 @@
     outside-tree or symlinked-out source; a remote Bundler would expand elsewhere (`~`, a `..`
     component, a URL, an absolute path); a `PATH` source with any option besides `remote`
     (such as `glob:`); a version mismatch; and a malformed lock. The lock parser is an
-    allowlist too: only the known headers, options at two spaces, a `remote:` (with no space
-    in it, and a URL for a `GEM` source) before the bare `specs:` marker, specs at four with a
-    RubyGems-valid version of at most 32 segments, and dependencies at six whose requirements
-    RubyGems can parse. Any other line, and whitespace other than spaces (a tab, `\r` and so
-    a CRLF lock, U+2028, a BOM), fails the whole lock.
+    allowlist too, held to Bundler's own parser by a sweep of malformed locks so that it
+    accepts nothing `Bundler::LockfileParser` raises on: only the known headers, options at
+    two spaces whose values are printable and not `true` or `false`, a `remote:` (with no
+    space in it; a URL Ruby can parse for a `GEM` source; not starting with `~` for a `PATH`
+    source) before the bare `specs:` marker, specs at four with a RubyGems-valid version of at
+    most 32 segments, dependencies at six whose requirements RubyGems can parse, and
+    `DEPENDENCIES` lines of the form `name`, `name (requirements)`, either with `!`. Any other
+    line, whitespace other than spaces (a tab, `\r` and so a CRLF lock, U+2028, a BOM), and a
+    `PLUGIN SOURCE` section (Bundler needs that plugin installed to read the lock) fail the
+    whole lock. A `GEM` source with more than one `remote:`, which older Bundler wrote, is
+    refused too.
     bundler-audit and `gems.locked` stay with the advisor.
   - **The confirmation names what matched:** a first-party advisory's exported reasoning said
     "Cargo member" for every ecosystem. It now says `Cargo member`, `npm workspace package`,
