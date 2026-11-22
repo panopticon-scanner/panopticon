@@ -37,8 +37,11 @@
       `unsafe reset cleanup: <directory> could not be listed: <reason>; nothing was cleared`
       and a non-zero exit, before removing anything;
     - a run folder: its findings files, plans, scout replies, coverage files and verdict
-      bundles read as none. The run now stops with one line,
-      `synthesize: <directory> could not be listed: <reason>`;
+      bundles read as none. The synthesize step now stops with one line,
+      `synthesize: <directory> could not be listed: <reason>`, and exit status 3. The driver
+      ends the run in `error` with that line on any status of that step which publishes no
+      report, and no longer takes a report an earlier attempt of the run left on disk for
+      this attempt's: it used to clear its retry marker and finish `complete` on it;
     - `readiness`: a sub-skill row past such a directory says
       `not found (<directory> could not be listed)`, and its JSON row carries `unlistable`;
     - token usage: a failed listing costs the token count and never the review. The
@@ -52,7 +55,7 @@
   - Each of those lines is one line whatever the directory is named: a newline or an escape
     sequence in the path is spelled out (`\x0a`, `\x1b`), not printed. A backslash in the path
     is doubled and a byte that is not UTF-8 is spelled `\udcNN`, so two different names never
-    print alike.
+    print alike. A credential in the name is redacted, as in every other diagnostic.
   - The helper refuses a pattern that would leave its directory: an empty, absolute, `.` or
     `..` part, no pattern at all, or an empty directory is a `ValueError`. So is a part that
     holds a backslash or starts with a drive (`C:`), on every platform.

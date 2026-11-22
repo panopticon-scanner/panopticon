@@ -390,6 +390,91 @@ class TestUnder(unittest.TestCase):
         self.assertEqual("caf\\udce9 could not be listed: caf\\udce9", message)
         message.encode("utf-8")
 
+    def test_a_credential_in_the_directory_name_is_not_printed(self):
+        """#3706 five gates at 590d2946, item 2. A directory can be named with anything.
+        Before this PR nothing printed the name; now every caller's message does."""
+        token, key = "ghp_" + "A" * 36, "AKIA" + "1234567890ABCDEF"
+        there = os.path.dirname(self.make("%s-%s" % (token, key), "findings-a.json"))
+        with unlistable(there), self.assertRaises(safe_glob.Unlistable) as caught:
+            safe_glob.under(there, "findings-*.json")
+        message = str(caught.exception)
+        self.assertEqual("%s could not be listed: Permission denied"
+                         % os.path.join(self.base, "[REDACTED_TOKEN]-[REDACTED_AWS_KEY]"), message)
+        self.assertEqual(there, caught.exception.directory)          # the path itself
+        self.assertEqual(os.path.join(self.base, "[REDACTED_TOKEN]-[REDACTED_AWS_KEY]"),
+                         safe_glob.shown(there))
+        # The reason is the system's, but one with no `strerror` can quote the path.
+        self.assertEqual("/d could not be listed: no such thing as [REDACTED_TOKEN]",
+                         str(safe_glob.Unlistable("/d", OSError("no such thing as " + token))))
+        # Spelled first, then redacted: what is printed is what was checked.
+        self.assertEqual("[REDACTED_TOKEN]\\x0aFAKE", safe_glob.shown(token + "\nFAKE"))
+
+    def test_a_listing_that_fails_after_it_has_started_is_not_what_was_read_so_far(self):
+        """#3706 five gates at 590d2946, item 3. `scandir` can open a directory and fail
+        while it is read (a network mount, a removed medium). Every other fixture here
+        fails at the open, so returning the names read so far went unseen: a run then
+        finished on part of its findings files."""
+        for name in ("findings-a.json", "findings-b.json", "findings-c.json"):
+            self.make("run", name)
+        there = os.path.join(self.base, "run")
+        real = os.scandir
+
+        class FailsPartway:
+            def __init__(self, path):
+                self.entries = real(path)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.entries.close()
+
+            def __iter__(self):
+                yield next(self.entries)
+                raise OSError(errno.EIO, "Input/output error")
+
+        self.assertEqual(3, len(safe_glob.under(there, "findings-*.json")))
+        with mock.patch.object(os, "scandir", FailsPartway):
+            with self.assertRaises(safe_glob.Unlistable) as caught:
+                safe_glob.under(there, "findings-*.json")
+            found = safe_glob.iter_under(there, "findings-*.json")
+            with self.assertRaises(safe_glob.Unlistable):
+                next(found)                                  # not the one name it had read
+        self.assertEqual((there, "Input/output error"),
+                         (caught.exception.directory, caught.exception.reason))
+
+    def test_a_name_no_file_can_have_matches_nothing(self):
+        """A path with a NUL in it names no file: nothing is there, which is not a
+        directory that could not be listed. Both the listing and the lookup say so."""
+        self.make("d", "a.json")
+        there = os.path.join(self.base, "d")
+        self.assertEqual([], safe_glob.under(there + "\0", "*.json"))          # the listing
+        self.assertEqual([], safe_glob.under(there, "a\0.json"))               # the lookup
+        self.assertEqual([], safe_glob.under(there, "x\0y", "*.json"))
+        self.assertEqual([], list(safe_glob.iter_under(there + "\0", "a.json")))
+
+    def test_a_name_the_listing_gave_is_not_looked_up_again(self):
+        """A name matched by a wildcard came from the listing, so it is there. A literal
+        name was given by the caller, so it is looked up. One `lstat` per literal last
+        part, none per match."""
+        for name in ("a.json", "b.json"):
+            self.make("d", name)
+        there = os.path.join(self.base, "d")
+        with mock.patch.object(os, "lstat", side_effect=AssertionError("looked up")):
+            self.assertEqual(2, len(safe_glob.under(there, "*.json")))
+            self.assertEqual(2, len(safe_glob.under(self.base, "d", "[ab].json")))
+        real, looked_up = os.lstat, []
+
+        def lstat(path, *args, **kwargs):
+            looked_up.append(path)
+            return real(path, *args, **kwargs)
+
+        with mock.patch.object(os, "lstat", lstat):
+            self.assertEqual([os.path.join(there, "a.json")], safe_glob.under(self.base, "*", "a.json"))
+            self.assertEqual([], safe_glob.under(there, "missing.json"))
+        self.assertEqual([os.path.join(there, "a.json"), os.path.join(there, "missing.json")],
+                         looked_up)
+
     def test_a_directory_under_a_wildcard_that_cannot_be_listed_raises(self):
         seen = self.make("home", "sessions", "d1", "s1", "wire.jsonl")
         locked = os.path.dirname(os.path.dirname(
@@ -808,6 +893,16 @@ class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
         # `requirements.txt` is found by name, so nothing is listed and nothing is said.
         self.write(self.target, "requirements.txt", "x==1\n")
         self.assertEqual(("requirements.txt", ""), contextvars.Context().run(located))
+
+    def test_a_rejected_requirements_txt_is_judged_once(self):
+        """`requirements.txt` is tried by name and then again matches `requirements*.txt`.
+        It is one candidate: a rejected one is disclosed once, not twice."""
+        outside = self.write(self.base, "elsewhere.txt", "x==1\n")
+        os.symlink(outside, os.path.join(self.target, "requirements.txt"))
+        dev = self.write(self.target, "requirements-dev.txt", "y==2\n")
+        self.assertEqual((dev, ["requirements.txt"]), pip_audit._requirement_candidate(self.target))
+        os.remove(dev)
+        self.assertEqual((None, ["requirements.txt"]), pip_audit._requirement_candidate(self.target))
 
     def test_pip_audit_needs_no_listing_when_requirements_txt_is_there(self):
         """`requirements.txt` is preferred over anything the listing would add, so a

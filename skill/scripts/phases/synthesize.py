@@ -291,6 +291,23 @@ def _plan_owed(manifest):
     return run_manifest.artifact_stamp(manifest, run_manifest.DRIVER_PLAN) is not None
 
 
+#: What the synthesize child exits with when it has published a report: the three gate
+#: outcomes (PASS, FAIL, INCONCLUSIVE) and an artifact that failed its own validation,
+#: which this phase reports beside the report it points at (#1639 P15).
+_PUBLISHED_STATUSES = (0, 1, 2, validate_schema_mod.ARTIFACT_INVALID)
+
+
+def _last_line(*streams):
+    """The last line a child printed, redacted and bounded: its reason for stopping.
+    The lines before it are whatever it had to say on the way there. From the first
+    of `streams` that holds a line."""
+    for stream in streams:
+        lines = [line for line in str(stream or "").splitlines() if line.strip()]
+        if lines:
+            return redact.redact_diagnostic(lines[-1].strip(), 400)
+    return "it said nothing"
+
+
 def synthesize_execute(review_root, manifest):
     # #5.0-16 fallback: guarantee both integrity artifacts exist once, after
     # review and before synthesize, even when the verify phase was vacuously
@@ -494,6 +511,15 @@ def synthesize_execute(review_root, manifest):
         raise runio.DriverError("synthesize could not write pending marker: %s" %
                                redact.redact_diagnostic(str(exc), 400)) from exc
     proc = child._run_child(cmd, review_root=review_root, phase="synthesize")
+    # #3706: a status the child returns only when it has published a report is the one
+    # kind this phase may look for a report after. Any other (3 is "invalid input": a
+    # scope it refuses, a directory it could not list) is a child that wrote none, and
+    # the report on disk is then an EARLIER attempt's. Accepting it cleared the marker
+    # and ended the run `complete`, on a verdict this attempt never reached. Raised
+    # before the relink below, with the marker left: the attempt is still owed.
+    if proc.returncode not in _PUBLISHED_STATUSES:
+        raise runio.DriverError("synthesize wrote no report (rc=%s): %s"
+                                % (proc.returncode, _last_line(proc.stderr, proc.stdout)))
     # Gate failures still publish usable reports. Keep the report-shape check
     # shared with done(), but independent of the pending marker: a successful
     # retry must validate its output before clearing that marker (#2930).

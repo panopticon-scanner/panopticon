@@ -30,6 +30,7 @@ import os
 import re
 
 import scripts.inert as inert
+import scripts.redact as redact
 
 _MAGIC = re.compile(r"[*?\[]")
 _SEPARATORS = "".join(sep for sep in (os.sep, os.altsep) if sep)
@@ -46,13 +47,15 @@ class Unlistable(Exception):
 
     The message is one line whatever the path holds: every caller prints it, and a
     directory named with a newline or an escape sequence would otherwise write a
-    second line, or move the cursor, in the operator's terminal. `directory` stays
-    the path itself."""
+    second line, or move the cursor, in the operator's terminal. It is redacted too:
+    a directory can be named with anything, a credential included, and this message
+    is the first thing that prints the name. `directory` stays the path itself."""
 
     def __init__(self, directory, error):
         self.directory = directory
         self.reason = getattr(error, "strerror", None) or str(error)
-        super().__init__("%s could not be listed: %s" % (shown(directory), _spelled(self.reason)))
+        super().__init__("%s could not be listed: %s"
+                         % (shown(directory), _printed(self.reason, _REASON_MAX)))
 
 
 def shown(directory):
@@ -62,8 +65,22 @@ def shown(directory):
     newline's spelling. A lone surrogate, which is what a byte that is not UTF-8
     becomes in a file name, is spelled `\\udcNN` here: `scripts.inert` writes it
     `U+DCNN` with no backslash, for readers of a path, and that is also six
-    characters a name can simply hold."""
-    return _spelled(os.fspath(directory))
+    characters a name can simply hold.
+
+    A credential in the name is redacted (`scripts.redact`), after the spelling, so
+    what is printed is what was checked. Two names that differ only in a credential
+    are therefore printed alike, which is the redaction doing its work."""
+    return _printed(os.fspath(directory), _PATH_MAX)
+
+
+#: How much of a path, and of the system's reason, a diagnostic prints. A path is
+#: bounded by the system well under this; the bound is what `redact_diagnostic` asks.
+_PATH_MAX = 8192
+_REASON_MAX = 400
+
+
+def _printed(text, limit):
+    return redact.redact_diagnostic(_spelled(text), limit)
 
 
 _SURROGATE = re.compile("[%c-%c]" % (inert.SURROGATES[0], inert.SURROGATES[-1]))
