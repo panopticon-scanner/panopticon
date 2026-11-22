@@ -559,8 +559,12 @@ class TestAFileThatChangesWhileItIsRead(_Case):
         with open(path, "wb") as fh:
             fh.write(b"abc")
         for limit in (0, -1, -10 ** 9, True, False, 1.5, 3.0, "3", None, [3]):
-            with self.subTest(limit=limit), self.assertRaises(ValueError):
-                safe_write.read_stable_regular_bytes(path, limit)
+            with self.subTest(limit=limit):
+                with self.assertRaises(ValueError) as caught:
+                    safe_write.read_stable_regular_bytes(path, limit)
+                # The argument's own refusal, not the over-the-limit one (which is a
+                # ValueError too and is what a limit of 0 or True would reach).
+                self.assertIs(ValueError, type(caught.exception))
         self.assertEqual(b"abc", safe_write.read_stable_regular_bytes(path, 3))
         self.assertEqual(b"abc", safe_write.read_stable_regular_bytes(path, 1 << 40))
 
