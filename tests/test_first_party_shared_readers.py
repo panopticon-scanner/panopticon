@@ -316,10 +316,8 @@ class TestAFileThatChangesWhileItIsRead(_Case):
                    "tool_evidence": {"rule_id": "X", "package_name": CARGO[0],
                                      "vulnerable_versions": CARGO[1], "ecosystem": "crates.io"}}
 
-        def touch():
-            os.utime(lock, ns=(1, 1))
         cache = first_party_advisory.IngestCache()
-        with self._during(touch) as drain:
+        with self._during(lambda: os.utime(lock, ns=(1, 1))) as drain:
             first_party_advisory.mark([finding], root, cache)
             calls = drain.call_count
             first_party_advisory.mark([finding], root, cache)     # same ingest, same cache
