@@ -46,7 +46,13 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
   exact indents, the bare `specs:` marker and RubyGems-valid versions, with whitespace other than
   spaces failing the whole lock. A literal `allowed_push_host` other than rubygems.org is
   private-only, and that key may appear only as that metadata line; only the review root is exempt.
-  bundler-audit and `gems.locked` stay with the advisor. Gate-eligible.
+  bundler-audit and `gems.locked` stay with the advisor. Maven and Gradle classify nothing (#3623):
+  a gradle.lockfile lists only external modules, never the build's own projects, and nothing shows
+  the pinned scanners report a sibling Maven reactor module, so every pom.xml and Gradle advisory
+  stays with the advisor under every scanner. In every ecosystem, a finding that declares an
+  ecosystem other than its lock's own (`Maven` at a `Cargo.lock`) stays with the advisor (#3760),
+  and so does an osv-scanner finding that declares none: osv-scanner always sets it, and only Trivy
+  and the audit adapters, which carry no ecosystem, are judged by the lock alone. Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
   Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
   by one advisor: the adversarial backup round is summoned only for primary-CONFIRMED findings in
