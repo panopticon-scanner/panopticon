@@ -1068,11 +1068,26 @@ class TestAPathOutsideTheScanMount(_Case):
                 for key in ("package_origin", "advisory_package"):
                     findings[0]["tool_evidence"].pop(key, None)
                 findings[0]["tool_evidence"]["uri_base"] = value
+                # The reader is the real one and is only counted: `mark` swallows an
+                # exception, so a reader that raised would hide which guard refused.
+                real = first_party_advisory._read_budgeted_bytes
+                reads = []
+
+                def counted(path, limit, cache, reads=reads, real=real):
+                    reads.append(path)
+                    return real(path, limit, cache)
                 with mock.patch.object(first_party_advisory, "_read_budgeted_bytes",
-                                       side_effect=AssertionError("a file was read")):
+                                       side_effect=counted):
                     first_party_advisory.mark(findings, root, first_party_advisory.IngestCache())
                 self.assertFalse(evidence.is_first_party_advisory(findings[0]))
                 self.assertNotIn("package_origin", findings[0]["tool_evidence"])
+                self.assertEqual([], reads)
+        # The control: the same finding with no flag is read and confirmed.
+        findings = _ingest(root, "trivy.sarif", _trivy(CARGO, "Cargo.lock"))
+        for key in ("package_origin", "advisory_package"):
+            findings[0]["tool_evidence"].pop(key, None)
+        first_party_advisory.mark(findings, root, first_party_advisory.IngestCache())
+        self.assertTrue(evidence.is_first_party_advisory(findings[0]))
         # The scanner adapters set it, for each lock, and only then.
         for lock_name, ecosystem, package in LOCKS:
             root = _tree(self, lock_name)
