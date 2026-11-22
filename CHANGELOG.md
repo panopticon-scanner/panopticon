@@ -19,10 +19,11 @@
   the finding stays with the advisor, decided before the lock is read. osv-scanner always
   declares one, so an osv finding with none (or a JSON `null`) is refused too; only Trivy and
   the audit adapters, whose findings carry no ecosystem, are judged by the lock alone, as
-  before. The osv-scanner adapter also no longer uses a record's ecosystem as its file when
-  the record has no source path: it reports the fixed placeholder `manifest`, which is never a
-  lock name. `location.file` is part of the finding fingerprint, so such a sourceless record's
-  fingerprint and reconcile key change once.
+  before. The osv-scanner adapter also no longer uses a record's bare ecosystem as its file
+  when the record has no source path: it reports `manifest (<ecosystem>)`, with the ecosystem
+  rendered inertly, which is never a lock name and keeps records of different ecosystems
+  apart. `location.file` is part of the finding fingerprint, so such a sourceless record's
+  fingerprint and reconcile key change once (from `npm` to `manifest (npm)`).
 
 - **Tools closure re-resolved: semgrep 1.185.0 (supersedes Dependabot #3751; #3619 not taken).**
   - Taken as offered: semgrep 1.183.0 -> 1.185.0, with the Dockerfile `SEMGREP_VERSION` moved to

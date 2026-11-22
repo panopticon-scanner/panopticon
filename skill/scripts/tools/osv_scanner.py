@@ -12,10 +12,30 @@ from .sarif_utils import CaptureCoverage, _norm_uri
 _DATABASE_SEVERITIES = {"CRITICAL": "CRITICAL", "HIGH": "HIGH",
                         "MEDIUM": "MEDIUM", "MODERATE": "MEDIUM", "LOW": "LOW"}
 
-# #3760: the file a record with no source path is reported at. A fixed placeholder:
-# the record's own ecosystem string used to stand in, so a record saying
-# `ecosystem: "Cargo.lock"` became a lock the first-party marker would read.
+# #3760: the file a record with no source path is reported at. A placeholder that
+# can never be a lock name: the record's own ecosystem string used to stand in, so a
+# record saying `ecosystem: "Cargo.lock"` became a lock the first-party marker would
+# read.
 NO_SOURCE_PATH = "manifest"
+NO_SOURCE_ECOSYSTEM_CHARS = 64
+
+
+def no_source_path(ecosystem):
+    """Where a record with no source path is reported: ``manifest (<ecosystem>)``.
+
+    Distinct per ecosystem (#3696 five-gate review): the location is part of the
+    aggregation key, the fingerprint and the reconcile key, so one fixed placeholder
+    merged an npm and a PyPI record for the same package name and advisory into one
+    finding and lost an advisor entry. The ecosystem is rendered inertly -- ASCII
+    letters, digits and ``._:-`` only, anything else ``_``, bounded -- and wrapped in
+    the parentheses, so the result holds no ``/`` and ends in ``)``: it is no lock's
+    name whatever the ecosystem says. No usable ecosystem gives bare ``manifest``."""
+    if not isinstance(ecosystem, str) or not ecosystem:
+        return NO_SOURCE_PATH
+    rendered = "".join(
+        ch if ch.isascii() and (ch.isalnum() or ch in "._:-") else "_"
+        for ch in ecosystem[:NO_SOURCE_ECOSYSTEM_CHARS])
+    return "%s (%s)" % (NO_SOURCE_PATH, rendered)
 
 # The config osv-scanner is pinned to, generated per scan into the adapter's own
 # scratch directory (#1839, run-14 SEC-1202454595). A CONSTANT with no ignore
@@ -203,7 +223,8 @@ class OsvScannerAdapter:
                         title=f"{pkg.get('name')} {pkg.get('version')}: {vuln.get('id', 'vulnerability')}",
                         severity=severity,
                         category="dependency_vulnerability",
-                        location={"file": src_path or NO_SOURCE_PATH, "line_start": 1},
+                        location={"file": src_path or no_source_path(pkg.get("ecosystem")),
+                                  "line_start": 1},
                         description=description if vuln.get("summary") else description[:500],
                         impact=f"Vulnerable dependency {pkg.get('name')}=={pkg.get('version')} is used.",
                         remediation="Upgrade to a patched version or see the OSV advisory.",
