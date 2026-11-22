@@ -169,6 +169,9 @@ def is_scan_mount(base):
     return parts.scheme in ("", "file") and not parts.netloc and parts.path == _TARGET_PREFIX
 
 
+_NOT_ID_SAFE = re.compile(r"[^A-Za-z0-9._-]")
+
+
 def artifact_uri(artifact, run):
     """A SARIF ``artifactLocation``'s uri, read with its ``uriBaseId`` (#3765).
 
@@ -179,7 +182,8 @@ def artifact_uri(artifact, run):
     - the base is the scan mount itself (``is_scan_mount``): the uri, as it is;
     - any other base the run DEFINES, whatever it says, and one that cannot be read
       (no string uri, a chained base, a table that is not an object, an id that is
-      not a string): outside, as the absolute ``/unresolved-uri-base/<id>/<uri>``;
+      not a string): outside, as the absolute ``/unresolved-uri-base.<id>/<uri>``,
+      the id made one inert segment;
     - a base the run never defines (no table, a null table, no entry for the id) is a
       bare symbol -- semgrep and CodeQL write ``%SRCROOT%`` so -- and the uri is read
       as it is;
@@ -202,7 +206,11 @@ def artifact_uri(artifact, run):
     base = entry.get("uri") if isinstance(entry, dict) and "uriBaseId" not in entry else None
     if is_scan_mount(base):
         return uri
-    return "/unresolved-uri-base/%s/%s" % (base_id, uri)
+    # The id is the scanner's text. As path segments of its own it could spell a
+    # directory a suppression knows (`tests/fixtures`, `vendor`), and the finding
+    # would be dropped as a fixture or vendored path. So it is fused into ONE segment
+    # behind a fixed prefix, with every character outside [A-Za-z0-9._-] replaced.
+    return "/unresolved-uri-base.%s/%s" % (_NOT_ID_SAFE.sub("_", str(base_id)), uri)
 
 
 def norm_uri(uri):

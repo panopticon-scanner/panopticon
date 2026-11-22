@@ -194,7 +194,7 @@ def _result_paths(sarif):
                     result["locations"][0]["physicalLocation"]["artifactLocation"], run))
             except (KeyError, IndexError, TypeError, AttributeError):
                 continue
-            if isinstance(path, str):          # a result with no file locates nothing
+            if isinstance(path, str) and path:     # no file, or an empty path: nothing
                 located.add(path)
     return located
 

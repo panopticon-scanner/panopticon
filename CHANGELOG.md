@@ -30,11 +30,12 @@
     is how Trivy writes a location. Nothing is resolved: the base is inside only when it is
     exactly the scan mount (`file:///src/` or `/src/`: no authority, query, fragment,
     percent-escape or control character), and any other base the run defines puts the result
-    outside, reported as `/unresolved-uri-base/<id>/<uri>`. A base the run never defines
+    outside, reported as `/unresolved-uri-base.<id>/<uri>`. A base the run never defines
     (semgrep's `%SRCROOT%` with no table) leaves the path as it was, and an absolute `uri`
     ignores its base, as semgrep's does. A location is matched against a lock only when it is
     a plain relative path: one with a scheme, a `%`, `?`, `#`, a backslash, a control
-    character (or the escape one is shown as) or a `..` segment stays with the advisor,
+    character or lone surrogate (or the escape one is shown as) or a `..` segment stays with
+    the advisor,
     whichever scanner wrote it; its reported `location.file` is unchanged.
     Findings, the file-coverage ledger and the legacy SARIF reader now share one spelling.
     **Output change:** a finding a scanner located outside the mount reports that path with
