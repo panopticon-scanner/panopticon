@@ -126,7 +126,8 @@ def repo_path(uri):
       Stripping that slash turned ``/Cargo.lock`` into the review root's own
       ``Cargo.lock``, a file the scanner never named.
     - ``/`` alone: no path, the empty string.
-    - A ``file://`` URI with an authority: not a local path; kept whole.
+    - A ``file://`` URI with an authority, or a path with exactly two leading
+      slashes (the same thing without the scheme): not a local path; kept whole.
     - Anything else: a relative path, unchanged.
 
     Idempotent: a result is relative, absolute-outside or whole, and each of those
@@ -134,6 +135,10 @@ def repo_path(uri):
     if not isinstance(uri, str):
         return uri
     path = uri[len("file://"):] if uri.startswith("file://") else uri
+    if path.startswith("//") and not path.startswith("///"):
+        # Exactly two leading slashes: an authority (`//src/x` is host `src`), as
+        # `file://src/x` is. Not a local path, whatever follows; kept whole.
+        return uri
     if path.startswith("/"):
         path = "/" + path.lstrip("/")
         if path.startswith(_TARGET_PREFIX):
@@ -150,7 +155,7 @@ def resolve_artifact_uri(artifact, run):
     file whatever the base says. So a relative uri that names a base is joined onto
     it: a base that is the scan mount keeps the file inside, any other puts it
     outside. A base the run DEFINES but that cannot be read -- no string uri, a
-    relative or chained base, a table that is not an object -- names no place in the
+    relative or chained base, a scheme with no slash, a table that is not an object -- names no place in the
     tree, and the result is an absolute ``/unresolved-uri-base/<id>/<uri>``. A base the
     run never defines is a bare symbol and leaves the uri as it is. An absolute uri ignores its base, as
     SARIF says (semgrep writes ``/src/...`` with ``%SRCROOT%`` and no table)."""
@@ -168,7 +173,9 @@ def resolve_artifact_uri(artifact, run):
         return uri
     entry = bases.get(base_id) if isinstance(bases, dict) and isinstance(base_id, str) else None
     base = entry.get("uri") if isinstance(entry, dict) and "uriBaseId" not in entry else None
-    if not isinstance(base, str) or not (base.startswith("/") or _URI_SCHEME.match(base)):
+    if (not isinstance(base, str) or "/" not in base
+            or not (base.startswith("/") or _URI_SCHEME.match(base))):
+        # No slash at all (`urn:outside`, `file:`, a Windows path): a scheme, not a place.
         return "/unresolved-uri-base/%s/%s" % (base_id, uri)
     # A URI reference: a base that does not end in `/` gives up its last segment.
     return base[:base.rfind("/") + 1] + uri

@@ -540,9 +540,9 @@ class TestAPathOutsideTheScanMount(_Case):
                 ("/src/a/b.py", "a/b.py"), ("Cargo.lock", "Cargo.lock"), ("a/b.py", "a/b.py"),
                 ("src/Cargo.lock", "src/Cargo.lock"), ("", ""),
                 # Outside the mount: still absolute, with one leading slash.
-                ("/Cargo.lock", "/Cargo.lock"), ("//Cargo.lock", "/Cargo.lock"),
+                ("/Cargo.lock", "/Cargo.lock"), ("//Cargo.lock", "//Cargo.lock"),
                 ("///Cargo.lock", "/Cargo.lock"), ("file:///Cargo.lock", "/Cargo.lock"),
-                ("file:////Cargo.lock", "/Cargo.lock"), ("/etc/passwd", "/etc/passwd"),
+                ("file:////Cargo.lock", "file:////Cargo.lock"), ("/etc/passwd", "/etc/passwd"),
                 ("/srcx/Cargo.lock", "/srcx/Cargo.lock"), ("/src", "/src"),
                 ("file:///usr/lib/x.so", "/usr/lib/x.so"),
                 # A file URI with an authority is not a local path: kept whole.

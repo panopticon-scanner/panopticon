@@ -32,8 +32,10 @@
     Findings, the file-coverage ledger and the legacy SARIF reader now share one spelling.
     **Output change:** a finding a scanner located outside the mount reports that path with
     its leading slash, so its `location.file`, fingerprint and reconcile key change once; a
-    bare `/` is no path. Paths inside the mount, and relative paths with no base, are
-    unchanged.
+    bare `/` is no path, and a path with exactly two leading slashes (`//src/x`, an
+    authority) is kept whole. Relative paths with no base are unchanged, and so are paths
+    inside the mount, with one exception: repeated slashes after the mount no longer leave an
+    absolute remainder (`/src//x` was `/x` and is now `x`).
   - **Only a Trivy vulnerability record is matched against a lock.** Trivy's package and
     version are parsed from its message, and a misconfiguration or licence record can carry
     the same text. `tool_evidence.kind` is now `vulnerability` when the record's rule carries
