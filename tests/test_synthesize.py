@@ -1286,21 +1286,167 @@ class TestManifestlessCertification(unittest.TestCase):
         self.assertEqual(0, rc)
         self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
 
-    def test_the_driver_sends_an_empty_run_id_for_a_run_manifest_without_one(self):
-        # The fact the test above rests on, pinned where it is decided: the read
-        # keeps a run manifest whose run_id is absent, and the synthesize phase
-        # threads `run_id or ""`.
+    def test_a_run_manifest_without_a_run_id_survives_the_read(self):
+        # Half of the fact the test above rests on, where it is decided: the read
+        # keeps a run manifest whose run_id is absent or null. (The other half, the
+        # argv the phase then builds, is pinned in tests/phases/test_synthesize.py.)
         import scripts.run_manifest as run_manifest
-        import scripts.phases.synthesize as phase
+        for document in ({"schema_version": 1}, {"schema_version": 1, "run_id": None}):
+            with self.subTest(document=document), tempfile.TemporaryDirectory() as d:
+                path = run_manifest.manifest_path(d)
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "w", encoding="utf-8") as fh:
+                    json.dump(dict(document, target=d), fh)
+                loaded = run_manifest.load_manifest(d)
+                self.assertIsInstance(loaded, dict)
+                self.assertIsNone(loaded.get("run_id"))
+
+    def test_a_tools_directory_that_cannot_be_listed_cannot_certify(self):
+        # Seat r1 item 1. `--tools-dir` was given, the directory is there, and its
+        # entries cannot be read: whatever the scanners wrote was present and could not
+        # be used. An empty listing said "no scanner output" and the run was certified.
+        real = os.scandir
+
+        def refuses(target):
+            def scandir(path="."):
+                if os.path.realpath(os.fspath(path)) == os.path.realpath(target):
+                    raise PermissionError(13, "Permission denied", os.fspath(path))
+                return real(path)
+            return mock.patch("os.scandir", side_effect=scandir)
+        manifest = {"schema_version": 1, "run_id": "rid-1", "selected": ["bandit"],
+                    "produced": ["bandit"], "missing": [], "outputs": ["bandit.sarif"]}
+        for label, extra, with_manifest in (
+                ("standalone", (), False),
+                ("an empty run id", ("--run-id", ""), False),
+                ("tools skipped", ("--tools-skipped",), False),
+                ("a run id and its manifest", ("--run-id", "rid-1"), True)):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as d:
+                with refuses(os.path.join(d, "tools")):
+                    rc, report, err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
+                                                extra=extra,
+                                                manifest=manifest if with_manifest else None)
+                reason = report["meta"]["integrity"]["tools_dir_unlistable"]
+                self.assertIn("tools", reason)
+                self.assertIn("Permission denied", reason)
+                self.assertEqual([], report["meta"]["coverage"]["tools_ran"])
+                self.assertFalse(report["summary"]["coverage_certified"])
+                self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+                self.assertEqual(2, rc)
+                self.assertIn("cannot be listed", err)
+        # A listable directory says nothing under the key, on every one of those paths.
         with tempfile.TemporaryDirectory() as d:
-            path = run_manifest.manifest_path(d)
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as fh:
-                json.dump({"schema_version": 1, "target": d}, fh)
-            loaded = run_manifest.load_manifest(d)
-        self.assertIsInstance(loaded, dict)
-        self.assertNotIn("run_id", loaded)
-        self.assertIn('"--run-id", manifest.get("run_id") or ""', inspect.getsource(phase))
+            rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF})
+        self.assertIsNone(report["meta"]["integrity"]["tools_dir_unlistable"])
+        self.assertEqual(0, rc)
+
+    @unittest.skipIf(not hasattr(os, "geteuid") or os.geteuid() == 0,
+                     "needs a user that permissions apply to")
+    def test_a_tools_directory_with_no_read_permission_cannot_certify(self):
+        # The same on a real directory, with no patched listing.
+        with tempfile.TemporaryDirectory() as d:
+            td = os.path.join(d, "tools")
+            self.addCleanup(lambda: os.path.isdir(td) and os.chmod(td, 0o700))
+            real_main = syn.main
+
+            def locked(argv):
+                os.chmod(td, 0)
+                try:
+                    return real_main(argv)
+                finally:
+                    os.chmod(td, 0o700)
+            with mock.patch.object(syn, "main", side_effect=locked):
+                rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF})
+        self.assertIn("tools", report["meta"]["integrity"]["tools_dir_unlistable"])
+        self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+        self.assertEqual(2, rc)
+
+    def test_the_reason_names_the_directory_redacted_and_bounded(self):
+        import scripts.synth.tool_axis as tool_axis
+        with tempfile.TemporaryDirectory() as d:
+            secret = "ghp_" + "A" * 36
+            path = os.path.join(d, secret)
+            os.mkdir(path)
+            with mock.patch("os.scandir", side_effect=PermissionError(13, "Permission denied")):
+                reason = tool_axis.tools_dir_unlistable(path)
+            self.assertNotIn(secret, reason)
+            self.assertIn("Permission denied", reason)
+            self.assertLessEqual(len(reason), 400)
+            # Listable, absent, or not given: nothing to say.
+            self.assertIsNone(tool_axis.tools_dir_unlistable(path))
+            self.assertIsNone(tool_axis.tools_dir_unlistable(os.path.join(d, "absent")))
+            self.assertIsNone(tool_axis.tools_dir_unlistable(None))
+            self.assertIsNone(tool_axis.tools_dir_unlistable(""))
+            # A path that is there and is not a directory cannot be listed either.
+            file_path = os.path.join(d, "a-file")
+            with open(file_path, "w", encoding="utf-8") as fh:
+                fh.write("x")
+            self.assertIn("a-file", tool_axis.tools_dir_unlistable(file_path))
+
+    def test_a_missing_tools_directory_is_unchanged(self):
+        # No directory is no tool axis, as it has always been; only one that is there
+        # and cannot be read is lost coverage.
+        with tempfile.TemporaryDirectory() as d:
+            fp = os.path.join(d, "findings-g1-COD.json")
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump({"findings": []}, fh)
+            out = os.path.join(d, "r.json")
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = syn.main(["--repo", "--target", "src", "--run-dir", d, "--tools-dir",
+                               os.path.join(d, "absent"), "--fail-on", "high", "--out", out, fp])
+            with open(out, encoding="utf-8") as fh:
+                report = json.load(fh)
+        self.assertEqual(0, rc)
+        self.assertIsNone(report["meta"]["integrity"]["tools_dir_unlistable"])
+        self.assertTrue(report["summary"]["coverage_certified"])
+
+    def test_a_manifest_with_no_run_id_does_not_turn_the_rule_off(self):
+        # Seat r1 item 2. On a standalone call a manifest is no more bound to the run
+        # than its absence is, and it bounded the required set to its own `selected`:
+        # an empty selection beside a capture nobody can read was PASS, certified.
+        manifest = {"schema_version": 1, "selected": [], "produced": [], "missing": []}
+        for label, document in (
+                ("selects nothing", manifest),
+                ("selects another", dict(manifest, selected=["bandit"], produced=["bandit"])),
+                ("names a run", dict(manifest, run_id="rid-1"))):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as d:
+                captures = {"semgrep.sarif": b"not JSON"}
+                if document["selected"]:
+                    captures["bandit.sarif"] = self.EMPTY_SARIF
+                rc, report, _err = self._run(d, captures, manifest=document)
+                self.assert_not_certified(rc, report, ["semgrep"])
+                self.assertEqual({"semgrep": "produced_unusable"},
+                                 report["meta"]["coverage"]["divergence"]["tools"])
+        # The control: the same manifest beside captures that are all usable.
+        with tempfile.TemporaryDirectory() as d:
+            rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
+                                         manifest=dict(manifest, selected=["bandit"],
+                                                       produced=["bandit"]))
+        self.assertTrue(report["summary"]["coverage_certified"])
+        self.assertEqual(0, rc)
+
+    def test_a_run_with_a_run_id_never_reads_an_unselected_capture(self):
+        # ... and must stay so: there an unselected capture is UNBOUND (#2070). It is
+        # named, never parsed, and so has no disposition for the rule above to count.
+        manifest = {"schema_version": 1, "run_id": "rid-1", "selected": ["bandit"],
+                    "produced": ["bandit"], "missing": [], "outputs": ["bandit.sarif"]}
+        with tempfile.TemporaryDirectory() as d:
+            rc, report, _err = self._run(
+                d, {"bandit.sarif": self.EMPTY_SARIF, "semgrep.sarif": b"not JSON"},
+                extra=("--run-id", "rid-1"), manifest=manifest)
+        cov = report["meta"]["coverage"]
+        self.assertEqual(["bandit"], cov["tools_ran"])
+        self.assertNotIn("semgrep", cov["adapters"])
+        self.assertEqual({}, cov["divergence"]["tools"])
+        self.assertEqual(["semgrep.sarif"], report["meta"]["integrity"]["unbound_tool_outputs"])
+        self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])     # for being unbound
+        # A selected capture that failed is lost coverage there, as it always was.
+        with tempfile.TemporaryDirectory() as d:
+            rc, report, _err = self._run(d, {"bandit.sarif": b"not JSON"},
+                                         extra=("--run-id", "rid-1"), manifest=manifest)
+        self.assertEqual({"bandit": "produced_unusable"},
+                         report["meta"]["coverage"]["divergence"]["tools"])
+        self.assertEqual(2, rc)
 
 
 class TestUnusableScannerCertification(unittest.TestCase):

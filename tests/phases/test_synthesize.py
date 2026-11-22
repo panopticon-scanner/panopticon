@@ -39,6 +39,49 @@ def _write_passing_synthesize_report(cmd, **_kwargs):
     return mock.Mock(returncode=0, stdout="", stderr="")
 
 
+class TestTheRunIdThePhaseSends(unittest.TestCase):
+    """#3766: the synthesize child decides whether a tools manifest and its receipt
+    are required from `--run-id`, so what the phase sends for a run manifest that
+    carries no run_id is part of that decision. Behaviour, not source text."""
+
+    def _argv(self, manifest):
+        calls = []
+
+        def child(cmd, **kwargs):
+            calls.append(list(cmd))
+            if "--out" in cmd:
+                return _write_passing_synthesize_report(cmd, **kwargs)
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch("scripts.phases.child._run_child", side_effect=child), \
+                mock.patch.object(synthesize, "_usable_report", return_value=True), \
+                contextlib.redirect_stderr(io.StringIO()):
+            write_host_evidence(d, _UL_PROVEN)
+            try:
+                synthesize.synthesize_execute(d, manifest)
+            except Exception:                    # what follows the child is not the subject
+                pass
+        sent = [cmd for cmd in calls if "--run-id" in cmd]
+        self.assertEqual(1, len(sent), calls)
+        return sent[0]
+
+    def test_a_run_id_is_sent_as_it_is(self):
+        cmd = self._argv({"host": "claude", "run_id": "rid-9",
+                          "created": "2026-08-30T15:37:19Z"})
+        self.assertEqual("rid-9", cmd[cmd.index("--run-id") + 1])
+
+    def test_a_run_manifest_without_one_sends_the_empty_string(self):
+        # ... which the child reads as a run that cannot be bound to its tool output,
+        # not as a standalone call (tests/test_synthesize.py).
+        for manifest in ({"host": "claude", "created": "2026-08-30T15:37:19Z"},
+                         {"host": "claude", "created": "2026-08-30T15:37:19Z",
+                          "run_id": None}):
+            with self.subTest(manifest=manifest):
+                cmd = self._argv(manifest)
+                self.assertEqual("", cmd[cmd.index("--run-id") + 1])
+                self.assertEqual(1, cmd.count("--run-id"))
+
+
 class TestHostUsageCollection(unittest.TestCase):
     """#calibration-1: meta.cost.tokens is host-supplied, and only lands if the
     collector runs BETWEEN the last dispatch and synthesize. Leaving that
