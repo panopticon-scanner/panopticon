@@ -55,7 +55,7 @@ import tomllib
 from scripts import evidence, safe_write
 from scripts.tools import ADVISORY_ADAPTERS
 from scripts.tools.base import inert_text
-from scripts.tools.sarif_utils import SECRET_KIND
+from scripts.tools.sarif_utils import SECRET_KIND, VULNERABILITY_KIND
 
 
 # Cargo.lock is controller input to the exact first-party package check, not
@@ -112,6 +112,9 @@ class IngestCache:
         self.manifest_bytes_remaining = MAX_CARGO_MANIFEST_INGEST_BYTES
         self.manifest_budget_exhausted = False
         self.budget_exhaustion_count = 0
+        # #3765: every lock or manifest that changed while it was read, in order. Such a
+        # read grants nothing; the count is disclosed per tool at ingest.
+        self.unstable_reads: list[str] = []
 
 
 def _cargo_lock_path(target_root, finding):
@@ -165,7 +168,11 @@ def _manifest_path(target_root, base, package_dir):
 
 
 def _read_budgeted_bytes(path, file_limit, cache: IngestCache):
-    """Read one file while charging the shared advisory-ingest byte budget."""
+    """Read one file while charging the shared advisory-ingest byte budget.
+
+    Through ``safe_write.read_stable_regular_bytes`` (#3765): a file that changes, or
+    is swapped, while it is read is a named refusal (``cache.unstable_reads``), and
+    its bytes are never parsed. Every lock and manifest reader comes through here."""
     if cache.manifest_budget_exhausted or cache.manifest_bytes_remaining <= 0:
         cache.manifest_bytes_remaining = 0
         cache.manifest_budget_exhausted = True
@@ -174,7 +181,10 @@ def _read_budgeted_bytes(path, file_limit, cache: IngestCache):
 
     limit = min(file_limit, cache.manifest_bytes_remaining)
     try:
-        raw = safe_write.read_regular_bytes(path, limit)
+        raw = safe_write.read_stable_regular_bytes(path, limit)
+    except safe_write.UnstableFileError:
+        cache.unstable_reads.append(path)
+        return None
     except safe_write.ReadLimitExceeded:
         cache.manifest_bytes_remaining -= limit
         if cache.manifest_bytes_remaining == 0:
@@ -946,6 +956,11 @@ def _mark_finding(finding, target_root, cache):
         return
     tool_evidence = finding.get("tool_evidence")
     if not isinstance(tool_evidence, dict) or tool_evidence.get("kind") == SECRET_KIND:
+        return
+    # #3765: Trivy's identity is parsed from its message, and a misconfiguration or
+    # licence record can carry the same text. Only a record Trivy itself tagged a
+    # vulnerability may be matched against a lock.
+    if tool == "trivy" and tool_evidence.get("kind") != VULNERABILITY_KIND:
         return
     package = _advisory_package(finding)
     if package is None:

@@ -43,6 +43,9 @@ SECRET_ADAPTERS = frozenset({"gitleaks"})
 # Trivy's scanner-owned `secret` tag gets this per-finding kind. The value is a
 # finding-kind tag, not a credential, so Bandit's B105 is a false positive.
 SECRET_KIND = "secret"  # nosec B105
+# #3765: the positive class the first-party advisory marker requires of a Trivy
+# record before it reads a package identity out of that record's message.
+VULNERABILITY_KIND = "vulnerability"
 # The SARIF toolComponent name a CWE taxonomy uses. gosec names its taxonomy
 # "CWE" and puts a BARE number under it, which is why `CWE_TAG` cannot see it.
 CWE_TAXONOMY = "CWE"
@@ -115,6 +118,8 @@ def norm_uri(uri):
     Strips the file:// scheme and the shared container-mount prefix, so tool
     findings share the same path space as agent findings. A plain relative
     path whose first component matches the mount basename is returned unchanged.
+    An absolute path OUTSIDE the mount stays absolute, and a file URI with an
+    authority is kept whole (#3765): neither is a path in the reviewed tree.
 
     The path is TARGET-authored text and lands in `location.file`, which the
     terminal summary prints, so it comes back INERT (#1829 SEC-4277410777): this
@@ -125,13 +130,18 @@ def norm_uri(uri):
     """
     if not isinstance(uri, str):
         return uri
-    if uri.startswith("file://"):
-        uri = uri[len("file://"):]
-    if uri.startswith(_TARGET_PREFIX):
-        uri = uri[len(_TARGET_PREFIX):]
-    else:
-        uri = uri.lstrip("/")
-    return inert_text(uri, mode="path")
+    path = uri[len("file://"):] if uri.startswith("file://") else uri
+    if path.startswith(_TARGET_PREFIX):
+        path = path[len(_TARGET_PREFIX):]
+    elif path.startswith("/"):
+        # #3765: an absolute path OUTSIDE the mount stays absolute (one leading
+        # slash). Stripping the slash turned `/Cargo.lock` into the review root's
+        # own `Cargo.lock`, a file the scanner never named.
+        path = "/" + path.lstrip("/")
+    elif path != uri:
+        # `file://host/...`: an authority, so not a local path at all. Kept whole.
+        path = uri
+    return inert_text(path, mode="path")
 
 
 _norm_uri = norm_uri
@@ -441,10 +451,14 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1,
                 result_props = _properties(res.get("properties"))
                 rule_tags = rule_props.get("tags")
                 tags = " ".join(str(t) for t in rule_tags) if isinstance(rule_tags, list) else ""
-                finding_kind = (SECRET_KIND if tool_name == "trivy"
-                                and isinstance(rule_tags, list)
-                                and any(tag == SECRET_KIND for tag in rule_tags)
-                                else None)
+                finding_kind = None
+                if tool_name == "trivy" and isinstance(rule_tags, list):
+                    # Trivy's own exact tags. `secret` wins: such a record is never
+                    # an advisory, whatever else it is tagged.
+                    if any(tag == SECRET_KIND for tag in rule_tags):
+                        finding_kind = SECRET_KIND
+                    elif any(tag == VULNERABILITY_KIND for tag in rule_tags):
+                        finding_kind = VULNERABILITY_KIND
                 blob = " ".join([res.get("ruleId", ""), tags,
                                  json.dumps(result_props, default=str)])
                 # #1578 I1: the tag scrape, UNION the rule's CWE taxonomy

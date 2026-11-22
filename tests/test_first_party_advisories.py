@@ -80,6 +80,10 @@ def _raw_advisory_finding(*, path="Cargo.lock", source="tool:osv-scanner",
     ecosystem = _OSV_ECOSYSTEMS.get(os.path.basename(path)) if isinstance(path, str) else None
     if source == "tool:osv-scanner" and ecosystem is not None:
         tool_evidence["ecosystem"] = ecosystem
+    if source == "tool:trivy" and kind is None:
+        # #3765: the class Trivy's vulnerability records carry; without it the marker
+        # reads no identity from a Trivy finding.
+        tool_evidence["kind"] = "vulnerability"
     if kind is not None:
         tool_evidence["kind"] = kind
     return {
@@ -574,14 +578,14 @@ class TestCargoFirstPartyAdvisoryIngest(unittest.TestCase):
                 json.dump(document, fh)
 
         reads = []
-        read_regular_bytes = first_party_advisory.safe_write.read_regular_bytes
+        read_stable = first_party_advisory.safe_write.read_stable_regular_bytes
 
         def counted_read(path, limit):
             reads.append(os.path.realpath(path))
-            return read_regular_bytes(path, limit)
+            return read_stable(path, limit)
 
         with mock.patch.object(
-                first_party_advisory.safe_write, "read_regular_bytes",
+                first_party_advisory.safe_write, "read_stable_regular_bytes",
                 side_effect=counted_read):
             findings = ingest_tools.ingest_dir(
                 tools, "g1", target_root=root.name)
@@ -2339,6 +2343,8 @@ class TestTheAdvisoryEcosystemMustAgreeWithItsLock(unittest.TestCase):
     def _finding(lock_name, package, source="tool:osv-scanner", **tool_evidence):
         body = {"rule_id": "GHSA-xxxx-yyyy-zzzz", "package_name": package[0],
                 "vulnerable_versions": package[1]}
+        if source == "tool:trivy":
+            body["kind"] = "vulnerability"             # #3765: as Trivy reports one
         body.update(tool_evidence)
         return {"id": "OS-001", "title": "%s %s: GHSA-xxxx-yyyy-zzzz" % package,
                 "source": source, "severity": "MEDIUM", "confidence": "CERTAIN",

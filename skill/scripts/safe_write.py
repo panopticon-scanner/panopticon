@@ -59,6 +59,10 @@ class NonRegularFileError(OSError):
     """The opened leaf is not a regular file and no bytes were consumed."""
 
 
+class UnstableFileError(OSError):
+    """The file changed, or another took its place, while it was being read (#3765)."""
+
+
 class ArtifactPathError(OSError):
     """A named refusal to write, publish, or remove an artifact path."""
 
@@ -127,6 +131,54 @@ def read_regular_bytes(path, limit):
     finally:
         if fd >= 0:
             os.close(fd)
+    if len(raw) > limit:
+        raise ReadLimitExceeded("over the %d-byte read limit; skipped unparsed" % limit)
+    return raw
+
+
+def _drain(path, stream, limit):
+    """The read itself, one byte past the limit. A seam: tests change the file here."""
+    return stream.read(limit + 1)
+
+
+def _file_state(status):
+    """What must not move across a read: which file it is, how big, and when it last
+    changed. ``st_ctime_ns`` is there because a writer can put ``st_mtime`` back."""
+    return (status.st_dev, status.st_ino, status.st_size, status.st_mtime_ns,
+            status.st_ctime_ns)
+
+
+def read_stable_regular_bytes(path, limit):
+    """``read_regular_bytes`` for a file whose CONTENT grants authority (#3765).
+
+    One read of a file that is being rewritten can return bytes that were never the
+    file: a complete-looking prefix, or another file swapped in and back. So the
+    descriptor's identity, size and times are compared before and after the read,
+    and the path is re-statted to check that it still names the file that was read.
+    Any difference raises ``UnstableFileError`` and the bytes are discarded. The
+    other refusals are ``read_regular_bytes``'s own."""
+    if type(limit) is not int or limit <= 0:
+        raise ValueError("read limit must be a positive integer")
+    flags = (os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+             | getattr(os, "O_NOFOLLOW", 0))
+    fd = os.open(path, flags)
+    try:
+        before = os.fstat(fd)
+        if not stat.S_ISREG(before.st_mode):
+            raise NonRegularFileError(errno.EINVAL, "not a regular file")
+        with os.fdopen(fd, "rb") as stream:
+            fd = -1
+            raw = _drain(path, stream, limit)
+            after = os.fstat(stream.fileno())
+    finally:
+        if fd >= 0:
+            os.close(fd)
+    try:
+        named = os.stat(path, follow_symlinks=False)
+    except OSError as exc:
+        raise UnstableFileError(errno.ESTALE, "the file changed while it was read") from exc
+    if not _file_state(before) == _file_state(after) == _file_state(named):
+        raise UnstableFileError(errno.ESTALE, "the file changed while it was read")
     if len(raw) > limit:
         raise ReadLimitExceeded("over the %d-byte read limit; skipped unparsed" % limit)
     return raw

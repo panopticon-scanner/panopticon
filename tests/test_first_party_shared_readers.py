@@ -84,13 +84,19 @@ def _ingest(root, name, document):
     return ingest_tools.ingest_dir(tools, "g1", target_root=root)
 
 
-def _verdict(findings):
-    """What a run with NO advisor answer says of these findings: the gate, and each
-    finding's evidence status."""
+def _verdict(findings, answer=None):
+    """What a run says of these findings -- the gate, and each finding's evidence
+    status -- with NO advisor answer, or with every queued finding answered `answer`."""
+    verdicts = {}
+    if answer is not None:
+        entries, _cut = evidence.build_verify_queue(copy.deepcopy(findings))
+        verdicts = {entry["queue_id"]: {"finding_id": entry["finding"]["id"],
+                                        "verdict": answer, "reasoning": "checked"}
+                    for entry in entries}
     report = report_mod.build_report(report_mod.ReportInputs(
         run=report_mod.RunConfig(target="project", fail_on="high",
                                  timestamp="2026-11-22T00:00:00Z"),
-        findings=findings_mod.FindingSet(findings=copy.deepcopy(findings), verdicts={},
+        findings=findings_mod.FindingSet(findings=copy.deepcopy(findings), verdicts=verdicts,
                                          verdicts_supplied=True)))
     return report["summary"]["gate"], [f["evidence"]["status"] for f in report["findings"]]
 
@@ -129,8 +135,8 @@ class TestAFileThatChangesWhileItIsRead(_Case):
     def _during(self, change):
         real = safe_write._drain
 
-        def drain(stream, limit):
-            raw = real(stream, limit)
+        def drain(path, stream, limit):
+            raw = real(path, stream, limit)
             change()
             return raw
         return mock.patch.object(safe_write, "_drain", side_effect=drain)
@@ -214,9 +220,9 @@ class TestAFileThatChangesWhileItIsRead(_Case):
         real = safe_write._drain
         swapped = []
 
-        def drain(stream, limit):
-            raw = real(stream, limit)
-            if os.path.basename(stream.name) == "Cargo.lock" and not swapped:
+        def drain(path, stream, limit):
+            raw = real(path, stream, limit)
+            if os.path.basename(path) == "Cargo.lock" and not swapped:
                 swapped.append(True)
                 raw = prefix.encode()                  # what a racing writer showed us
                 with open(lock, "w", encoding="utf-8") as fh:
@@ -258,10 +264,10 @@ class TestAFileThatChangesWhileItIsRead(_Case):
                 self.assert_first_party(_ingest(root, "osv-scanner.json", document))
                 real = safe_write._drain
 
-                def drain(stream, limit, lock_name=lock_name):
-                    raw = real(stream, limit)
-                    if os.path.basename(stream.name) != lock_name:       # a manifest
-                        os.utime(stream.name, ns=(1, 1))
+                def drain(path, stream, limit, lock_name=lock_name):
+                    raw = real(path, stream, limit)
+                    if os.path.basename(path) != lock_name:              # a manifest
+                        os.utime(path, ns=(1, 1))
                     return raw
                 with mock.patch.object(safe_write, "_drain", side_effect=drain):
                     self.assert_advisor_path(_ingest(root, "osv-scanner.json", document))
@@ -348,15 +354,20 @@ class TestAPathOutsideTheScanMount(_Case):
                 self.assertIsNone(first_party_advisory._lock_path(
                     root, finding, first_party_advisory.FIRST_PARTY_LOCKS))
 
-    def test_a_high_finding_outside_the_mount_still_gates(self):
-        # The other direction: the finding is kept and judged, not dropped.
+    def test_a_high_finding_outside_the_mount_is_kept_and_can_still_gate(self):
+        # The other direction: the finding is not dropped. On the base it was confirmed
+        # with no advisor (FAIL, certified); now it waits for one, and gates once
+        # confirmed -- or passes once rejected.
         root = _tree(self, "Cargo.lock")
         document = _trivy(CARGO, "/Cargo.lock", tags=("vulnerability", "security", "HIGH"),
                           severity="8.1")
         findings = _ingest(root, "trivy.sarif", document)
         self.assertEqual(1, len(findings))
         self.assertEqual("HIGH", findings[0]["severity"])
-        self.assertEqual(("FAIL", ["tool_reported"]), _verdict(findings))
+        self.assertEqual("/Cargo.lock", findings[0]["location"]["file"])
+        self.assertEqual(("INCONCLUSIVE", ["tool_reported"]), _verdict(findings))
+        self.assertEqual(("FAIL", ["tool_confirmed"]), _verdict(findings, "CONFIRMED"))
+        self.assertEqual("PASS", _verdict(findings, "REJECTED")[0])
 
 
 class TestATrivyRecordThatIsNotAVulnerability(_Case):

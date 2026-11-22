@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **Three shared-reader faults behind first-party advisory marking are closed (#3765).** Each
+  could put a scanner finding on the advisor-free path without having earned it, for every
+  lock the marker reads (Cargo, npm, Python).
+  - **A file that changes while it is read grants nothing.** A lock or manifest was read
+    once and believed. A writer racing the read could show a complete-looking prefix, or swap
+    another file in and back, and the finding was confirmed. The reader now compares the
+    file's identity, size, modification time and change time before and after the read, and
+    checks that the path still names the file it read (`safe_write.read_stable_regular_bytes`).
+    A mismatch discards the bytes, leaves the advisory with the advisor, and is counted per
+    tool as `advisory_manifest_changed_during_read` in the tool dispositions.
+  - **A scanner path outside the scan mount stays outside.** `/Cargo.lock`,
+    `//Cargo.lock` and `file:///Cargo.lock` had their leading slashes stripped and became the
+    review root's own `Cargo.lock`. An absolute path outside the mount now stays absolute
+    (`/Cargo.lock`), and a `file://` URI with an authority is kept whole. **Output change:** a
+    finding a scanner located outside the mount reports that path with its leading slash, so
+    its `location.file`, fingerprint and reconcile key change once. Paths inside the mount,
+    and relative paths, are unchanged.
+  - **Only a Trivy vulnerability record is matched against a lock.** Trivy's package and
+    version are parsed from its message, and a misconfiguration or licence record can carry
+    the same text. `tool_evidence.kind` is now `vulnerability` when the record's rule carries
+    Trivy's own `vulnerability` tag (`secret` still wins), and the marker requires it.
+    **Output change:** Trivy vulnerability findings gain `tool_evidence.kind: "vulnerability"`
+    and the report schema's `kind` enum gains that value. It is not part of the fingerprint
+    or reconcile key.
+
 - **Maven and Gradle advisories always stay with the advisor (#3623, owner rulings).** Like Go,
   neither has a first-party marker. A gradle.lockfile lists only resolved external modules,
   never the build's own projects, so no lock entry is a local project a manifest proves. A Maven
