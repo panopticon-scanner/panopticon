@@ -1020,7 +1020,7 @@ class TestAPathOutsideTheScanMount(_Case):
         cut = chr(0x2026)                       # inert_text's mark for a cut value
         plain = ("sub", os.path.join("sub", "x:y"), "a b", "a+b", "a@b", "caf" + chr(0xe9),
                  # Not the surrogate spelling: too few digits, lower case, no plus.
-                 "U+D80", "u+d800", "UD800", "U+",
+                 "U+D80", "u+d800", "U+d800", "U+dce9x", "UD800", "U+",
                  "a.b", "~a", "a=b&c", "[a]")
         refused = ("xU+D800", "U+DCE9", "aU+DFFFb",
                    "x:y", "C:", "a%20b", "%2e%2e", "a?b", "a#b", "a\\b", "a\\x0a",
