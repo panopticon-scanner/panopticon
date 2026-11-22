@@ -2,6 +2,96 @@
 
 ## Unreleased
 
+- **A target whose path holds `[`, `*` or `?` is reviewed like any other (#3701).** The run looked
+  for its own files with `glob`, and passed the run folder's path as part of the pattern. Under a
+  review root such as `repo[x]/`, `[x]` was read as a character class, so nothing matched: the
+  report held no agent finding and no reviewed cell, every verdict was counted as "unknown", and
+  it said only "NOT CERTIFIED — incomplete". `--reset` there removed the run's own folder, left
+  its flat artifacts in place, and deleted the flat artifacts of the sibling `repox/.panopticon/`,
+  which is what the pattern matched. It said nothing.
+  - Every such lookup now takes the directory as it is spelled: the findings files, dispatch
+    plans, scout replies and coverage files of a run, the dispatch counts in `meta.cost`, the
+    `--reset` sweep, the report parts surfaced from a `--pr` worktree (code no run reaches while
+    delta review is withdrawn, #3735), and the host transcripts read for token usage.
+  - pip-audit had the same fault in the other direction: an empty `repo[x]/` beside
+    `repox/requirements-dev.txt` read as a Python tree, and the sibling's file was reported as a
+    rejected requirements path. It now matches `requirements*.txt` under the target itself.
+  - One helper does the matching (`scripts/safe_glob.py`), and a test fails if any module in
+    `skill/scripts` calls `glob`. There is one exception, which the test names: `guard_rules.py`
+    is loaded with the standard library alone, cannot import the helper, and escapes its
+    directory itself.
+  - **A directory that cannot be listed no longer reads as an empty one.** `glob` returns
+    nothing for a directory it cannot read, so "no such file" and "could not look" were the same
+    answer. This fault is older than #3701; it is fixed here because every listing now goes
+    through the one helper. A directory that is not there still matches nothing. One that is
+    there and cannot be listed is reported by each caller as something worse than the truth:
+    - the dependency audit: an existing `requirements-dev.txt` was not seen, pip-audit read as
+      not applicable, and the report showed no gap. The Python ecosystem now reads as
+      applicable and pip-audit is selected. Where pip-audit cannot list the target either, it
+      fails with the reason, and the report shows the ecosystem as applicable with nothing
+      produced for it. A result pip-audit already captured is never lost to this: when the
+      host parses it and cannot list the target to see which requirements file was audited,
+      every finding is kept, located at `requirements.txt` (or `pyproject.toml` when there is
+      one), and the reason is printed once;
+    - `--reset`: it left every flat artifact in place and said nothing. It now stops with
+      `unsafe reset cleanup: <directory> could not be listed: <reason>; nothing was cleared`
+      and a non-zero exit, before removing anything;
+    - a run folder: its findings files, plans, scout replies, coverage files and verdict
+      bundles read as none. The synthesize step now stops with one line,
+      `synthesize: <directory> could not be listed: <reason>`, and exit status 3. The driver
+      ends the run in `error` with that line on any status of that step which publishes no
+      report, and no longer takes a report an earlier attempt of the run left on disk for
+      this attempt's: it used to clear its retry marker and finish `complete` on it;
+    - `readiness`: a sub-skill row past such a directory says
+      `not found (<directory> could not be listed)`, and its JSON row carries `unlistable`;
+    - token usage: a failed listing costs the token count and never the review. The
+      collector stops with `collect-usage: <directory> could not be listed: <reason>; usage
+      was not collected`, the driver relays that line (it used to print the "wrong
+      directory?" advice for every failure), and `meta.cost.tokens` stays null. A Kimi reply
+      whose wire directory cannot be listed is kept, with its usage unknown and the reason on
+      stderr. A `claude-<uid>` directory under the temp root that another user owns is passed
+      over, as it cannot hold this session's transcripts. Our own stops the collection, closed
+      to us or not.
+  - Each of those lines is one line whatever the directory is named: a newline or an escape
+    sequence in the path is spelled out (`\x0a`, `\x1b`), not printed. A backslash in the path
+    is doubled and a byte that is not UTF-8 is spelled `\udcNN`, so two different names never
+    print alike. A credential in the name is redacted, as in every other diagnostic.
+  - The helper refuses a pattern that would leave its directory: an empty, absolute, `.` or
+    `..` part, no pattern at all, or an empty directory is a `ValueError`. So is a part that
+    holds a backslash or starts with a drive (`C:`), on every platform.
+
+- **A reply whose token usage could not be measured is no longer counted as zero tokens
+  (#3764).** The dispatch ledger records `usage: {}` for such a launch: a Kimi reply whose wire
+  file is missing or, since #3701, whose directory cannot be listed, or a host that timed out
+  before it printed its figures. `usage.json` and `meta.cost.tokens` summed that row as 0 and said
+  nothing, so the total was too low with no sign of it.
+  - `usage.json` now counts those launches in `unmeasured_rows`, split by host
+    (`unmeasured_by_host`) and by phase (`unmeasured_by_phase`). They add to no figure.
+  - `total_is_lower_bound` is true when `total` leaves some launches out. When no launch at all
+    was measured, `total` is null, not 0; the same holds for one phase's figure in `by_phase`.
+  - One rule decides whether a launch was measured, for every host: at least one of the four
+    counters the ledger sums was reported as a number. A usage that held only nulls, only a
+    total or a thinking count, or no counter at all was written as four zeros and read back as
+    an exact 0. It is now written as `usage: {}` and counted as unmeasured, for a Claude
+    envelope, a Codex turn, and an agy or Gemini envelope. Kimi's wire reader already worked
+    this way.
+  - What a measured row holds differs by host. A Claude row holds only the counters its envelope
+    reported as integers; one that was not reported is left out. Codex, Kimi, agy and Gemini
+    build all four from their own fields, so on a measured launch a counter they did not report
+    reads 0.
+  - A ledger written before this change is read as it was: a row that already holds four zeros
+    is an exact zero, on a resumed run too.
+  - A run that launched nothing still reads 0, and a launch that measured zero still counts as
+    measured. The rows an interrupt writes are not launches and are not counted.
+  - An entry the runner refused before it launched anything spent nothing, so it is not counted
+    either: an unregistered enforcement shell, a model the host does not list, an argv the
+    Claude runner will not launch. Its ledger row carries `launched: false`. A failure that
+    cannot say whether a child started (a timeout, a crash, a launch that raised) is counted.
+    So are Codex's own refusals before launch (a runner that was not prepared, an entry binding
+    that does not match), which are raised beside the launch and carry no such mark.
+  - `meta.cost.tokens` is that document unchanged, so a reader that summed `total` or a
+    `by_phase` value must now expect null there. No finding, gate or certification reads it.
+
 - **Maven and Gradle advisories always stay with the advisor (#3623, owner rulings).** Like Go,
   neither has a first-party marker. A gradle.lockfile lists only resolved external modules,
   never the build's own projects, so no lock entry is a local project a manifest proves. A Maven

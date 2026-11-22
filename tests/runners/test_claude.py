@@ -115,6 +115,7 @@ class TestAnUnenforcedArgvWithoutItsToolControlsNeverLaunches(unittest.TestCase)
         result, launched = self.run_with(alter)
         self.assertEqual(launched, [])
         self.assertIn("refused before launch", str(result.error))
+        self.assertIs(False, result.launched)          # #3764: refused, never launched
 
     def test_dropping_the_allow_list_is_refused(self):
         self.assert_refused(lambda cmd: [a for a in cmd if not a.startswith("--tools=")])
@@ -188,6 +189,7 @@ class TestAnEnforcedLaunchIsGrantedExactlyItsOwnOutFile(unittest.TestCase):
                 result, launched = self.run_with(entry)
                 self.assertEqual(launched, [])
                 self.assertIn("refused before launch", str(result.error))
+                self.assertIs(False, result.launched)
                 self.assertIn(char, str(result.error))
                 self.assertIn("a%sb" % char, str(result.error).replace("\\\\", "\\"))
 
@@ -598,12 +600,15 @@ class TestRunEntry(unittest.TestCase):
             r = claude_runner.Runner("claude", runner=boom); r.prepare(d, review_root=d)
             res = r.run_entry(_entry(True), {})
         self.assertFalse(res.ok); self.assertIn("timed out", res.error)
+        self.assertIs(True, res.launched)              # #3764: a launch that raised may have started a child
         def missing(cmd, **kw):
             raise FileNotFoundError("claude")
         with tempfile.TemporaryDirectory() as d:
             r = claude_runner.Runner("claude", runner=missing); r.prepare(d, review_root=d)
             res = r.run_entry(_entry(True), {})
         self.assertFalse(res.ok); self.assertIn("claude", res.error)
+        self.assertIn("could not launch", res.error)
+        self.assertIs(True, res.launched)
 
     def test_any_other_launch_exception_is_a_failed_result(self):
         def bad_args(cmd, **kw):
@@ -613,6 +618,7 @@ class TestRunEntry(unittest.TestCase):
             res = r.run_entry(_entry(True), {})
         self.assertFalse(res.ok)
         self.assertIn("ValueError", res.error)
+        self.assertIs(True, res.launched)
 
 
 class TestPrepare(unittest.TestCase):

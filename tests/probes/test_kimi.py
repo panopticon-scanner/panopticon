@@ -552,6 +552,17 @@ class TestKimiUsageWireProbe(unittest.TestCase):
         self.assertEqual(hosts.REFUTED, state)
         self.assertIn("wire.jsonl", detail)
 
+    def test_a_home_that_cannot_be_listed_is_unknown_not_a_crash(self):
+        # #3706 review round 2: `wire_path` raises for a home it cannot list, and that
+        # is not an `OSError`. The probe could not measure, which is `unknown`.
+        import scripts.runners.kimi as kimi_runner
+        import scripts.safe_glob as safe_glob
+        failed = safe_glob.Unlistable("/run/kimi/sessions", PermissionError(13, "Permission denied"))
+        with mock.patch.object(kimi_runner, "wire_path", side_effect=failed):
+            state, _by, detail = kimi_probes.probe_kimi_usage_wire("kimi")
+        self.assertEqual(hosts.UNKNOWN, state)
+        self.assertIn("/run/kimi/sessions could not be listed: Permission denied", detail)
+
     def test_a_parser_that_returns_the_wrong_figures_is_refuted(self):
         import scripts.runners.kimi as kimi_runner
         with mock.patch.object(kimi_runner, "parse_wire", return_value=({}, None)):

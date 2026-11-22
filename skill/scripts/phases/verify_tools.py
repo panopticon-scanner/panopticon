@@ -25,7 +25,6 @@ name here is an alias of that function, kept because this module's callers and
 tests spell it this way. The dependency runs one way: nothing here reads
 `verify`.
 """
-import glob as _glob
 import json
 import os
 
@@ -122,8 +121,7 @@ def _tool_verify_queue(review_root, manifest):
         return []
     # Match synthesis before fingerprinting: a redacted agent title changes
     # the combined queue's ordering and therefore its max-verify cut (#1660).
-    findings = redact.redact_tree(findings_mod.load_findings(
-        sorted(_glob.glob(runio._pano(review_root, "findings-*.json")))))
+    findings = redact.redact_tree(findings_mod.load_findings(runio._findings_files(review_root)))
     tool_findings, _disp = ingest_tools.ingest_dir_detailed(
         tools_dir, None,
         exclude_globs=runio.committed_exclude_paths(review_root),

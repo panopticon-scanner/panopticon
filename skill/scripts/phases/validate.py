@@ -1,5 +1,4 @@
 """Phase 7 -- validate: the working-tree baseline, delta and worktree finalization."""
-import glob as _glob
 import hashlib
 import io
 import json
@@ -13,6 +12,7 @@ import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
 import scripts.safe_git as safe_git
 import scripts.redact as redact
+import scripts.safe_glob as safe_glob
 import scripts.safe_write as safe_write
 from . import engine
 from . import runio
@@ -491,20 +491,27 @@ def _finalize_worktree(review_root, manifest):
     # #run7 OPS-E1A: surface EVERY durable tag-named artifact, not just part2 --
     # a split report (run-7 produced 4 parts + discarded + x0x) otherwise loses
     # part3+ on worktree release.
-    if tag:
-        names = sorted(os.path.basename(p) for p in
-                       _glob.glob(os.path.join(src_dir, f"{tag}-report*.json")))
-        names.append(f"{tag}-report.json.html")
-    else:
-        names = ["report.json"]
-    # #3225: the main report first, so `_surface_into` publishes it LAST and
-    # its siblings are already in place when it goes live.
-    names = [n for n in names if os.path.isfile(os.path.join(src_dir, n))]
-    names.sort(key=lambda n: n != (f"{tag}-report.json" if tag else "report.json"))
+    def report_names():
+        if tag:
+            names = sorted(os.path.basename(p) for p in
+                           safe_glob.under(src_dir, tag + "-report*.json"))
+            names.append(f"{tag}-report.json.html")
+        else:
+            names = ["report.json"]
+        # #3225: the main report first, so `_surface_into` publishes it LAST and
+        # its siblings are already in place when it goes live.
+        names = [n for n in names if os.path.isfile(os.path.join(src_dir, n))]
+        names.sort(key=lambda n: n != (f"{tag}-report.json" if tag else "report.json"))
+        return names
+
     failed = []
     try:
+        # #3706: a worktree `.panopticon/` that cannot be listed raises here. It is a
+        # failed surface like any other below, so the worktree is kept, where it used to
+        # read as "no report parts" and the only other copy was released.
+        names = report_names()
         dfd = _open_caller_artifact_dir(target)
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, safe_glob.Unlistable) as e:
         failed.append((plan_contract.ARTIFACT_DIR, e))
     else:
         try:

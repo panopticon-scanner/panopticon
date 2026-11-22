@@ -42,7 +42,6 @@ Usage:
     python3 skill/scripts/collect_usage.py --run-dir <dir> --dry-run
 """
 import argparse
-import glob
 import hashlib
 import json
 import os
@@ -52,7 +51,7 @@ import sys
 if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
     import runpy
     runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
-from scripts import claim_scope, plan_contract, safe_write
+from scripts import claim_scope, plan_contract, safe_glob, safe_write
 
 USAGE_FIELDS = ("input_tokens", "output_tokens",
                 "cache_creation_input_tokens", "cache_read_input_tokens")
@@ -72,6 +71,9 @@ DROP_COUNTERS = ("unreadable_transcripts", "undecodable_lines",
 # largest fan-out measured is solidus at ~1,300 agents, so this is roughly 15x
 # any real run and only an adversarial or runaway tasks directory reaches it.
 TASK_TRANSCRIPTS_MAX = 20_000
+
+#: Where Claude Code keeps a session's task output: `<root>/claude-<uid>/<project>/<session>/tasks`.
+TEMP_ROOTS = ("/private/tmp", "/tmp")
 
 # #run10 B2 hands agents a `prompt_file` PATH instead of an inline prompt, so a
 # real dispatch prompt names `_prompts/<entry-id>.txt` and never mentions the
@@ -113,7 +115,7 @@ def find_controller_transcript(project_dir, home=None, since=None):
     """
     home = home or os.path.expanduser("~")
     d = os.path.join(home, ".claude", "projects", project_slug(project_dir))
-    files = [p for p in glob.glob(os.path.join(d, "*.jsonl")) if os.path.isfile(p)]
+    files = [p for p in safe_glob.under(d, "*.jsonl") if os.path.isfile(p)]
     if not files:
         return None
     if not since:
@@ -155,6 +157,16 @@ def _cap_transcripts(paths, info):
     return paths[:TASK_TRANSCRIPTS_MAX]
 
 
+def _another_users(base):
+    """Whether `base` is known to belong to another user: it has an owner, and the
+    owner is not us. Not known is not another's. (What we may do with it says
+    nothing: our own directory at mode 000 is closed to us too.)"""
+    try:
+        return os.lstat(base).st_uid != os.geteuid()
+    except OSError:
+        return False
+
+
 def find_task_transcripts(controller_transcript, tasks_dir=None, info=None):
     """Every subagent transcript for the controller's session.
 
@@ -177,7 +189,7 @@ def find_task_transcripts(controller_transcript, tasks_dir=None, info=None):
     """
     if tasks_dir:
         return _cap_transcripts(
-            sorted(p for p in glob.glob(os.path.join(tasks_dir, "*"))
+            sorted(p for p in safe_glob.under(tasks_dir, "*")
                    if os.path.isfile(p)), info)
     if not controller_transcript:
         return _cap_transcripts([], info)
@@ -185,11 +197,19 @@ def find_task_transcripts(controller_transcript, tasks_dir=None, info=None):
     proj = os.path.dirname(controller_transcript)
     slug = os.path.basename(proj)
     candidates = []
-    for base in glob.glob("/private/tmp/claude-*") + glob.glob("/tmp/claude-*"):
-        candidates.extend(glob.glob(os.path.join(base, slug, session, "tasks", "*")))
-    candidates.extend(glob.glob(os.path.join(
-        proj, session, "subagents", "workflows", "*", "agent-*.jsonl")))
-    candidates.extend(glob.glob(os.path.join(proj, session, "subagents", "*.jsonl")))
+    for root in TEMP_ROOTS:
+        for base in safe_glob.under(root, "claude-*"):
+            try:
+                candidates.extend(safe_glob.under(os.path.join(base, slug, session, "tasks"), "*"))
+            except safe_glob.Unlistable:
+                # #3706: a shared machine has one `claude-<uid>` per user, and another
+                # user's is closed to us. This session's tasks are not in it, so it is
+                # passed over. Any other one is ours, and ours stops the collection.
+                if not _another_users(base):
+                    raise
+    subagents = os.path.join(proj, session, "subagents")
+    candidates.extend(safe_glob.under(subagents, "workflows", "*", "agent-*.jsonl"))
+    candidates.extend(safe_glob.under(subagents, "*.jsonl"))
     seen, out = set(), []
     for cand in candidates:
         if not os.path.isfile(cand) or cand.endswith(".meta.json"):
@@ -634,8 +654,14 @@ def main(argv=None):
     elif until is not None and until.lower() == "none":
         until = None
 
-    doc = collect(args.run_dir, args.project_dir, args.transcript,
-                  args.tasks_dir, since, until)
+    try:
+        doc = collect(args.run_dir, args.project_dir, args.transcript,
+                      args.tasks_dir, since, until)
+    except safe_glob.Unlistable as exc:
+        # #3706: a transcript directory that is there and could not be listed is not
+        # "no transcript" (rc 1, below). The driver relays this line.
+        print("collect-usage: %s; usage was not collected" % exc, file=sys.stderr)
+        return 2
     if doc is None:
         # Deliberately not an error, and deliberately not a zero: the channel is
         # optional, and a usage.json full of zeros would be a false ledger.

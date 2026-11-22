@@ -21,7 +21,10 @@ from unittest import mock
 import scripts.ledger as ledger_mod
 import scripts.money as money
 import scripts.runners.base as base
+import scripts.runners.agy as agy_runner
 import scripts.runners.claude as claude_runner
+import scripts.runners.codex as codex_runner
+import scripts.runners.gemini as gemini_runner
 import scripts.runners.outage as outage
 import scripts.synth.cost as cost_mod
 from tests.orchestrate_helpers import LoopCase
@@ -308,6 +311,393 @@ class TestLedgerMoney(LoopCase):
         ledger = self._ledger()
         ledger.record({"id": "e"}, "review", self._result(0.1), "headless", "claude")
         self.assertEqual(0, ledger.usage_document()["corrupt_rows"])
+
+
+class TestUnmeasuredUsage(LoopCase):
+    """#3764: a launch whose usage could not be measured is not a launch that used
+    nothing. Its row holds `usage: {}`; summed as zero, it made the total too low and
+    nothing in the document said so."""
+
+    def _ledger(self):
+        d, _floor = self._repo()
+        return ledger_mod.Ledger(d)
+
+    def _record(self, ledger, entry_id, checkpoint, host, usage, ok=True):
+        ledger.record({"id": entry_id}, checkpoint,
+                      base.RunResult(entry_id=entry_id, ok=ok, text="", usage=usage,
+                                     cost_usd=None, model=None, session_id=None, denials=[],
+                                     error=None if ok else "timed out"),
+                      "headless", host)
+
+    def test_an_unmeasured_row_is_counted_and_the_total_is_a_floor(self):
+        ledger = self._ledger()
+        self._record(ledger, "review-a", "review", "kimi",
+                     {"input_tokens": 10, "output_tokens": 7})
+        self._record(ledger, "review-b", "review", "kimi", {})
+        self._record(ledger, "verify-a", "verify", "kimi", {})
+        self._record(ledger, "verify-b", "verify", "codex", {}, ok=False)
+        doc = ledger.usage_document()
+        self.assertEqual((17, True), (doc["total"], doc["total_is_lower_bound"]))
+        self.assertEqual(3, doc["unmeasured_rows"])
+        self.assertEqual({"kimi": 2, "codex": 1}, doc["unmeasured_by_host"])
+        self.assertEqual({"review": 1, "verify": 2}, doc["unmeasured_by_phase"])
+        # Review has a measured row, so its figure is a floor. Verify has none: null,
+        # not zero. A phase with no rows at all spent nothing.
+        self.assertEqual({"scout": 0, "review": 17, "verify": None, "unattributed": 0},
+                         doc["by_phase"])
+        self.assertEqual({"input_tokens": 10, "output_tokens": 7,
+                          "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                         doc["by_field"])
+
+    def test_nothing_measured_is_null_and_not_zero(self):
+        ledger = self._ledger()
+        self._record(ledger, "review-a", "review", "kimi", {})
+        doc = ledger.usage_document()
+        self.assertEqual((None, False, 1), (doc["total"], doc["total_is_lower_bound"],
+                                            doc["unmeasured_rows"]))
+        self.assertEqual({"scout": 0, "review": None, "verify": 0, "unattributed": 0},
+                         doc["by_phase"])
+        self.assertEqual(dict.fromkeys(doc["by_field"]), doc["by_field"])
+        self.assertEqual(4, len(doc["by_field"]))
+
+    def test_a_measured_zero_is_zero(self):
+        ledger = self._ledger()
+        self._record(ledger, "review-a", "review", "kimi", {"input_tokens": 0})
+        doc = ledger.usage_document()
+        self.assertEqual((0, False, 0, {}, {}),
+                         (doc["total"], doc["total_is_lower_bound"], doc["unmeasured_rows"],
+                          doc["unmeasured_by_host"], doc["unmeasured_by_phase"]))
+        self.assertEqual({"scout": 0, "review": 0, "verify": 0, "unattributed": 0},
+                         doc["by_phase"])
+        self.assertEqual({0}, set(doc["by_field"].values()))
+
+    def test_a_run_that_launched_nothing_spent_nothing(self):
+        doc = self._ledger().usage_document()
+        self.assertEqual((0, False, 0), (doc["total"], doc["total_is_lower_bound"],
+                                         doc["unmeasured_rows"]))
+        self.assertEqual({0}, set(doc["by_phase"].values()) | set(doc["by_field"].values()))
+
+    def test_the_rows_an_interrupt_writes_are_not_launches(self):
+        """A marker row sits beside the real row of an entry that completed, or stands
+        for one that was cut. Neither is a launch that went unmeasured."""
+        ledger = self._ledger()
+        self._record(ledger, "e1", "review", "kimi", {"input_tokens": 5})
+        ledger.rollback_rows([{"id": "e1"}, {"id": "e2"}], {"e1"}, "review", "headless", "kimi")
+        doc = ledger.usage_document()
+        self.assertEqual((5, False, 0, {}),
+                         (doc["total"], doc["total_is_lower_bound"], doc["unmeasured_rows"],
+                          doc["unmeasured_by_host"]))
+
+    def test_an_entry_refused_before_launch_spent_nothing(self):
+        """#3706 seat review at eccba175, item 1. The loop records every result, and a
+        refusal before launch ("enforcement shell not registered") has no usage. It was
+        counted as a launch that went unmeasured, so a run in which every token was
+        counted published a lower bound, or null."""
+        ledger = self._ledger()
+        ledger.record({"id": "review-a"}, "review",
+                      base.RunResult.refused("review-a", "enforcement shell not registered"),
+                      "headless", "kimi")
+        self.assertIs(False, ledger.lines()[0]["launched"])
+        doc = ledger.usage_document()
+        self.assertEqual((0, False, 0, {}, {}),
+                         (doc["total"], doc["total_is_lower_bound"], doc["unmeasured_rows"],
+                          doc["unmeasured_by_host"], doc["unmeasured_by_phase"]))
+        self.assertEqual({"scout": 0, "review": 0, "verify": 0, "unattributed": 0},
+                         doc["by_phase"])
+        self._record(ledger, "review-b", "review", "kimi", {"input_tokens": 9})
+        doc = ledger.usage_document()
+        self.assertEqual((9, False, 0), (doc["total"], doc["total_is_lower_bound"],
+                                         doc["unmeasured_rows"]))
+        # A failure that does not say it never launched may have spent tokens.
+        ledger.record({"id": "review-c"}, "review",
+                      base.RunResult.failed("review-c", "kimi -p timed out after 5s"),
+                      "headless", "kimi")
+        doc = ledger.usage_document()
+        self.assertEqual((9, True, 1, {"kimi": 1}),
+                         (doc["total"], doc["total_is_lower_bound"], doc["unmeasured_rows"],
+                          doc["unmeasured_by_host"]))
+        # Written only when set: no other row carries the key.
+        self.assertEqual([False, None, None],
+                         [row.get("launched", None) for row in ledger.lines()])
+        self.assertEqual([True, False, False], ["launched" in row for row in ledger.lines()])
+
+    def test_only_an_explicit_false_marks_a_row_as_never_launched(self):
+        ledger = self._ledger()
+        with open(ledger.path, "w", encoding="utf-8") as fh:
+            for launched in (False, True, None, 0, "false"):
+                fh.write(json.dumps({"phase": "review", "host": "kimi", "usage": {},
+                                     "launched": launched}) + "\n")
+        self.assertEqual(4, ledger.usage_document()["unmeasured_rows"])
+
+    #: A Claude envelope's `usage`, and the usage its ledger row must hold. Five gates at
+    #: 908f005e, item 2: the writer filled all four counters from any non-empty usage,
+    #: so the first four of these were written as four zeros and read back as an exact 0.
+    CLAUDE_USAGE = (
+        ("every counter null", {"input_tokens": None, "output_tokens": None,
+                                "cache_read_input_tokens": None,
+                                "cache_creation_input_tokens": None}, {}),
+        ("no counter at all", {"service_tier": "standard",
+                               "server_tool_use": {"web_search_requests": 3}}, {}),
+        ("nothing that is an integer", {"input_tokens": "12", "output_tokens": True,
+                                        "cache_read_input_tokens": [4],
+                                        "cache_creation_input_tokens": 1.5}, {}),
+        ("no usage object", None, {}),
+        ("one counter, the others null", {"input_tokens": 5, "output_tokens": None,
+                                          "cache_read_input_tokens": None},
+         {"input_tokens": 5}),
+        ("a measured zero", {"input_tokens": 0, "output_tokens": 0},
+         {"input_tokens": 0, "output_tokens": 0}),
+        ("all four", {"input_tokens": 8, "output_tokens": 11, "cache_read_input_tokens": 2,
+                      "cache_creation_input_tokens": 4, "service_tier": "standard"},
+         {"input_tokens": 8, "output_tokens": 11, "cache_read_input_tokens": 2,
+          "cache_creation_input_tokens": 4}))
+
+    def _claude_result(self, entry_id, usage):
+        envelope = {"result": "reply", "is_error": False, "total_cost_usd": 0.01}
+        if usage is not None:
+            envelope["usage"] = usage
+        return claude_runner.Runner("claude").parse_envelope(entry_id, json.dumps(envelope), 0)
+
+    def test_the_writer_records_what_the_host_measured_and_nothing_else(self):
+        ledger = self._ledger()
+        for n, (_what, usage, _row) in enumerate(self.CLAUDE_USAGE):
+            result = self._claude_result("review-%d" % n, usage)
+            self.assertTrue(result.ok, result.error)
+            ledger.record({"id": "review-%d" % n}, "review", result, "headless", "claude")
+        self.assertEqual([row for _what, _usage, row in self.CLAUDE_USAGE],
+                         [row["usage"] for row in ledger.lines()])
+        doc = ledger.usage_document()
+        self.assertEqual((5 + 0 + 25, True, 4, {"claude": 4}, {"review": 4}),
+                         (doc["total"], doc["total_is_lower_bound"], doc["unmeasured_rows"],
+                          doc["unmeasured_by_host"], doc["unmeasured_by_phase"]))
+        self.assertEqual({"input_tokens": 13, "output_tokens": 11, "cache_read_input_tokens": 2,
+                          "cache_creation_input_tokens": 4}, doc["by_field"])
+
+    def test_launches_nobody_measured_are_not_an_exact_zero(self):
+        """The gate's case: every launch of a run with a usage of nulls. `total: 0`,
+        not a lower bound, nothing unmeasured, is what it published."""
+        ledger = self._ledger()
+        for n in range(24):
+            what, usage, _row = self.CLAUDE_USAGE[n % 4]
+            ledger.record({"id": "review-%d" % n}, "review",
+                          self._claude_result("review-%d" % n, usage), "headless", "claude")
+        doc = ledger.usage_document()
+        self.assertEqual((None, False, 24, {"claude": 24}),
+                         (doc["total"], doc["total_is_lower_bound"], doc["unmeasured_rows"],
+                          doc["unmeasured_by_host"]))
+        self.assertIsNone(doc["by_phase"]["review"])
+        self.assertEqual({None}, set(doc["by_field"].values()))
+
+    def test_a_result_whose_usage_is_not_an_object_is_unmeasured(self):
+        ledger = self._ledger()
+        for n, usage in enumerate((None, [], "many", 7, {})):
+            self._record(ledger, "review-%d" % n, "review", "kimi", usage)
+        self.assertEqual([{}] * 5, [row["usage"] for row in ledger.lines()])
+        self.assertEqual(5, ledger.usage_document()["unmeasured_rows"])
+
+    def test_the_other_families_hand_the_writer_no_made_up_zero(self):
+        """agy and Gemini read their counters with a null-is-zero conversion, so an
+        envelope that reported none reached the writer as zeros, where nothing could
+        tell it from a measurement. Each now hands over no usage for it."""
+        def gemini(doc):
+            return gemini_runner.parse_envelope(json.dumps(dict(doc, response="reply")), 0,
+                                                entry_id="e")
+
+        def agy(doc):
+            return agy_runner.parse_envelope(json.dumps(dict(
+                doc, status="SUCCESS", response="reply", conversation_id="c")), 0, entry_id="e")
+        unmeasured = ({"usage": {"input_tokens": None, "output_tokens": None}},
+                      {"usage": {}},
+                      {"usage": {"note": "n/a"}},
+                      {"usage": {"input_tokens": "n/a", "output_tokens": [1]}},
+                      {"usage": {"input_tokens": False, "output_tokens": True}},
+                      {"stats": {"models": {"m": {"tokens": {"input": True, "total": "?"}}}}},
+                      {"stats": {"models": {"m": {"tokens": {"input": None, "total": None}}}}},
+                      {"stats": {"models": {"m": {"tokens": {}}}}},
+                      {"stats": {"models": {"m": {"api": {"totalRequests": 1}}}}},
+                      {})
+        measured = (({"usage": {"input_tokens": 0, "output_tokens": 0}}, 0),
+                    ({"usage": {"input_tokens": 7, "output_tokens": None}}, 7),
+                    ({"stats": {"models": {"m": {"tokens": {"input": 3, "candidates": 4,
+                                                           "cached": None}}}}}, 7),
+                    ({"usage": {"input_tokens": None},
+                      "stats": {"models": {"m": {"tokens": {"input": 3, "candidates": 4}}}}}, 7),
+                    # One counter that is a number is enough, wherever it stands: after a
+                    # field that is not one, and in a model listed before one with none.
+                    ({"usage": {"input_tokens": "n/a", "output_tokens": 7}}, 7),
+                    ({"stats": {"models": {"a": {"tokens": {"input": 3, "candidates": 4}},
+                                           "b": {"tokens": {"input": None}},
+                                           "c": {"api": {}}}}}, 7))
+        for host, parse in (("gemini", gemini), ("agy", agy)):
+            with self.subTest(host=host):
+                ledger = self._ledger()
+                for n, doc in enumerate(unmeasured):
+                    result = parse(doc)
+                    self.assertEqual((True, {}), (result.ok, result.usage), doc)
+                    ledger.record({"id": "review-%d" % n}, "review", result, "headless", host)
+                doc = ledger.usage_document()
+                self.assertEqual((None, len(unmeasured), {host: len(unmeasured)}),
+                                 (doc["total"], doc["unmeasured_rows"],
+                                  doc["unmeasured_by_host"]))
+                for n, (envelope, tokens) in enumerate(measured):
+                    result = parse(envelope)
+                    ledger.record({"id": "verify-%d" % n}, "verify", result, "headless", host)
+                    self.assertEqual(tokens, sum(ledger.lines()[-1]["usage"].values()), envelope)
+                doc = ledger.usage_document()
+                self.assertEqual((35, True, len(unmeasured)),
+                                 (doc["total"], doc["total_is_lower_bound"],
+                                  doc["unmeasured_rows"]))
+
+    #: Seat review at 89cf0c5d: ONE rule for "measured", in every family. A launch is
+    #: measured when at least one of the four counters the ledger sums was reported as a
+    #: number. These are the fields that feed those four, per family, spelled here so a
+    #: name cannot leave a family's tuple unseen; and beside them, fields a host reports
+    #: that feed none of the four.
+    FEEDS_THE_LEDGER = {
+        "agy": (("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_read_tokens",
+                 "cache_creation_input_tokens", "cache_write_tokens"),
+                ("input", "candidates", "cached")),
+        "gemini": (("input_tokens", "output_tokens", "cache_read_input_tokens",
+                    "cache_read_tokens", "cache_creation_input_tokens", "cache_write_tokens"),
+                   ("input", "prompt", "candidates", "cached", "thoughts")),
+    }
+    FEEDS_NOTHING = {
+        "agy": (("total_tokens", "thinking_tokens", "reasoning_tokens", "note"),
+                ("total", "thoughts", "prompt", "tool")),
+        "gemini": (("total_tokens", "thinking_tokens", "reasoning_tokens", "note"),
+                   ("total", "tool")),
+    }
+
+    def _family_result(self, host, doc):
+        if host == "gemini":
+            return gemini_runner.parse_envelope(json.dumps(dict(doc, response="reply")), 0,
+                                                entry_id="e")
+        return agy_runner.parse_envelope(json.dumps(dict(
+            doc, status="SUCCESS", response="reply", conversation_id="c")), 0, entry_id="e")
+
+    def _recorded(self, host, result):
+        """(the row's usage, the document) after this one result is recorded alone."""
+        ledger = self._ledger()
+        ledger.record({"id": "review-a"}, "review", result, "headless", host)
+        return ledger.lines()[0]["usage"], ledger.usage_document()
+
+    def test_each_field_that_feeds_the_ledger_makes_a_launch_measured(self):
+        for host, module in (("agy", agy_runner), ("gemini", gemini_runner)):
+            usage_names, model_names = self.FEEDS_THE_LEDGER[host]
+            self.assertEqual((usage_names, model_names),
+                             (module._USAGE_COUNTERS, module._MODEL_COUNTERS))
+            # A number is what the family's own reader takes for one: `"12"` is twelve.
+            for count, read_as in ((7, 7), (0, 0), ("12", 12), (7.0, 7)):
+                shapes = ([({"usage": {name: count}}, name) for name in usage_names]
+                          + [({"stats": {"models": {"m": {"tokens": {name: count}}}}}, name)
+                             for name in model_names])
+                for doc, name in shapes:
+                    with self.subTest(host=host, name=name, count=count):
+                        result = self._family_result(host, doc)
+                        row, document = self._recorded(host, result)
+                        self.assertEqual((True, read_as, 4), (result.ok, sum(row.values()), len(row)))
+                        self.assertEqual((read_as, False, 0),
+                                         (document["total"], document["total_is_lower_bound"],
+                                          document["unmeasured_rows"]))
+
+    def test_a_field_that_feeds_nothing_the_ledger_sums_measures_nothing(self):
+        """`{"total_tokens": 500}`, or a thinking count alone, was written as four zeros."""
+        for host in ("agy", "gemini"):
+            usage_names, model_names = self.FEEDS_NOTHING[host]
+            shapes = ([{"usage": {name: 500}} for name in usage_names]
+                      + [{"usage": dict.fromkeys(usage_names, 500)}]
+                      + [{"stats": {"models": {"m": {"tokens": {name: 500}}}}}
+                         for name in model_names]
+                      + [{"stats": {"models": {"m": {"tokens": dict.fromkeys(model_names, 500)}}}}])
+            for doc in shapes:
+                with self.subTest(host=host, doc=doc):
+                    result = self._family_result(host, doc)
+                    row, document = self._recorded(host, result)
+                    self.assertEqual((True, {}, {}), (result.ok, result.usage, row))
+                    self.assertEqual((None, 1, {host: 1}),
+                                     (document["total"], document["unmeasured_rows"],
+                                      document["unmeasured_by_host"]))
+
+    def _codex_result(self, *usages):
+        events = [{"type": "item.completed",
+                   "item": {"type": "agent_message", "text": '{"domains": []}'}}]
+        events += [{"type": "turn.completed", "usage": usage} for usage in usages]
+        return codex_runner.Runner.parse_envelope(
+            "e", "\n".join(json.dumps(event) for event in events), 0)
+
+    def test_codex_measures_a_turn_by_its_own_three_counters(self):
+        """A `turn.completed` usage holding only other fields was written as four zeros,
+        because each counter Codex reads defaults to 0 when it is absent."""
+        self.assertEqual(("input_tokens", "cached_input_tokens", "output_tokens"),
+                         codex_runner._USAGE_COUNTERS)
+        for usage in ({"reasoning_tokens": 40}, {"total_tokens": 500},
+                      {"reasoning_tokens": 40, "total_tokens": 500}, {}, None):
+            with self.subTest(usage=usage):
+                result = self._codex_result(usage)
+                row, document = self._recorded("codex", result)
+                self.assertEqual((True, {}, {}), (result.ok, result.usage, row), result.error)
+                self.assertEqual((None, 1, {"codex": 1}),
+                                 (document["total"], document["unmeasured_rows"],
+                                  document["unmeasured_by_host"]))
+        for usage, tokens in (({"input_tokens": 7}, 7), ({"output_tokens": 7}, 7),
+                              ({"input_tokens": 0}, 0), ({"output_tokens": 0}, 0),
+                              ({"cached_input_tokens": 0}, 0),
+                              ({"input_tokens": 9, "cached_input_tokens": 2}, 9),
+                              ({"output_tokens": 3, "total_tokens": 500}, 3)):
+            with self.subTest(usage=usage):
+                result = self._codex_result(usage)
+                row, document = self._recorded("codex", result)
+                self.assertEqual((True, tokens, 4), (result.ok, sum(row.values()), len(row)))
+                self.assertEqual((tokens, 0), (document["total"], document["unmeasured_rows"]))
+        # A turn that measured nothing adds nothing to one that did, either way round.
+        for usages in (({"total_tokens": 500}, {"output_tokens": 5}),
+                       ({"output_tokens": 5}, {"total_tokens": 500})):
+            self.assertEqual(5, sum(self._codex_result(*usages).usage.values()))
+        # A counter that is present and is not a count is still a broken envelope.
+        for usage in ({"cached_input_tokens": 7}, {"input_tokens": None}, {"output_tokens": "5"}):
+            self.assertEqual((False, {}), (self._codex_result(usage).ok,
+                                           self._codex_result(usage).usage), usage)
+
+    def test_a_launch_with_no_host_is_counted_under_unknown(self):
+        """Five gates at 908f005e, item 3. The bucket is the word `unknown`, and a host
+        that is absent, null, empty or not a string all land in it, beside a real one."""
+        ledger = self._ledger()
+        hosts = ("kimi", None, "", 7, ["kimi"], {"host": "kimi"}, True)
+        with open(ledger.path, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"phase": "review", "usage": {}}) + "\n")      # absent
+            for host in hosts:
+                fh.write(json.dumps({"phase": "review", "host": host, "usage": {}}) + "\n")
+        doc = ledger.usage_document()
+        self.assertEqual({"kimi": 1, "unknown": len(hosts)}, doc["unmeasured_by_host"])
+        self.assertEqual("unknown", ledger_mod.UNKNOWN_HOST)
+        self.assertEqual(len(hosts) + 1, doc["unmeasured_rows"])
+
+    def test_rows_no_writer_of_ours_made(self):
+        """A row with no host is counted under `unknown`. One whose usage is not an
+        object, or holds none of the four fields, is unmeasured, not a crash."""
+        ledger = self._ledger()
+        with open(ledger.path, "w", encoding="utf-8") as fh:
+            for row in ({"phase": "review", "usage": {}},
+                        {"phase": "review", "host": 7, "usage": "many"},
+                        {"phase": "review", "host": "agy", "usage": {"other": 3}},
+                        {"phase": "review", "host": "agy",
+                         "usage": {"input_tokens": None, "output_tokens": None}},
+                        {"host": "agy"},
+                        {"phase": "review", "host": "agy", "usage": {"output_tokens": 2}}):
+                fh.write(json.dumps(row) + "\n")
+        doc = ledger.usage_document()
+        self.assertEqual((2, True, 5), (doc["total"], doc["total_is_lower_bound"],
+                                        doc["unmeasured_rows"]))
+        self.assertEqual({ledger_mod.UNKNOWN_HOST: 2, "agy": 3}, doc["unmeasured_by_host"])
+        self.assertEqual({"review": 4, "unattributed": 1}, doc["unmeasured_by_phase"])
+        self.assertEqual({"scout": 0, "review": 2, "verify": 0, "unattributed": None},
+                         doc["by_phase"])
+
+    def test_the_document_says_what_its_figures_leave_out(self):
+        doc = self._ledger().usage_document()
+        self.assertTrue(doc["definition"].endswith(
+            "; a launch whose usage was not measured is in unmeasured_rows and in no "
+            "figure, and a figure with nothing measured behind it is null"), doc["definition"])
 
 
 class TestCancelledRows(LoopCase):

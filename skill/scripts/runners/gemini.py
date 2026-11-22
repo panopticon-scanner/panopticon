@@ -118,6 +118,33 @@ def _safe_int(value):
         return 0
 
 
+#: The fields that feed the four counters the ledger sums (`collect_usage.USAGE_FIELDS`):
+#: in an envelope's `usage` object, and in one model's `tokens` object under
+#: `stats.models`. A launch is measured when one of them is reported as a number (#3764).
+#: A total, or a thinking count, alone is not one: nothing the ledger sums comes from it
+#: (a model's `thoughts` are part of this family's `output_tokens`, so they are one).
+_USAGE_COUNTERS = ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                   "cache_read_tokens", "cache_creation_input_tokens", "cache_write_tokens")
+_MODEL_COUNTERS = ("input", "prompt", "candidates", "cached", "thoughts")
+
+
+def _reports_a_count(record, names):
+    """Whether `record` holds a number under any of `names`. `_safe_int` reads a null,
+    a boolean and anything that is not a number as 0, which is right for one counter
+    beside others that were reported and wrong for a record that reports none: usage
+    nobody measured must not reach the ledger as four zeros (#3764)."""
+    for name in names:
+        value = record.get(name)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            int(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        return True
+    return False
+
+
 def _extract_usage_and_model(doc):
     """Extract usage telemetry and actual model slug from structured JSON fields only.
 
@@ -144,7 +171,7 @@ def _extract_usage_and_model(doc):
     usage = {}
     model = doc.get("model") if isinstance(doc.get("model"), str) and doc.get("model") else None
     raw_usage = doc.get("usage")
-    if isinstance(raw_usage, dict):
+    if isinstance(raw_usage, dict) and _reports_a_count(raw_usage, _USAGE_COUNTERS):
         inp = _safe_int(raw_usage.get("input_tokens"))
         out = _safe_int(raw_usage.get("output_tokens"))
         cache_read = (_safe_int(raw_usage.get("cache_read_input_tokens"))
@@ -169,6 +196,7 @@ def _extract_usage_and_model(doc):
     model_map: dict[str, object] = {}
     if isinstance(models, dict) and models:
         inp = out = cache_read = thinking = total = 0
+        counted = False
         for slug, mdata in models.items():
             if isinstance(slug, str) and slug:
                 model_map[slug] = mdata
@@ -176,6 +204,7 @@ def _extract_usage_and_model(doc):
                     model = slug
             tok = mdata.get("tokens") if isinstance(mdata, dict) else None
             if isinstance(tok, dict):
+                counted = counted or _reports_a_count(tok, _MODEL_COUNTERS)
                 m_cached = _safe_int(tok.get("cached"))
                 if "input" in tok and tok.get("input") is not None:
                     m_inp = _safe_int(tok.get("input"))
@@ -188,7 +217,7 @@ def _extract_usage_and_model(doc):
                 cache_read += m_cached
                 thinking += m_thoughts
                 total += _safe_int(tok.get("total"))
-        if not usage:
+        if not usage and counted:
             usage = {
                 "input_tokens": inp,
                 "output_tokens": out,
@@ -474,19 +503,19 @@ class Runner(base.HostRunner):
     def run_entry(self, entry, env):
         entry_id = entry.get("id")
         if self.gemini_home is None:
-            return base.RunResult.failed(
+            return base.RunResult.refused(
                 entry_id, "the gemini runner was not prepared before run_entry")
         if entry.get("enforced"):
             if base.registered_agent(entry, roles=self.roles) is None:
                 return base.refuse_unregistered_agent(entry, roles=self.roles)
             shell = self._shell_path(entry)
             if shell is None or not os.path.isfile(shell):
-                return base.RunResult.failed(
+                return base.RunResult.refused(
                     entry_id, "enforcement shell not registered for %r "
                     "(run dispatch.py --emit-host-agents gemini)" % entry.get("agent"))
         eff_model = entry.get("model")
         if eff_model is not None and eff_model not in KNOWN_MODELS:
-            return base.RunResult.failed(
+            return base.RunResult.refused(
                 entry_id, "entry model %r is not in gemini's known model catalogue"
                 % eff_model)
         launcher = (DEFAULT_RUNNER
@@ -501,7 +530,7 @@ class Runner(base.HostRunner):
             child_env = self.launch_env(env)
             hazard = gemini_home.auth_hazard(env=child_env, real_user_home=self.user_home)
             if hazard:
-                return base.RunResult.failed(
+                return base.RunResult.refused(
                     entry_id, hazard, host_error=hazard,
                     failure_class=outage.HOST_FAILURE)
             child_env[gemini_guard_hook.ENV_DENIAL_LOG] = denial_log

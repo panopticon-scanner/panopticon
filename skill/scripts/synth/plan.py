@@ -6,7 +6,6 @@ reached the 700-line ceiling (#1701).
 """
 from typing import Any
 from dataclasses import dataclass, field
-import glob
 import os
 import sys
 
@@ -16,6 +15,7 @@ import scripts.group_runner as group_runner
 import scripts.inert as inert
 import scripts.ingest_tools as ingest_tools
 import scripts.plan_contract as plan_contract
+import scripts.safe_glob as safe_glob
 import scripts.score_gate as score_gate
 from . import artifacts as artifacts_mod
 from . import backups as backups_mod
@@ -250,7 +250,7 @@ def load_dispatch_plans_detailed(panopticon_dir):
     retired with the roles it keyed on."""
     plans = []
     invalid = []
-    paths = sorted(glob.glob(os.path.join(panopticon_dir, DISPATCH_PLAN_GLOB)))
+    paths = sorted(safe_glob.under(panopticon_dir, DISPATCH_PLAN_GLOB))
     for path in paths:
         try:
             plan = artifacts_mod.read_json(path)
@@ -285,7 +285,7 @@ def load_dispatch_plans(panopticon_dir):
     """Load every per-group dispatch plan file as a list of per-file plan
     lists. Tolerant: unreadable/malformed plan files are skipped."""
     plans = []
-    for path in sorted(glob.glob(os.path.join(panopticon_dir, DISPATCH_PLAN_GLOB))):
+    for path in sorted(safe_glob.under(panopticon_dir, DISPATCH_PLAN_GLOB)):
         try:
             plan = artifacts_mod.read_json(path, announce=True)
         except (OSError, ValueError):
@@ -481,7 +481,7 @@ def load_scout_requests(run_dir):
     profile count is recorded separately and the decline is announced."""
     requested: set[str] = set()
     profiles_seen = 0
-    for sp in glob.glob(os.path.join(run_dir, "scout-*.json")):
+    for sp in safe_glob.under(run_dir, "scout-*.json"):
         try:
             sd = artifacts_mod.read_json(sp, tolerant=True, announce=True)
         except (OSError, ValueError):  # tolerant by design: never abort a run

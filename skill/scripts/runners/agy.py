@@ -227,11 +227,37 @@ def _safe_int(value):
         return 0
 
 
+#: The fields that feed the four counters the ledger sums (`collect_usage.USAGE_FIELDS`):
+#: in an envelope's `usage` object, and in one model's `tokens` object under
+#: `stats.models`. A launch is measured when one of them is reported as a number (#3764).
+#: A total, or a thinking count, alone is not one: nothing the ledger sums comes from it.
+_USAGE_COUNTERS = ("input_tokens", "output_tokens", "cache_read_input_tokens",
+                   "cache_read_tokens", "cache_creation_input_tokens", "cache_write_tokens")
+_MODEL_COUNTERS = ("input", "candidates", "cached")
+
+
+def _reports_a_count(record, names):
+    """Whether `record` holds a number under any of `names`. `_safe_int` reads a null,
+    a boolean and anything that is not a number as 0, which is right for one counter
+    beside others that were reported and wrong for a record that reports none: usage
+    nobody measured must not reach the ledger as four zeros (#3764)."""
+    for name in names:
+        value = record.get(name)
+        if value is None or isinstance(value, bool):
+            continue
+        try:
+            int(value)
+        except (TypeError, ValueError, OverflowError):
+            continue
+        return True
+    return False
+
+
 def _extract_usage_and_model(doc):
     usage = {}
     model = doc.get("model") if isinstance(doc.get("model"), str) else None
     raw_usage = doc.get("usage")
-    if isinstance(raw_usage, dict):
+    if isinstance(raw_usage, dict) and _reports_a_count(raw_usage, _USAGE_COUNTERS):
         inp = _safe_int(raw_usage.get("input_tokens"))
         out = _safe_int(raw_usage.get("output_tokens"))
         cache_read = (_safe_int(raw_usage.get("cache_read_input_tokens"))
@@ -255,17 +281,19 @@ def _extract_usage_and_model(doc):
     models = stats.get("models") if isinstance(stats, dict) else None
     if isinstance(models, dict) and models:
         inp = out = cache_read = thinking = total = 0
+        counted = False
         for slug, mdata in models.items():
             if model is None and isinstance(slug, str) and slug:
                 model = slug
             tok = mdata.get("tokens") if isinstance(mdata, dict) else None
             if isinstance(tok, dict):
+                counted = counted or _reports_a_count(tok, _MODEL_COUNTERS)
                 inp += _safe_int(tok.get("input"))
                 out += _safe_int(tok.get("candidates"))
                 cache_read += _safe_int(tok.get("cached"))
                 thinking += _safe_int(tok.get("thoughts"))
                 total += _safe_int(tok.get("total"))
-        if not usage:
+        if not usage and counted:
             usage = {
                 "input_tokens": inp,
                 "output_tokens": out,
@@ -602,25 +630,25 @@ class Runner(base.HostRunner):
     def run_entry(self, entry, env):
         entry_id = entry.get("id")
         if self.agy_home is None:
-            return base.RunResult.failed(
+            return base.RunResult.refused(
                 entry_id, "the agy runner was not prepared before run_entry")
         if entry.get("enforced"):
             if base.registered_agent(entry, roles=self.roles) is None:
                 return base.refuse_unregistered_agent(entry, roles=self.roles)
             shell = self._shell_path(entry)
             if shell is None or not os.path.isfile(shell):
-                return base.RunResult.failed(
+                return base.RunResult.refused(
                     entry_id, "enforcement shell not registered for %r "
                     "(run dispatch.py --emit-host-agents agy)" % entry.get("agent"))
         eff_model = entry.get("model")
         if eff_model is not None and eff_model not in KNOWN_MODELS:
-            return base.RunResult.failed(
+            return base.RunResult.refused(
                 entry_id, "entry model %r is not in agy's known model catalogue"
                 % eff_model)
         try:
             effort_argv(entry.get("effort"), eff_model)
         except ValueError as exc:
-            return base.RunResult.failed(entry_id, redact.redact(str(exc)))
+            return base.RunResult.refused(entry_id, redact.redact(str(exc)))
         launch_entry, launch_model, bound_model, substitution = entry, eff_model, None, None
         if self.auth_route == "key":
             # #3627 review 1: belt and braces -- a strict run walks no ladder even if an
@@ -632,8 +660,8 @@ class Runner(base.HostRunner):
                     explicit=bool(entry.get("model_override")),
                     ladder=(ladders.get("key") if isinstance(ladders, dict) else None) or ())
             except ValueError as exc:
-                return base.RunResult.failed(entry_id, str(exc), host_error=str(exc),
-                                             failure_class=outage.HOST_FAILURE)
+                return base.RunResult.refused(entry_id, str(exc), host_error=str(exc),
+                                              failure_class=outage.HOST_FAILURE)
             launch_entry = {k: v for k, v in entry.items() if k != "effort"}
             launch_model = bound_model
             if substitution is not None:

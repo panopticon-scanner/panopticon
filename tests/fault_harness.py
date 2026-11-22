@@ -333,8 +333,10 @@ class NoEcho(FixtureReplies):
         return self.echo if entry.get("targeted_review") else None
 
 
-def build_target(test_case):
-    root = os.path.realpath(tempfile.mkdtemp())
+def build_target(test_case, suffix=""):
+    """A fresh fixture target. `suffix` ends the directory's own name, for a target whose
+    path holds characters a pattern would read as wildcards (#3701)."""
+    root = os.path.realpath(tempfile.mkdtemp(suffix=suffix))
     test_case.addCleanup(lambda: shutil.rmtree(root, ignore_errors=True))
     for relative, body in FILES.items():
         path = os.path.join(root, relative)
@@ -569,14 +571,15 @@ def _run_folder_bytes(root):
 
 
 def drive(test_case, plan=None, recover=False, split_bytes=None, replies=None, unparsed=(),
-          limited_resumes=0):
+          limited_resumes=0, suffix=""):
     """One case: a fresh target, reviewed under `plan` until the loop stops for a reason other
     than a pause (or `MAX_INVOCATIONS` pauses). With `recover`, the host then heals and the
     loop is run again, as an operator would after an outage. `replies` is what the agents
     say, when it is not the fixture's usual answers. `unparsed` are the files Semgrep
     reports it could not parse. `limited_resumes` is how many times the operator resumes
-    while the host still rate-limits the capability probe, before it heals (#3646)."""
-    root = build_target(test_case)
+    while the host still rate-limits the capability probe, before it heals (#3646).
+    `suffix` is `build_target`'s."""
+    root = build_target(test_case, suffix)
     replies = replies or FixtureReplies()
     runner = FakeRunner(faults=plan, replies=replies)
     statuses, terminal = [], []
