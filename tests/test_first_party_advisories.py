@@ -1626,6 +1626,32 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
         self.assertEqual("first_party", self._origin((PY_MEMBER[0], "1.2.0rc1")))
         self.assertIsNone(self._origin((PY_MEMBER[0], "1.2.0-rc1")))
 
+    def test_a_twin_is_found_across_spellings_of_the_name_too(self):
+        # #3776 N-A (from #3686's round-2 review): the twin is looked up by the
+        # NORMALISED name (PEP 503) and the PEP 440 key. Keyed by the name as the lock
+        # spells it, a registry `Acme_Lib 1.0.0` beside the local `acme-lib 1.0` was not
+        # the same release, and the local one was confirmed.
+        for local_name, local_version, registry_name, registry_version, expected in (
+                ("lib-x", "1.0", "Lib_X", "1.0.0", None),
+                ("lib-x", "1.0", "LIB.X", "1.0", None),
+                ("lib-x", "1.0", "lib--x", "v1.0", None),
+                ("lib-x", "1.0", "lib_x", "1.0", None),
+                ("Lib_X", "1.0", "lib-x", "1.0.0", None),
+                # Another name, or another release, is not a twin.
+                ("lib-x", "1.0", "lib-y", "1.0.0", "first_party"),
+                ("lib-x", "1.0", "libx", "1.0.0", "first_party"),
+                ("lib-x", "1.0", "Lib_X", "1.0.1", "first_party")):
+            with self.subTest(local=(local_name, local_version),
+                              registry=(registry_name, registry_version)):
+                entry = _uv_entry(local_name, local_version, '{ editable = "packages/lib" }')
+                _py_tree(self.root, member=_pyproject(local_name, local_version),
+                         lock=_uv_lock(member=None, extra=entry + _uv_entry(
+                             registry_name, registry_version, _UV_REGISTRY)))
+                self.assertEqual(expected, self._origin(
+                    (first_party_advisory._pep503(local_name), local_version)))
+                # The rest of the lock is read as before.
+                self.assertEqual("first_party", self._origin(PY_ROOT))
+
     def test_a_version_past_the_int_digit_limit_fails_closed_for_its_identity_only(self):
         # #3686 review N1: int() refuses more than 4300 digits. Such a version keys as
         # its own text, so the lock still parses and only that identity is affected.
@@ -1636,6 +1662,52 @@ class TestPythonFirstPartyAdvisory(unittest.TestCase):
         self.assertEqual("first_party", self._origin(PY_MEMBER))
         self.assertEqual("first_party", self._origin(PY_ROOT))
         self.assertIsNone(self._origin(("other", huge)))
+
+    def test_a_local_version_past_the_int_digit_limit_is_unknown(self):
+        # #3776 N-B. Such a version keys as its own text, so a twin spelled differently
+        # (`<huge>` and `<huge>.0` are one release) is never found. An identity whose
+        # twins cannot be looked for is not confirmed: it stays with the advisor.
+        huge = "1." + "9" * 5000
+        entry = _uv_entry(PY_MEMBER[0], huge, '{ editable = "packages/lib" }')
+        for label, extra in (
+                ("alone", entry),
+                ("beside its twin", entry + _uv_entry(PY_MEMBER[0], huge + ".0", _UV_REGISTRY)),
+                ("an epoch past the limit",
+                 _uv_entry(PY_MEMBER[0], "9" * 5000 + "!1.0", '{ editable = "packages/lib" }')),
+                ("spelled with a v and padding",
+                 _uv_entry(PY_MEMBER[0], " V" + huge + " ", '{ editable = "packages/lib" }'))):
+            with self.subTest(case=label):
+                version = {"an epoch past the limit": "9" * 5000 + "!1.0",
+                           "spelled with a v and padding": " V" + huge + " "}.get(label, huge)
+                _py_tree(self.root, member=_pyproject(PY_MEMBER[0], version),
+                         lock=_uv_lock(member=None, extra=extra))
+                self.assertIsNone(self._origin((PY_MEMBER[0], version)))
+                # Only that identity: the root, read from the same lock, is confirmed.
+                self.assertEqual("first_party", self._origin(PY_ROOT))
+        # The control: 4300 digits is within the limit, parses, and is confirmed alone
+        # and ambiguous beside its twin.
+        fits = "1." + "9" * 4300
+        entry = _uv_entry(PY_MEMBER[0], fits, '{ editable = "packages/lib" }')
+        _py_tree(self.root, member=_pyproject(PY_MEMBER[0], fits),
+                 lock=_uv_lock(member=None, extra=entry))
+        self.assertEqual("first_party", self._origin((PY_MEMBER[0], fits)))
+        _py_tree(self.root, member=_pyproject(PY_MEMBER[0], fits),
+                 lock=_uv_lock(member=None, extra=entry + _uv_entry(
+                     PY_MEMBER[0], fits + ".0", _UV_REGISTRY)))
+        self.assertIsNone(self._origin((PY_MEMBER[0], fits)))
+        # A version that is simply not PEP 440 is not this case: it keys as its text,
+        # as before, and an exact match is still confirmed.
+        odd = "not-a-version"
+        _py_tree(self.root, member=_pyproject(PY_MEMBER[0], odd),
+                 lock=_uv_lock(member=None, extra=_uv_entry(
+                     PY_MEMBER[0], odd, '{ editable = "packages/lib" }')))
+        self.assertEqual("first_party", self._origin((PY_MEMBER[0], odd)))
+        keyed = first_party_advisory._pep440_keyed
+        self.assertEqual((huge, True), keyed(" %s " % huge))
+        self.assertEqual(("v" + huge, True), keyed(" V%s " % huge))
+        self.assertEqual(("not-a-version", False), keyed(" Not-A-Version "))
+        self.assertIs(False, keyed("1.0")[1])
+        self.assertEqual(keyed("1.0")[0], first_party_advisory._pep440_key("1.0.0"))
 
     def test_the_pep_440_key_agrees_only_on_equal_releases(self):
         key = first_party_advisory._pep440_key
