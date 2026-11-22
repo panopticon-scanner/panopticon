@@ -379,10 +379,12 @@ class TestTrivySecretClass(unittest.TestCase):
         finding["tool_evidence"]["kind"] = "credential"
         self.assertFalse(ingest.secret_class(finding))
 
-    def test_a_captured_trivy_vulnerability_is_unchanged(self):
+    def test_a_captured_trivy_vulnerability_carries_its_own_class(self):
+        # #3765: the rule's exact `vulnerability` tag, as `secret` is carried above.
         finding = first(ADAPTERS["trivy"].parse(_golden("trivy"), "g1"),
                         "captured Trivy vulnerability")
-        self.assertEqual(finding["tool_evidence"], {"rule_id": "CVE-2021-23337"})
+        self.assertEqual(finding["tool_evidence"],
+                         {"rule_id": "CVE-2021-23337", "kind": "vulnerability"})
         self.assertEqual(finding["citations"]["cve"], ["CVE-2021-23337"])
         self.assertFalse(ingest.secret_class(finding))
 

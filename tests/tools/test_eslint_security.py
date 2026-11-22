@@ -251,11 +251,12 @@ class TestEslintSecurityAdapter(unittest.TestCase):
         findings = es.EslintSecurityAdapter().parse(json.dumps([]).encode(), "g1")
         self.assertEqual(len(findings), 0)
 
-    def test_strip_prefix_removes_src_and_leading_slash(self):
+    def test_strip_prefix_removes_the_mount_and_keeps_an_outside_path_outside(self):
         adapter = es.EslintSecurityAdapter()
         self.assertEqual(adapter._strip_prefix("/src/app.js"), "app.js")
         self.assertEqual(adapter._strip_prefix("src/app.js"), "src/app.js")
-        self.assertEqual(adapter._strip_prefix("/app.js"), "app.js")
+        # #3765: `/app.js` is outside the mount, not the tree's own `app.js`.
+        self.assertEqual(adapter._strip_prefix("/app.js"), "/app.js")
         self.assertEqual(adapter._strip_prefix("app.js"), "app.js")
 
     def test_is_applicable_detects_js_files(self):
