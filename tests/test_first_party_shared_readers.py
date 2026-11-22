@@ -796,14 +796,14 @@ class TestAPathOutsideTheScanMount(_Case):
                 findings = _ingest(root, "trivy.sarif", _trivy(
                     CARGO, "Cargo.lock", base_id="", bases={"": {"uri": base}}))
                 (self.assert_first_party if inside else self.assert_advisor_path)(findings)
-        self.assertEqual("/unresolved-uri-base//a.py", sarif_utils.artifact_uri(
+        self.assertEqual("/unresolved-uri-base./a.py", sarif_utils.artifact_uri(
             {"uri": "a.py", "uriBaseId": ""}, {"originalUriBaseIds": {"": {"uri": "file:///etc/"}}}))
 
     def test_the_legacy_located_paths_resolve_the_base_too(self):
         import scripts.tools.legacy_sarif as legacy_sarif
         document = _trivy(CARGO, "Cargo.lock", base_id="ROOTPATH",
                           bases={"ROOTPATH": {"uri": "file:///etc/"}})
-        self.assertEqual({"/unresolved-uri-base/ROOTPATH/Cargo.lock"},
+        self.assertEqual({"/unresolved-uri-base.ROOTPATH/Cargo.lock"},
                          legacy_sarif._result_paths(document))
         document = _trivy(CARGO, "a/b.py", base_id="ROOTPATH",
                           bases={"ROOTPATH": {"uri": "file:///src/"}})
@@ -836,11 +836,11 @@ class TestAPathOutsideTheScanMount(_Case):
                 ({"uri": "a/b.py"}, "a/b.py"),
                 ({"uri": "a/b.py", "uriBaseId": "ROOTPATH"}, "a/b.py"),
                 ({"uri": "a/b.py", "uriBaseId": "ELSEWHERE"},
-                 "/unresolved-uri-base/ELSEWHERE/a/b.py"),
-                ({"uri": "a/b.py", "uriBaseId": "NOSLASH"}, "/unresolved-uri-base/NOSLASH/a/b.py"),
-                ({"uri": "a.py", "uriBaseId": ""}, "/unresolved-uri-base//a.py"),
+                 "/unresolved-uri-base.ELSEWHERE/a/b.py"),
+                ({"uri": "a/b.py", "uriBaseId": "NOSLASH"}, "/unresolved-uri-base.NOSLASH/a/b.py"),
+                ({"uri": "a.py", "uriBaseId": ""}, "/unresolved-uri-base./a.py"),
                 # A numeric id is not the key "7".
-                ({"uri": "a.py", "uriBaseId": 7}, "/unresolved-uri-base/7/a.py"),
+                ({"uri": "a.py", "uriBaseId": 7}, "/unresolved-uri-base.7/a.py"),
                 ({"uri": "/src/a.py", "uriBaseId": "%SRCROOT%"}, "/src/a.py"),
                 ({"uri": "/src/a.py", "uriBaseId": "ELSEWHERE"}, "/src/a.py"),
                 ({"uri": "file:///src/a.py", "uriBaseId": "ELSEWHERE"}, "file:///src/a.py"),
@@ -857,8 +857,45 @@ class TestAPathOutsideTheScanMount(_Case):
         # A table that is there but is not an object defines every id, unreadably.
         for bad in ([], "", False, 0, ["X"], "X", 7):
             with self.subTest(table=bad):
-                self.assertEqual("/unresolved-uri-base/X/a.py", resolve(
+                self.assertEqual("/unresolved-uri-base.X/a.py", resolve(
                     {"uri": "a.py", "uriBaseId": "X"}, {"originalUriBaseIds": bad}))
+
+    def test_a_base_id_cannot_spell_a_directory_a_suppression_knows(self):
+        # Seat r3 item 1: the id is the scanner's text. Written as its own path
+        # segments, `tests/fixtures` or `vendor` made the outside path a fixture or a
+        # vendored one, and a HIGH was suppressed: PASS, certified, no finding.
+        root = _tree(self, "Cargo.lock")
+        ids = ("tests/fixtures", "x/testdata/y", "node_modules/a", "vendor/x", "__pycache__/x",
+               "vendor", "node_modules", "testdata", "tests", "fixtures", "__pycache__", "..",
+               "", ".", "a/../b", "/vendor/", "vendor/", "/", "a b", "a\nb", "ROOTPATH",
+               "%SRCROOT%", "tests\\fixtures", "caf" + chr(0xe9), 7)
+        for base_id in ids:
+            with self.subTest(id=base_id):
+                document = _trivy(CARGO, "Cargo.lock", base_id=base_id, severity="8.1",
+                                  tags=("vulnerability", "security", "HIGH"),
+                                  bases={str(base_id) if base_id == 7 else base_id:
+                                         {"uri": "file:///etc/"}} if base_id != 7 else [])
+                findings = _ingest(root, "trivy.sarif", document)
+                self.assertEqual(1, len(findings))
+                self.assert_advisor_path(findings)
+                self.assertEqual(("INCONCLUSIVE", ["tool_reported"]), _verdict(findings))
+                path = findings[0]["location"]["file"]
+                parts = path.split("/")
+                # One fixed-prefix segment holds the id; the uri follows, and nothing else.
+                self.assertEqual(["", parts[1], "Cargo.lock"], parts)
+                self.assertTrue(parts[1].startswith("unresolved-uri-base."))
+                self.assertRegex(parts[1], r"\Aunresolved-uri-base\.[A-Za-z0-9._-]*\Z")
+                self.assertEqual(path, sarif_utils.norm_uri(path))
+        # Distinct ids stay distinct where their characters allow.
+        resolve = sarif_utils.artifact_uri
+        table = {"A": {"uri": "file:///etc/"}, "B": {"uri": "file:///etc/"}}
+        self.assertEqual("/unresolved-uri-base.A/x", resolve(
+            {"uri": "x", "uriBaseId": "A"}, {"originalUriBaseIds": table}))
+        self.assertEqual("/unresolved-uri-base.B/x", resolve(
+            {"uri": "x", "uriBaseId": "B"}, {"originalUriBaseIds": table}))
+        self.assertEqual("/unresolved-uri-base.tests_fixtures/x", resolve(
+            {"uri": "x", "uriBaseId": "tests/fixtures"},
+            {"originalUriBaseIds": {"tests/fixtures": {"uri": "file:///etc/"}}}))
 
     def test_only_the_scan_mount_itself_is_an_inside_base(self):
         inside = sarif_utils.is_scan_mount
@@ -878,6 +915,8 @@ class TestAPathOutsideTheScanMount(_Case):
                      "file:///src/%2e%2e/", "file:///%73rc/", "/src%2f",
                      # Control characters and padding, which a URL parser strips.
                      "file:///src/a\n/", "file:///src/\n", "\tfile:///src/", " file:///src/",
+                     "\x01file:///src/", "\x01/src/", "\x1ffile:///src/", "file:///SRC/",
+                     "/SRC/", "/Src/",
                      "file:///src/ ", "fi\tle:///src/", "/s\nrc/", "/src/\x00", "/src/\x7f",
                      "/src/\u202e", "file:///src/../src/", "/src/./",
                      None, 7, b"/src/", ["/src/"], {"uri": "/src/"}):
@@ -896,6 +935,7 @@ class TestAPathOutsideTheScanMount(_Case):
         _write_manifest(root)
         nested = ("sub", "?other", "#shadow", "file:", "urn:outside", "C:", "%2e%2e",
                   "a\\x0a", "a#b", "a?b", "a%20b", "x:y", "a\\b", "a\\x1b[31m", "etc",
+                  "xU+D800", "xU+DCE9",
                   "outside", os.path.join("file:", "outside"), os.path.join("C:", "outside"))
         for name in nested:
             os.makedirs(os.path.join(root, name), exist_ok=True)
@@ -926,6 +966,8 @@ class TestAPathOutsideTheScanMount(_Case):
             ("Cargo.lock", at("file:///src/%2e%2e/"), False),
             ("Cargo.lock", at("file:///src/a\n/"), False),
             ("Cargo.lock", at("file:///src/\n"), False), ("Cargo.lock", at(" file:///src/"), False),
+            ("Cargo.lock", at("\x01file:///src/"), False), ("Cargo.lock", at("\x01/src/"), False),
+            ("Cargo.lock", at("file:///SRC/"), False), ("Cargo.lock", at("/SRC/"), False),
             ("Cargo.lock", at("//src/"), False), ("Cargo.lock", at("file:////src/"), False),
             ("Cargo.lock", at("file://host/src/"), False), ("Cargo.lock", at("src/"), False),
             ("Cargo.lock", at(""), False), ("Cargo.lock", at(None), False),
@@ -941,6 +983,10 @@ class TestAPathOutsideTheScanMount(_Case):
             ("a\n/Cargo.lock", mount, False), ("a\x1b[31m/Cargo.lock", mount, False),
             ("a\\b/Cargo.lock", mount, False), ("a\\x0a/Cargo.lock", mount, False),
             ("Cargo.lock?x", mount, False), ("Cargo.lock#x", mount, False),
+            # A lone surrogate is shown as U+XXXX, with no backslash (seat r3 item 2).
+            ("x" + chr(0xd800) + "/Cargo.lock", mount, False),
+            ("x" + chr(0xd800) + "/Cargo.lock", _NO_BASES, False),
+            ("/src/x" + chr(0xdce9) + "/Cargo.lock", _NO_BASES, False),
             ("../src/Cargo.lock", _NO_BASES, False), ("sub/../Cargo.lock", _NO_BASES, False),
             ("?other/Cargo.lock", _NO_BASES, False), ("#shadow/Cargo.lock", _NO_BASES, False),
             ("%2e%2e/Cargo.lock", _NO_BASES, False), ("a%20b/Cargo.lock", _NO_BASES, False),
@@ -973,8 +1019,11 @@ class TestAPathOutsideTheScanMount(_Case):
         root = os.path.realpath(d.name)
         cut = chr(0x2026)                       # inert_text's mark for a cut value
         plain = ("sub", os.path.join("sub", "x:y"), "a b", "a+b", "a@b", "caf" + chr(0xe9),
+                 # Not the surrogate spelling: too few digits, lower case, no plus.
+                 "U+D80", "u+d800", "UD800", "U+",
                  "a.b", "~a", "a=b&c", "[a]")
-        refused = ("x:y", "C:", "a%20b", "%2e%2e", "a?b", "a#b", "a\\b", "a\\x0a",
+        refused = ("xU+D800", "U+DCE9", "aU+DFFFb",
+                   "x:y", "C:", "a%20b", "%2e%2e", "a?b", "a#b", "a\\b", "a\\x0a",
                    "a\nb", "a\tb", "a\x1fb", "a\x01b", "a\x7fb", "a" + cut,
                    os.path.join("sub", "a%b"), os.path.join("sub", "a" + cut))
         for name in plain + refused:
@@ -1022,6 +1071,10 @@ class TestAPathOutsideTheScanMount(_Case):
                     "artifactLocation"] = artifact
                 self.assertEqual(set(), legacy_sarif._result_paths(document))
         self.assertEqual({"a.py"}, legacy_sarif._result_paths(_trivy(CARGO, "a.py")))
+        # Seat r3 item 3: nor is an empty path, however it is spelled.
+        for uri in ("", "/", "file:///", "/src/", "file:///src/", "///"):
+            with self.subTest(empty=uri):
+                self.assertEqual(set(), legacy_sarif._result_paths(_trivy(CARGO, uri)))
 
     def test_repo_path_passes_a_non_string_through(self):
         for value in (None, 7, ["a"], {"a": 1}, b"/src/a"):
