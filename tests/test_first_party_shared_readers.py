@@ -865,6 +865,8 @@ class TestAPathOutsideTheScanMount(_Case):
                      "file:///src/sub/", "file:///", "/", "", "src/", "./src/", "file:src/",
                      "file://localhost/src/", "file://host/src/", "https://x/src/",
                      "http:///src/", "urn:/src/", "C:/src/",
+                     # What the parser itself refuses.
+                     "file://[::1/src/", "//[/src/",
                      # A query or a fragment, even an empty one.
                      "file:///src/?other/", "file:///src/#shadow/", "file:///src/?", "/src/#",
                      "file:///src/#/tests/fixtures/",
@@ -958,6 +960,38 @@ class TestAPathOutsideTheScanMount(_Case):
                 findings = _ingest(root, "trivy.sarif", _trivy(
                     CARGO, uri, base_id=None if bases is _NO_BASES else "ROOTPATH", bases=bases))
                 (self.assert_first_party if inside else self.assert_advisor_path)(findings)
+
+    def test_the_marker_matches_only_a_plain_relative_location(self):
+        # Asked of the location itself, whichever adapter wrote it, with each
+        # directory really on disk and holding a lock.
+        d = tempfile.TemporaryDirectory()
+        self.addCleanup(d.cleanup)
+        root = os.path.realpath(d.name)
+        cut = chr(0x2026)                       # inert_text's mark for a cut value
+        plain = ("sub", os.path.join("sub", "x:y"), "a b", "a+b", "a@b", "caf" + chr(0xe9),
+                 "a.b", "~a", "a=b&c", "[a]")
+        refused = ("x:y", "C:", "a%20b", "%2e%2e", "a?b", "a#b", "a\\b", "a\\x0a",
+                   "a\nb", "a\tb", "a\x1fb", "a\x01b", "a\x7fb", "a" + cut,
+                   os.path.join("sub", "a%b"), os.path.join("sub", "a" + cut))
+        for name in plain + refused:
+            os.makedirs(os.path.join(root, name), exist_ok=True)
+            _write_lock(os.path.join(root, name))
+
+        def lock_path(rel):
+            return first_party_advisory._lock_path(
+                root, {"location": {"file": rel}}, ("Cargo.lock",))
+        for name in plain:
+            with self.subTest(plain=name):
+                rel = name.replace(os.sep, "/") + "/Cargo.lock"
+                self.assertEqual(os.path.join(root, name, "Cargo.lock"), lock_path(rel))
+                self.assertEqual(os.path.join(root, name, "Cargo.lock"), lock_path("./" + rel))
+        for name in refused:
+            with self.subTest(refused=name):
+                self.assertIsNone(lock_path(name.replace(os.sep, "/") + "/Cargo.lock"))
+        for rel in ("file:Cargo.lock", "file:/Cargo.lock", "urn:x/Cargo.lock",
+                    "sub/../sub/Cargo.lock", "/Cargo.lock", "", "sub//Cargo.lock"):
+            with self.subTest(refused=rel):
+                self.assertIsNone(lock_path(rel))
 
     def test_an_osv_source_path_must_be_plain_too(self):
         d = tempfile.TemporaryDirectory()

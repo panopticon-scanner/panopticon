@@ -155,18 +155,18 @@ def is_scan_mount(base):
     hand-written join read differently from a real one (a query, a fragment, a scheme
     with no ``//``, a percent-escape, a control character). The runner scans one
     mount, so one base is inside and every other is outside. The standard library
-    parses it; the base must have the scheme ``file`` or none, no authority, no query
-    and no fragment, and a path that is exactly the mount with its trailing slash.
-    A ``%``, ``?`` or ``#`` anywhere, or a control character or space (which a URL
-    parser strips before it looks), refuses it unparsed."""
-    if not isinstance(base, str) or any(ch in "%?#" or ord(ch) <= 0x20 for ch in base):
+    parses it; the base must have the scheme ``file`` or none, no authority, and a
+    path that is exactly the mount with its trailing slash -- which, since nothing is
+    decoded, also means no percent sign. A ``?`` or ``#`` anywhere (so no query and
+    no fragment, not even an empty one), or a control character or space (which a
+    URL parser strips before it looks), refuses it unparsed."""
+    if not isinstance(base, str) or any(ch in "?#" or ord(ch) <= 0x20 for ch in base):
         return False
     try:
         parts = urlsplit(base)
     except ValueError:
         return False
-    return (parts.scheme in ("", "file") and not parts.netloc and not parts.query
-            and not parts.fragment and parts.path == _TARGET_PREFIX)
+    return parts.scheme in ("", "file") and not parts.netloc and parts.path == _TARGET_PREFIX
 
 
 def artifact_uri(artifact, run):
