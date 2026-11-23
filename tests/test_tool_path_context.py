@@ -734,3 +734,30 @@ def test_the_marker_and_the_count_are_of_rows_the_rule_took_out(tmp_path, monkey
             "tool_reported", "test")
         assert report["meta"]["coverage"]["tools_context_not_gated"] == counted, extra
         assert row.get("gate") == ({"eligible": False, "rule": "test-path"} if counted else None)
+
+
+def test_each_guard_on_the_gate_marker_holds_on_its_own(tmp_path):
+    """Two guards, either of which is enough: the loader strips the field from an
+    agent's finding, and the resolver drops whatever a row carries before it says its own."""
+    import scripts.synth.findings as findings_mod
+    import scripts.synth.report as report_mod
+    import scripts.synth.verdicts as verdicts_mod
+    path = tmp_path / "findings-g1-SEC.json"
+    path.write_text(json.dumps({"findings": [{
+        "id": "A-1", "title": "t", "severity": "HIGH", "panel": "security", "category": "auth",
+        "location": {"file": "src/a.py", "line_start": 1},
+        "gate": {"eligible": False, "rule": "test-path"}}]}), encoding="utf-8")
+    said = io.StringIO()
+    with contextlib.redirect_stderr(said):
+        loaded = findings_mod.load_findings([str(path)])
+    assert "gate" not in loaded[0] and "stripped self-asserted 'gate'" in said.getvalue()
+
+    run = report_mod.RunConfig(target="src", fail_on="high", timestamp="2026-11-23T00:00:00Z")
+    elsewhere = {"source": "tool:semgrep", "severity": "HIGH", "evidence": {"status": "tool_confirmed"},
+                 "gate": {"eligible": False, "rule": "test-path"}}
+    marked = {"source": "tool:semgrep", "severity": "HIGH", "evidence": {"status": "tool_confirmed"},
+              "tool_evidence": {"path_context": "dev_manifest"},
+              "gate": {"eligible": True, "rule": "nonsense"}}
+    assert verdicts_mod._mark_context_rule([elsewhere, marked], run) == {"dev-manifest": 1}
+    assert "gate" not in elsewhere
+    assert marked["gate"] == {"eligible": False, "rule": "dev-manifest"}
