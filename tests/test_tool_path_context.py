@@ -7,6 +7,7 @@ that verdict decided the gate. The controller now states the fact at ingest
 in `--security standard` it is reported and not counted; in `--security redteam` it
 counts only when CRITICAL or secret-class (#1578's rule, `gates_when_suppressed`)."""
 import contextlib
+import contextvars
 import io
 import json
 
@@ -50,8 +51,16 @@ def _ingest(tmp_path, captures, **kwargs):
     for name, document in captures.items():
         (tools / name).write_text(json.dumps(document), encoding="utf-8")
     with contextlib.redirect_stderr(io.StringIO()):
-        kept, _dispositions = it.ingest_dir_detailed(str(tools), "g1", **kwargs)
+        kept, _dispositions = _fresh(it.ingest_dir_detailed, str(tools), "g1", **kwargs)
     return kept
+
+
+def _fresh(call, *args, **kwargs):
+    """`call` in a context of its own, as the host's parse is in a process of its own.
+    `tools/pip_audit.py` keeps the manifest an `invoke` chose in a context variable, so
+    a pip-audit capture parsed after another test's `invoke` is labelled with THAT
+    test's file (CI's shard order did exactly this to the first push of this file)."""
+    return contextvars.Context().run(call, *args, **kwargs)
 
 
 def _contexts(findings):
@@ -305,8 +314,8 @@ def _report(tmp_path, monkeypatch, captures, verdict, security="standard", fail_
         (tmp_path / ".panopticon" / "groups.json").write_text(json.dumps(groups), encoding="utf-8")
         common += ["--groups", str(tmp_path / ".panopticon" / "groups.json")]
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        assert synthesize.main(common + ["--emit-verify-queue", "--out",
-                                         str(tmp_path / "unused.json"), str(agent)]) == 0
+        assert _fresh(synthesize.main, common + ["--emit-verify-queue", "--out",
+                                                 str(tmp_path / "unused.json"), str(agent)]) == 0
     queue = json.loads((tmp_path / ".panopticon" / "verify-queue.json").read_text(encoding="utf-8"))
     verdicts = tmp_path / "verdicts"
     verdicts.mkdir()
@@ -316,7 +325,8 @@ def _report(tmp_path, monkeypatch, captures, verdict, security="standard", fail_
             "verdict": verdict, "reasoning": "the advisor's own words"}), encoding="utf-8")
     out, said = tmp_path / "report.json", io.StringIO()
     with contextlib.redirect_stdout(said), contextlib.redirect_stderr(io.StringIO()):
-        synthesize.main(common + ["--verdicts-dir", str(verdicts), "--out", str(out), str(agent)])
+        _fresh(synthesize.main,
+               common + ["--verdicts-dir", str(verdicts), "--out", str(out), str(agent)])
     report = json.loads(out.read_text(encoding="utf-8"))
     report["_said"] = said.getvalue()
     report["_page"] = (tmp_path / "report.json.html").read_text(encoding="utf-8")
@@ -464,7 +474,8 @@ def test_a_finding_left_unanswered_is_marked_too(tmp_path, monkeypatch):
     (tools / "gitleaks.sarif").write_text(json.dumps(SECRET["gitleaks.sarif"]), encoding="utf-8")
     out = tmp_path / "report.json"
     with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        synthesize.main(["--repo", "--target", "src", "--tools-dir", str(tools), "--out", str(out)])
+        _fresh(synthesize.main,
+               ["--repo", "--target", "src", "--tools-dir", str(tools), "--out", str(out)])
     report = json.loads(out.read_text(encoding="utf-8"))
     assert [(row["evidence"]["status"], row["gate"]) for row in report["findings"]] == [
         ("tool_reported", {"eligible": False, "rule": "test-path"})]
@@ -552,3 +563,25 @@ def test_more_included_files_than_the_bound_is_not_told(tmp_path):
         assert (told is None) == (marked is None)
         if told is not None:
             assert told == sorted(["requirements-dev.txt"] + names[:count])
+
+
+def test_a_pip_audit_capture_is_labelled_from_its_own_tree_whatever_ran_before(tmp_path):
+    """The order dependence this file's helpers guard against, shown on purpose: with
+    another test's choice left in the context, the label is that test's."""
+    import scripts.tools.pip_audit as pip_audit
+    root = _tree(tmp_path, DEV_PLUS_PROD)
+
+    def after_another_tests_invoke():
+        pip_audit._manifest_path_cv.set("requirements.txt")
+        return it.ingest_dir_detailed(str(root / ".panopticon" / "tools"), "g1",
+                                      target_root=str(root))[0]
+
+    (root / ".panopticon" / "tools").mkdir()
+    (root / ".panopticon" / "tools" / "pip-audit.json").write_text(
+        json.dumps(_pip_audit()), encoding="utf-8")
+    with contextlib.redirect_stderr(io.StringIO()):
+        stale = contextvars.Context().run(after_another_tests_invoke)
+    own = _ingest_in(root, {"pip-audit.json": _pip_audit()})
+    assert [finding["location"]["file"] for finding in stale] == ["requirements.txt"]
+    assert [finding["location"]["file"] for finding in own] == ["requirements-dev.txt"]
+    assert [evidence.path_context(finding) for finding in stale + own] == [None, None]
