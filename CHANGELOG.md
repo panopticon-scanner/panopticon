@@ -12,6 +12,10 @@
   - The report says what was left out, per manifest: `meta.coverage.tools_unpinned`, and one
     line in the summary and the HTML page, with the packages, the number of advisories and up
     to 20 advisory ids. Certification is unchanged.
+  - An advisory with no fix is true of whatever version gets installed, so it stays a
+    finding: a malicious-package record (`MAL-…`), or one whose range for the package never
+    ends. Only an advisory whose ranges for the package all end (`fixed`, `last_affected` or
+    `limit`) is left out; one whose ranges cannot be read stays.
   - Only osv-scanner's PyPI rows from a `.txt` requirements manifest at exactly `0.0.0`. A
     requirement really pinned at `==0.0.0` (or `===0.0.0`) is kept. Lockfiles, other
     ecosystems and other scanners are untouched.

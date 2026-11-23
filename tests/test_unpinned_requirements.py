@@ -18,12 +18,29 @@ import scripts.synth.validate_schema as validate_schema
 from tests._test_helpers import adopt_panopticon
 
 
-def _package(name, version, *advisories, severity="HIGH", ecosystem="PyPI"):
+FIXED = [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"fixed": "2.0"}]}]
+NO_FIX = [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}]}]
+ABSENT = object()
+
+
+def _affected(name, ecosystem, ranges):
+    return {"package": {"name": name, "ecosystem": ecosystem}, "ranges": ranges}
+
+
+def _package(name, version, *advisories, severity="HIGH", ecosystem="PyPI", ranges=FIXED,
+             affected=ABSENT):
+    """One package of an osv-scanner capture. Each advisory says which versions of the
+    package it covers; by default a range that ends (`introduced 0`, `fixed 2.0`)."""
+    said = [_affected(name, ecosystem, ranges)] if affected is ABSENT else affected
+    vulnerabilities = []
+    for advisory in advisories:
+        vulnerability = {"id": advisory, "summary": "affected package",
+                         "database_specific": {"severity": severity}}
+        if said is not None:
+            vulnerability["affected"] = said
+        vulnerabilities.append(vulnerability)
     return {"package": {"name": name, "version": version, "ecosystem": ecosystem},
-            "vulnerabilities": [{"id": advisory, "summary": "affected package",
-                                 "database_specific": {"severity": severity}}
-                                for advisory in advisories],
-            "groups": []}
+            "vulnerabilities": vulnerabilities, "groups": []}
 
 
 def _osv(path, *packages):
@@ -121,7 +138,7 @@ def test_only_osv_scanners_row_is_judged(tmp_path):
     def row(source):
         return {"source": source, "location": {"file": "requirements.txt"},
                 "tool_evidence": {"package_name": "requests", "vulnerable_versions": "0.0.0",
-                                  "ecosystem": "PyPI", "rule_id": "GHSA-1"}}
+                                  "ecosystem": "PyPI", "rule_id": "GHSA-1", "ranges_end": True}}
 
     kept, rows = it._without_unpinned([row("tool:osv-scanner"), row("tool:trivy"),
                                        row("tool:pip-audit"), row("agent")], str(root))
@@ -359,3 +376,225 @@ def test_the_page_escapes_what_the_scanner_named(tmp_path, monkeypatch):
     assert report["meta"]["coverage"]["tools_unpinned"]["osv-scanner"][0]["packages"] == ["<b>bold</b>"]
     assert "&lt;b&gt;bold&lt;/b&gt;: GHSA-&lt;i&gt;-1" in page
     assert "<b>bold</b>" not in page and "GHSA-<i>-1" not in page
+
+
+# ---- seat review of #3790: an advisory with no fix covers every version ----------------
+
+OPEN_AFTER_A_FIX = [{"type": "ECOSYSTEM", "events": [
+    {"introduced": "0"}, {"fixed": "1.0"}, {"introduced": "2.0"}]}]
+
+
+@pytest.mark.parametrize("label, package", [
+    ("no fix", _package("pycrypto", "0.0.0", "GHSA-nofix-0001", ranges=NO_FIX)),
+    ("a malicious-package record", _package("evilpkg", "0.0.0", "MAL-2026-0001")),
+    ("a malicious-package record with no fix", _package("evilpkg", "0.0.0", "MAL-2026-0002", ranges=NO_FIX)),
+    ("open again after a fix", _package("p", "0.0.0", "GHSA-open-0001", ranges=OPEN_AFTER_A_FIX)),
+    ("two ranges, one open", _package("p", "0.0.0", "GHSA-two-0001", ranges=FIXED + NO_FIX)),
+    ("two entries for the package, one open", _package("p", "0.0.0", "GHSA-two-0002", affected=[
+        _affected("p", "PyPI", FIXED), _affected("P", "PyPI", NO_FIX)])),
+    ("no affected entry at all", _package("p", "0.0.0", "GHSA-none-0001", affected=None)),
+    ("an empty affected list", _package("p", "0.0.0", "GHSA-none-0002", affected=[])),
+    ("no entry for this package", _package("p", "0.0.0", "GHSA-none-0003", affected=[
+        _affected("other", "PyPI", FIXED)])),
+    ("the entry is for another ecosystem", _package("p", "0.0.0", "GHSA-none-0004", affected=[
+        _affected("p", "npm", FIXED)])),
+    ("the ecosystem differs in case", _package("p", "0.0.0", "GHSA-none-0005", affected=[
+        _affected("p", "pypi", FIXED)])),
+    ("affected is not a list", _package("p", "0.0.0", "GHSA-bad-0001", affected={"p": FIXED})),
+    ("an entry is not an object", _package("p", "0.0.0", "GHSA-bad-0002", affected=["p"])),
+    ("no ranges", _package("p", "0.0.0", "GHSA-bad-0003", affected=[
+        {"package": {"name": "p", "ecosystem": "PyPI"}, "versions": ["1.0", "1.1"]}])),
+    ("an empty ranges list", _package("p", "0.0.0", "GHSA-bad-0004", ranges=[])),
+    ("ranges is not a list", _package("p", "0.0.0", "GHSA-bad-0005", ranges="0-2.0")),
+    ("a range is not an object", _package("p", "0.0.0", "GHSA-bad-0006", ranges=["0-2.0"])),
+    ("a range with no events", _package("p", "0.0.0", "GHSA-bad-0007", ranges=[{"type": "ECOSYSTEM"}])),
+    ("events is empty", _package("p", "0.0.0", "GHSA-bad-0008", ranges=[{"events": []}])),
+    ("an event is not an object", _package("p", "0.0.0", "GHSA-bad-0009",
+                                           ranges=[{"events": ["introduced 0", {"fixed": "1"}]}])),
+    ("an event of a kind nobody knows", _package("p", "0.0.0", "GHSA-bad-0010",
+                                                 ranges=[{"events": [{"introduced": "0"}, {"maybe": "1"}]}])),
+    ("a fix with nothing introduced", _package("p", "0.0.0", "GHSA-bad-0011",
+                                               ranges=[{"events": [{"fixed": "1"}]}])),
+    ("the fix is listed before the introduction", _package("p", "0.0.0", "GHSA-bad-0012",
+                                                           ranges=[{"events": [{"fixed": "1"}, {"introduced": "0"}]}])),
+])
+def test_an_advisory_that_may_cover_every_version_is_still_a_finding(tmp_path, label, package):
+    """The first rule left out every `0.0.0` row. An advisory with no fix is true of
+    whatever version gets installed: a malicious package, an unfixed CVE on an abandoned
+    one. Left out, the gate passed. Unless every range for THIS package ends, the row
+    stays a finding, as on main; so does one whose ranges cannot be read."""
+    root = _tree(tmp_path, {"requirements.txt": "p\npycrypto\nevilpkg\n"})
+    found, dispositions = _ingest(root, {"osv-scanner.json": _osv("requirements.txt", package)})
+    assert [finding["tool_evidence"]["package_name"] for finding in found] == [
+        package["package"]["name"]], label
+    assert _unpinned(dispositions) is None, label
+
+
+@pytest.mark.parametrize("label, ranges", [
+    ("a fix", FIXED),
+    ("a last affected version", [{"type": "ECOSYSTEM", "events": [{"introduced": "0"}, {"last_affected": "1.9"}]}]),
+    ("a limit", [{"type": "GIT", "events": [{"introduced": "0"}, {"limit": "abc"}]}]),
+    ("two ranges that both end", FIXED + [{"type": "ECOSYSTEM", "events": [{"introduced": "3.0"}, {"fixed": "3.1"}]}]),
+    ("fixed, opened again and fixed again", [{"type": "ECOSYSTEM", "events": [
+        {"introduced": "0"}, {"fixed": "1.0"}, {"introduced": "2.0"}, {"fixed": "2.1"}]}]),
+])
+def test_an_advisory_whose_ranges_all_end_is_still_left_out(tmp_path, label, ranges):
+    root = _tree(tmp_path, {"requirements.txt": "p\n"})
+    found, dispositions = _ingest(root, {"osv-scanner.json": _osv(
+        "requirements.txt", _package("p", "0.0.0", "GHSA-ends-0001", ranges=ranges))})
+    assert found == [], label
+    assert _unpinned(dispositions)[0]["ids"] == ["GHSA-ends-0001"]
+
+
+def test_a_record_that_another_id_calls_malicious_is_still_a_finding(tmp_path):
+    root = _tree(tmp_path, {"requirements.txt": "p\n"})
+    package = _package("p", "0.0.0", "GHSA-alias-0001")
+    package["vulnerabilities"][0]["aliases"] = ["CVE-2026-0001", "MAL-2026-0003"]
+    found, dispositions = _ingest(root, {"osv-scanner.json": _osv("requirements.txt", package)})
+    assert len(found) == 1 and _unpinned(dispositions) is None
+    # Only that prefix, at the start: an id that merely contains it is not one.
+    package["vulnerabilities"][0]["aliases"] = ["CVE-2026-0001", "GHSA-MAL-0003", "mal-1"]
+    found, dispositions = _ingest(root, {"osv-scanner.json": _osv("requirements.txt", package)})
+    assert found == [] and _unpinned(dispositions)[0]["ids"] == ["GHSA-alias-0001"]
+
+
+@pytest.mark.parametrize("said", ["true", 1, "yes", [True], {"ends": True}, None, False])
+def test_only_the_adapters_own_yes_leaves_a_row_out(tmp_path, said):
+    root = _tree(tmp_path, {"requirements.txt": "requests\n"})
+    row = {"source": "tool:osv-scanner", "location": {"file": "requirements.txt"},
+           "tool_evidence": {"package_name": "requests", "vulnerable_versions": "0.0.0",
+                             "ecosystem": "PyPI", "rule_id": "GHSA-1", "ranges_end": said}}
+    kept, rows = it._without_unpinned([row], str(root))
+    assert (len(kept), rows) == (1, [])
+    assert "ranges_end" not in kept[0]["tool_evidence"]
+
+
+def test_the_adapters_note_reaches_no_finding(tmp_path):
+    """`ranges_end` is what the adapter read for this rule. It is taken off every
+    finding at ingest, kept or not, pinned or in a lockfile."""
+    root = _tree(tmp_path, {"requirements.txt": "p==0.0.0\nq==1.0\n", "poetry.lock": ""})
+    document = _osv("requirements.txt", _package("p", "0.0.0", "GHSA-ends-0001"),
+                    _package("q", "1.0", "GHSA-ends-0002"),
+                    _package("r", "0.0.0", "GHSA-nofix-0001", ranges=NO_FIX))
+    document["results"] += _osv("poetry.lock", _package("s", "0.0.0", "GHSA-ends-0003"))["results"]
+    found, _dispositions = _ingest(root, {"osv-scanner.json": document})
+    assert len(found) == 4
+    assert all("ranges_end" not in finding["tool_evidence"] for finding in found)
+    # The adapter itself says it only when it is so.
+    from scripts.tools.osv_scanner import OsvScannerAdapter
+    parsed = OsvScannerAdapter().parse(json.dumps(document).encode("utf-8"), "g")
+    assert [finding["tool_evidence"].get("ranges_end") for finding in parsed] == [
+        True, True, None, True]
+
+
+def test_another_packages_open_range_in_the_same_record_is_ignored(tmp_path):
+    """One advisory often covers several packages. Only this package's ranges count,
+    with its name compared as PyPI compares names."""
+    root = _tree(tmp_path, {"requirements.txt": "my_pkg\n"})
+    package = _package("my_pkg", "0.0.0", "GHSA-shared-0001", affected=[
+        _affected("My.Pkg", "PyPI", FIXED), _affected("sibling", "PyPI", NO_FIX),
+        _affected("my-pkg", "npm", NO_FIX)])
+    found, dispositions = _ingest(root, {"osv-scanner.json": _osv("requirements.txt", package)})
+    assert found == []
+    assert _unpinned(dispositions)[0]["packages"] == ["my_pkg"]
+
+
+def test_one_package_can_have_both_kinds_of_advisory(tmp_path):
+    root = _tree(tmp_path, {"requirements.txt": "p\n"})
+    package = _package("p", "0.0.0", "GHSA-ends-0001")
+    package["vulnerabilities"] += _package("p", "0.0.0", "GHSA-nofix-0001", ranges=NO_FIX)["vulnerabilities"]
+    found, dispositions = _ingest(root, {"osv-scanner.json": _osv("requirements.txt", package)})
+    assert [finding["tool_evidence"]["rule_id"] for finding in found] == ["GHSA-nofix-0001"]
+    assert _unpinned(dispositions) == [{
+        "manifest": "requirements.txt", "packages": ["p"], "packages_more": 0,
+        "advisories": 1, "ids": ["GHSA-ends-0001"], "ids_more": 0}]
+
+
+def test_the_ci_gate_still_fails_on_an_unpinned_package_with_no_fix(tmp_path):
+    """The seat's probe. Two unpinned CRITICAL rows, one with no fix and one malicious
+    package: with the first rule the CI gate found nothing and passed, in both modes."""
+    import scripts.security_gate as gate
+    import scripts.tools_manifest as tools_manifest
+    root = _tree(tmp_path, {"requirements.txt": "pycrypto\nevilpkg\nrequests\n"})
+    tools = root / ".panopticon" / "tools"
+    capture = tools / "osv-scanner.json"
+    capture.write_text(json.dumps(_osv(
+        "requirements.txt",
+        _package("pycrypto", "0.0.0", "GHSA-nofix-0001", severity="CRITICAL", ranges=NO_FIX),
+        _package("evilpkg", "0.0.0", "MAL-2026-0001", severity="CRITICAL"),
+        _package("requests", "0.0.0", "GHSA-ends-0001", severity="CRITICAL"))), encoding="utf-8")
+    manifest = root / ".panopticon" / "tools-manifest.json"
+    tools_manifest.write_manifest(str(manifest), ["osv-scanner"], [str(capture)])
+    for mode in ("standard", "redteam"):
+        with contextlib.redirect_stderr(io.StringIO()):
+            _findings, _dispositions, failures, high, _suppressed = contextvars.Context().run(
+                gate.evaluate, str(tools), str(manifest), security_mode=mode)
+        assert sorted(finding["tool_evidence"]["rule_id"] for finding in high) == [
+            "GHSA-nofix-0001", "MAL-2026-0001"], mode
+        assert failures == [], mode
+
+
+def test_the_report_fails_its_gate_on_an_unpinned_package_with_no_fix(tmp_path, monkeypatch):
+    files = {"requirements.txt": "pycrypto\nrequests\n"}
+    document = _osv("requirements.txt",
+                    _package("pycrypto", "0.0.0", "GHSA-nofix-0001", ranges=NO_FIX),
+                    _package("requests", "0.0.0", "GHSA-ends-0001"))
+    report, queue, said, _page = _report(tmp_path, monkeypatch, files, document)
+    assert report["summary"]["gate"] == "FAIL"
+    assert [row["tool_evidence"]["rule_id"] for row in report["findings"]] == ["GHSA-nofix-0001"]
+    assert [entry["finding"]["tool_evidence"]["rule_id"] for entry in queue["entries"]] == [
+        "GHSA-nofix-0001"]
+    assert report["meta"]["coverage"]["tools_unpinned"]["osv-scanner"][0]["ids"] == ["GHSA-ends-0001"]
+    assert "(requests: GHSA-ends-0001)" in said and "GHSA-nofix-0001)" not in said
+
+
+# ---- seat review of #3790: the smaller items ---------------------------------------------
+
+@pytest.mark.parametrize("text", [
+    "requests==0.0.0 \\\r\n    --hash=sha256:abc\r\n",          # pip-compile on Windows
+    "flask==1.0\r\nrequests==0.0.0\r\n",
+    "requests==0.0.0 --config-settings=KEY=VALUE\n",
+    'requests==0.0.0 --config-settings "KEY=VALUE"\n',
+    "requests==0.0.0 --global-option=--no-user-cfg --hash=sha256:abc\n",
+    "requests [security]==0.0.0\n", "requests[security] == 0.0.0\n", "requests  ==0.0.0\n",
+])
+def test_a_real_pin_is_read_in_these_spellings_too(tmp_path, text):
+    root = tmp_path / "root"
+    (root / ".panopticon" / "tools").mkdir(parents=True)
+    (root / "requirements.txt").write_bytes(text.encode("utf-8"))
+    found, dispositions = _ingest(root, {"osv-scanner.json": _osv(
+        "requirements.txt", _package("requests", "0.0.0", "GHSA-aaaa-0001"))})
+    assert _kept(found) == [("requests", "0.0.0")], text
+    assert _unpinned(dispositions) is None
+
+
+@pytest.mark.parametrize("name", [None, 7, ["requests"], {"n": "requests"}, True])
+def test_a_package_name_that_is_not_text_does_not_stop_ingest(tmp_path, name):
+    root = _tree(tmp_path, {"requirements.txt": "requests\n"})
+    found, dispositions = _ingest(root, {"osv-scanner.json": _osv(
+        "requirements.txt", _package(name, "0.0.0", "GHSA-aaaa-0001"),
+        _package("requests", "0.0.0", "GHSA-bbbb-0001"))})
+    assert dispositions["osv-scanner"]["status"] == "ok"
+    assert len(found) == 1 and found[0]["tool_evidence"]["rule_id"] == "GHSA-aaaa-0001"
+    assert _unpinned(dispositions)[0]["packages"] == ["requests"]
+
+
+@pytest.mark.parametrize("ecosystem", ["pypi", "PYPI", "PyPI ", "PyPI:3", "Pypi", "", None])
+def test_the_ecosystem_is_compared_exactly(tmp_path, ecosystem):
+    root = _tree(tmp_path, {"requirements.txt": "requests\n"})
+    found, dispositions = _ingest(root, {"osv-scanner.json": _osv(
+        "requirements.txt", _package("requests", "0.0.0", "GHSA-aaaa-0001", ecosystem=ecosystem,
+                                     affected=[_affected("requests", ecosystem, FIXED)]))})
+    assert len(found) == 1
+    assert _unpinned(dispositions) is None
+
+
+def test_advisories_counts_the_rows_left_out_and_ids_lists_each_id_once(tmp_path):
+    """Two packages can share one advisory: two rows left out, one id."""
+    root = _tree(tmp_path, {"requirements.txt": "a\nb\n"})
+    found, dispositions = _ingest(root, {"osv-scanner.json": _osv(
+        "requirements.txt", _package("a", "0.0.0", "GHSA-shared-0001", "GHSA-a-0001"),
+        _package("b", "0.0.0", "GHSA-shared-0001"))})
+    assert found == []
+    row = _unpinned(dispositions)[0]
+    assert (row["advisories"], row["ids"]) == (3, ["GHSA-a-0001", "GHSA-shared-0001"])

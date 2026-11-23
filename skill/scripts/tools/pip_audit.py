@@ -585,7 +585,10 @@ def _requirement_closure(path, root):
 # without extras. Whatever follows a `;` (a marker) or a ` #` (a comment) is not part of it.
 _EXACT_PIN = re.compile(
     r"([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)\s*(?:\[[^\]]*\])?\s*===?\s*([^\s,;]+)")
-_HASH_OPTION = re.compile(r"\s+--hash[=\s]\S+")
+# The options pip takes after one requirement. They are not part of what it pins.
+_REQUIREMENT_OPTION = re.compile(
+    r"""\s+--(?:hash|config-settings|global-option|install-option)"""
+    r"""(?:=|\s+)(?:"[^"]*"|'[^']*'|\S+)""")
 
 
 def pep503(name):
@@ -604,8 +607,10 @@ def requirement_pins(path, root, cache=None):
         return None
     pins = set()
     for text in closure.values():
-        for line in text.replace("\\\n", " ").splitlines():
-            spec = _HASH_OPTION.sub("", re.split(r"\s#|;", line.strip(), maxsplit=1)[0]).strip()
+        # A file written on Windows continues a line with a backslash before CRLF.
+        for line in text.replace("\r\n", "\n").replace("\\\n", " ").splitlines():
+            spec = _REQUIREMENT_OPTION.sub(
+                "", re.split(r"\s#|;", line.strip(), maxsplit=1)[0]).strip()
             m = _EXACT_PIN.fullmatch(spec)
             if m is not None:
                 pins.add((pep503(m.group(1)), m.group(2)))

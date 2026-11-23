@@ -1,5 +1,6 @@
 """OSV scanner adapter for cross-ecosystem dependency advisories."""
 from __future__ import annotations
+import re
 import math
 import os
 from .base import (cve_ids, cvss_bucket, has_any_file, make_finding,
@@ -64,6 +65,68 @@ def _group_score(raw: object) -> float | None:
     except (TypeError, ValueError, OverflowError):
         return None
     return score if math.isfinite(score) and 0 <= score <= 10 else None
+
+
+_RANGE_ENDS = ("fixed", "last_affected", "limit")
+
+
+def _pep503(name: str) -> str:
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def every_range_ends(vuln: dict, package: dict) -> bool:
+    """True only when the advisory says, for THIS package, that each affected range
+    stops: every `introduced` is followed by a `fixed`, `last_affected` or `limit`.
+
+    #3749 reads it for a requirement with no version, which osv-scanner reports as
+    `0.0.0`. An advisory with no fix covers whatever version gets installed (a
+    malicious package, an unfixed CVE on an abandoned one), so it is a true claim
+    with no version known. One whose ranges all end is a claim about versions nobody
+    has been shown to have.
+
+    False for anything short of that being read: a `MAL-` record (by id or alias), no
+    `affected` entry for the package (its name as PyPI compares names, its ecosystem
+    exactly), an entry or a range or an event that is not what the OSV schema says,
+    a range with nothing introduced, and an entry that lists no ranges."""
+    aliases = vuln.get("aliases")
+    names = [vuln.get("id"), *(aliases if isinstance(aliases, list) else [])]
+    if any(isinstance(name, str) and name.startswith("MAL-") for name in names):
+        return False
+    name, ecosystem = package.get("name"), package.get("ecosystem")
+    affected = vuln.get("affected")
+    if not (isinstance(name, str) and isinstance(ecosystem, str)
+            and isinstance(affected, list)):
+        return False
+    ours = 0
+    for entry in affected:
+        about = entry.get("package") if isinstance(entry, dict) else None
+        if not (isinstance(about, dict) and isinstance(about.get("name"), str)
+                and isinstance(about.get("ecosystem"), str)):
+            return False                  # whose ranges these are cannot be told
+        if about["ecosystem"] != ecosystem or _pep503(about["name"]) != _pep503(name):
+            continue
+        ours += 1
+        ranges = entry.get("ranges")
+        if not isinstance(ranges, list) or not ranges:
+            return False
+        for one in ranges:
+            events = one.get("events") if isinstance(one, dict) else None
+            if not isinstance(events, list):
+                return False
+            introduced, is_open = 0, False
+            for event in events:
+                if not isinstance(event, dict) or len(event) != 1:
+                    return False
+                kind = next(iter(event))
+                if kind == "introduced":
+                    introduced, is_open = introduced + 1, True
+                elif kind in _RANGE_ENDS and introduced:
+                    is_open = False
+                else:
+                    return False
+            if is_open or not introduced:
+                return False
+    return ours > 0
 
 
 def _database_severity(vuln: dict) -> str | None:
@@ -235,6 +298,9 @@ class OsvScannerAdapter:
                             "vulnerable_versions": pkg.get("version"),
                             "ecosystem": pkg.get("ecosystem"),
                             "cvss_max_severity": vuln_score,
+                            # #3749: read once here, where the advisory's ranges are;
+                            # ingest takes it off again (`_without_unpinned`).
+                            "ranges_end": every_range_ends(vuln, pkg) or None,
                         }),
                     ))
                     n += 1

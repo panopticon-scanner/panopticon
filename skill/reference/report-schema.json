@@ -804,7 +804,7 @@
                   }
                 }
               },
-              "description": "#3749: per scanner, one row per requirements manifest whose entries have no pinned version. osv-scanner reports such an entry as version `0.0.0`, and every advisory whose range starts at zero then matches; those matches are not claims about an installed version. They are not in `findings[]` or `discarded_claims`, are never put to an advisor, and do not change certification. Each row names the manifest, up to 20 packages and 20 advisory ids (inert, bounded) with the rest counted in `packages_more` and `ids_more`, and the number of advisories left out. A requirement really pinned at `==0.0.0` is kept as a finding. Empty when there are none; absent from a report written before this."
+              "description": "#3749: per scanner, one row per requirements manifest whose entries have no pinned version. osv-scanner reports such an entry as version `0.0.0`, and every advisory whose range starts at zero then matches; those matches are not claims about an installed version. Only an advisory whose ranges for the package all end is left out: one with no fix, a `MAL-` record, or one whose ranges cannot be read stays a finding. The rows left out are not in `findings[]` or `discarded_claims`, are never put to an advisor, and do not change certification. Each row names the manifest, up to 20 packages and 20 advisory ids (inert, bounded) with the rest counted in `packages_more` and `ids_more`, and the number of advisories left out. A requirement really pinned at `==0.0.0` is kept as a finding. Empty when there are none; absent from a report written before this."
             },
             "tools_context_not_gated": {
               "type": "object",

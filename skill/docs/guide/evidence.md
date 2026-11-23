@@ -72,6 +72,11 @@ the packages, the number of advisories, and up to 20 advisory ids with the rest 
 Certification is unchanged.
 - Only an osv-scanner PyPI row from a requirements-format (`.txt`) manifest at exactly `0.0.0`.
   Lockfiles, other ecosystems and other scanners are untouched.
+- Only an advisory whose ranges for the package all end: each `introduced` is followed by a
+  `fixed`, `last_affected` or `limit`. An advisory with no fix covers whatever version gets
+  installed, so it stays a finding and is gated as before: a malicious-package record (an id or
+  alias starting `MAL-`), or an unfixed advisory on an abandoned package. So does an advisory
+  that has no entry for the package, or one whose ranges cannot be read.
 - "Pinned" is `==` or `===` to one version. `>=`, `~=`, `!=`, a bare name, a URL and `==1.0,<2`
   are unpinned. A requirement really pinned at `==0.0.0`, in the manifest or a file it includes,
   is kept as a finding.

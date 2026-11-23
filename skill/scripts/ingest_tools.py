@@ -472,10 +472,16 @@ def _without_unpinned(findings, target_root=None):
     135 of these rows, 120 rejected by the advisor and 15 left in reports.
 
     Only an osv-scanner PyPI row from a requirements-format (`.txt`) manifest at
-    exactly that version. It is kept when the manifest, or a file it includes, really
-    pins the package there (`==0.0.0` or `===0.0.0`). When the manifest cannot be read
-    (no tree at hand, a missing or oversized file) the version is unknown: a real
-    `==0.0.0` pin is rare, and an unknown version taken for a known one is the fault.
+    exactly that version, and only when the advisory's ranges for the package all end
+    (`osv_scanner.every_range_ends`). An advisory with no fix, or a malicious-package
+    record, is true of whatever version gets installed: it stays a finding, as does
+    one whose ranges cannot be read. The adapter's `ranges_end` is taken off every
+    finding here: it is this function's input and no part of the report.
+
+    A row is also kept when the manifest, or a file it includes, really pins the
+    package there (`==0.0.0` or `===0.0.0`). When the manifest cannot be read (no tree
+    at hand, a missing or oversized file) the version is unknown: a real `==0.0.0`
+    pin is rare, and an unknown version taken for a known one is the fault.
 
     Each row names at most `UNPINNED_NAMED` packages and ids, made inert and bounded
     (they are the scanner's text about the target), and counts the rest."""
@@ -484,8 +490,12 @@ def _without_unpinned(findings, target_root=None):
     pins: dict = {}
     for finding in findings:
         said = evidence_mod._tool_evidence(finding)
+        ranges_end = said.get("ranges_end") is True
+        if "ranges_end" in said:
+            said = {key: value for key, value in said.items() if key != "ranges_end"}
+            finding["tool_evidence"] = said
         manifest = str((finding.get("location") or {}).get("file") or "").replace(os.sep, "/")
-        if not (evidence_mod.tool_name(finding) == "osv-scanner"
+        if not (evidence_mod.tool_name(finding) == "osv-scanner" and ranges_end
                 and said.get("vulnerable_versions") == _NO_VERSION
                 and said.get("ecosystem") == "PyPI" and manifest.endswith(".txt")
                 and isinstance(said.get("package_name"), str)):
