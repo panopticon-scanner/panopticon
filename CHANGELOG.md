@@ -61,10 +61,12 @@
     failed or absent. A hand `run_tools.py` + `synthesize.py` pair has no run id and reads
     INCONCLUSIVE for coverage. A certified result comes from a driver run, which passes the run
     id.
-  - Not changed: a run with a run id; a `--tools-skipped` run; a call with no tools directory, or
-    one that is not there. A tools manifest is looked for in the run directory (`--run-dir`, or
-    the directory of `--groups`), never in the tools directory. A `tools-manifest.json` inside
-    `--tools-dir` is read as a JSON file with no registered adapter.
+  - Not changed by this rule: a run with a run id; a `--tools-skipped` run; a call with no tools
+    directory, or one that is not there. A tools directory that cannot be listed is a separate
+    change, below, and applies to each of these that is given one. A tools manifest is looked for
+    in the run directory (`--run-dir`, or the directory of `--groups`), never in the tools
+    directory. A `tools-manifest.json` inside `--tools-dir` is read as a JSON file with no
+    registered adapter.
   - Two existing tests asserted the old exit code of such a hand call and now assert exit 2:
     `TestReport.test_main_tools_exclude_and_fixture_prune_wired_end_to_end` (was 0 or 1) and
     `TestToolsDirIntegration.test_direct_run_without_root_reclassifies_against_the_ingest_root`
@@ -77,12 +79,13 @@
   - **A tools directory that cannot be listed is lost coverage.** A `--tools-dir` whose entries
     cannot be read looked like a directory with no scanner output, and the run was certified. It
     now reports the new `meta.integrity.tools_dir_unlistable` (the directory and the error,
-    redacted, on one line) and is not certified, on every path. This is any failure to list it
-    except "no such file" when the directory is opened. An error part way through the entries
-    counts, "no such file" included (that path was a traceback and no report). A directory that
-    is not there is unchanged. The directory is listed
-    once, and that listing is the one both the ingest and the report use. The report schema gains
-    the key.
+    redacted, on one line) and is not certified, on every path: with a run id, without one, and
+    with `--tools-skipped`, which was PASS, certified, and is INCONCLUSIVE. With a run id and its
+    manifest, the scanners the manifest selected are still `requested_absent`, as before. This is
+    any failure to list it except "no such file" when the directory is opened. An error part way
+    through the entries counts, "no such file" included (that path was a traceback and no report).
+    A directory that is not there is unchanged. The directory is listed once, and that listing is
+    the one both the ingest and the report use. The report schema gains the key.
   - Tool names on the summary's coverage line are spelled on one line, control characters
     escaped.
   - Exposure: a driver run always passes a run id unless its run manifest has lost the key, so
