@@ -14,8 +14,8 @@ from typing import Any, NamedTuple
 
 from scripts import evidence as evidence_mod
 from scripts import first_party_advisory, groups_schema, plan_contract
-from scripts.tools import ADAPTERS
-from scripts.tools.base import ingest_policy_cv, strip_ansi, target_root_cv
+from scripts.tools import ADAPTERS, ADVISORY_ADAPTERS, pip_audit
+from scripts.tools.base import inert_text, ingest_policy_cv, strip_ansi, target_root_cv
 from scripts.tools.sarif_utils import (
     CWE_TAG,
     CVE_TAG,
@@ -354,6 +354,176 @@ def _plain_path(fpath):
     `./vendor/lib.js`."""
     return not (_NOT_PLAIN.search(fpath) or _SCHEME.match(fpath)
                 or ".." in fpath.split("/"))
+
+
+# #3755: the directories whose contents are tests, by full path segment, exact and
+# case-sensitive. The narrow list on purpose (coordinator, 2026-11-23): a wrong mark
+# takes a finding OUT of the gate, which reads better than the truth. `testing` is
+# often shipped library code and `specs` often holds API specifications, so neither is
+# here; a file merely NAMED like a test (`test_x.py`, `x_test.go`) is not marked either.
+TEST_DIRS = frozenset({"test", "tests", "spec", "__tests__", "e2e", "testdata",
+                       "fixtures", "__fixtures__"})
+# A requirements file that is only for development: by its own name, or `dev.txt` /
+# `test.txt` in a directory named `requirements`.
+_DEV_REQUIREMENTS = frozenset({"requirements-dev.txt", "dev-requirements.txt",
+                               "requirements-test.txt", "test-requirements.txt"})
+_DEV_REQUIREMENTS_IN_DIR = frozenset({"dev.txt", "test.txt"})
+
+
+def _is_advisory(finding):
+    """A dependency advisory: an advisory adapter's finding, or one of trivy's that
+    names a package and a version (its secrets and misconfigurations do not)."""
+    tool = evidence_mod.tool_name(finding)
+    if tool in ADVISORY_ADAPTERS:
+        return True
+    return (tool == "trivy"
+            and evidence_mod._tool_evidence(finding).get("kind") != SECRET_KIND
+            and first_party_advisory.advisory_package(finding) is not None)
+
+
+def _dev_only(rel):
+    """Whether the manifest at root-relative `rel` is only for development, by its path:
+    under a test directory, or a development requirements file."""
+    *dirs, base = rel.split("/")
+    return (any(segment in TEST_DIRS for segment in dirs) or base in _DEV_REQUIREMENTS
+            or (base in _DEV_REQUIREMENTS_IN_DIR and dirs[-1:] == ["requirements"]))
+
+
+def _path_context(finding, roots, target_root=None, closures=None):
+    """`evidence.PATH_CONTEXT_*` for one scanner finding, or None (#3755): decided from
+    the path inside the review root. Nothing of the target is read but a requirements
+    file's own include lines (below)."""
+    fpath = str((finding.get("location") or {}).get("file") or "").replace(os.sep, "/")
+    if not fpath or not _plain_path(fpath):
+        return None                       # #3771: not a file in the tree, whatever it spells
+    norm = fpath.lstrip("/")
+    for root in roots:                    # a scanner that reported the host's own path
+        if norm.startswith(root):
+            norm = norm[len(root):]
+            break
+    *dirs, base = norm.split("/")
+    in_tests = any(segment in TEST_DIRS for segment in dirs)
+    if not _is_advisory(finding):
+        return evidence_mod.PATH_CONTEXT_TEST if in_tests else None
+    if not _dev_only(norm):
+        return None
+    if base.endswith(".txt"):
+        # A requirements file includes others (`-r`, `-c`), and the scanner labels every
+        # finding with the one it was pointed at. EVERY file that produced the finding
+        # must be dev-only (coordinator, 2026-11-23): `requirements-dev.txt` holding
+        # `-r requirements-prod.txt` carries production's advisories. With no tree to
+        # read, or a file that cannot be followed, nothing says which files they were.
+        files = (pip_audit.requirement_files(os.path.join(target_root, *norm.split("/")),
+                                             target_root, closures) if target_root else None)
+        if files is None or not all(_dev_only(rel) for rel in files):
+            return None
+    return evidence_mod.PATH_CONTEXT_DEV_MANIFEST
+
+
+def mark_path_context(findings, target_root=None):
+    """State, on each scanner finding, whether it sits in a test path or a dev-only
+    manifest (#3755): `tool_evidence.path_context`.
+
+    Whether a path is a test path is a fact. Each advisor used to decide it again
+    ("or is it test scaffolding"), so one finding was confirmed in five runs and
+    rejected in the sixth, and that verdict decided the gate. The controller states it
+    here, once, for both synthesize passes and the driver's tool queue (they all ingest
+    through this point, as #3593's first-party mark does), and `synth/verdicts` applies
+    one rule to it.
+
+    Not part of a finding's identity: fingerprints and reconciliation read other keys.
+    A finding this cannot classify is left unmarked, which leaves it in the gate."""
+    roots = []
+    for resolve in (os.path.abspath, os.path.realpath):
+        try:
+            root = resolve(os.fspath(target_root)).replace(os.sep, "/").strip("/") + "/"
+        except TypeError:                 # no root: paths are taken as they are
+            target_root = None
+            break
+        if root != "/" and root not in roots:
+            roots.append(root)
+    closures: dict = {}                    # one walk per manifest, however many findings
+    for finding in findings:
+        try:
+            context = _path_context(finding, roots, target_root, closures)
+        except Exception:  # noqa: BLE001 - classification fails closed: no mark
+            continue
+        if context is not None:
+            marked = dict(evidence_mod._tool_evidence(finding))
+            marked["path_context"] = context
+            finding["tool_evidence"] = marked
+
+
+# #3749: what osv-scanner reports as the version of a requirement that has none.
+_NO_VERSION = "0.0.0"
+# How many packages and advisory ids one manifest's row names before "+N more".
+UNPINNED_NAMED = 20
+_UNPINNED_TEXT_MAX = 200
+
+
+def _without_unpinned(findings, target_root=None):
+    """`(kept, rows)`: `findings` without the advisories osv-scanner matched against a
+    version nobody has, and one row per manifest saying what was left out (#3749).
+
+    osv-scanner gives a requirements-file entry with no `==` pin the version `0.0.0`,
+    and every advisory whose range starts at zero then matches. Such a match is not a
+    claim about the code: it is not a finding, it is never put to an advisor, and the
+    report says it as coverage (`meta.coverage.tools_unpinned`). The 5.4 batch held
+    135 of these rows, 120 rejected by the advisor and 15 left in reports.
+
+    Only an osv-scanner PyPI row from a requirements-format (`.txt`) manifest at
+    exactly that version, and only when the advisory's ranges for the package all end
+    (`osv_scanner.every_range_ends`). An advisory with no fix, or a malicious-package
+    record, is true of whatever version gets installed: it stays a finding, as does
+    one whose ranges cannot be read. The adapter's `ranges_end` is taken off every
+    finding here: it is this function's input and no part of the report.
+
+    A row is also kept when the manifest, or a file it includes, really pins the
+    package there (`==0.0.0` or `===0.0.0`). When the manifest cannot be read (no tree
+    at hand, a missing or oversized file) the version is unknown: a real `==0.0.0`
+    pin is rare, and an unknown version taken for a known one is the fault.
+
+    Each row names at most `UNPINNED_NAMED` packages and ids, made inert and bounded
+    (they are the scanner's text about the target), and counts the rest."""
+    kept: list = []
+    by_manifest: dict[str, tuple[set, list]] = {}
+    pins: dict = {}
+    for finding in findings:
+        said = evidence_mod._tool_evidence(finding)
+        ranges_end = said.get("ranges_end") is True
+        if "ranges_end" in said:
+            said = {key: value for key, value in said.items() if key != "ranges_end"}
+            finding["tool_evidence"] = said
+        manifest = str((finding.get("location") or {}).get("file") or "").replace(os.sep, "/")
+        if not (evidence_mod.tool_name(finding) == "osv-scanner" and ranges_end
+                and said.get("vulnerable_versions") == _NO_VERSION
+                and said.get("ecosystem") == "PyPI" and manifest.endswith(".txt")
+                and isinstance(said.get("package_name"), str)):
+            kept.append(finding)
+            continue
+        if manifest not in pins:
+            pins[manifest] = (pip_audit.requirement_pins(
+                os.path.join(target_root, *manifest.lstrip("/").split("/")), target_root)
+                if target_root and _plain_path(manifest) else None)
+        if (pip_audit.pep503(said["package_name"]), _NO_VERSION) in (pins[manifest] or ()):
+            kept.append(finding)
+            continue
+        packages, ids = by_manifest.setdefault(manifest, (set(), []))
+        packages.add(said["package_name"])
+        ids.append(str(said.get("rule_id") or ""))
+    rows = []
+    for manifest in sorted(by_manifest):
+        packages, ids = by_manifest[manifest]
+        named = sorted(packages)
+        listed = sorted(set(ids) - {""})
+        rows.append({
+            "manifest": inert_text(manifest, limit=_UNPINNED_TEXT_MAX, mode="path"),
+            "packages": [inert_text(name, limit=_UNPINNED_TEXT_MAX) for name in named[:UNPINNED_NAMED]],
+            "packages_more": max(0, len(named) - UNPINNED_NAMED),
+            "advisories": len(ids),
+            "ids": [inert_text(one, limit=_UNPINNED_TEXT_MAX) for one in listed[:UNPINNED_NAMED]],
+            "ids_more": max(0, len(listed) - UNPINNED_NAMED)})
+    return kept, rows
 
 
 def _run_artifact_segment(fpath):
@@ -940,6 +1110,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         # resulting queue exemption cannot drift between them.
         prior_budget_exhaustions = cargo_advisory_cache.budget_exhaustion_count
         first_party_advisory.mark(parsed, root, cargo_advisory_cache)
+        mark_path_context(parsed, root)                              # #3755
         budget_exhaustions = (
             cargo_advisory_cache.budget_exhaustion_count
             - prior_budget_exhaustions
@@ -959,6 +1130,9 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         gl_excluded += gl_cnt
         for seg, n in sup_cnt.items():
             suppressed[seg] = suppressed.get(seg, 0) + n
+        # #3749: after the operator's exclusions and the source-scope rules, so a
+        # manifest they scoped out is counted as theirs and not disclosed twice.
+        parsed, unpinned = _without_unpinned(parsed, root)
         parsed, truncated = _cap_findings(parsed, tool)
         out.extend(parsed)
         if raw_count:
@@ -983,6 +1157,8 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
                 policy["suppressed_in_source"])
         if file_coverage is not None:
             dispositions[tool]["file_coverage"] = file_coverage
+        if unpinned:
+            dispositions[tool]["unpinned"] = unpinned               # #3749
         if truncated:
             # Disclosed, never silent: `findings` stays the RAW count, so a
             # report reads "N seen, M dropped" rather than looking like a

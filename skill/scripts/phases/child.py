@@ -19,6 +19,7 @@ import time
 import scripts.executable as executable
 import scripts.phases.runio as runio
 import scripts.procgroup as procgroup
+import scripts.run_lock as run_lock
 import scripts.loop_progress as loop_progress
 
 
@@ -35,6 +36,7 @@ def _child_env():
     env = executable.sanitize_startup_environment(os.environ)
     parts = [skill_dir, repo_devtools]
     env["PYTHONPATH"] = os.pathsep.join(os.path.realpath(part) for part in parts)
+    env.pop(run_lock.FD_ENV, None)    # #3779: set by `_run_child` alone, for a root it holds
     # These children execute installed panopticon code with a reviewed tree as
     # cwd. Ambient Python startup controls must not make that tree import code
     # before the trusted entry script. Keep the rest of the operator's env and
@@ -81,6 +83,8 @@ _CAPTURE_CHUNK = 65536
 # How long `_run_child` waits for its reader threads after the child is gone --
 # ONE deadline for both of them, not one each.
 _READER_JOIN_GRACE = 5
+# The clock a phase's cap is measured on.
+_clock = time.monotonic
 
 
 class _Head:
@@ -182,19 +186,34 @@ def _run_child(cmd, review_root, phase, timeout=None):
     if timeout is None:
         timeout = _CHILD_TIMEOUTS.get(phase, _CHILD_TIMEOUT_DEFAULT)
     name = cmd[1] if len(cmd) > 1 else cmd[0]
+    # #3779: the child holds the review root with the driver. It is the same open file,
+    # so a child that outlives a killed driver keeps the root until it exits. A lock
+    # that cannot be matched to this root stops the launch: never a child on a guess.
+    try:
+        lock = run_lock.descriptor(review_root)
+    except run_lock.Refused as exc:
+        raise runio.DriverError("%s: not started: %s" % (phase, exc)) from exc
+    env = _child_env()
+    if lock is not None:
+        env[run_lock.FD_ENV] = str(lock)
     try:
         proc = subprocess.Popen(cmd, cwd=review_root, text=True,  # nosec B603
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                env=_child_env(), start_new_session=True)
+                                env=env, start_new_session=True,
+                                pass_fds=() if lock is None else (lock,))
     except OSError as exc:
         raise runio.DriverError("%s: could not spawn %s: %s" % (phase, name, exc))
+    started = _clock()                 # the phase's cap runs from here, whatever follows
     out = {"stdout": _Head(), "stderr": _Head()}
     readers = [threading.Thread(target=_capture, args=(pipe, out[key]), daemon=True)
                for key, pipe in (("stdout", proc.stdout), ("stderr", proc.stderr))]
     try:
         for reader in readers:
             reader.start()
-        loop_progress.wait(proc, timeout, phase)
+        # Inside the cleanup below, and on the phase's clock: an interrupt here stops the
+        # child like one during the wait, and a slow write is not time the child gains.
+        run_lock.note_child(review_root, proc.pid, phase)
+        loop_progress.wait(proc, max(0, timeout - (_clock() - started)), phase)
     except subprocess.TimeoutExpired:
         procgroup.kill_group(proc)     # #1575: the whole tree, not the direct PID
         raise runio.DriverError("%s: %s timed out after %ss" % (phase, name, timeout))
@@ -217,5 +236,6 @@ def _run_child(cmd, review_root, phase, timeout=None):
         for reader in readers:
             if reader.is_alive():
                 reader.join(timeout=max(0.0, deadline - time.monotonic()))
+        run_lock.note_child(review_root)
     return subprocess.CompletedProcess(cmd, proc.returncode,
                                        out["stdout"].text(), out["stderr"].text())

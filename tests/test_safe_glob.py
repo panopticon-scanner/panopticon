@@ -814,10 +814,12 @@ class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
 
     def synthesize_a_captured_advisory(self, manifest, locked, advisories=1):
         """(exit code, stderr, report) of a synthesis over a pip-audit capture made while
-        the target could be listed: `requirements-dev.txt` and CRITICAL advisories."""
+        the target could be listed: `requirements-app.txt` and CRITICAL advisories. (Not
+        `requirements-dev.txt`: an advisory there is in a dev-only manifest and does not
+        gate in standard mode, #3755, and these tests are about the gate.)"""
         target = os.path.join(self.base, "audited-%d" % len(os.listdir(self.base)))
         run = os.path.join(target, ".panopticon")
-        self.write(target, "requirements-dev.txt", "leftpad==1.0\n")
+        self.write(target, "requirements-app.txt", "leftpad==1.0\n")
         self.write(run, os.path.join("tools", "pip-audit.json"), {"fixes": [], "dependencies": [{
             "name": "leftpad", "version": "1.0", "vulns": [
                 {"id": "PYSEC-2026-%d" % n, "severity": "CRITICAL", "description": "RCE",
@@ -855,7 +857,7 @@ class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
                 target, locked_rc, locked_err, kept = self.synthesize_a_captured_advisory(
                     manifest, locked=True)
                 self.assertEqual((1, 1), (rc, locked_rc), locked_err)          # the gate: FAIL
-                self.assertEqual(["requirements-dev.txt"],
+                self.assertEqual(["requirements-app.txt"],
                                  [f["location"]["file"] for f in seen["findings"]], err)
                 # Kept, at the location a tree with no requirements file is given.
                 self.assertEqual([("tool:pip-audit", "PYSEC-2026-0", "CRITICAL", "requirements.txt")],

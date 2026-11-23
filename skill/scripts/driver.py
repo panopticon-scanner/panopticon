@@ -25,6 +25,7 @@ import scripts.delta_withdrawn as delta_withdrawn
 import scripts.diff_map as diff_map
 import scripts.first_contact as first_contact
 import scripts.matrix_provenance as matrix_provenance
+import scripts.run_lock as run_lock
 import scripts.run_manifest as run_manifest
 from scripts import hosts, loop_progress, procgroup
 from scripts.host_posture import (  # noqa: F401 -- compatibility names for #3402
@@ -34,6 +35,7 @@ from scripts.host_posture import (  # noqa: F401 -- compatibility names for #340
 from scripts.host_posture import HostLimited
 import scripts.money as money
 import scripts.model_resolver as model_resolver
+import scripts.plan_contract as plan_contract
 import scripts.setup_config as setup_config
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
@@ -52,6 +54,9 @@ import scripts.phases.validate as validate
 # How many exhausted cells the terminal `complete` message names before it
 # says "and N more" (the count beside it is always exact).
 _EXHAUSTED_NAMED = 10
+
+# How many run ids a new run draws before it gives up on a tag no earlier run uses (#3779).
+_RUN_ID_DRAWS = 8
 
 
 # #1637 P08 (owner ruling D7): `readiness` leads. `coverage` is the first
@@ -383,6 +388,22 @@ def _manifest_for_run(args, review_root, worktree, base, scope, pr_base, first, 
             worktree=worktree,
             scope=scope, pr=args.pr, pr_base=pr_base,
             model_strict=model_resolver.strict_models())
+        # #3779: the tag holds eight characters of the run id. A new run whose tag an
+        # earlier run's files already use would take that run's report for its own.
+        try:
+            for draw in range(_RUN_ID_DRAWS):
+                tag = run_manifest.run_tag(manifest)
+                if not run_artifacts.tag_in_use(review_root, tag):
+                    break
+                if draw + 1 < _RUN_ID_DRAWS:      # an id is drawn only to be looked for
+                    manifest["run_id"] = run_manifest.new_run_id()
+            else:
+                return None, runio._error_status(
+                    "could not start a run: every run id drawn gives the tag %s, which an "
+                    "earlier run's files in %s/ already use; move them away, or run again"
+                    % (tag, plan_contract.ARTIFACT_DIR))
+        except runio.DriverError as exc:
+            return None, runio._error_status(str(exc))
         manifest["first_contact"] = first or {}
         # #3651: where this run's matrix came from, measured once so a resume reports what
         # was true when the run began. Recorded, never enforced, and not an anti-drift key.
@@ -517,6 +538,24 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
                                       runner=runner))
     except (RuntimeError, ValueError, OSError) as exc:
         return runio._error_status("could not resolve review root: %s" % exc)
+    # #3779: one driver on a root, from before first contact to the last write. A refusal
+    # touches nothing, a `--pr` worktree included: that is the holder's.
+    try:
+        with run_lock.hold(review_root, "run"), runio.paths_scope(review_root):
+            return _run_held(args, runner, phases, review_root, worktree, pr_base)
+    except run_lock.Refused as exc:
+        return runio._error_status(str(exc))
+
+
+def _run_held(args, runner, phases, review_root, worktree, pr_base):
+    """`run`, from the resolved review root on, with that root held (#3779)."""
+    # #3779: the manifest is settled from the disk, as before, with nothing captured from
+    # an earlier `run` of the same loop. Its paths are captured once it is settled.
+    runio.capture_paths(review_root, None)
+    # #3735, moved under the lock (#3782): the first read under `.panopticon/` is a held one.
+    stop = _resumed_delta_refusal(args, review_root)
+    if stop:
+        return runio._error_status(stop)
     if args.pr is not None:
         # A PR is a changed-files delta by definition. manifest["base"] holds the
         # user's EXPLICIT override only (anti-drift key); the gh-detected PR base
@@ -542,6 +581,7 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
                                           first, phases)
     if refused is not None:
         return refused
+    runio.capture_paths(review_root, manifest)
     # In-memory only, and deliberately NOT a manifest field: it names where the HOST SESSION runs,
     # a property of this invocation rather than of the run, and feeds only the cost-ledger
     # transcript lookup. Not persisted, so not an anti-drift key: resuming from another session is
@@ -650,20 +690,30 @@ def parse_cli(argv=None):
     return args
 
 
-def _resumed_delta_run(args):
+def _resumed_delta_refusal(args, review_root):
     """The refusal for a run folder that was started as a delta review (#3735), or None.
 
     A bare `driver run` or `driver loop` resumes whatever the manifest says: `None`
     never conflicts, so a run started with `-c` or `--base` went on as a delta run
     with no flag on the command line at all. Read-only, and before any phase: nothing
-    is launched or written for it. `--reset` discards the folder, so it passes."""
+    is launched or written for it. `--reset` discards the folder, so it passes.
+
+    `run` and `loop` ask this with the review root held (#3782); `persist`, which takes
+    no lock, asks it through `_resumed_delta_run`."""
+    if getattr(args, "reset", False):
+        return None
+    return delta_withdrawn.resumed_refusal(run_manifest.load_manifest(review_root))
+
+
+def _resumed_delta_run(args):
+    """`_resumed_delta_refusal` for a verb that has not resolved its root yet."""
     if getattr(args, "reset", False):
         return None
     try:
         review_root = runio.resolve_review_root(args.target)[0]
     except (runio.DriverError, RuntimeError, ValueError, OSError):
         return None         # no root: the verb itself says why
-    return delta_withdrawn.resumed_refusal(run_manifest.load_manifest(review_root))
+    return _resumed_delta_refusal(args, review_root)
 
 
 def main(argv=None):
@@ -706,12 +756,11 @@ def main(argv=None):
             model_resolver.validate_env_overrides(getattr(args, "host", None))
         except ValueError as exc:
             return engine.emit_status(runio._error_status(str(exc)))
-    stop = _resumed_delta_run(args)
-    if stop:
-        if args.verb == "persist":      # its own exit code: it speaks no status protocol
-            print("driver persist: %s" % stop, file=sys.stderr)
-            return 2
-        return engine.emit_status(runio._error_status(stop))
+    # `run` and `loop` make this check themselves, with the review root held (#3782).
+    stop = _resumed_delta_run(args) if args.verb == "persist" else None
+    if stop:                            # its own exit code: it speaks no status protocol
+        print("driver persist: %s" % stop, file=sys.stderr)
+        return 2
     if args.verb in ("loop", "persist"):
         import scripts.orchestrate as orchestrate   # R-P6-2: lazy, no cycle
         return loop_progress.stamped_call(args.verb == "loop", orchestrate.main_verb, args,

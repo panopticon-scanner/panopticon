@@ -488,6 +488,135 @@ def sanitize_requirements_file(path, root):
             "truncated": truncated, "dropped_truncated": more}
 
 
+# #3755: how many files one requirements file may draw on before "which files" is no
+# longer something this module will say.
+_MAX_CLOSURE_FILES = 64
+
+
+# Any spelling of an include that `_INCLUDE` does not take: pip reads `-rprod.txt`, and
+# `-R` is not pip's but may be another reader's. Such a line is an include this module
+# cannot follow, never "no include".
+_INCLUDE_LIKE = re.compile(r"^(?:-[rcR]|--requirement|--constraint)")
+
+
+def _read_regular(real):
+    """`_bounded` over the regular file at `real`. Opened without following a link at
+    the name and without blocking, and read only if it IS a regular file: a FIFO a
+    target includes must not hold the reader, and a device is not a requirements file."""
+    fd = os.open(real, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", real)
+        return _bounded(fh.read(_MAX_READ_BYTES + 1))
+
+
+def requirement_files(path, root, cache=None):
+    """Every file the requirements file at `path` draws on (#3755): itself and its
+    `-r`/`-c` includes, followed to the end, as paths inside `root` (`/`-separated, by
+    where each file really is). None when that cannot be told.
+
+    An advisory labelled with `requirements-dev.txt` is a development advisory only if
+    nothing that file includes is production's: `requirements-dev.txt` holding
+    `-r requirements-prod.txt` is the common layout, and the scanner labels every
+    finding with the file it was pointed at. The whole closure is followed, however
+    far any one scanner goes, so the answer covers whatever subset a scanner read.
+
+    "Cannot be told" is anything short of having read every file: one that is absent,
+    unreadable, not a regular file, outside `root`, cut at the read bound, part of a
+    cycle, or the sixty-fifth; and any line that looks like an include and is not one
+    this module can follow. The caller makes no claim then.
+
+    `cache` (a dict the caller keeps for one pass) holds the answer per file, so a
+    manifest with a thousand findings is walked once."""
+    closure = _closure(path, root, cache)
+    return None if closure is None else sorted(closure)
+
+
+def _closure(path, root, cache=None):
+    """`_requirement_closure`, remembered in `cache` when the caller keeps one."""
+    if cache is None:
+        return _requirement_closure(path, root)
+    key = (os.path.realpath(path), os.path.realpath(root))
+    if key not in cache:
+        cache[key] = _requirement_closure(path, root)
+    return cache[key]
+
+
+def _requirement_closure(path, root):
+    """`{root-relative path: text}` for the requirements file at `path` and every file
+    it includes, or None when that cannot be told (`requirement_files` says when)."""
+    root = os.path.abspath(root)
+    real_root = os.path.realpath(root)
+    done: dict = {}
+    walking: set = set()
+
+    def walk(p):
+        if not confined_to_root(root, p):
+            return False
+        real = os.path.realpath(p)
+        if real in done:
+            return True                   # a file two others include: read once
+        if real in walking or len(done) + len(walking) >= _MAX_CLOSURE_FILES:
+            return False
+        try:
+            text, cut = _read_regular(real)
+        except OSError:
+            return False
+        if cut:
+            return False
+        walking.add(real)
+        base = os.path.dirname(os.path.abspath(p))
+        for entry in _classify(text)[1]:
+            m = _INCLUDE.match(entry["line"]) if entry["reason"] == "include" else None
+            if m is None:
+                if _INCLUDE_LIKE.match(entry["line"].strip()):
+                    return False          # an include, in a spelling this cannot follow
+                continue
+            if not walk(os.path.join(base, m.group(1).strip().strip('"\''))):
+                return False
+        walking.discard(real)
+        done[real] = (os.path.relpath(real, real_root).replace(os.sep, "/"), text)
+        return True
+
+    return dict(done.values()) if walk(path) else None
+
+
+# One requirement pinned to one exact version: `name==1.2` or `name===1.2`, with or
+# without extras. Whatever follows a `;` (a marker) or a ` #` (a comment) is not part of it.
+_EXACT_PIN = re.compile(
+    r"([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)\s*(?:\[[^\]]*\])?\s*===?\s*([^\s,;]+)")
+# The options pip takes after one requirement. They are not part of what it pins.
+_REQUIREMENT_OPTION = re.compile(
+    r"""\s+--(?:hash|config-settings|global-option|install-option)"""
+    r"""(?:=|\s+)(?:"[^"]*"|'[^']*'|\S+)""")
+
+
+def pep503(name):
+    """A project name as PyPI compares names."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def requirement_pins(path, root, cache=None):
+    """`{(pep503 name, version)}` for every requirement the file at `path`, or a file it
+    includes, pins to one exact version (#3749). None when the files cannot all be read.
+
+    "Pinned" is `==` or `===` to a single version and nothing else: `>=`, `~=`, `!=`,
+    a bare name, a URL, and `==1.0,<2` are all unpinned."""
+    closure = _closure(path, root, cache)
+    if closure is None:
+        return None
+    pins = set()
+    for text in closure.values():
+        # A file written on Windows continues a line with a backslash before CRLF.
+        for line in text.replace("\r\n", "\n").replace("\\\n", " ").splitlines():
+            spec = _REQUIREMENT_OPTION.sub(
+                "", re.split(r"\s#|;", line.strip(), maxsplit=1)[0]).strip()
+            m = _EXACT_PIN.fullmatch(spec)
+            if m is not None:
+                pins.add((pep503(m.group(1)), m.group(2)))
+    return pins
+
+
 # #3223: pip-audit resolves with pip in a temporary venv, and for a name with no wheel pip runs that
 # sdist's build hook -- attacker code in the online container. PIP_ONLY_BINARY (read by that inner
 # pip from the environment; measured) refuses the build. One such name fails the WHOLE resolution,

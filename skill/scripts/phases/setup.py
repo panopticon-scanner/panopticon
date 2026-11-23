@@ -13,6 +13,7 @@ import scripts.host_disclosure as host_disclosure
 import scripts.matrix_provenance as matrix_provenance
 import scripts.plan_contract as plan_contract
 import scripts.repo_config as repo_config
+import scripts.run_lock as run_lock
 import scripts.run_manifest as run_manifest
 import scripts.setup_flow as setup_flow
 import scripts.setup_config as setup_config
@@ -634,6 +635,15 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
     refusal -- a posture that moved, a planted shadow shell -- is this verb's
     `error` status, the same one every other refusal here speaks."""
     review_root, _wt, _pr = runio.resolve_review_root(args.target, runner=runner)
+    try:                              # #3779: one driver on a root, setup included
+        with run_lock.hold(review_root, "setup"):
+            return _setup_flow_held(args, runner, phases, posture, review_root)
+    except run_lock.Refused as exc:
+        return runio._error_status(str(exc))
+
+
+def _setup_flow_held(args, runner, phases, posture, review_root):
+    """`run_setup_flow`, from the resolved review root on, with that root held (#3779)."""
     try:
         # #3271: first contact, before anything below removes or writes under
         # .panopticon/ -- the same halt `driver run` makes.

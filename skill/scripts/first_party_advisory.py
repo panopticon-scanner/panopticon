@@ -930,6 +930,10 @@ def _advisory_package(finding):
     return (match.group(1), match.group(2)) if match else None
 
 
+#: The advisory's (package, version), for a caller outside this module (#3755).
+advisory_package = _advisory_package
+
+
 def mark(findings, target_root, cache: IngestCache):
     """Mark and reframe exact in-tree publishable Cargo package advisories.
 

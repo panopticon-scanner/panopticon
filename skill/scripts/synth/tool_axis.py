@@ -657,6 +657,16 @@ def reconcile(plan, tools, resolved, run=None):
         # an operator reading a PASS over a vendor-heavy tree has to see how
         # many drops the rule declined to count, and under which segment.
         "tools_suppressed_not_gated": not_gated_counts,
+        # #3749: per tool, per manifest, the advisories a scanner matched against a
+        # version nobody has (an unpinned requirement reported as 0.0.0). Not findings:
+        # disclosed here, never queued, and certification is as it was.
+        "tools_unpinned": {
+            name: d["unpinned"] for name, d in (tools.dispositions or {}).items()
+            if isinstance(d, dict) and isinstance(d.get("unpinned"), list) and d["unpinned"]},
+        # #3755: scanner findings that ARE in the body and that the path-context rule
+        # kept out of the gate (a test path, a dev-only manifest), per rule. Keys are
+        # the controller's two rule names, counts its own: nothing here is target text.
+        "tools_context_not_gated": dict(sorted(resolved.context_not_gated.items())),
         # #1740 fix round 2: the exclusion POLICY, repaired at the read like
         # its two siblings -- `exclude_paths:` is target-authored, so a glob
         # reaching a published artifact is a target-carried input.

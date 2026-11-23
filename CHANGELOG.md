@@ -32,6 +32,92 @@
     (`count`, and up to 50 `rows`), which stays in the main report file when
     `discarded_claims` moves to a sibling file. Nothing counts differently.
 
+- **A requirement with no pinned version is no longer scanned as version 0.0.0 (#3749).**
+  osv-scanner reports a requirements-file entry that has no `==` pin as version `0.0.0`, and
+  every advisory whose range starts at zero then matches. In the 5.4 batch that was 135 rows:
+  the advisor rejected 120 and 15 stayed in reports as findings, some of them HIGH.
+  - Such a match is not a claim about an installed version. It is no longer a finding: it is
+    not in `findings[]` or `discarded_claims`, it is never put to an advisor, and the gate,
+    grade and health read as if the scanner had not said it.
+  - The report says what was left out, per manifest: `meta.coverage.tools_unpinned`, and one
+    line in the summary and the HTML page, with the packages, the number of advisories and up
+    to 20 advisory ids. Certification is unchanged.
+  - An advisory with no fix is true of whatever version gets installed, so it stays a
+    finding: a malicious-package record (`MAL-…`), or one whose range for the package never
+    ends. Only an advisory whose ranges for the package all end (`fixed`, `last_affected` or
+    `limit`) is left out; one whose ranges cannot be read stays.
+  - Only osv-scanner's PyPI rows from a `.txt` requirements manifest at exactly `0.0.0`. A
+    requirement really pinned at `==0.0.0` (or `===0.0.0`) is kept. Lockfiles, other
+    ecosystems and other scanners are untouched.
+  - To have an unpinned requirement audited, pin it.
+- **A scanner finding in a test path or a dev-only manifest no longer decides the gate by which
+  way its advisor leaned (#3755).** Whether a path is a test path is a fact, but each advisor
+  decided it again ("or is it test scaffolding"). In the 5.4.0 sweep one repository failed its
+  gate in every run on private keys under a test directory, each confirmed in only some runs, and
+  another's only CRITICAL, an advisory in a test-tooling lockfile, was confirmed in five runs and
+  rejected in the sixth, which graded two bands higher.
+  - The controller now states the fact at ingest, as `tool_evidence.path_context`: `test` under
+    a test directory (`test`, `tests`, `spec`, `__tests__`, `e2e`, `testdata`, `fixtures`,
+    `__fixtures__`), `dev_manifest` for a dependency advisory in a manifest under one or in a
+    development requirements file. It is decided from the path inside the review root.
+  - A requirements file is dev-only only when every file it includes (`-r`, `-c`, followed to
+    the end) is dev-only too. `requirements-dev.txt` holding `-r requirements-prod.txt` is not
+    marked: the scanner labels production's advisories with the file it was pointed at. When
+    the included files cannot all be read, there is no mark.
+  - The advisor is told the fact as settled, and judges only whether the claim is true of what
+    is at the location.
+  - **The rule (owner's ruling, 2026-11-23).** In `--security standard` such a finding is
+    reported and not gate-eligible: out of the gate, the grade and health. In `--security
+    redteam` it gates only when CRITICAL or secret-class (#1578 policy C). Severity is unchanged.
+  - The report shows it: the row carries `gate: {"eligible": false, "rule": ...}`,
+    `meta.coverage.tools_context_not_gated` counts per rule, and the summary and HTML say so.
+  - **This changes results.** A run that failed its gate only on scanner findings in test
+    paths now passes in standard mode; use `--security redteam` to gate on secrets and
+    CRITICALs there.
+  - A reviewer's own claim at the same line as such a scanner finding stays a separate row.
+    Merged into one, the scanner finding was in the gate whenever the claim was the more severe.
+  - Not covered: a file only named like a test, an agent's own finding in a test path, and
+    dev-only packages inside a shared lockfile.
+- **A run's paths are settled once per invocation (#3779, part 2).** Every path lookup read
+  `run-manifest.json` again, and a failed read meant "no manifest": the flat `.panopticon/` path,
+  with no error. One failed read in the middle of synthesis sent the synthesize step to
+  `.panopticon/report.json` while the driver checked the tagged report of an earlier attempt
+  and then pointed the flat link at it.
+  - `driver run` now reads the manifest once, when it starts or resumes the run, and uses that
+    run's tag for every path until it returns. `driver loop` does so in each step and keeps the
+    last step's tag between steps; `driver persist` reads it once for its paths. A phase
+    function called directly, outside the driver, reads the manifest on every lookup as before.
+  - **A new run does not take a tag an earlier run's files already use.** The tag holds eight
+    characters of the run id, so two runs sharing them, with one host, mode, scope and date,
+    shared every durable file name, and one could take the other's report for its own. A new run
+    whose tag is on disk (`runs/<tag>` or any `<tag>-*` file) draws another id before it writes
+    its manifest. After eight draws it stops with the reason.
+- **Two drivers can no longer work on one review root at the same time (#3779, part 1).** Nothing
+  stopped a second `driver run`, `loop` or `setup` on a root where one was already running. Each
+  reads `.panopticon/`, decides and writes, so the second acted on what the first was changing: a
+  second driver's `--reset` deleted the run folder under the first, and a driver that woke after
+  a newer run had finished set that run's report aside.
+  - Each of the three verbs now holds a lock on the review root from before it first reads
+    `.panopticon/` until it returns. A second one changes nothing and ends in `error`: `another
+    driver is running on this review root (pid <n>, `driver loop`, since <time>): wait for it to
+    finish, or stop it, then run again`.
+  - The lock is `flock` on a file under `$PANOPTICON_STATE_DIR/locks/`, outside the reviewed tree,
+    named by the root directory's device and inode numbers: a link to the root, or the same
+    directory typed in another letter case, is the same lock. The operating system releases it
+    when the process exits, so a killed driver leaves no stale lock.
+  - **The state directory must now be writable** for `run`, `loop` and `setup`. A read-only one,
+    from which the stamp key alone could be read, is refused with the reason.
+  - The driver's child steps hold the same lock. A synthesis step that outlives a killed driver
+    keeps the root until it exits, so a retry cannot start beside it; the refusal names its pid
+    and says `kill <pid>`. Reviewer agents and scanner containers never hold the lock.
+  - A lock that cannot be used (a state directory that cannot be written, is not yours, or is on
+    a filesystem that refuses `flock`) stops the driver before it touches the tree, with the
+    reason and the remedy.
+  - Not covered: `driver persist`, `driver readiness` and `driver migrate-config` take no lock,
+    nor does an entry script run by hand (`synthesize.py`, `discovery.py`,
+    `devtools/replay_report.py`). Two state directories (two machines or two users on one shared
+    tree) do not exclude each other. A lock file deleted or replaced while it is held lets a
+    second driver in, and so does replacing the root directory itself.
 - **A tool finding is no longer dropped because its location spells a fixture, vendored or
   generated directory it is not in (#3771).** Suppression by path name read the scanner's reported
   location as text. A location carrying URI syntax or dot segments, such as
@@ -44,7 +130,6 @@
     other location is kept and reported.
   - Plain paths are suppressed as before, including `./vendor/lib.js` and names with spaces,
     `@`, `+` or non-ASCII letters.
-
 - **A synthesis retry that dies without writing a report no longer ends the run on an earlier
   attempt's (#3769).** The driver took any usable report at the run's report path for the one its
   synthesize step had just written. When an attempt had published a report and then not finished
