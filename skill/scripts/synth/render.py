@@ -20,6 +20,13 @@ from . import health_basis as health_basis_mod
 from . import integrity as integrity_mod
 
 
+# #3754: the terminal lines for `meta.severity_ceiling` and `meta.severity_outside_range`.
+_CEILING_LINE = ("**Lowered to the domain's ceiling:** %d agent finding(s) rated above what "
+                 "their code's domain allows (%s)")
+_OUTSIDE_LINE = ("**Rated above the domain's range:** %d agent finding(s) with no catalog "
+                 "code, rated above their reviewer's domain ceiling and left as rated (%s)")
+
+
 def _grade_text(summary):
     """The grade as displayed: the letter, a provisional letter, or n/a.
 
@@ -468,13 +475,10 @@ def render_summary(report):
         % len(unscored), ""] if unscored else []) + ([
         "**Capped at MEDIUM:** %d unconfirmed claim(s) (%s)" % (sum(map(len, capped.values())), ", ".join(
             "%s %d" % (k.replace("_", " "), len(v)) for k, v in sorted(capped.items()))), ""] if capped else []) + ([
-        "**Lowered to the domain's ceiling:** %d agent finding(s) rated above what their code's "
-        "domain allows (%s)" % (sum(map(len, ceilinged.values())), ", ".join(
+        _CEILING_LINE % (sum(map(len, ceilinged.values())), ", ".join(
             "%s %d" % (k, len(v)) for k, v in sorted(ceilinged.items()))), ""]
         if ceilinged else []) + ([
-        "**Rated above the domain's range:** %d agent finding(s) with no catalog code, rated "
-        "above their reviewer's domain ceiling and left as rated (%s)"
-        % (len(outside), ", ".join(outside[:5]) + (" ..." if len(outside) > 5 else "")), ""]
+        _OUTSIDE_LINE % (len(outside), ", ".join(outside[:5]) + (" ..." if len(outside) > 5 else "")), ""]
         if outside else []) + ([
         "**Model fallbacks:** %d dispatch(es) ran on a fallback, not the requested model (%s)" % (
             len(fallbacks), "; ".join(sorted({tool_base.inert_text(
