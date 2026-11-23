@@ -37,6 +37,7 @@ that needs more room is a new module.
 """
 
 import scripts.evidence as evidence
+import scripts.redact as redact
 
 VERIFIED_STATUSES = ("tool_confirmed", "advisor_confirmed")
 UNVERIFIED_STATUSES = ("tool_reported", "needs_more_info", "unverified")
@@ -116,7 +117,12 @@ def rejected_scanner_findings(rejected):
     for finding in chosen[:REJECTED_SCANNER_ROWS]:
         location = evidence.location_of(finding)
         reasoning = finding_evidence(finding).get("reasoning")
-        reasoning = reasoning if isinstance(reasoning, str) else ""
+        # Redacted BEFORE the cut (seat review of fd8f260d; redact.py's D10 F2): the
+        # private-key rule needs both delimiters, so a cut that drops the END leaves
+        # the key body unmasked. `redact_diagnostic` also drops everything from a
+        # header nothing closes.
+        reasoning = (redact.redact_diagnostic(reasoning, redact.REDACT_CAP)
+                     if isinstance(reasoning, str) else "")
         if len(reasoning) > REJECTED_REASONING_CAP:
             reasoning = reasoning[:REJECTED_REASONING_CAP - len(_CUT)] + _CUT
         occurrences = finding.get("occurrences")
