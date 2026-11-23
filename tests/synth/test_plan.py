@@ -887,14 +887,14 @@ class TestManifestMustDeclareSelected(unittest.TestCase):
 
     TS = "2026-09-17T00:00:00Z"
 
-    def _run(self, manifest, dispositions=None, tools_ran=None):
+    def _run(self, manifest, dispositions=None, tools_ran=None, run_id=None):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "tools-manifest.json"), "w",
                       encoding="utf-8") as fh:
                 json.dump(manifest, fh)
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 axis = tool_axis_mod.ToolAxis.load(
-                    _cli_args(), d, [], dispositions or {}, tools_ran)
+                    _cli_args(run_id=run_id), d, [], dispositions or {}, tools_ran)
                 report = report_mod.build_report(report_mod.ReportInputs(
                     run=report_mod.RunConfig(target=d, fail_on="high",
                                              timestamp=self.TS),
@@ -930,11 +930,25 @@ class TestManifestMustDeclareSelected(unittest.TestCase):
         # The shape this fix must NOT reject: the runner ran and honestly
         # selected nothing. `selected: []` is a measurement; a missing key is
         # the absence of one.
-        axis, report, _err = self._run(
-            {"schema_version": 1, "selected": [], "produced": [], "missing": []})
+        manifest = {"schema_version": 1, "selected": [], "produced": [], "missing": []}
+        axis, report, _err = self._run(manifest)
         self.assertIsNotNone(axis.manifest)
         self.assertIsNone(axis.manifest_invalid)
         self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
+        # #3766 (owner ruling, 2026-11-22) moved the two lines that stood here. This
+        # helper's scout requests semgrep, and with no run id nothing binds the
+        # manifest to the run, so it cannot excuse a request it did not select: the
+        # empty selection is still a measurement, and the request is still required.
+        self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"],
+                         {"semgrep": "requested_absent"})
+        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
+        self.assertFalse(report["summary"]["coverage_certified"])
+        # With the run id that binds it, the selection is the required set, as before.
+        axis, report, _err = self._run(dict(manifest, run_id="rid-1"), run_id="rid-1")
+        self.assertIsNotNone(axis.manifest)
+        self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
+        self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"],
+                         {"semgrep": "requested_unavailable"})
         self.assertEqual(report["summary"]["gate"], "PASS")
         self.assertTrue(report["summary"]["coverage_certified"])
 

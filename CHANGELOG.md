@@ -38,28 +38,44 @@
   had requested. A scanner nobody requested, whose output was there and could not be used
   (unparseable, an adapter that raised while parsing, pip-audit's empty capture when it refuses to
   audit), was recorded as `failed` and the run still read PASS, certified.
-  - Every adapter with a `failed` disposition now counts as lost coverage on that path, reported
-    as `produced_unusable` in `meta.coverage.divergence.tools`, and the gate is INCONCLUSIVE
-    (exit 2). A clean run on the same path is unchanged.
+  - Every registered adapter with a `failed` disposition now counts as lost coverage on that
+    path, reported as `produced_unusable` in `meta.coverage.divergence.tools`. A coverage loss
+    withholds certification: the gate is INCONCLUSIVE (exit 2) unless a finding already makes it
+    FAIL (exit 1) or `--fail-on off` turns it off (exit 0). A clean run on the same path is
+    unchanged. A `.json` or `.sarif` file with no registered adapter (a report written into the
+    tools directory, a stray manifest) is listed as before and does not count.
+  - **A manifest that no run id binds can add to what is required and never remove from it.**
+    On a call with no `--run-id`, a `tools-manifest.json` beside the captures used to bound the
+    required set to its own `selected`: a scanner the scout requested and the manifest did not
+    select was the non-gating `requested_unavailable`, and a capture it did not select could fail
+    without counting. Required is now the scout's request together with `selected`; such a
+    request with no usable output is `requested_absent`, and a failed capture counts whoever
+    selected it. What the manifest records as lost (`missing`, a refused network, a dependency
+    audit with no output, a capture its receipt does not name, a manifest that cannot be read)
+    counts as before. **This changes a verdict that was PASS:** a standalone call whose scout
+    requested a scanner the runner did not select is now INCONCLUSIVE. A run with a run id is
+    unchanged. One existing test pinned the old reading and was changed:
+    `TestManifestMustDeclareSelected.test_an_empty_selected_list_is_a_manifest_not_a_failure`
+    (#1692) now asserts PASS, certified, with a binding run id, and INCONCLUSIVE without one.
   - **An empty `--run-id` no longer reads as no run id.** The driver passes the run manifest's
     `run_id`, or an empty string when the manifest carries none, and the empty string turned off
     the requirement that a tools manifest and its output receipt exist. Such a run now reports
     `meta.integrity.tools_manifest_invalid` ("this run has no run id ..."), reads none of the tool
-    output, and is INCONCLUSIVE. A call with no `--run-id` at all, and a `--tools-skipped` run,
-    are unchanged.
-  - The same holds beside a manifest that no run id binds: on a call with no `--run-id`, a
-    failed capture counts whether or not the manifest's `selected` names it. A run with a run id
-    is unchanged; there an unselected capture is unbound and never read.
-  - **A tools directory that cannot be listed is lost coverage.** A `--tools-dir` that is there
-    and whose entries cannot be read looked like a directory with no scanner output, and the run
-    was certified. It now reports the new `meta.integrity.tools_dir_unlistable` (the directory
-    and the error, redacted) and is INCONCLUSIVE, on every path. A directory that is not there
-    is unchanged. The report schema gains the key.
+    output, and is not certified. A tools directory that is not there says nothing, as before. A
+    call with no `--run-id` at all, and a `--tools-skipped` run, are unchanged.
+  - **A tools directory that cannot be listed is lost coverage.** A `--tools-dir` whose entries
+    cannot be read looked like a directory with no scanner output, and the run was certified. It
+    now reports the new `meta.integrity.tools_dir_unlistable` (the directory and the error,
+    redacted, on one line) and is not certified, on every path. This is any failure to list it
+    except "no such file", an error part way through the entries included (that one was a
+    traceback and no report); a directory that is not there is unchanged. The directory is listed
+    once, and that listing is the one both the ingest and the report use. The report schema gains
+    the key.
+  - Tool names on the summary's coverage line are spelled on one line, control characters
+    escaped.
   - Exposure: a driver run always passes a run id unless its run manifest has lost the key, so
     in practice this was a standalone `synthesize` call. What that call certifies is stated in
-    the output guide: every scout-requested adapter ended `ok`, `empty` or `noscan`, and every
-    capture in the tools directory was usable; nothing is said about a scanner that never ran
-    and was not requested.
+    the output guide.
 
 - **A local Python package with an over-long version number stays with the advisor (#3776).** A
   version holding a number past Python's integer digit limit (more than 4,300 digits) cannot be

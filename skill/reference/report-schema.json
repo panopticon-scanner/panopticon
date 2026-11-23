@@ -1261,7 +1261,7 @@
             },
             "tools_dir_unlistable": {
               "type": ["string", "null"],
-              "description": "#3766: the tools directory this run was given exists and could not be listed -- the directory and the error, redacted and bounded, else null. No scanner output in it was read, so tool coverage is unknown; this sinking integrity fact forces INCONCLUSIVE unless a finding already forces FAIL. A tools directory that was not given, or is not there, is null."
+              "description": "#3766: the tools directory this run was given could not be listed -- the directory and the error, redacted, on one line and bounded (400 characters), else null. It is the listing ingest read from that failed, at the open or while reading the entries; nothing in the directory was read, so tool coverage is unknown. This sinking integrity fact forces INCONCLUSIVE unless a finding already forces FAIL. A tools directory that was not given, or is not there (no such file, and only that), is null."
             },
             "unbound_tool_outputs": {
               "type": "array",

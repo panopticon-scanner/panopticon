@@ -22,6 +22,7 @@ import sys
 
 import scripts.app_trace as app_trace
 import scripts.groups_schema as groups_schema
+import scripts.inert as inert
 import scripts.ingest_tools as ingest_tools
 import scripts.native_unparsed as native_unparsed
 import scripts.redact as redact
@@ -39,22 +40,20 @@ class ToolManifestError(ValueError):
     """A stale or foreign tool manifest cannot be used for synthesis."""
 
 
-def tools_dir_unlistable(tools_dir):
-    """Why a tools directory that is THERE could not be listed, else None (#3766).
+LISTING_FAILURE_MAX = 400
 
-    `ingest_tools._output_files` turns a failed listing into an empty one, which is
-    what a directory holding no scanner output looks like: the run then certified
-    over captures that were present and could not be read. A directory that was not
-    given, or is not there, has no output to lose and says nothing, as before. The
-    reason names the directory and the error, redacted and bounded."""
-    if not tools_dir or not os.path.lexists(tools_dir):
-        return None
-    try:
-        with os.scandir(tools_dir):
-            return None
-    except OSError as exc:
-        return redact.redact_diagnostic(
-            "%s: %s" % (tools_dir, exc.strerror or type(exc).__name__), 400)
+
+def listing_failure(tools_dir, error):
+    """Why the tools directory could not be listed, for the report and stderr (#3766).
+
+    `error` is the one `ingest_tools.list_tools_dir` met, at the open or while the
+    entries were read. The directory's name is the caller's and the target's to
+    choose, so the reason is redacted, spelled on one line (`inert.inert_spelling`:
+    a newline in the name would otherwise start a line of its own on stderr and in
+    the summary) and bounded."""
+    text = "%s: %s" % (tools_dir, error.strerror or type(error).__name__)
+    return inert.inert_spelling(
+        redact.redact_diagnostic(text, LISTING_FAILURE_MAX))[:LISTING_FAILURE_MAX]
 
 
 @dataclass(frozen=True)
@@ -77,6 +76,10 @@ class ToolAxis:
     unbound_outputs: list | None = None
     # #3766: why the tools directory this run was given could not be listed, or None.
     dir_unlistable: str | None = None
+    # #3766 (owner ruling): no run id binds the manifest to this run. It can then add
+    # to what is required and never remove from it; see `reconcile`. False for a
+    # caller that builds the axis itself, which reads as on main.
+    manifest_unbound: bool = False
     suppressed: dict | None = None   # {reason: count} source-scope drops
     # #1701/#3269 G4: source-scope drops this run's GATE must still count -- non-empty
     # only under `--security redteam`. Carried beside `suppressed` rather than
@@ -92,8 +95,11 @@ class ToolAxis:
     excluded: dict | None = None
 
     @classmethod
-    def manifest_state(cls, args, run_dir):
-        """Load the manifest before ingest and return it, its error, and receipt."""
+    def manifest_state(cls, args, run_dir, listing=None):
+        """Load the manifest before ingest and return it, its error, and receipt.
+
+        `listing` is the caller's one look at the tools directory
+        (`ingest_tools.list_tools_dir`); without one this takes its own."""
         manifest, manifest_invalid = None, None
         allowed_outputs = None
         tm_path = os.path.join(run_dir, "tools-manifest.json")
@@ -160,10 +166,15 @@ class ToolAxis:
         # which read as a standalone call, required no receipt, and sent a missing
         # (or deleted) tools manifest down the permissive branch of `reconcile`. A
         # caller that names a run and cannot say which has tool output nobody can
-        # bind: nothing in the tools directory is this run's.
+        # bind: nothing in the tools directory is this run's. A directory that is
+        # NOT THERE holds nothing to bind, and says nothing, as on main.
         unbound_run = (getattr(args, "run_id", None) == ""
                        and bool(getattr(args, "tools_dir", None))
                        and not getattr(args, "tools_skipped", False))
+        if unbound_run:
+            if listing is None:
+                listing = ingest_tools.list_tools_dir(args.tools_dir)
+            unbound_run = not listing.missing
         if unbound_run and manifest_invalid is None:
             manifest_invalid = ("this run has no run id, so tools-manifest.json and the "
                                 "tool output cannot be bound to it")
@@ -192,12 +203,17 @@ class ToolAxis:
     @classmethod
     def load(cls, args, run_dir, plan_lists, dispositions, tools_ran, suppressed=None,
              gated_suppressed=None, excluded=None, manifest_state=None,
-             unbound_outputs=None):
-        """Build the tool axis from one manifest state and one bounded ingest."""
+             unbound_outputs=None, listing=None):
+        """Build the tool axis from one manifest state and one bounded ingest.
+
+        `listing` is the look at the tools directory that ingest read from. This
+        never takes another: without one the axis says nothing about the listing."""
         if manifest_state is None:
-            manifest_state = cls.manifest_state(args, run_dir)
+            manifest_state = cls.manifest_state(args, run_dir, listing)
         manifest, manifest_invalid, _allowed_outputs = manifest_state
-        unlistable = tools_dir_unlistable(getattr(args, "tools_dir", None))
+        unlistable = None
+        if listing is not None and listing.error is not None and not listing.missing:
+            unlistable = listing_failure(args.tools_dir, listing.error)
         if unlistable:
             print("synthesize: the tools directory cannot be listed (%s) -- no scanner "
                   "output in it was read, so tool coverage is NOT certified."
@@ -206,6 +222,7 @@ class ToolAxis:
                    tools_ran=tools_ran, dispositions=dispositions, manifest=manifest,
                    ingested_paths=args.files, manifest_invalid=manifest_invalid,
                    dir_unlistable=unlistable,
+                   manifest_unbound=not getattr(args, "run_id", None),
                    unbound_outputs=list(unbound_outputs or []),
                    suppressed=suppressed,                     # #1578
                    gated_suppressed=list(gated_suppressed or []),   # #1701
@@ -314,9 +331,15 @@ def _merged_tallies(tallied, extra):
 
 
 def _unusable(dispositions):
-    """Adapters whose capture ingest read and could not use (`failed`), sorted."""
+    """Registered adapters whose capture ingest read and could not use, sorted.
+
+    Ingest gives every `.json`/`.sarif` with no registered adapter a `failed`
+    disposition too ("no registered adapter"): the report this command wrote into the
+    directory, a stray manifest, a note. Those are disclosed in `adapters` and are
+    not scanner output, so they are not lost coverage."""
     return sorted(name for name, d in (dispositions or {}).items()
-                  if isinstance(d, dict) and d.get("status") == "failed")
+                  if isinstance(d, dict) and d.get("status") == "failed"
+                  and name in ingest_tools.ADAPTERS)
 
 
 def reconcile(plan, tools, resolved, run=None):
@@ -391,17 +414,25 @@ def reconcile(plan, tools, resolved, run=None):
                 {t: "produced_unusable" if info["kind"] == "unusable"
                  else "requested_absent"
                  for t, info in lost.items()})
-            # #3766: and every capture ingest read and could not use, selected or
-            # not. `lost_required_coverage` reads only the manifest's `selected`, so on
-            # a call that requires no receipt a manifest selecting nothing switched
-            # the rule below off again: a manifest there is no more bound to the run
-            # than its absence is. With a receipt (a run id) nothing changes: an
-            # unselected capture is unbound, never parsed, and has no disposition.
+        unavailable = sorted(set(plan.scout_requested or []) - selected_m - produced_m)
+        if tools.manifest_unbound:
+            # #3766 (owner ruling on the gates at 93300f1b): with no run id nothing
+            # binds this manifest to the run, so it can ADD to what is required and
+            # never remove from it. Everything above stands -- what it records as
+            # lost is lost. What it may not do is excuse: main demoted a request the
+            # runner did not select to non-gating `requested_unavailable`, and bounded
+            # "could not be used" to its own `selected`, so a manifest anyone could
+            # leave beside the captures switched both rules off. Required here is the
+            # scout's request UNION the selection, and every registered capture that
+            # could not be used counts, as on the manifestless branch below.
+            requested = [t for t in unavailable if t not in produced]
+            tools_absent = sorted(set(tools_absent) | set(requested))
+            tool_divergence.update({t: "requested_absent" for t in requested})
             unusable = _unusable(tools.dispositions)
             tools_absent = sorted(set(tools_absent) | set(unusable))
             tool_divergence.update({t: "produced_unusable" for t in unusable})
-        unavailable = sorted(set(plan.scout_requested or []) - selected_m - produced_m)
-        tool_divergence.update({t: "requested_unavailable" for t in unavailable})
+        else:
+            tool_divergence.update({t: "requested_unavailable" for t in unavailable})
     else:
         tools_absent = sorted(set(plan.scout_requested or []) - produced)
         tool_divergence = {t: "requested_absent" for t in tools_absent}

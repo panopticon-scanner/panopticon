@@ -288,15 +288,26 @@ which the driver sends for a run manifest that carries no `run_id`, is not the s
 exempting it from the gate would have made corrupting one byte of a target-writable file the
 cheapest way to turn an INCONCLUSIVE run into a PASS on identical findings. An ABSENT manifest when
 no run-bound tool ingest was requested (a pre-#1031 run, `--no-tools`) is a different fact and keeps
-the scout-derived gate. What that gate certifies over a tools directory (#3766, a standalone
-`synthesize` call with no `--run-id`, with or without a manifest beside it, since nothing binds a
-manifest to such a call): every scout-requested adapter ended `ok`, `empty` or `noscan`, and every
-capture in the tools directory was usable. A `failed` capture is lost coverage (`produced_unusable`)
-whoever asked for it, selected by a manifest or not, and the gate goes INCONCLUSIVE. Nothing is said
-about a scanner that never ran and was not requested: it leaves no trace there, which is what a
-run-bound manifest is for. A tools directory that is given, is there, and cannot be listed is lost
-coverage on every path (`meta.integrity.tools_dir_unlistable`, INCONCLUSIVE): its captures were
-present and could not be read. One that is not there is no tool axis at all, as before. A manifest
+the scout-derived gate. What a call with no `--run-id` certifies over a tools directory (#3766; a standalone
+`synthesize` call): nothing binds a manifest to such a call, so a manifest beside it can add to what
+is required and never remove from it. Required is the scout's request together with the manifest's
+`selected`; a requested scanner the manifest did not select and that left no usable output is
+`requested_absent`, not the non-gating `requested_unavailable` a run-bound manifest gives it. What
+the manifest records as lost (`missing`, a refused network, a dependency audit with no output, a
+capture its receipt does not name) is lost as before. A capture that could not be used is lost
+coverage (`produced_unusable`) whoever asked for it. "Capture" means a file ingest reads and has an
+adapter for: ingest reads the names in the tools directory that do not start with a dot and end in
+`.sarif` or `.json`, and matches each by its name without the extension against the registered
+adapters. A file with no adapter (a report written into the directory, a stray manifest) is listed
+under `meta.coverage.adapters` as `failed`, "no registered adapter", and does not count. A coverage
+loss withholds certification; the gate is then INCONCLUSIVE unless a finding already makes it FAIL
+or `--fail-on off` turns it off. Nothing is said about a scanner that never ran, was not requested
+and is in no manifest: it leaves no trace there, which is what a run-bound manifest is for. A tools
+directory that is given and cannot be listed is lost coverage on every path
+(`meta.integrity.tools_dir_unlistable`, the directory and the error on one line): whatever it holds
+was not read. That is any failure to list it, an error part way through the entries included,
+except "no such file"; a directory that is not there is no tool axis at all, as before, with an
+empty `--run-id` too. The one listing ingest reads from is the one this is judged by. A manifest
 that parses with malformed FIELDS is a third, repaired at the read (`meta.tools.sanitized` /
 `network`) where a bad row costs a warning and the row, never the run. The three are independent: a
 run can complete, write a valid artifact and still be `INCONCLUSIVE`; it can pass its gate and still

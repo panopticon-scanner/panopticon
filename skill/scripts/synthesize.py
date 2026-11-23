@@ -475,8 +475,13 @@ def main(argv=None, refuse_delta=True):
         print("synthesize: %s" % exc, file=sys.stderr)
         return validate_schema_mod.ARTIFACT_INVALID  # fatal even beside an old report
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
+    # #3766: ONE look at the tools directory. The manifest state, the ingest and the
+    # tool axis all judge it, and a second look can disagree with the first.
+    tools_listing = (ingest_tools.list_tools_dir(args.tools_dir)
+                     if args.tools_dir else None)
     try:
-        manifest_state = tool_axis_mod.ToolAxis.manifest_state(args, run_dir)
+        manifest_state = tool_axis_mod.ToolAxis.manifest_state(
+            args, run_dir, tools_listing)
     except tool_axis_mod.ToolManifestError as exc:
         print(str(exc), file=sys.stderr)
         return 3              # invalid input, distinct from gate FAIL (1)
@@ -487,10 +492,12 @@ def main(argv=None, refuse_delta=True):
     unbound_outputs: list[str] = []
     (tool_findings, dispositions, tools_ran, suppressed,
      gated_suppressed, tools_excluded) = plan_mod.ingest_tool_findings(
-         args, allowed_outputs=manifest_state[2], unbound_out=unbound_outputs)
+         args, allowed_outputs=manifest_state[2], unbound_out=unbound_outputs,
+         listing=tools_listing)
     tools = tool_axis_mod.ToolAxis.load(
         args, run_dir, plans[0], dispositions, tools_ran, suppressed,
-        gated_suppressed, tools_excluded, manifest_state, unbound_outputs)
+        gated_suppressed, tools_excluded, manifest_state, unbound_outputs,
+        listing=tools_listing)
     prepared = findings_mod.FindingSet.prepare(args, tool_findings, run.security_mode)
     # #1634: redact the INPUT, not only the output -- and do it HERE, upstream
     # of the --emit-verify-queue branch, so both passes of a run see identical
