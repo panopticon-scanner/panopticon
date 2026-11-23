@@ -35,7 +35,7 @@ Not covered: `driver persist`, `driver readiness` and `driver migrate-config` ta
 lock, nor does an entry script run by hand (`synthesize.py`, `discovery.py`,
 `devtools/replay_report.py`). Two state directories (two machines, or two users, on one
 shared tree) do not exclude each other. A lock file deleted or replaced while it is
-held lets a second driver in.
+held lets a second driver in, and so does replacing the root directory itself.
 
 Stdlib only.
 """
@@ -67,9 +67,10 @@ _RECORD_MAX = 4096
 #: Every record is written at this size, padded: one write, never a truncate first.
 _RECORD_SIZE = 1024
 
-#: lock path -> [descriptor, how many holds deep, what the file says]
+#: lock path -> [descriptor, how many holds deep, what the file says, who holds it]
 _HELD: dict = {}
-_GUARD = threading.RLock()
+#: a root's path as it was given to `hold` -> its lock path, while that lock is held.
+_GIVEN: dict = {}
 
 _AGAIN = "wait for it to finish, or stop it, then run again"
 _UNUSABLE = ("the run lock cannot be used: %s. `driver run`, `loop` and `setup` hold one "
@@ -90,72 +91,106 @@ def lock_path(review_root):
                         "%x-%x.lock" % (info.st_dev, info.st_ino))
 
 
+def _me():
+    """Who holds: this process, on this thread. A hold inside a hold is the same one."""
+    return (os.getpid(), threading.get_ident())
+
+
 def _held(review_root):
-    """This process's entry for `review_root`, or None. A root that cannot be looked at
-    is one this process does not hold."""
-    try:
-        return _HELD.get(lock_path(review_root))
-    except OSError:
+    """This process's entry for `review_root`, or None when it holds none.
+
+    By the path as it was given to `hold`, with no second look at the root: a look that
+    fails must not read as "not held" and start a child without the lock its driver
+    holds. Any other spelling is looked at, and that `OSError` is the caller's."""
+    if not _HELD:
         return None
+    path = _GIVEN.get(os.path.abspath(review_root))
+    return _HELD.get(lock_path(review_root) if path is None else path)
 
 
 @contextlib.contextmanager
 def hold(review_root, verb):
     """Hold `review_root` for `verb`, or raise `Refused`.
 
-    A hold inside a hold, in one process, passes: `driver loop` holds the root and
-    calls `driver.run` in-process. The root is let go when the outermost one ends."""
+    A hold inside a hold, in one process and on one thread, passes: `driver loop` holds
+    the root and calls `driver.run` in-process. The root is let go when the outermost
+    one ends. From any other thread, or from a forked process that inherited this
+    table, the root is held by another driver.
+
+    No mutex: the table is changed only by the thread that holds, and two threads that
+    both find the root free are told apart by `flock`, which one of them loses."""
     try:
         path = lock_path(review_root)
     except OSError as exc:
         raise Refused("the review root cannot be locked: %s" % _reason(review_root, exc)) from exc
-    with _GUARD:
-        entry = _HELD.get(path)
-        if entry is None:
-            said = {"pid": os.getpid(), "verb": verb, "host": socket.gethostname(),
-                    "since": datetime.datetime.now(datetime.timezone.utc)
-                    .strftime("%Y-%m-%dT%H:%M:%SZ")}
-            entry = _HELD[path] = [_take(path), 0, said]
-            _say(entry)
-        entry[1] += 1
+    given = os.path.abspath(review_root)
+    entry = _HELD.get(path)
+    if entry is not None and entry[3] != _me():
+        raise Refused(_held_by(entry[0], path))
+    if entry is None:
+        said = {"pid": os.getpid(), "verb": verb, "host": socket.gethostname(),
+                "since": datetime.datetime.now(datetime.timezone.utc)
+                .strftime("%Y-%m-%dT%H:%M:%SZ")}
+        entry = _HELD[path] = [_take(path), 0, said, _me()]
+        _say(entry)
+    entry[1] += 1
+    _GIVEN[given] = path
     try:
         yield
     finally:
-        with _GUARD:
-            entry[1] -= 1
-            if not entry[1]:
-                del _HELD[path]
-                _let_go(entry[0])
+        entry[1] -= 1
+        if not entry[1]:
+            del _HELD[path]
+            for spelled in [key for key, value in _GIVEN.items() if value == path]:
+                del _GIVEN[spelled]
+            _let_go(entry[0])
 
 
 def descriptor(review_root):
-    """The descriptor this process holds `review_root` by, or None when it holds none."""
-    with _GUARD:
+    """The descriptor this process holds `review_root` by, or None when it holds none.
+    `Refused` when that cannot be told: the caller starts no child on a guess."""
+    try:
         entry = _held(review_root)
-        return None if entry is None else entry[0]
+    except OSError as exc:
+        raise Refused("the run lock for %s could not be checked: %s"
+                      % (review_root, exc.strerror or exc)) from exc
+    return None if entry is None else entry[0]
 
 
 def note_child(review_root, pid=None, phase=None):
-    """Say which phase child is running, or (no pid) that none is. A process holding no
-    lock says nothing."""
-    with _GUARD:
+    """Say which phase child is running, or (no pid) that none is. Best-effort, like the
+    record itself: a process holding no lock, or a root that cannot be matched to one,
+    says nothing."""
+    try:
         entry = _held(review_root)
-        if entry is None:
-            return
-        entry[2].pop("child", None)
-        if pid is not None:
-            entry[2]["child"] = {"pid": pid, "phase": phase}
-        _say(entry)
+    except OSError:
+        return
+    if entry is None:
+        return
+    entry[2].pop("child", None)
+    if pid is not None:
+        entry[2]["child"] = {"pid": pid, "phase": phase}
+    _say(entry)
 
 
 def _take(path):
     """An open, locked descriptor on `path`, or `Refused`. Close-on-exec, as every
-    descriptor Python opens is: only a child handed it by name inherits it."""
+    descriptor Python opens is: only a child handed it by name inherits it.
+
+    Never 0, 1 or 2. A driver started with a standard stream closed is given that number
+    by `os.open`, and a child's own redirection then replaces it: the child was handed a
+    pipe for a lock. Moved above them before it is locked."""
     directory = os.path.dirname(path)
     try:
         for folder in (os.path.dirname(directory), directory):
             run_stamp._ensure_dir(folder)
         fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+        if fd <= 2:
+            low = fd
+            try:
+                fd = fcntl.fcntl(low, fcntl.F_DUPFD_CLOEXEC, 3)
+            finally:
+                os.close(low)
     except (OSError, run_stamp.KeyUnavailable) as exc:
         raise Refused(_UNUSABLE % _reason(path, exc)) from exc
     try:
@@ -201,13 +236,13 @@ def _say(entry):
 
 def _let_go(fd):
     """Close, and no more. `flock(LOCK_UN)` would unlock the open file itself, and so
-    take the lock away from a phase child still holding the same one."""
-    try:
-        os.ftruncate(fd, 0)
-    except OSError:
-        pass
-    finally:
-        os.close(fd)
+    take the lock away from a phase child still holding the same one. Best-effort: the
+    verb has finished, and a close that fails must not turn its status into a traceback."""
+    for release in (lambda: os.ftruncate(fd, 0), lambda: os.close(fd)):
+        try:
+            release()
+        except OSError:
+            pass
 
 
 def _whole(value: Any) -> TypeGuard[int]:
@@ -253,7 +288,9 @@ def _held_by(fd, path):
     left = said.get("child")
     child, phase = (left.get(key) for key in ("pid", "phase")) if isinstance(left, dict) \
         else (None, None)
-    if _whole(child) and isinstance(phase, str) and _PHASE.fullmatch(phase):
+    # Named only while it runs: a record update that failed leaves the child before it.
+    if (_whole(child) and isinstance(phase, str) and _PHASE.fullmatch(phase)
+            and _running(child)):
         return ("a %s child (pid %d) left by %s still holds this review root: wait for it "
                 "to exit, or stop it (`kill %d`), then run again" % (phase, child, gone, child))
     return ("a process left by %s still holds this review root: `lsof %s` names it; "

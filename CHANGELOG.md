@@ -27,7 +27,7 @@
     nor does an entry script run by hand (`synthesize.py`, `discovery.py`,
     `devtools/replay_report.py`). Two state directories (two machines or two users on one shared
     tree) do not exclude each other. A lock file deleted or replaced while it is held lets a
-    second driver in.
+    second driver in, and so does replacing the root directory itself.
 - **A tool finding is no longer dropped because its location spells a fixture, vendored or
   generated directory it is not in (#3771).** Suppression by path name read the scanner's reported
   location as text. A location carrying URI syntax or dot segments, such as
