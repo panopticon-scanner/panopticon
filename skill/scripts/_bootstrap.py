@@ -31,6 +31,7 @@ mutation in the tree, which the guard in tests/test_import_shape.py enforces.
 Stdlib only, and nothing from this tree: it runs before `scripts` resolves.
 """
 import os
+import stat
 import sys
 
 SCRIPTS = os.path.dirname(os.path.realpath(__file__))
@@ -57,8 +58,12 @@ if __name__ != "scripts._bootstrap":
     sys.path[:] = rewritten(sys.path)
     # #3779: a phase child holds its driver's run lock by an inherited descriptor
     # (`scripts.run_lock`). It stops here: closed on exec, so nothing this process
-    # starts holds the review root, however it is started.
+    # starts holds the review root, however it is started. Only what a lock is: a
+    # regular file past the standard three. The variable is the environment's, and
+    # `=1` beside a script run by hand must not take its children's standard output.
     try:
-        os.set_inheritable(int(os.environ.pop("PANOPTICON_RUN_LOCK_FD", "")), False)
+        _handed = int(os.environ.pop("PANOPTICON_RUN_LOCK_FD", ""))
+        if _handed > 2 and stat.S_ISREG(os.fstat(_handed).st_mode):
+            os.set_inheritable(_handed, False)
     except (OSError, OverflowError, ValueError):
         pass                          # no number, or one that names no descriptor here

@@ -11,17 +11,23 @@
     `.panopticon/` until it returns. A second one changes nothing and ends in `error`: `another
     driver is running on this review root (pid <n>, `driver loop`, since <time>): wait for it to
     finish, or stop it, then run again`.
-  - The lock is `flock` on a file under `$PANOPTICON_STATE_DIR/locks/`, outside the reviewed tree.
-    The operating system releases it when the process exits, so a killed driver leaves no stale
-    lock.
+  - The lock is `flock` on a file under `$PANOPTICON_STATE_DIR/locks/`, outside the reviewed tree,
+    named by the root directory's device and inode numbers: a link to the root, or the same
+    directory typed in another letter case, is the same lock. The operating system releases it
+    when the process exits, so a killed driver leaves no stale lock.
+  - **The state directory must now be writable** for `run`, `loop` and `setup`. A read-only one,
+    from which the stamp key alone could be read, is refused with the reason.
   - The driver's child steps hold the same lock. A synthesis step that outlives a killed driver
     keeps the root until it exits, so a retry cannot start beside it; the refusal names its pid
     and says `kill <pid>`. Reviewer agents and scanner containers never hold the lock.
-  - A lock that cannot be used (a state directory on a filesystem that refuses `flock`, or one
-    that is not yours) stops the driver before it touches the tree, with the reason and the
-    remedy.
-  - Not covered: `driver persist` and `driver readiness` take no lock, and two state directories
-    (two machines or two users on one shared tree) do not exclude each other.
+  - A lock that cannot be used (a state directory that cannot be written, is not yours, or is on
+    a filesystem that refuses `flock`) stops the driver before it touches the tree, with the
+    reason and the remedy.
+  - Not covered: `driver persist`, `driver readiness` and `driver migrate-config` take no lock,
+    nor does an entry script run by hand (`synthesize.py`, `discovery.py`,
+    `devtools/replay_report.py`). Two state directories (two machines or two users on one shared
+    tree) do not exclude each other. A lock file deleted or replaced while it is held lets a
+    second driver in.
 - **A tool finding is no longer dropped because its location spells a fixture, vendored or
   generated directory it is not in (#3771).** Suppression by path name read the scanner's reported
   location as text. A location carrying URI syntax or dot segments, such as

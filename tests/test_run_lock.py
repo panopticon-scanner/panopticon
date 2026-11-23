@@ -165,8 +165,46 @@ def test_each_root_has_its_own_lock_and_a_link_to_a_root_shares_it(root, tmp_pat
         assert _free(other)
         assert not _free(root)
     with run_lock.hold(str(link), "run"):
-        with open(run_lock.lock_path(root), encoding="utf-8") as fh:
-            assert json.load(fh)["review_root"] == os.path.realpath(root)
+        assert not _free(root)
+
+
+def test_the_lock_is_named_for_the_directory_itself_not_for_a_spelling_of_it(root):
+    """Device and inode: one directory has one lock, however its path is typed."""
+    info = os.stat(root)
+    assert os.path.basename(run_lock.lock_path(root)) == "%x-%x.lock" % (info.st_dev, info.st_ino)
+    assert run_lock.lock_path(root + os.sep + ".") == run_lock.lock_path(root)
+    assert run_lock.lock_path(os.path.join(root, os.pardir, os.path.basename(root))) == \
+        run_lock.lock_path(root)
+
+
+def test_a_root_typed_in_another_case_is_the_same_root(tmp_path, monkeypatch):
+    """A non-git root on a case-insensitive volume: `nongit/Proj` and `NONGIT/proj` are
+    one `.panopticon/`, and were two lock names by path (seat review of #3782)."""
+    typed = tmp_path / "nongit" / "Proj"
+    typed.mkdir(parents=True)
+    other = str(tmp_path / "NONGIT" / "proj")
+    if not os.path.isdir(other):
+        pytest.skip("this volume tells the two spellings apart")
+    assert os.path.realpath(other) != os.path.realpath(str(typed))    # resolving keeps the case
+    assert run_lock.lock_path(other) == run_lock.lock_path(str(typed))
+    monkeypatch.setattr(driver, "_establish_host_posture", lambda *args: None)
+    with _another_driver(str(typed)):
+        assert not _free(other)
+        status = _run(other)
+    assert status["status"] == "error"
+    assert status["message"].startswith("another driver is running on this review root (pid ")
+    assert not os.path.lexists(os.path.join(other, ".panopticon"))
+
+
+def test_a_root_that_cannot_be_looked_at_is_refused_and_no_child_is_handed_anything(tmp_path):
+    gone = str(tmp_path / "no-such-root")
+    with pytest.raises(run_lock.Refused) as refused:
+        with run_lock.hold(gone, "run"):
+            pytest.fail("held a root that is not there")
+    assert str(refused.value).startswith(
+        "the review root cannot be locked: %s: No such file or directory" % gone)
+    assert run_lock.descriptor(gone) is None
+    run_lock.note_child(gone, 4242, "tools")          # says nothing, raises nothing
 
 
 def test_the_lock_is_kept_in_the_state_directory_and_not_in_the_tree(root):
@@ -187,10 +225,49 @@ def test_the_holder_says_who_it_is_while_it_holds_and_nothing_afterwards(root):
         assert said["pid"] == os.getpid()
         assert said["verb"] == "setup"
         assert said["host"] == run_lock.socket.gethostname()
-        assert said["review_root"] == os.path.realpath(root)
         assert run_lock._SINCE.fullmatch(said["since"])
-        assert "child" not in said
+        assert sorted(said) == ["host", "pid", "since", "verb"]       # no path: nothing reads one
     assert os.path.getsize(run_lock.lock_path(root)) == 0
+
+
+def test_the_record_is_one_write_of_one_size_so_a_reader_never_sees_part_of_one(root):
+    """The next driver may read while the holder writes. A record replaced by truncating
+    and then writing showed it an empty file, and so the fallback wording."""
+    sizes = []
+    with run_lock.hold(root, "loop"):
+        with mock.patch.object(run_lock.os, "ftruncate") as truncate, \
+                mock.patch.object(run_lock.os, "pwrite", wraps=os.pwrite) as write:
+            for pid, phase in ((4242, "synthesize"), (None, None), (7, "tools"), (None, None)):
+                run_lock.note_child(root, pid, phase)
+                sizes.append(os.path.getsize(run_lock.lock_path(root)))
+                with open(run_lock.lock_path(root), encoding="utf-8") as fh:
+                    assert json.load(fh).get("child") == (
+                        {"pid": pid, "phase": phase} if pid else None)
+        assert not truncate.called
+        assert [len(call.args[1]) for call in write.call_args_list] == [run_lock._RECORD_SIZE] * 4
+        assert all(call.args[2] == 0 for call in write.call_args_list)
+    assert sizes == [run_lock._RECORD_SIZE] * 4
+    assert run_lock._RECORD_SIZE <= run_lock._RECORD_MAX
+
+
+def test_a_record_too_long_for_its_size_says_nothing_and_the_root_is_still_held(root):
+    with mock.patch.object(run_lock.socket, "gethostname", return_value="\u00e9" * 255):
+        with run_lock.hold(root, "run"):
+            assert os.path.getsize(run_lock.lock_path(root)) == run_lock._RECORD_SIZE
+            with open(run_lock.lock_path(root), "rb") as fh:
+                assert fh.read().strip() == b""
+            assert not _free(root)
+    assert _free(root)
+
+
+def test_the_longest_record_a_holder_can_write_fits_and_is_read_back(root):
+    longest = "h" * 255                                # a hostname's limit
+    with mock.patch.object(run_lock.socket, "gethostname", return_value=longest):
+        with run_lock.hold(root, "setup"):
+            run_lock.note_child(root, 2 ** 31 - 1, "x" * 20)
+            assert os.path.getsize(run_lock.lock_path(root)) == run_lock._RECORD_SIZE
+            with open(run_lock.lock_path(root), encoding="utf-8") as fh:
+                assert json.load(fh)["host"] == longest
 
 
 def test_the_drivers_own_descriptor_is_not_inherited_by_what_it_starts(root):
@@ -374,7 +451,26 @@ def test_a_state_directory_that_is_a_file_stops_the_driver(root, monkeypatch, tm
     assert status["status"] == "error"
     assert status["message"].startswith(
         "the run lock cannot be used: %s: File exists. " % tmp_path.joinpath("state"))
-    assert "PANOPTICON_STATE_DIR" in status["message"]
+    assert status["message"].endswith(
+        "point PANOPTICON_STATE_DIR at a directory you own and can write, on a local filesystem")
+    assert not os.path.lexists(os.path.join(root, ".panopticon"))
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root writes anywhere")
+def test_a_state_directory_that_cannot_be_written_stops_the_driver(root, monkeypatch, tmp_path):
+    """The stamp key can be read from a read-only state directory. The lock cannot be
+    made in one, so `run`, `loop` and `setup` need it writable (seat review of #3782)."""
+    state = _state(monkeypatch, tmp_path)
+    state.mkdir(mode=0o700)
+    state.chmod(0o500)
+    try:
+        status = _run(root)
+    finally:
+        state.chmod(0o700)
+    assert status["status"] == "error"
+    assert status["message"].startswith(
+        "the run lock cannot be used: %s: Permission denied. " % (state / "locks"))
+    assert "a directory you own and can write" in status["message"]
     assert not os.path.lexists(os.path.join(root, ".panopticon"))
 
 
@@ -621,6 +717,46 @@ def test_a_variable_that_names_no_descriptor_does_not_stop_a_script(value, tmp_p
     assert (started.returncode, started.stdout.strip(), started.stderr) == (0, "None", "")
 
 
+_STARTS = """\
+import json, os, runpy, sys
+kind, bootstrap, name, path = sys.argv[1:5]
+if kind == "pipe":
+    fd = os.pipe()[1]
+elif kind == "directory":
+    fd = os.open(os.path.dirname(path), os.O_RDONLY)
+else:
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)     # descriptor 3: the first one free
+report = os.fdopen(os.dup(1), "w")    # the output this was started with, whatever follows
+if kind.startswith("standard"):
+    os.dup2(fd, int(kind[-1]))        # a regular file as standard input, output or error
+    fd = int(kind[-1])
+os.set_inheritable(fd, True)
+os.environ[name] = str(fd)
+runpy.run_path(bootstrap)
+print(json.dumps({"inherited by what it starts": os.get_inheritable(fd), "descriptor": fd,
+                  "variable": os.environ.get(name)}), file=report)
+"""
+
+
+@pytest.mark.parametrize("kind, descriptor, inherited", [
+    ("file", 3, False),               # what a driver hands a phase child, at the lowest number
+    ("pipe", 4, True), ("directory", 3, True),
+    ("standard-0", 0, True), ("standard-1", 1, True), ("standard-2", 2, True),
+])
+def test_the_bootstrap_closes_a_regular_file_past_the_standard_three_and_nothing_else(
+        tmp_path, kind, descriptor, inherited):
+    """`PANOPTICON_RUN_LOCK_FD=1` beside a script run by hand took its standard output
+    from everything that script started (seat review of #3782)."""
+    script = tmp_path / "starts.py"
+    script.write_text(_STARTS, encoding="utf-8")
+    started = child._run_child(
+        [sys.executable, str(script), kind, BOOTSTRAP, run_lock.FD_ENV, str(tmp_path / "a-file")],
+        review_root=str(tmp_path), phase="synthesize")
+    assert started.returncode == 0, started.stderr
+    assert json.loads(started.stdout) == {
+        "inherited by what it starts": inherited, "descriptor": descriptor, "variable": None}
+
+
 def test_the_lock_file_names_the_phase_child_while_it_runs(root, tmp_path):
     script = tmp_path / "reads_lock.py"
     script.write_text("import sys\nprint(open(sys.argv[1]).read())\n", encoding="utf-8")
@@ -658,12 +794,22 @@ import scripts.run_lock as run_lock
 from scripts.phases import child
 root, script, port = sys.argv[1:4]
 with run_lock.hold(root, "run"):
-    child._run_child([sys.executable, script, port, str(os.getpid())], review_root=root,
-                     phase="synthesize")
+    child._run_child([sys.executable, script, port, str(os.getpid()), run_lock.lock_path(root)],
+                     review_root=root, phase="synthesize")
 """
 
+# Ready only once the driver has named it in the lock file: the driver writes that just
+# after it starts the child, and a driver killed in between leaves no child named.
 _LINGERS = """\
-import os, socket, sys, time
+import json, os, socket, sys, time
+def named():
+    try:
+        with open(sys.argv[3]) as fh:
+            return json.load(fh)["child"]["pid"] == os.getpid()
+    except (OSError, ValueError, KeyError):
+        return False
+while not named():
+    time.sleep(0.01)
 with socket.create_connection(("127.0.0.1", int(sys.argv[1]))) as said:
     said.sendall(("%s %d\\n" % (sys.argv[2], os.getpid())).encode())
 time.sleep(120)

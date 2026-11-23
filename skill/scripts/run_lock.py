@@ -9,10 +9,15 @@ The lock is `flock` on one file per review root, held by the process for the who
 verb. The kernel lets it go when the last holder exits, so a killed driver leaves no
 stale lock and nothing here guesses whether a pid is alive to decide anything.
 
-The file lives in the operator's state directory (`run_stamp.state_dir`), named by the
-SHA-256 of the root's real path: a target cannot plant, hold or delete it, first
-contact has nothing new to judge, and `--reset` does not touch it. The file is never
-removed, so its name always means the same inode.
+The file lives in the operator's state directory (`run_stamp.state_dir`): a target
+cannot plant, hold or delete it, first contact has nothing new to judge, and `--reset`
+does not touch it. It is named by the root DIRECTORY's device and inode numbers, not by
+its path. A path has more than one spelling (a link, `..`, and on a case-insensitive
+volume `nongit/Proj` and `NONGIT/proj`, which `realpath` leaves apart), and two
+spellings of one `.panopticon/` must be one lock. The numbers only have to agree
+between processes running at the same time, which is all a lock compares. The file is
+never removed, so its name always means the same inode. The state directory must be
+writable: the stamp key can be read from a read-only one, the lock cannot be made there.
 
 A phase child (`phases/child._run_child`) is handed the descriptor. It is the same
 open file, so a synthesis child that outlives a killed driver still holds the root,
@@ -23,11 +28,14 @@ holds the root.
 
 What the file SAYS (pid, verb, start, the phase child now running) is for the next
 driver's refusal and for nothing else. It is read back type by type, never printed
-as written.
+as written, and written as one write of one size, so a driver reading while the holder
+writes sees the old record or the new one.
 
-Not covered: `driver persist` and `driver readiness` take no lock, and two state
-directories (two machines, or two users, on one shared tree) do not exclude each
-other.
+Not covered: `driver persist`, `driver readiness` and `driver migrate-config` take no
+lock, nor does an entry script run by hand (`synthesize.py`, `discovery.py`,
+`devtools/replay_report.py`). Two state directories (two machines, or two users, on one
+shared tree) do not exclude each other. A lock file deleted or replaced while it is
+held lets a second driver in.
 
 Stdlib only.
 """
@@ -37,7 +45,6 @@ import contextlib
 import datetime
 import errno
 import fcntl
-import hashlib
 import json
 import os
 import re
@@ -57,6 +64,8 @@ _SINCE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
 _PHASE = re.compile(r"[a-z]{1,20}")
 _HOST = re.compile(r"[A-Za-z0-9._-]{1,255}")
 _RECORD_MAX = 4096
+#: Every record is written at this size, padded: one write, never a truncate first.
+_RECORD_SIZE = 1024
 
 #: lock path -> [descriptor, how many holds deep, what the file says]
 _HELD: dict = {}
@@ -65,7 +74,7 @@ _GUARD = threading.RLock()
 _AGAIN = "wait for it to finish, or stop it, then run again"
 _UNUSABLE = ("the run lock cannot be used: %s. `driver run`, `loop` and `setup` hold one "
              "lock file per review root under the state directory; point "
-             "PANOPTICON_STATE_DIR at a directory you own on a local filesystem")
+             "PANOPTICON_STATE_DIR at a directory you own and can write, on a local filesystem")
 
 
 class Refused(ValueError):
@@ -74,10 +83,20 @@ class Refused(ValueError):
 
 
 def lock_path(review_root):
-    """The lock file for `review_root`, by its real path: a link to a root is that root."""
-    real = os.path.realpath(review_root)
+    """The lock file for the directory `review_root` names, by its device and inode: one
+    directory, one lock, however its path is spelled. `OSError` when it cannot be looked at."""
+    info = os.stat(review_root)
     return os.path.join(run_stamp.state_dir(), LOCKS_DIR,
-                        hashlib.sha256(os.fsencode(real)).hexdigest() + ".lock")
+                        "%x-%x.lock" % (info.st_dev, info.st_ino))
+
+
+def _held(review_root):
+    """This process's entry for `review_root`, or None. A root that cannot be looked at
+    is one this process does not hold."""
+    try:
+        return _HELD.get(lock_path(review_root))
+    except OSError:
+        return None
 
 
 @contextlib.contextmanager
@@ -86,14 +105,16 @@ def hold(review_root, verb):
 
     A hold inside a hold, in one process, passes: `driver loop` holds the root and
     calls `driver.run` in-process. The root is let go when the outermost one ends."""
-    path = lock_path(review_root)
+    try:
+        path = lock_path(review_root)
+    except OSError as exc:
+        raise Refused("the review root cannot be locked: %s" % _reason(review_root, exc)) from exc
     with _GUARD:
         entry = _HELD.get(path)
         if entry is None:
             said = {"pid": os.getpid(), "verb": verb, "host": socket.gethostname(),
                     "since": datetime.datetime.now(datetime.timezone.utc)
-                    .strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "review_root": os.path.realpath(review_root)}
+                    .strftime("%Y-%m-%dT%H:%M:%SZ")}
             entry = _HELD[path] = [_take(path), 0, said]
             _say(entry)
         entry[1] += 1
@@ -110,7 +131,7 @@ def hold(review_root, verb):
 def descriptor(review_root):
     """The descriptor this process holds `review_root` by, or None when it holds none."""
     with _GUARD:
-        entry = _HELD.get(lock_path(review_root))
+        entry = _held(review_root)
         return None if entry is None else entry[0]
 
 
@@ -118,7 +139,7 @@ def note_child(review_root, pid=None, phase=None):
     """Say which phase child is running, or (no pid) that none is. A process holding no
     lock says nothing."""
     with _GUARD:
-        entry = _HELD.get(lock_path(review_root))
+        entry = _held(review_root)
         if entry is None:
             return
         entry[2].pop("child", None)
@@ -164,12 +185,16 @@ def _reason(path, exc):
 
 
 def _say(entry):
-    """Write what the next driver's refusal reads. Best-effort: a record that cannot be
-    written (a full disk) costs that message its detail, never the holder its run."""
+    """Write what the next driver's refusal reads: one write, always `_RECORD_SIZE`
+    bytes (JSON, then spaces), so a reader sees the record before or the record after
+    and never an empty or half-replaced file. A record too long for that says nothing.
+    Best-effort: a record that cannot be written (a full disk) costs that message its
+    detail, never the holder its run."""
     data = json.dumps(entry[2], sort_keys=True).encode("utf-8")
+    if len(data) > _RECORD_SIZE:
+        data = b""
     try:
-        os.ftruncate(entry[0], 0)
-        os.pwrite(entry[0], data, 0)
+        os.pwrite(entry[0], data.ljust(_RECORD_SIZE), 0)
     except OSError:
         pass
 
