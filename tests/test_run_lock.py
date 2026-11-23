@@ -396,9 +396,10 @@ def test_a_pid_no_system_holds_does_not_stop_the_refusal(root):
 
 def test_a_child_whose_record_is_unusable_is_not_named(root):
     gone = dead_pid()
-    for bad in ({"pid": "12", "phase": "synthesize"}, {"pid": 12, "phase": "\x1b[2J"},
-                {"pid": 12, "phase": "tools\x1b[2J"}, {"pid": 12, "phase": 7}, {"pid": 12},
-                {"pid": 0, "phase": "synthesize"}, ["12"], {"pid": True, "phase": "tools"}):
+    here = os.getpid()                    # a child that is running: only its record is bad
+    for bad in ({"pid": str(here), "phase": "synthesize"}, {"pid": here, "phase": "\x1b[2J"},
+                {"pid": here, "phase": "tools\x1b[2J"}, {"pid": here, "phase": 7}, {"pid": here},
+                {"pid": 0, "phase": "synthesize"}, [here], {"pid": True, "phase": "tools"}):
         with _another_driver(root, _record(pid=gone, child=bad)):
             message = _refusal(root)
         assert "lsof %s" % run_lock.lock_path(root) in message, bad
@@ -592,17 +593,29 @@ def test_the_loop_holds_its_root_across_every_run_and_lets_go_after(root):
     seen = []
 
     def run(args, resolved=None):
+        first = not seen
         seen.append((_free(root), _says(root)))
         with run_lock.hold(root, "run"):          # `driver.run`'s own hold passes
             seen.append((_free(root), _says(root)))
         seen.append((_free(root), _says(root)))   # and its exit does not let go
-        return orchestrate._status("complete", "done")
+        return orchestrate._status("checkpoint" if first else "complete", "done",
+                                   phase="review", checkpoint="review")
+
+    def between(review_root):                     # after the first run, with work remaining
+        seen.append((_free(root), _says(root)))
+        return True
+
+    class Pause(orchestrate.loop_setup.PauseRequest):
+        def restore(self):                        # the loop's last step, after the root is let go
+            seen.append(_free(root))
+            super().restore()
 
     args = driver.parse_cli(["loop", root, "--host", "codex", "--mode", "session", "--no-tools"])
-    with mock.patch.object(orchestrate.driver, "run", side_effect=run):
-        status = orchestrate.loop(args)
+    with mock.patch.object(orchestrate.driver, "run", side_effect=run), \
+            mock.patch.object(orchestrate, "_after_first_run", side_effect=between):
+        status = orchestrate.loop(args, pause=Pause())
     assert status["status"] == "complete", status
-    assert seen == [(False, "loop")] * 3
+    assert seen == [(False, "loop")] * 7 + [True]
     assert _free(root)
 
 
@@ -645,6 +658,10 @@ def test_setup_holds_its_root_and_a_held_root_refuses_it(root):
     with mock.patch.object(setup.first_contact, "assess", side_effect=look):
         setup.run_setup_flow(args)
     assert seen == [(False, "setup")]
+    assert _free(root)
+    worked = []                                   # past first contact, while work remains
+    status = setup.run_setup_flow(args, phases=(_held_inside(root, worked),))
+    assert worked == [(False, "setup")], status
     assert _free(root)
     before = _tree(root)
     with _another_driver(root), mock.patch.object(setup.first_contact, "assess") as assess:
@@ -703,10 +720,11 @@ def _phase_child(tmp_path):
     return [sys.executable, str(script)]
 
 
-def test_a_phase_child_is_handed_the_lock_and_what_it_starts_is_not(root, tmp_path):
+@pytest.mark.parametrize("phase", ["discovery", "tools", "usage", "synthesize"])
+def test_a_phase_child_is_handed_the_lock_and_what_it_starts_is_not(root, tmp_path, phase):
     with run_lock.hold(root, "run"):
         fd = run_lock.descriptor(root)
-        proc = child._run_child(_phase_child(tmp_path), review_root=root, phase="synthesize")
+        proc = child._run_child(_phase_child(tmp_path), review_root=root, phase=phase)
     said = json.loads(proc.stdout)
     assert said == {"handed": str(fd), "open here": True, "variable after start": None,
                     "started with close_fds=False": "closed", "started by fork and exec": 0}
@@ -772,7 +790,10 @@ def test_the_bootstrap_closes_a_regular_file_past_the_standard_three_and_nothing
 
 def test_the_lock_file_names_the_phase_child_while_it_runs(root, tmp_path):
     script = tmp_path / "reads_lock.py"
-    script.write_text("import sys\nprint(open(sys.argv[1]).read())\n", encoding="utf-8")
+    script.write_text(      # the driver names the child just after it starts it: wait for that
+        "import json, sys, time\nfor _ in range(2000):\n    said = open(sys.argv[1]).read()\n"
+        "    if 'child' in json.loads(said or '{}'):\n        break\n    time.sleep(0.01)\n"
+        "print(said)\n", encoding="utf-8")
     with run_lock.hold(root, "loop"):
         proc = child._run_child([sys.executable, str(script), run_lock.lock_path(root)],
                                 review_root=root, phase="tools")
@@ -821,7 +842,9 @@ def named():
             return json.load(fh)["child"]["pid"] == os.getpid()
     except (OSError, ValueError, KeyError):
         return False
-while not named():
+for _ in range(2000):                 # about twenty seconds, then it reports as it is
+    if named():
+        break
     time.sleep(0.01)
 with socket.create_connection(("127.0.0.1", int(sys.argv[1]))) as said:
     said.sendall(("%s %d\\n" % (sys.argv[2], os.getpid())).encode())
@@ -927,3 +950,245 @@ def test_a_second_driver_process_is_refused_and_the_first_is_not_disturbed(root,
         _stop(*pids)
     assert first.ended()
     assert _free(root)                    # a killed holder leaves nothing to clear
+
+
+# ---- five gates at 712b36ee --------------------------------------------------------
+
+_STREAM_CLOSED = """\
+import json, os, sys
+closed, root, probe, out = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+for number in closed.split(","):      # as a scheduler or a service starts a driver
+    os.close(int(number))
+import scripts.run_lock as run_lock
+from scripts.phases import child
+said = {}
+with run_lock.hold(root, "run"):
+    fd = run_lock.descriptor(root)
+    info = os.fstat(fd)
+    said.update(fd=fd, lock=[info.st_dev, info.st_ino], inheritable=os.get_inheritable(fd))
+    done = child._run_child([sys.executable, probe, out + ".child"], review_root=root,
+                            phase="synthesize")
+    said["child status"] = done.returncode
+with open(out, "w") as fh:
+    json.dump(said, fh)
+"""
+
+_HANDED = """\
+import json, os, runpy, sys
+handed = int(os.environ[{env!r}])
+info = os.fstat(handed)
+runpy.run_path({bootstrap!r})
+with open(sys.argv[1], "w") as fh:
+    json.dump({{"fd": handed, "lock": [info.st_dev, info.st_ino],
+               "inherited by what it starts": os.get_inheritable(handed)}}, fh)
+"""
+
+
+@pytest.mark.parametrize("closed", ["0", "1", "2", "1,2", "0,2", "0,1,2"])
+def test_a_driver_started_with_a_standard_stream_closed_holds_the_lock_above_them(
+        root, tmp_path, closed):
+    """`os.open` returns the lowest free number. At 1 or 2 the child's output redirection
+    replaced the lock with a pipe, and a retry ran beside the orphan; at 0 the bootstrap
+    left it open to everything the child started."""
+    driver_script, probe, out = tmp_path / "driver.py", tmp_path / "probe.py", tmp_path / "out"
+    driver_script.write_text(_STREAM_CLOSED, encoding="utf-8")
+    probe.write_text(_HANDED.format(env=run_lock.FD_ENV, bootstrap=BOOTSTRAP), encoding="utf-8")
+    child._run_child([sys.executable, str(driver_script), closed, root, str(probe), str(out)],
+                     review_root=root, phase="tools")
+    info = os.stat(run_lock.lock_path(root))
+    lock = [info.st_dev, info.st_ino]
+    held = json.loads(out.read_text(encoding="utf-8"))
+    handed = json.loads((tmp_path / "out.child").read_text(encoding="utf-8"))
+    assert held["fd"] > 2 and handed["fd"] == held["fd"]
+    assert (held["lock"], handed["lock"]) == (lock, lock)     # the lock file, in both
+    assert held["inheritable"] is False
+    assert handed["inherited by what it starts"] is False
+    assert held["child status"] == 0
+    assert _free(root)
+
+
+def test_a_lock_opened_above_the_standard_three_is_kept_where_it_is(root):
+    opened = []
+    real = os.open
+
+    def watch(path, *args, **kwargs):
+        opened.append(real(path, *args, **kwargs))
+        return opened[-1]
+
+    with mock.patch.object(run_lock.os, "open", side_effect=watch):
+        with run_lock.hold(root, "run"):
+            assert run_lock.descriptor(root) == opened[0] > 2
+
+
+def test_the_hand_off_does_not_look_at_the_root_again(root, tmp_path):
+    """A failed look read as "this process holds nothing", and the child was started
+    without the lock its driver held."""
+    script = tmp_path / "handed.py"
+    script.write_text("import os\nprint(os.environ.get(%r))\n" % run_lock.FD_ENV, encoding="utf-8")
+    with run_lock.hold(root, "run"):
+        fd = run_lock.descriptor(root)
+        with mock.patch.object(run_lock.os, "stat", side_effect=OSError(errno.EIO, "I/O error")):
+            assert run_lock.descriptor(root) == fd
+            assert run_lock.descriptor(root + os.sep) == fd
+            proc = child._run_child([sys.executable, str(script)], review_root=root,
+                                    phase="synthesize")
+            run_lock.note_child(root, 4242, "tools")
+        assert proc.stdout.strip() == str(fd)
+        with open(run_lock.lock_path(root), encoding="utf-8") as fh:
+            assert json.load(fh)["child"] == {"pid": 4242, "phase": "tools"}
+
+
+def test_a_root_that_cannot_be_matched_to_a_held_lock_stops_the_launch(root, tmp_path):
+    """Another spelling of a root, while this process holds a lock and the look fails:
+    it may be the held one. No child is started without knowing."""
+    link = tmp_path / "link"
+    link.symlink_to(root)
+    with run_lock.hold(root, "run"):
+        assert run_lock.descriptor(str(link)) == run_lock.descriptor(root)    # looked at: the same
+        with mock.patch.object(run_lock.os, "stat", side_effect=OSError(errno.EIO, "I/O error")), \
+                mock.patch.object(child.subprocess, "Popen") as started:
+            with pytest.raises(runio.DriverError) as stopped:
+                child._run_child([sys.executable, "-c", "pass"], review_root=str(link),
+                                 phase="synthesize")
+            run_lock.note_child(str(link), 4242, "tools")     # best-effort: says nothing
+        assert not started.called
+        assert str(stopped.value) == (
+            "synthesize: not started: the run lock for %s could not be checked: I/O error" % link)
+        with open(run_lock.lock_path(root), encoding="utf-8") as fh:
+            assert "child" not in json.load(fh)
+
+
+def test_a_process_that_holds_nothing_starts_a_child_without_looking(tmp_path):
+    with mock.patch.object(run_lock.os, "stat", side_effect=OSError(errno.EIO, "I/O error")) as look:
+        assert run_lock.descriptor(str(tmp_path)) is None
+        proc = child._run_child([sys.executable, "-c", "print('ran')"], review_root=str(tmp_path),
+                                phase="synthesize")
+    assert proc.stdout.strip() == "ran"
+    assert not look.called
+
+
+def _refused_on_another_thread(root):
+    said = []
+
+    def contend():
+        try:
+            with run_lock.hold(root, "run"):
+                said.append("held")
+        except run_lock.Refused as exc:
+            said.append(str(exc))
+
+    thread = threading.Thread(target=contend)
+    thread.start()
+    thread.join(30)
+    return said
+
+
+def test_a_hold_on_another_thread_is_another_driver(root):
+    """The loop's nested `driver.run` is on the loop's own thread. A second `driver.run`
+    on any other thread was taken for it and let in."""
+    with run_lock.hold(root, "loop"):
+        said = _refused_on_another_thread(root)
+        assert len(said) == 1 and said[0].startswith(
+            "another driver is running on this review root (pid %d, `driver loop`" % os.getpid())
+        with run_lock.hold(root, "run"):          # the same thread: still the nested call
+            assert not _free(root)
+        assert not _free(root)                    # the refusal let nothing go
+    assert _free(root)
+    assert _refused_on_another_thread(root) == ["held"]
+    assert _free(root)
+
+
+def test_a_hold_in_a_process_that_inherited_the_table_is_another_driver(root):
+    """A forked process has its parent's table and its parent's descriptor."""
+    with run_lock.hold(root, "loop"):
+        with mock.patch.object(run_lock.os, "getpid", return_value=os.getpid() + 1):
+            with pytest.raises(run_lock.Refused, match="another driver is running"):
+                with run_lock.hold(root, "run"):
+                    pytest.fail("the inherited table let a second process in")
+        assert not _free(root)
+    assert _free(root)
+
+
+_SLEEPS = "import time\ntime.sleep(120)\n"
+
+
+def test_an_interrupt_while_the_child_is_being_named_stops_the_child(root, tmp_path):
+    """The record was written before the cleanup was in place: a Ctrl-C there left the
+    child running, with the root, after its driver had gone."""
+    script = tmp_path / "sleeps.py"
+    script.write_text(_SLEEPS, encoding="utf-8")
+    named = []
+
+    def interrupted(review_root, pid=None, phase=None):
+        if pid is not None:
+            named.append(pid)
+            raise KeyboardInterrupt
+
+    with run_lock.hold(root, "run"):
+        with mock.patch.object(child.run_lock, "note_child", side_effect=interrupted):
+            with pytest.raises(KeyboardInterrupt):
+                child._run_child([sys.executable, str(script)], review_root=root, phase="tools")
+    assert len(named) == 1
+    with pytest.raises(ProcessLookupError):       # stopped and reaped, not left with the root
+        os.kill(named[0], 0)
+    _until_free(root)
+
+
+def test_time_spent_naming_the_child_is_charged_to_the_phase(root, tmp_path):
+    """A 0.2 s cap ran 1.4 s and published: the clock started after the record write."""
+    script = tmp_path / "sleeps.py"
+    script.write_text(_SLEEPS, encoding="utf-8")
+    clock = iter([100.0, 104.5])                  # started; then 4.5 s later, the wait
+    with run_lock.hold(root, "run"):
+        with mock.patch.object(child, "_clock", side_effect=lambda: next(clock)), \
+                mock.patch.object(child.loop_progress, "wait",
+                                  wraps=child.loop_progress.wait) as waited:
+            with pytest.raises(runio.DriverError, match="timed out after 5s"):
+                child._run_child([sys.executable, str(script)], review_root=root,
+                                 phase="tools", timeout=5)
+    assert waited.call_args.args[1] == 0.5        # what was left of the cap
+    clock = iter([100.0, 199.0])
+    with mock.patch.object(child, "_clock", side_effect=lambda: next(clock)), \
+            mock.patch.object(child.loop_progress, "wait",
+                              wraps=child.loop_progress.wait) as waited:
+        with pytest.raises(runio.DriverError, match="timed out after 5s"):
+            child._run_child([sys.executable, str(script)], review_root=root,
+                             phase="tools", timeout=5)
+    assert waited.call_args.args[1] == 0          # never a negative wait
+
+
+def test_a_lock_that_cannot_be_closed_does_not_fail_a_finished_run(root):
+    real, kept = os.close, []
+
+    def fails(fd):
+        if kept and fd == kept[0]:
+            raise OSError(errno.EIO, "Input/output error")
+        real(fd)
+
+    def watch(review_root, manifest):
+        kept.append(run_lock.descriptor(root))
+        return engine.PhaseResult(kind="advanced", message="looked")
+
+    phase = engine.Phase("look", "deterministic", lambda *_: bool(kept), watch)
+    try:
+        with mock.patch.object(run_lock.os, "close", side_effect=fails):
+            status = _run(root, phases=(phase,))
+        assert (run_lock._HELD, run_lock._GIVEN) == ({}, {})  # nothing of the hold is left
+    finally:
+        for fd in kept:                           # the descriptor the failed close left open
+            real(fd)
+    assert REFUSAL not in str(status.get("message")) and status["status"] != "error", status
+    assert len(kept) == 1 and _free(root)
+
+
+def test_a_child_that_is_not_running_is_not_named_as_the_one_to_stop(root):
+    """A record update that failed leaves the last child's pid in the file. `kill <pid>`
+    of a process that is gone, or of whatever has its number now, is the wrong advice."""
+    gone = dead_pid()
+    record = _record(pid=gone, verb="run", child={"pid": dead_pid(), "phase": "synthesize"})
+    with _another_driver(root, record):
+        message = _refusal(root)
+    assert message == (
+        "a process left by a driver that is no longer running (pid %d, `driver run`, since "
+        "2026-11-23T04:00:12Z) still holds this review root: `lsof %s` names it; wait for it "
+        "to exit, or stop it, then run again" % (gone, run_lock.lock_path(root)))

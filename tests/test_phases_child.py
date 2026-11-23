@@ -147,7 +147,8 @@ class TestRunChildTimeout(_ChildCase):
         seen = {}
         with mock.patch.object(child.subprocess, "Popen",
                                return_value=_FakeProc(seen)), \
-             mock.patch.object(child, "_child_env", return_value={}):
+             mock.patch.object(child, "_child_env", return_value={}), \
+             mock.patch.object(child, "_clock", return_value=0.0):   # #3782: no time has passed
             child._run_child([sys.executable, "discovery.py"], self.root, "discovery")
         self.assertEqual(seen.get("timeout"), child._CHILD_TIMEOUTS["discovery"])
 

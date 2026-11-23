@@ -231,6 +231,15 @@ The host contract (5.2, plan 6):
       working on one shared tree are not excluded.
     - A lock file deleted or replaced while a driver holds it lets a second driver in. Nothing
       in the driver removes one; leave `locks/` alone while a run is going.
+    - Replacing the root directory itself while a driver runs (moving it away and making a new
+      one at the same path) gives a second driver another lock: the lock is named for the
+      directory, which is what lets every spelling of its path share one.
+    - `PANOPTICON_STATE_DIR` also holds the stamp key that marks a `.panopticon/` as this
+      machine's. Pointing it somewhere else, as the refusal suggests, changes that key too, so
+      a run already in progress is not recognised from the new directory. Change it between
+      runs.
+    - A state directory inside the reviewed tree puts the lock in the tree, where the target
+      can reach it. Keep it outside.
 - **A run's paths are settled once per invocation (#3779).** The run folder
   (`.panopticon/runs/<tag>/`) and the report name (`<tag>-report.json`) come from the run manifest.
   `driver run` reads the manifest once, when it starts or resumes the run, and uses that tag for

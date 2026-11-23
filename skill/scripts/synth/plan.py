@@ -527,7 +527,7 @@ def gate_counts_suppressed(args):
     return gate_security_mode(args) == REDTEAM
 
 
-def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
+def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None, listing=None):
     """The --tools-dir ingest (WS-0 S3): (raw tool findings, per-adapter
     dispositions, tools_ran, the `{reason: count}` of source-scope drops
     -- the findings themselves stay suppressed -- the #1701 subset of those
@@ -555,7 +555,17 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
     here stays the FULL ingest tally either way; `reconcile` splits it into what
     the gate counted and what stayed suppressed from it, so the two published
     numbers still sum to what stderr and `security_gate` print.
+
+    #3766: `listing` is the one look at the tools directory this call ingests
+    from, `ingest_tools.list_tools_dir`'s; a caller that also judges the
+    directory (`ToolAxis`) passes its own so both read the same answer. Only a
+    directory that is NOT THERE is "no tool axis" (`tools_ran` None). One that is
+    there and could not be listed ingests nothing and measures that nothing ran
+    (the empty set), so a bound manifest's selection is still held against it,
+    as on main; the `ToolAxis` names why it could not be listed.
     """
+    if listing is None and args.tools_dir:
+        listing = ingest_tools.list_tools_dir(args.tools_dir)
     if getattr(args, "tools_skipped", False):
         # #3197: an operator's `--no-tools` run has no receipt BY DESIGN, so
         # nothing in the directory is this run's. Ingest nothing; name every
@@ -564,7 +574,7 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
         # leave every other part of the report as a run with no tool axis.
         if args.tools_dir and unbound_out is not None:
             ingest_tools._output_files(args.tools_dir, allowed_outputs=(),
-                                       unbound_out=unbound_out)
+                                       unbound_out=unbound_out, listing=listing)
         return [], {}, None, None, [], excluded_block(args, 0)
     if not args.tools_dir:
         default_tools = os.path.join(plan_contract.ARTIFACT_DIR, "tools")
@@ -572,7 +582,7 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
             print("synthesize: %s appears un-ingested — pass --tools-dir %s to "
                   "include tool findings in this report"
                   % (default_tools, default_tools), file=sys.stderr)
-    if not (args.tools_dir and os.path.isdir(args.tools_dir)):
+    if not args.tools_dir or listing.missing:
         return [], {}, None, None, [], excluded_block(args, 0)
     dropped: list[dict[str, Any]] = []     # source-scope drops, for count/gate
     excluded: list[dict[str, Any]] = []    # #1740 fix round 2: the operator's own glob drops
@@ -591,7 +601,7 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None):
         # answer `security_gate` uses, from the same function this module's own
         # gate decisions read.
         security_mode=gate_security_mode(args), allowed_outputs=allowed_outputs,
-        unbound_out=unbound_out)
+        unbound_out=unbound_out, listing=listing)
     gated = []
     if gate_counts_suppressed(args):
         gated = [findings_mod.normalize_finding(f) for f in dropped]

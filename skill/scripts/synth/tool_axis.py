@@ -22,8 +22,10 @@ import sys
 
 import scripts.app_trace as app_trace
 import scripts.groups_schema as groups_schema
+import scripts.inert as inert
 import scripts.ingest_tools as ingest_tools
 import scripts.native_unparsed as native_unparsed
+import scripts.redact as redact
 import scripts.tools_image as tools_image
 import scripts.tools_manifest as tools_manifest
 from scripts.tools import EXECUTES_TARGET_BUILD
@@ -36,6 +38,29 @@ from . import validate_schema as validate_schema_mod
 
 class ToolManifestError(ValueError):
     """A stale or foreign tool manifest cannot be used for synthesis."""
+
+
+LISTING_FAILURE_MAX = 400
+LISTING_ERROR_MAX = 120      # of the 400: the error is kept whole, the path is cut
+
+
+def listing_failure(tools_dir, error):
+    """Why the tools directory could not be listed, for the report and stderr (#3766).
+
+    `error` is the one `ingest_tools.list_tools_dir` met, at the open or while the
+    entries were read. The directory's name is the caller's and the target's to
+    choose, so the reason is redacted, spelled on one line (`inert.inert_spelling`:
+    a newline in the name would otherwise start a line of its own on stderr and in
+    the summary) and bounded. The bound cuts the PATH: a long path ahead of the error
+    would otherwise leave a reason that names a directory and no failure."""
+    why = _one_line(error.strerror or type(error).__name__, LISTING_ERROR_MAX)
+    return "%s: %s" % (
+        _one_line(tools_dir, LISTING_FAILURE_MAX - len(why) - 2), why)
+
+
+def _one_line(text, limit):
+    """`text` redacted, spelled on one line, and cut to `limit` characters."""
+    return inert.inert_spelling(redact.redact_diagnostic(str(text), limit))[:limit]
 
 
 @dataclass(frozen=True)
@@ -69,6 +94,14 @@ class ToolAxis:
     # policy that removed them has to be published beside the two tallies that
     # are.
     excluded: dict | None = None
+    # New fields go LAST: a caller that builds the axis positionally keeps every
+    # argument in the field it had on main.
+    # #3766: why the tools directory this run was given could not be listed, or None.
+    dir_unlistable: str | None = None
+    # #3766 (owner ruling, no run id, no certification): this call was given a tools
+    # directory that is there and no run id to bind it. False for a caller that
+    # builds the axis itself, which reads as on main.
+    run_unbound: bool = False
 
     @classmethod
     def manifest_state(cls, args, run_dir):
@@ -157,14 +190,45 @@ class ToolAxis:
     @classmethod
     def load(cls, args, run_dir, plan_lists, dispositions, tools_ran, suppressed=None,
              gated_suppressed=None, excluded=None, manifest_state=None,
-             unbound_outputs=None):
-        """Build the tool axis from one manifest state and one bounded ingest."""
+             unbound_outputs=None, listing=None):
+        """Build the tool axis from one manifest state and one bounded ingest.
+
+        `listing` is the look at the tools directory that ingest read from; a caller
+        with none to share gets this method's own, because "nobody looked" is not
+        "not there"."""
         if manifest_state is None:
             manifest_state = cls.manifest_state(args, run_dir)
         manifest, manifest_invalid, _allowed_outputs = manifest_state
+        tools_dir = getattr(args, "tools_dir", None)
+        if listing is None and tools_dir:
+            listing = ingest_tools.list_tools_dir(tools_dir)
+        there = listing is not None and not listing.missing
+        unlistable = None
+        if there and listing.error is not None:
+            unlistable = listing_failure(tools_dir, listing.error)
+        # #3766 (owner ruling): NO RUN ID, NO CERTIFICATION. A tools directory that is
+        # there -- listed or not -- on a call that is not `--tools-skipped` and names
+        # no run (absent, or the "" the driver threads for a run manifest without
+        # one) holds output nothing binds to this call. A manifest beside it is as
+        # unbound as the captures, and every rule that let one excuse a requirement
+        # was a way to certify over a directory anyone could have filled. Findings
+        # are still ingested and `reconcile` still says what was produced, failed or
+        # absent; the call just never certifies. A directory that was not given or
+        # is not there says nothing, as on main.
+        run_unbound = (there and not getattr(args, "run_id", None)
+                       and not getattr(args, "tools_skipped", False))
+        if run_unbound:
+            print("synthesize: no run id binds the tools directory's output to this "
+                  "call, so tool coverage is NOT certified (a driver run passes "
+                  "--run-id).", file=sys.stderr)
+        if unlistable:
+            print("synthesize: the tools directory cannot be listed (%s) -- no scanner "
+                  "output in it was read, so tool coverage is NOT certified."
+                  % unlistable, file=sys.stderr)
         return cls(policy_mode=plan_mod.derive_tool_policy_mode(plans=plan_lists),
                    tools_ran=tools_ran, dispositions=dispositions, manifest=manifest,
                    ingested_paths=args.files, manifest_invalid=manifest_invalid,
+                   dir_unlistable=unlistable, run_unbound=run_unbound,
                    unbound_outputs=list(unbound_outputs or []),
                    suppressed=suppressed,                     # #1578
                    gated_suppressed=list(gated_suppressed or []),   # #1701
@@ -272,6 +336,18 @@ def _merged_tallies(tallied, extra):
     return out
 
 
+def _unusable(dispositions):
+    """Registered adapters whose capture ingest read and could not use, sorted.
+
+    Ingest gives every `.json`/`.sarif` with no registered adapter a `failed`
+    disposition too ("no registered adapter"): the report this command wrote into the
+    directory, a stray manifest, a note. Those are disclosed in `adapters` and are
+    not scanner output, so they are not lost coverage."""
+    return sorted(name for name, d in (dispositions or {}).items()
+                  if isinstance(d, dict) and d.get("status") == "failed"
+                  and name in ingest_tools.ADAPTERS)
+
+
 def reconcile(plan, tools, resolved, run=None):
     """The plan-reconciliation cluster (WS-0 S2): meta.coverage and
     meta.integrity from the dispatch plan, the tool layer and the resolved
@@ -349,6 +425,17 @@ def reconcile(plan, tools, resolved, run=None):
     else:
         tools_absent = sorted(set(plan.scout_requested or []) - produced)
         tool_divergence = {t: "requested_absent" for t in tools_absent}
+        # #3766: with no manifest the runner's selection is unknown, and the scout's
+        # request was the only required set. An adapter nobody requested, whose capture
+        # was there and could not be used, was then required by no one: the run read
+        # PASS, certified, with `failed` in its own dispositions. What ingest found
+        # and could not use is lost coverage whoever asked for it -- the rule the
+        # manifest branch has had since #1512, here without a selection to bound it.
+        # The reason is the exact one (`produced_unusable`) even for a tool the scout
+        # also requested.
+        unusable = _unusable(tools.dispositions)
+        tools_absent = sorted(set(tools_absent) | set(unusable))
+        tool_divergence.update({t: "produced_unusable" for t in unusable})
     # #1899: certify on the `network` table `meta.tools.network` publishes.
     network_excluded = ingest_tools.network_exclusions({"network": network})
     tools_absent = sorted(set(tools_absent) | set(network_excluded))
@@ -436,6 +523,12 @@ def reconcile(plan, tools, resolved, run=None):
     integrity = dict(integrity)
     integrity["tools_manifest_invalid"] = tools.manifest_invalid
     integrity["unbound_tool_outputs"] = list(tools.unbound_outputs or [])
+    # #3766: always present, like the two above; None when the directory was listed,
+    # was not given, or is not there.
+    integrity["tools_dir_unlistable"] = tools.dir_unlistable
+    # #3766 (owner ruling): always present; true only for a tools directory that is
+    # there on a call with no run id.
+    integrity["tools_run_unbound"] = bool(tools.run_unbound)
     # #2013 fix round 1 (review I1): suppressing the target's clean filter makes
     # git compare RAW worktree bytes against a FILTERED index blob, so paths
     # nobody touched read as modified. On a full-repo scan that costs
