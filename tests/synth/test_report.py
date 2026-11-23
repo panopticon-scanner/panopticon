@@ -403,7 +403,9 @@ class TestReport(unittest.TestCase):
                             fpath,
                         ]
                     )
-                self.assertEqual(rc in (0, 1), True)
+                # #3766: a hand call with a tools directory and no run id is never
+                # certified, so its gate is INCONCLUSIVE; what it ingests is unchanged.
+                self.assertEqual(rc, 2)
                 with open(out) as fh:
                     return {f["location"]["file"] for f in json.load(fh)["findings"]}
 

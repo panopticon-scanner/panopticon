@@ -286,7 +286,29 @@ this same fail-closed path. It is deliberately NOT softer than that:
 exempting it from the gate would have made corrupting one byte of a target-writable file the
 cheapest way to turn an INCONCLUSIVE run into a PASS on identical findings. An ABSENT manifest when
 no run-bound tool ingest was requested (a pre-#1031 run, `--no-tools`) is a different fact and keeps
-the scout-derived gate, and a manifest
+the scout-derived gate. What a call with no `--run-id` certifies over a tools directory (#3766): nothing. A
+`synthesize` call given a tools directory that is there, without `--tools-skipped` and without a run
+id (absent, or the empty `--run-id ""` the driver sends for a run manifest that carries no
+`run_id`), has nothing that binds the directory's output to it, and a manifest in the run directory
+is no more bound than the output is. The call reports `meta.integrity.tools_run_unbound: true` and
+`summary.coverage_certified: false`; the gate is then INCONCLUSIVE unless a finding already makes it
+FAIL or `--fail-on off` turns it off. A hand `run_tools.py` + `synthesize.py` pair is such a call. A
+certified result comes from a driver run, which passes the run id. Findings are still ingested and
+reported, and `meta.coverage` still says what was produced, failed or absent: with no manifest, a
+capture that could not be used is `produced_unusable` whoever asked for it. "Capture" means a file
+ingest reads and has an adapter for: ingest reads the names in the tools directory that do not start
+with a dot and end in `.sarif` or `.json`, and matches each by its name without the extension
+against the registered adapters. On a call with no run id, a file with no adapter (a report written
+into the directory, a `tools-manifest.json` put there; the manifest is looked for in the run
+directory, never in the tools directory) is listed under `meta.coverage.adapters` as `failed`, "no
+registered adapter", and is not named as lost coverage. With a run id and its receipt it is not read
+at all: any `.json` or `.sarif` name the receipt does not list is unbound output
+(`meta.integrity.unbound_tool_outputs`), and that does withhold certification. A tools
+directory that is given and cannot be listed is lost coverage on every path
+(`meta.integrity.tools_dir_unlistable`, the directory and the error on one line): whatever it holds
+was not read. That is any failure to list it except "no such file" at the open; an error part way
+through the entries counts, whatever the error. A directory that is not there is no tool axis at
+all, as before, with or without a run id. The one listing ingest reads from is the one this is judged by. A manifest
 that parses with malformed FIELDS is a third, repaired at the read (`meta.tools.sanitized` /
 `network`) where a bad row costs a warning and the row, never the run. The three are independent: a
 run can complete, write a valid artifact and still be `INCONCLUSIVE`; it can pass its gate and still
