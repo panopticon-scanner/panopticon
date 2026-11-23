@@ -62,6 +62,28 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
   (#1638 P16). A confirmed finding wearing a disclosure, not a contested one: gate-eligible, and NOT
   counted as "verified" in the report's coverage line.
 
+**A requirement with no pinned version is not version 0.0.0 (#3749).** osv-scanner reports a
+requirements-file entry that has no `==` pin as version `0.0.0`, and every advisory whose range
+starts at zero then matches. Such a match is not a claim about an installed version, so it is not a
+finding: it is not in `findings[]` or `discarded_claims`, it is never put to an advisor, and the
+gate, grade and health read as if the scanner had not said it. The report says what was left out,
+per manifest, in `meta.coverage.tools_unpinned` and in one line of the summary and the HTML page:
+the packages, the number of advisories, and up to 20 advisory ids with the rest counted.
+Certification is unchanged.
+- Only an osv-scanner PyPI row from a requirements-format (`.txt`) manifest at exactly `0.0.0`.
+  Lockfiles, other ecosystems and other scanners are untouched.
+- Only an advisory whose ranges for the package all end: each `introduced` is followed by a
+  `fixed`, `last_affected` or `limit`. An advisory with no fix covers whatever version gets
+  installed, so it stays a finding and is gated as before: a malicious-package record (an id or
+  alias starting `MAL-`), or an unfixed advisory on an abandoned package. So does an advisory
+  that has no entry for the package, or one whose ranges cannot be read.
+- "Pinned" is `==` or `===` to one version. `>=`, `~=`, `!=`, a bare name, a URL and `==1.0,<2`
+  are unpinned. A requirement really pinned at `==0.0.0`, in the manifest or a file it includes,
+  is kept as a finding.
+- When the manifest cannot be read (no tree at hand, a missing or oversized file) the version is
+  unknown and the row is left out.
+- To have an unpinned requirement audited, pin it.
+
 **Where a scanner finding is can keep it out of the gate (#3755).** Whether a path is a test path
 is a fact, and each advisor used to decide it again, so one finding was confirmed in some runs and
 rejected in others and that verdict decided the gate. The controller now states it at ingest, in

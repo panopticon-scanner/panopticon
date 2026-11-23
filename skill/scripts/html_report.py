@@ -666,6 +666,7 @@ def _render_header(report):
     parts.append(_render_suppressed_gated_tools(meta))
     parts.append(_render_suppressed_tools(meta))
     parts.append(_render_context_not_gated(meta))
+    parts.append(_render_unpinned(meta))
     parts.append(_render_sec_carve_out(meta))   # #1757: ABOVE, as the md ranks it
     parts.append(_render_excluded_tools(meta))
     parts.append(_render_model_fallbacks(meta))   # #3582
@@ -990,6 +991,17 @@ def _suppressed_rows(value):
     return [(seg, n) for seg, n in sorted(value.items())
             if isinstance(seg, str) and isinstance(n, int)
             and not isinstance(n, bool) and n > 0]
+
+
+def _render_unpinned(meta):
+    """#3749: the advisories a scanner matched against a version nobody has, per
+    manifest. The sentences are `synth.render.unpinned_rows`', so the page and the
+    terminal say the same thing; everything in them is escaped here."""
+    rows = render_mod.unpinned_rows((meta.get("coverage") or {}).get("tools_unpinned"))
+    return "".join(
+        "<div class='coverage'>Unpinned requirements (<code>%s</code>): %s. These are not "
+        "findings: pin the requirement to have it audited</div>"
+        % (html.escape(tool), html.escape(sentence)) for tool, sentence in rows)
 
 
 def _render_context_not_gated(meta):
