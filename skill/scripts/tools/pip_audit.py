@@ -528,6 +528,12 @@ def requirement_files(path, root, cache=None):
 
     `cache` (a dict the caller keeps for one pass) holds the answer per file, so a
     manifest with a thousand findings is walked once."""
+    closure = _closure(path, root, cache)
+    return None if closure is None else sorted(closure)
+
+
+def _closure(path, root, cache=None):
+    """`_requirement_closure`, remembered in `cache` when the caller keeps one."""
     if cache is None:
         return _requirement_closure(path, root)
     key = (os.path.realpath(path), os.path.realpath(root))
@@ -537,6 +543,8 @@ def requirement_files(path, root, cache=None):
 
 
 def _requirement_closure(path, root):
+    """`{root-relative path: text}` for the requirements file at `path` and every file
+    it includes, or None when that cannot be told (`requirement_files` says when)."""
     root = os.path.abspath(root)
     real_root = os.path.realpath(root)
     done: dict = {}
@@ -567,10 +575,41 @@ def _requirement_closure(path, root):
             if not walk(os.path.join(base, m.group(1).strip().strip('"\''))):
                 return False
         walking.discard(real)
-        done[real] = os.path.relpath(real, real_root).replace(os.sep, "/")
+        done[real] = (os.path.relpath(real, real_root).replace(os.sep, "/"), text)
         return True
 
-    return sorted(done.values()) if walk(path) else None
+    return dict(done.values()) if walk(path) else None
+
+
+# One requirement pinned to one exact version: `name==1.2` or `name===1.2`, with or
+# without extras. Whatever follows a `;` (a marker) or a ` #` (a comment) is not part of it.
+_EXACT_PIN = re.compile(
+    r"([A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)\s*(?:\[[^\]]*\])?\s*===?\s*([^\s,;]+)")
+_HASH_OPTION = re.compile(r"\s+--hash[=\s]\S+")
+
+
+def pep503(name):
+    """A project name as PyPI compares names."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def requirement_pins(path, root, cache=None):
+    """`{(pep503 name, version)}` for every requirement the file at `path`, or a file it
+    includes, pins to one exact version (#3749). None when the files cannot all be read.
+
+    "Pinned" is `==` or `===` to a single version and nothing else: `>=`, `~=`, `!=`,
+    a bare name, a URL, and `==1.0,<2` are all unpinned."""
+    closure = _closure(path, root, cache)
+    if closure is None:
+        return None
+    pins = set()
+    for text in closure.values():
+        for line in text.replace("\\\n", " ").splitlines():
+            spec = _HASH_OPTION.sub("", re.split(r"\s#|;", line.strip(), maxsplit=1)[0]).strip()
+            m = _EXACT_PIN.fullmatch(spec)
+            if m is not None:
+                pins.add((pep503(m.group(1)), m.group(2)))
+    return pins
 
 
 # #3223: pip-audit resolves with pip in a temporary venv, and for a name with no wheel pip runs that

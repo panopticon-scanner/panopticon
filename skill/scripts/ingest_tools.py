@@ -15,7 +15,7 @@ from typing import Any, NamedTuple
 from scripts import evidence as evidence_mod
 from scripts import first_party_advisory, groups_schema, plan_contract
 from scripts.tools import ADAPTERS, ADVISORY_ADAPTERS, pip_audit
-from scripts.tools.base import ingest_policy_cv, strip_ansi, target_root_cv
+from scripts.tools.base import inert_text, ingest_policy_cv, strip_ansi, target_root_cv
 from scripts.tools.sarif_utils import (
     CWE_TAG,
     CVE_TAG,
@@ -452,6 +452,68 @@ def mark_path_context(findings, target_root=None):
             marked = dict(evidence_mod._tool_evidence(finding))
             marked["path_context"] = context
             finding["tool_evidence"] = marked
+
+
+# #3749: what osv-scanner reports as the version of a requirement that has none.
+_NO_VERSION = "0.0.0"
+# How many packages and advisory ids one manifest's row names before "+N more".
+UNPINNED_NAMED = 20
+_UNPINNED_TEXT_MAX = 200
+
+
+def _without_unpinned(findings, target_root=None):
+    """`(kept, rows)`: `findings` without the advisories osv-scanner matched against a
+    version nobody has, and one row per manifest saying what was left out (#3749).
+
+    osv-scanner gives a requirements-file entry with no `==` pin the version `0.0.0`,
+    and every advisory whose range starts at zero then matches. Such a match is not a
+    claim about the code: it is not a finding, it is never put to an advisor, and the
+    report says it as coverage (`meta.coverage.tools_unpinned`). The 5.4 batch held
+    135 of these rows, 120 rejected by the advisor and 15 left in reports.
+
+    Only an osv-scanner PyPI row from a requirements-format (`.txt`) manifest at
+    exactly that version. It is kept when the manifest, or a file it includes, really
+    pins the package there (`==0.0.0` or `===0.0.0`). When the manifest cannot be read
+    (no tree at hand, a missing or oversized file) the version is unknown: a real
+    `==0.0.0` pin is rare, and an unknown version taken for a known one is the fault.
+
+    Each row names at most `UNPINNED_NAMED` packages and ids, made inert and bounded
+    (they are the scanner's text about the target), and counts the rest."""
+    kept: list = []
+    by_manifest: dict[str, tuple[set, list]] = {}
+    pins: dict = {}
+    for finding in findings:
+        said = evidence_mod._tool_evidence(finding)
+        manifest = str((finding.get("location") or {}).get("file") or "").replace(os.sep, "/")
+        if not (evidence_mod.tool_name(finding) == "osv-scanner"
+                and said.get("vulnerable_versions") == _NO_VERSION
+                and said.get("ecosystem") == "PyPI" and manifest.endswith(".txt")
+                and isinstance(said.get("package_name"), str)):
+            kept.append(finding)
+            continue
+        if manifest not in pins:
+            pins[manifest] = (pip_audit.requirement_pins(
+                os.path.join(target_root, *manifest.lstrip("/").split("/")), target_root)
+                if target_root and _plain_path(manifest) else None)
+        if (pip_audit.pep503(said["package_name"]), _NO_VERSION) in (pins[manifest] or ()):
+            kept.append(finding)
+            continue
+        packages, ids = by_manifest.setdefault(manifest, (set(), []))
+        packages.add(said["package_name"])
+        ids.append(str(said.get("rule_id") or ""))
+    rows = []
+    for manifest in sorted(by_manifest):
+        packages, ids = by_manifest[manifest]
+        named = sorted(packages)
+        listed = sorted(set(ids) - {""})
+        rows.append({
+            "manifest": inert_text(manifest, limit=_UNPINNED_TEXT_MAX, mode="path"),
+            "packages": [inert_text(name, limit=_UNPINNED_TEXT_MAX) for name in named[:UNPINNED_NAMED]],
+            "packages_more": max(0, len(named) - UNPINNED_NAMED),
+            "advisories": len(ids),
+            "ids": [inert_text(one, limit=_UNPINNED_TEXT_MAX) for one in listed[:UNPINNED_NAMED]],
+            "ids_more": max(0, len(listed) - UNPINNED_NAMED)})
+    return kept, rows
 
 
 def _run_artifact_segment(fpath):
@@ -1058,6 +1120,9 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         gl_excluded += gl_cnt
         for seg, n in sup_cnt.items():
             suppressed[seg] = suppressed.get(seg, 0) + n
+        # #3749: after the operator's exclusions and the source-scope rules, so a
+        # manifest they scoped out is counted as theirs and not disclosed twice.
+        parsed, unpinned = _without_unpinned(parsed, root)
         parsed, truncated = _cap_findings(parsed, tool)
         out.extend(parsed)
         if raw_count:
@@ -1082,6 +1147,8 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
                 policy["suppressed_in_source"])
         if file_coverage is not None:
             dispositions[tool]["file_coverage"] = file_coverage
+        if unpinned:
+            dispositions[tool]["unpinned"] = unpinned               # #3749
         if truncated:
             # Disclosed, never silent: `findings` stays the RAW count, so a
             # report reads "N seen, M dropped" rather than looking like a

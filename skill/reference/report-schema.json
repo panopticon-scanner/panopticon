@@ -786,6 +786,26 @@
               "description": "#1578 policy C, widened through #3269 G4: `{reason: count}` for source-scope-suppressed findings that cleared the run's severity and delta/gate-scope filters but the redteam gate declined. It includes rows policy C declined because they were neither CRITICAL nor secret-class, plus every `run-artifact` or `generated-bytecode` candidate regardless of severity or secret provenance. This is a subset of `tools_suppressed`, not a third population beside it, and is empty in standard mode.",
               "$comment": "Repaired to these types at the read by synth.repair.repair_tools_suppressed, like its two siblings."
             },
+            "tools_unpinned": {
+              "type": "object",
+              "additionalProperties": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": ["manifest", "packages", "packages_more", "advisories", "ids", "ids_more"],
+                  "properties": {
+                    "manifest": {"type": "string", "maxLength": 201},
+                    "packages": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 201}},
+                    "packages_more": {"type": "integer", "minimum": 0},
+                    "advisories": {"type": "integer", "minimum": 1},
+                    "ids": {"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 201}},
+                    "ids_more": {"type": "integer", "minimum": 0}
+                  }
+                }
+              },
+              "description": "#3749: per scanner, one row per requirements manifest whose entries have no pinned version. osv-scanner reports such an entry as version `0.0.0`, and every advisory whose range starts at zero then matches; those matches are not claims about an installed version. They are not in `findings[]` or `discarded_claims`, are never put to an advisor, and do not change certification. Each row names the manifest, up to 20 packages and 20 advisory ids (inert, bounded) with the rest counted in `packages_more` and `ids_more`, and the number of advisories left out. A requirement really pinned at `==0.0.0` is kept as a finding. Empty when there are none; absent from a report written before this."
+            },
             "tools_context_not_gated": {
               "type": "object",
               "additionalProperties": false,

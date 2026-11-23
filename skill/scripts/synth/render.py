@@ -237,6 +237,49 @@ def _suppressed_gated_line(gated):
             % coverage_io.venv_tally(rows, MARKER_VENV_PREFIX))
 
 
+def _count(value):
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _names(value):
+    return isinstance(value, list) and all(isinstance(name, str) for name in value)
+
+
+def unpinned_rows(block):
+    """`[(tool, sentence)]` for `meta.coverage.tools_unpinned` (#3749), one per manifest:
+    what could not be matched, and to what. Shared with the HTML page so the two say the
+    same thing. Tolerant of a malformed or absent block: a row it cannot read is left out."""
+    rows = []
+    for tool, manifests in sorted(block.items()) if isinstance(block, dict) else ():
+        for row in manifests if isinstance(manifests, list) else ():
+            if not (isinstance(tool, str) and isinstance(row, dict)
+                    and isinstance(row.get("manifest"), str)
+                    and _names(row.get("packages")) and _names(row.get("ids"))
+                    and all(_count(row.get(key))
+                            for key in ("advisories", "packages_more", "ids_more"))):
+                continue
+            requirements = len(row["packages"]) + row["packages_more"]
+            rows.append((tool, "%d requirement%s in %s ha%s no pinned version, so %d advisor%s "
+                         "could not be matched to an installed version (%s: %s)" % (
+                             requirements, "" if requirements == 1 else "s", row["manifest"],
+                             "s" if requirements == 1 else "ve", row["advisories"],
+                             "y" if row["advisories"] == 1 else "ies",
+                             _named(row["packages"], row["packages_more"]),
+                             _named(row["ids"], row["ids_more"]))))
+    return rows
+
+
+def _named(names, more):
+    return ", ".join(names) + (" +%d more" % more if more else "")
+
+
+def _unpinned_lines(block):
+    """#3749: one summary line per manifest with unpinned requirements. Not findings, and
+    not a change to certification: the report says what the scanner could not tell."""
+    return ["**Unpinned requirements (%s):** %s. These are not findings: pin the "
+            "requirement to have it audited" % row for row in unpinned_rows(block)]
+
+
 def _context_not_gated_line(counts):
     """#3755: scanner findings that are in the report and that this run's gate did not
     count, because of where they are. Silent when there are none, and on a report from
@@ -478,6 +521,8 @@ def render_summary(report):
     context = _context_not_gated_line(_cov.get("tools_context_not_gated"))
     if context:
         lines.insert(3, context)
+    for unpinned in reversed(_unpinned_lines(_cov.get("tools_unpinned"))):
+        lines.insert(3, unpinned)
     # #1701: inserted AFTER the line above so it lands ABOVE it -- a count that
     # moved this run's gate outranks a count that did not.
     sup_gated = _suppressed_gated_line(_cov.get("tools_suppressed_gated"))
