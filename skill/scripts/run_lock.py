@@ -48,6 +48,7 @@ import fcntl
 import json
 import os
 import re
+import shlex
 import socket
 import stat
 import threading
@@ -60,7 +61,7 @@ LOCKS_DIR = "locks"
 FD_ENV = "PANOPTICON_RUN_LOCK_FD"
 VERBS = ("run", "loop", "setup")
 
-_SINCE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+_SINCE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", re.ASCII)
 _PHASE = re.compile(r"[a-z]{1,20}")
 _HOST = re.compile(r"[A-Za-z0-9._-]{1,255}")
 _RECORD_MAX = 4096
@@ -71,6 +72,10 @@ _RECORD_SIZE = 1024
 _HELD: dict = {}
 #: a root's path as it was given to `hold` -> its lock path, while that lock is held.
 _GIVEN: dict = {}
+#: Held for every change to the two tables above. A process may hold several roots on
+#: several threads, and a release that iterates a table another thread is writing to
+#: raises before it closes its descriptor.
+_TABLE = threading.Lock()
 
 _AGAIN = "wait for it to finish, or stop it, then run again"
 _UNUSABLE = ("the run lock cannot be used: %s. `driver run`, `loop` and `setup` hold one "
@@ -117,33 +122,38 @@ def hold(review_root, verb):
     one ends. From any other thread, or from a forked process that inherited this
     table, the root is held by another driver.
 
-    No mutex: the table is changed only by the thread that holds, and two threads that
-    both find the root free are told apart by `flock`, which one of them loses."""
+    The descriptor is closed whatever happens to the table on the way out."""
     try:
         path = lock_path(review_root)
     except OSError as exc:
         raise Refused("the review root cannot be locked: %s" % _reason(review_root, exc)) from exc
     given = os.path.abspath(review_root)
-    entry = _HELD.get(path)
-    if entry is not None and entry[3] != _me():
-        raise Refused(_held_by(entry[0], path))
-    if entry is None:
-        said = {"pid": os.getpid(), "verb": verb, "host": socket.gethostname(),
-                "since": datetime.datetime.now(datetime.timezone.utc)
-                .strftime("%Y-%m-%dT%H:%M:%SZ")}
-        entry = _HELD[path] = [_take(path), 0, said, _me()]
-        _say(entry)
-    entry[1] += 1
-    _GIVEN[given] = path
+    with _TABLE:
+        entry = _HELD.get(path)
+        if entry is not None and entry[3] != _me():
+            raise Refused(_held_by(entry[0], path))
+        if entry is None:
+            said = {"pid": os.getpid(), "verb": verb, "host": socket.gethostname(),
+                    "since": datetime.datetime.now(datetime.timezone.utc)
+                    .strftime("%Y-%m-%dT%H:%M:%SZ")}
+            entry = [_take(path), 0, said, _me()]
+            _HELD[path] = entry
+            _say(entry)
+        entry[1] += 1
+        _GIVEN[given] = path
     try:
         yield
     finally:
         entry[1] -= 1
-        if not entry[1]:
-            del _HELD[path]
-            for spelled in [key for key, value in _GIVEN.items() if value == path]:
-                del _GIVEN[spelled]
-            _let_go(entry[0])
+        try:
+            with _TABLE:
+                if not entry[1]:
+                    _HELD.pop(path, None)
+                    for spelled in [key for key, value in _GIVEN.items() if value == path]:
+                        _GIVEN.pop(spelled, None)
+        finally:
+            if not entry[1]:
+                _let_go(entry[0])
 
 
 def descriptor(review_root):
@@ -199,6 +209,10 @@ def _take(path):
             raise Refused(_UNUSABLE % ("%s is not a regular file" % path))
         if info.st_uid != os.getuid():
             raise Refused(_UNUSABLE % ("%s is owned by another user" % path))
+        if info.st_nlink > 1:             # a hard link: the record would be written over it
+            raise Refused(_UNUSABLE % ("%s has more than one name" % path))
+        if info.st_nlink < 1:             # removed since the open: a lock nobody else can see
+            raise Refused(_UNUSABLE % ("%s is no longer at its name" % path))
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:
@@ -224,14 +238,18 @@ def _say(entry):
     bytes (JSON, then spaces), so a reader sees the record before or the record after
     and never an empty or half-replaced file. A record too long for that says nothing.
     Best-effort: a record that cannot be written (a full disk) costs that message its
-    detail, never the holder its run."""
+    detail, never the holder its run. The file is then emptied, so the next driver's
+    refusal does not name a pid out of an earlier holder's record."""
     data = json.dumps(entry[2], sort_keys=True).encode("utf-8")
     if len(data) > _RECORD_SIZE:
         data = b""
     try:
         os.pwrite(entry[0], data.ljust(_RECORD_SIZE), 0)
     except OSError:
-        pass
+        try:                              # never the record of whoever held it before
+            os.ftruncate(entry[0], 0)
+        except OSError:
+            pass
 
 
 def _let_go(fd):
@@ -264,7 +282,7 @@ def _held_by(fd, path):
     """The refusal for a root another process holds, from what its lock file says.
     Every field is taken by type and shape; anything else is not repeated."""
     unreadable = ("another process holds this review root, and its lock file says nothing "
-                  "readable about it: `lsof %s` names it; %s" % (path, _AGAIN))
+                  "readable about it: `lsof %s` names it; %s" % (shlex.quote(path), _AGAIN))
     try:
         said = json.loads(os.pread(fd, _RECORD_MAX, 0).decode("utf-8"))
     except (OSError, ValueError):
@@ -280,18 +298,22 @@ def _held_by(fd, path):
             return unreadable
         return ("another driver is running on this review root (pid %d on %s, `driver %s`, "
                 "since %s): %s" % (pid, host, verb, since, _AGAIN))
-    if _running(pid):
-        return ("another driver is running on this review root (pid %d, `driver %s`, "
-                "since %s): %s" % (pid, verb, since, _AGAIN))
-    gone = "a driver that is no longer running (pid %d, `driver %s`, since %s)" % (
-        pid, verb, since)
     left = said.get("child")
     child, phase = (left.get(key) for key in ("pid", "phase")) if isinstance(left, dict) \
         else (None, None)
     # Named only while it runs: a record update that failed leaves the child before it.
+    kid: int | None = None
     if (_whole(child) and isinstance(phase, str) and _PHASE.fullmatch(phase)
             and _running(child)):
+        kid = child
+    if _running(pid):
+        its = "; its %s child is pid %d" % (phase, kid) if kid is not None else ""
+        return ("another driver is running on this review root (pid %d, `driver %s`, "
+                "since %s%s): %s" % (pid, verb, since, its, _AGAIN))
+    gone = "a driver that is no longer running (pid %d, `driver %s`, since %s)" % (
+        pid, verb, since)
+    if kid is not None:
         return ("a %s child (pid %d) left by %s still holds this review root: wait for it "
-                "to exit, or stop it (`kill %d`), then run again" % (phase, child, gone, child))
+                "to exit, or stop it (`kill %d`), then run again" % (phase, kid, gone, kid))
     return ("a process left by %s still holds this review root: `lsof %s` names it; "
-            "wait for it to exit, or stop it, then run again" % (gone, path))
+            "wait for it to exit, or stop it, then run again" % (gone, shlex.quote(path)))

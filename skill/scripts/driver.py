@@ -550,6 +550,10 @@ def _run_held(args, runner, phases, review_root, worktree, pr_base):
     # #3779: the manifest is settled from the disk, as before, with nothing captured from
     # an earlier `run` of the same loop. Its paths are captured once it is settled.
     runio.capture_paths(review_root, None)
+    # #3735, moved under the lock (#3782): the first read under `.panopticon/` is a held one.
+    stop = _resumed_delta_refusal(args, review_root)
+    if stop:
+        return runio._error_status(stop)
     if args.pr is not None:
         # A PR is a changed-files delta by definition. manifest["base"] holds the
         # user's EXPLICIT override only (anti-drift key); the gh-detected PR base
@@ -684,20 +688,30 @@ def parse_cli(argv=None):
     return args
 
 
-def _resumed_delta_run(args):
+def _resumed_delta_refusal(args, review_root):
     """The refusal for a run folder that was started as a delta review (#3735), or None.
 
     A bare `driver run` or `driver loop` resumes whatever the manifest says: `None`
     never conflicts, so a run started with `-c` or `--base` went on as a delta run
     with no flag on the command line at all. Read-only, and before any phase: nothing
-    is launched or written for it. `--reset` discards the folder, so it passes."""
+    is launched or written for it. `--reset` discards the folder, so it passes.
+
+    `run` and `loop` ask this with the review root held (#3782); `persist`, which takes
+    no lock, asks it through `_resumed_delta_run`."""
+    if getattr(args, "reset", False):
+        return None
+    return delta_withdrawn.resumed_refusal(run_manifest.load_manifest(review_root))
+
+
+def _resumed_delta_run(args):
+    """`_resumed_delta_refusal` for a verb that has not resolved its root yet."""
     if getattr(args, "reset", False):
         return None
     try:
         review_root = runio.resolve_review_root(args.target)[0]
     except (runio.DriverError, RuntimeError, ValueError, OSError):
         return None         # no root: the verb itself says why
-    return delta_withdrawn.resumed_refusal(run_manifest.load_manifest(review_root))
+    return _resumed_delta_refusal(args, review_root)
 
 
 def main(argv=None):
@@ -740,12 +754,11 @@ def main(argv=None):
             model_resolver.validate_env_overrides(getattr(args, "host", None))
         except ValueError as exc:
             return engine.emit_status(runio._error_status(str(exc)))
-    stop = _resumed_delta_run(args)
-    if stop:
-        if args.verb == "persist":      # its own exit code: it speaks no status protocol
-            print("driver persist: %s" % stop, file=sys.stderr)
-            return 2
-        return engine.emit_status(runio._error_status(stop))
+    # `run` and `loop` make this check themselves, with the review root held (#3782).
+    stop = _resumed_delta_run(args) if args.verb == "persist" else None
+    if stop:                            # its own exit code: it speaks no status protocol
+        print("driver persist: %s" % stop, file=sys.stderr)
+        return 2
     if args.verb in ("loop", "persist"):
         import scripts.orchestrate as orchestrate   # R-P6-2: lazy, no cycle
         return loop_progress.stamped_call(args.verb == "loop", orchestrate.main_verb, args,
