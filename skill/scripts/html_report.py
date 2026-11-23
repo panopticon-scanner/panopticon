@@ -1325,6 +1325,29 @@ def _render_dashboard(report):
 """
 
 
+def _severity_notes(finding):
+    """#3754: what the page says beside a finding's severity -- lowered to its code's
+    domain ceiling, rated above its reviewer's domain range, or assessed by the
+    advisor (recorded, not applied). Each is a `<dt>/<dd>` pair, escaped."""
+    out = []
+    ceiling = finding.get("severity_ceiling")
+    if isinstance(ceiling, dict):
+        out.append("<dt>Severity</dt><dd>%s rated %s, above the %s ceiling of %s for its "
+                   "code's domain; published at %s</dd>" % tuple(_escape(str(x)) for x in (
+                       "Reviewer", ceiling.get("from"), ceiling.get("domain"),
+                       ceiling.get("ceiling"), ceiling.get("ceiling"))))
+    outside = finding.get("severity_outside_range")
+    if isinstance(outside, dict):
+        out.append("<dt>Severity</dt><dd>Rated above the %s range (its ceiling is %s); no "
+                   "catalog code, so left as rated</dd>" % (
+                       _escape(str(outside.get("domain"))), _escape(str(outside.get("ceiling")))))
+    assessed = finding.get("severity_assessed")
+    if isinstance(assessed, dict):
+        out.append("<dt>Advisor's severity</dt><dd>%s: %s (recorded, not applied)</dd>" % (
+            _escape(str(assessed.get("severity"))), _escape(str(assessed.get("reason")))))
+    return out
+
+
 def _render_card(finding, delta=None):
     loc = finding.get("location") or {}
     where = f"{_escape(loc.get('file', '?'))}:{_escape(loc.get('line_start', '?'))}"
@@ -1347,6 +1370,7 @@ def _render_card(finding, delta=None):
         value = finding.get(key)
         if value:
             details.append(f"<dt>{label}</dt><dd>{_escape(value)}</dd>")
+    details.extend(_severity_notes(finding))
 
     # #1638 P16: when the adversarial backup could not reach the files it needed, say so
     # in the artifact a person opens -- else a CONFIRMED finding's second opinion is

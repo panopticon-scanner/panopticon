@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **A test-quality or hygiene finding can no longer be rated CRITICAL by its reviewer alone
+  (#3754).** The shipped OCRDb catalog (0.6.0) has no severity ranges, so a reviewer's severity
+  stood whatever its code. In the 5.4.0 sweep one run rated four test-quality findings CRITICAL
+  (one a copy-pasted docstring), the advisor confirmed three, and the run graded F.
+  - **This changes results.** An agent finding whose catalog code is in test quality (TST),
+    accessibility (ACC) or operations and CI hygiene (OPS) is published at HIGH at most, and one
+    in code quality (QAL) at MEDIUM at most. These are the highest ceilings of those domains'
+    codes in the 0.7 catalog; the table goes when 0.7 ships. Such a finding carries
+    `severity_ceiling` and is listed in `meta.severity_ceiling`; the summary and the page say so.
+    A TST-coded CRITICAL no longer fails the default gate (`--fail-on critical`).
+  - A claim with no code, or one the catalog does not know, keeps its severity, so a real defect
+    filed without a code is not lowered by which reviewer found it. When its reviewer's domain is
+    one of the four and the rating is above that domain's ceiling, it is flagged
+    `severity_outside_range` (and in `meta.severity_outside_range`).
+  - The domain advisor now says, for a CRITICAL or HIGH claim, which severity it would assign
+    when the claim's does not fit (`severity_assessed`). It is recorded beside the finding and
+    applied to nothing in 5.5. The advisor verdict schema, the verdict bundle and the Codex
+    verify projections gain the field (nullable there).
+  - Not changed: scanner findings; codes in SEC, COD, AGT, DAT, ARC and LNG.
+
 - **A requirement with no pinned version is no longer scanned as version 0.0.0 (#3749).**
   osv-scanner reports a requirements-file entry that has no `==` pin as version `0.0.0`, and
   every advisory whose range starts at zero then matches. In the 5.4 batch that was 135 rows:

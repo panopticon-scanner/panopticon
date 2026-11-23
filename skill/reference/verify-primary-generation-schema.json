@@ -126,6 +126,36 @@
         },
         "citations": {
           "$ref": "#/$defs/citations"
+        },
+        "severity_assessed": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "CRITICAL",
+                    "HIGH",
+                    "MEDIUM",
+                    "LOW",
+                    "INFO"
+                  ]
+                },
+                "reason": {
+                  "$ref": "#/$defs/s"
+                }
+              },
+              "required": [
+                "severity",
+                "reason"
+              ]
+            }
+          ]
         }
       },
       "required": [
@@ -136,7 +166,8 @@
         "reasoning",
         "explored",
         "references",
-        "citations"
+        "citations",
+        "severity_assessed"
       ]
     }
   }

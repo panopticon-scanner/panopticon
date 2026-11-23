@@ -860,6 +860,7 @@ class TestTheMergeRanksByThePublishedSeverity(_Verdicts):
         scanner finding would have won anyway. Here main shows the claim at its own
         severity, so it comes back beside the scanner's row."""
         for severity in ("HIGH", "CRITICAL"):
+            published = "HIGH"      # #3754: a TST-coded claim is published at HIGH at most
             scanner = ("the scanner's", "findings", "MEDIUM")
             for label, how, status, tool_status in (
                     ("no verify phase", dict(verify=False), "unverified", "tool_reported"),
@@ -871,10 +872,10 @@ class TestTheMergeRanksByThePublishedSeverity(_Verdicts):
                                          tool_says="NEEDS_MORE_INFO"),
                      "needs_more_info", "needs_more_info")):
                 with self.subTest(label, severity=severity):
-                    self.assertEqual([("the claim", "findings", severity, status),
+                    self.assertEqual([("the claim", "findings", published, status),
                                       scanner + (tool_status,)], self.uncapped_claim(severity, **how))
             with self.subTest("the claim alone", severity=severity):
-                self.assertEqual([("the claim", "findings", severity, "unverified")],
+                self.assertEqual([("the claim", "findings", published, "unverified")],
                                  self.uncapped_claim(severity, scanner=False))
             # A scanner finding an advisor CONFIRMED keeps its severity: a tie, one row.
             with self.subTest("the scanner confirmed", severity=severity):
@@ -1985,7 +1986,8 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
     def final_of(self, finding, said, capped=True):
         """The severity this finding is published at, by the rule: an override with no
         reason resets it to its code's default; then a `TST-A1*` claim on a file that is
-        not Python, or a scanner finding nobody confirmed, is capped at MEDIUM."""
+        not Python, or a scanner finding nobody confirmed, is capped at MEDIUM; and a
+        claim coded in a ceilinged domain is held to its ceiling (#3754)."""
         severity = finding["severity"]
         override = finding.get("severity_override")
         if isinstance(override, dict) and not override.get("reason"):
@@ -1996,6 +1998,11 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
             return self.CAPPED_TO.get(severity, severity) if unconfirmed else severity
         if finding["code"] == "TST-A1A" and not self.LINE_FILE.endswith(".py"):
             return self.CAPPED_TO.get(severity, severity)
+        # #3754: a claim whose code is in a ceilinged domain is published at most at
+        # that domain's ceiling.
+        ceiling = ocrdb.DOMAIN_CEILINGS.get(str(finding.get("code"))[:3])
+        if ceiling and self.RANK[severity] > self.RANK[ceiling]:
+            return ceiling
         return severity
 
     def write(self, cells, tool, skip=None):

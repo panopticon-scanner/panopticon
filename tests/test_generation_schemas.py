@@ -205,7 +205,8 @@ def _as_required(name, reply):
 
 def _verify_reply(stage="primary", missing=False):
     return _as_required(stage, {
-        "verdicts": [_verdict(stage == "backup", missing)],
+        # #3754: the domain advisor's severity view, null when it has none.
+        "verdicts": [dict(_verdict(stage == "backup", missing), severity_assessed=None)],
         "_panopticon": {
             "run_id": "RID", "role": "domain_advisor", "domain": "COD",
             "group": "app", "stage": stage,

@@ -20,6 +20,13 @@ from . import health_basis as health_basis_mod
 from . import integrity as integrity_mod
 
 
+# #3754: the terminal lines for `meta.severity_ceiling` and `meta.severity_outside_range`.
+_CEILING_LINE = ("**Lowered to the domain's ceiling:** %d agent finding(s) rated above what "
+                 "their code's domain allows (%s)")
+_OUTSIDE_LINE = ("**Rated above the domain's range:** %d agent finding(s) with no catalog "
+                 "code, rated above their reviewer's domain ceiling and left as rated (%s)")
+
+
 def _grade_text(summary):
     """The grade as displayed: the letter, a provisional letter, or n/a.
 
@@ -439,6 +446,8 @@ def render_summary(report):
     basis_note = health_basis_mod.rendered_note(s.get("health"))
     unscored = report["meta"].get("cvss_unscored") or []      # #3162
     capped = report["meta"].get("severity_capped") or {}      # #3231
+    ceilinged = report["meta"].get("severity_ceiling") or {}  # #3754
+    outside = report["meta"].get("severity_outside_range") or []
     fallbacks = report["meta"].get("model_substitutions") or []   # #3582
     lines = [
         # #1829 SEC-798292895: belt and braces for the two fields the
@@ -466,6 +475,11 @@ def render_summary(report):
         % len(unscored), ""] if unscored else []) + ([
         "**Capped at MEDIUM:** %d unconfirmed claim(s) (%s)" % (sum(map(len, capped.values())), ", ".join(
             "%s %d" % (k.replace("_", " "), len(v)) for k, v in sorted(capped.items()))), ""] if capped else []) + ([
+        _CEILING_LINE % (sum(map(len, ceilinged.values())), ", ".join(
+            "%s %d" % (k, len(v)) for k, v in sorted(ceilinged.items()))), ""]
+        if ceilinged else []) + ([
+        _OUTSIDE_LINE % (len(outside), ", ".join(outside[:5]) + (" ..." if len(outside) > 5 else "")), ""]
+        if outside else []) + ([
         "**Model fallbacks:** %d dispatch(es) ran on a fallback, not the requested model (%s)" % (
             len(fallbacks), "; ".join(sorted({tool_base.inert_text(
                 "%s -> %s (%s)" % (f.get("requested"), f.get("bound"), f.get("reason")))

@@ -168,6 +168,36 @@
         },
         "evidence_scope": {
           "$ref": "#/$defs/evidence_scope"
+        },
+        "severity_assessed": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "CRITICAL",
+                    "HIGH",
+                    "MEDIUM",
+                    "LOW",
+                    "INFO"
+                  ]
+                },
+                "reason": {
+                  "$ref": "#/$defs/s"
+                }
+              },
+              "required": [
+                "severity",
+                "reason"
+              ]
+            }
+          ]
         }
       },
       "required": [
@@ -179,7 +209,8 @@
         "explored",
         "references",
         "citations",
-        "evidence_scope"
+        "evidence_scope",
+        "severity_assessed"
       ]
     },
     "verdict_missing": {
@@ -215,6 +246,36 @@
         },
         "missing_evidence": {
           "$ref": "#/$defs/strings"
+        },
+        "severity_assessed": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "CRITICAL",
+                    "HIGH",
+                    "MEDIUM",
+                    "LOW",
+                    "INFO"
+                  ]
+                },
+                "reason": {
+                  "$ref": "#/$defs/s"
+                }
+              },
+              "required": [
+                "severity",
+                "reason"
+              ]
+            }
+          ]
         }
       },
       "required": [
@@ -227,7 +288,8 @@
         "references",
         "citations",
         "evidence_scope",
-        "missing_evidence"
+        "missing_evidence",
+        "severity_assessed"
       ]
     }
   }

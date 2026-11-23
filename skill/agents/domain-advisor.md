@@ -77,6 +77,15 @@ For a below-floor override, verify that `reason` begins with one of the menu
 contract's controlled `severity_modifier` slugs and that its concrete instance
 fact is true.
 
+For a claim rated CRITICAL or HIGH, also judge whether that severity fits what
+the code does: what an attacker or a failure could actually reach from here, not
+how the defect is named. A copy-pasted docstring, a misleading test name, missing
+alt text or an unpinned CI tool is rarely HIGH and is not CRITICAL. When the
+claim's severity does not fit, give the one you would assign and why in
+`severity_assessed`; when it fits, or the claim is MEDIUM or below, set it to
+null. Your assessment is recorded beside the finding and changes nothing: the
+verdict is still about whether the defect is real.
+
 ## Backup round
 
 If the verification round is `backup`, these claims were ALREADY confirmed by a
@@ -117,6 +126,7 @@ Each verdict is one object per claim:
       "explored": ["every/file/you/read/or/grepped"],
       "references": ["..."],
       "citations": {"cwe": [], "owasp": [], "cve": []},
+      "severity_assessed": {"severity": "MEDIUM", "reason": "..."},
       "evidence_scope": {"granted": ["...the granted list, verbatim..."], "cap": 12, "truncated": false, "entry_cap": 48, "entry_truncated": false, "floor_count": 3},
       "missing_evidence": ["a/file/you/needed/and/could/not/read.py"]
     }

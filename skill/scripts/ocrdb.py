@@ -19,6 +19,16 @@ from scripts import _version
 BUNDLE_VERSION = "0.6.0"
 _BUNDLE_NAME = "ocrdb-%s.json" % BUNDLE_VERSION
 
+# #3754: the highest severity an agent finding coded in these domains may publish.
+# The shipped 0.6.0 catalog has no `severity_range` on any code, so a reviewer's
+# claimed severity stood whatever its code: four test-quality findings at CRITICAL
+# graded one run F. Each value is the highest `severity_range.ceiling` of the
+# domain's codes in the 0.7 catalog (tests/fixtures/ocrdb-0.7.0-dev.json, and a test
+# holds the two equal). These are the four domains #3754 is about; ARC, DAT and LNG
+# also stop below CRITICAL in 0.7 and are left to it. This table goes when 0.7
+# ships: its ranges then bound every code on their own.
+DOMAIN_CEILINGS = {"TST": "HIGH", "ACC": "HIGH", "OPS": "HIGH", "QAL": "MEDIUM"}
+
 # The 10 OCRDb domains -> the legacy 6-panel axis (evidence.PANELS), so a
 # domain-scoped finding still segments in the panel-graded report (Task 2 uses
 # this to back-fill `panel`). Domains with no legacy equivalent bucket to "code".
@@ -415,6 +425,17 @@ def category_of(bundle, code):
 def domain_fallback(domain):
     """The catalog-gap fallback code for a domain: '<DOM>-X0X'."""
     return "%s-X0X" % domain
+
+
+def domain_ceiling(bundle, code):
+    """`(domain, ceiling)` for a code the catalog KNOWS whose domain has a ceiling
+    (`DOMAIN_CEILINGS`), else None. An unknown code names no domain here: a prefix
+    is what the code claims, not what it is (`domain_of`)."""
+    if default_severity(bundle, code) is None:
+        return None
+    domain = domain_of(code)
+    ceiling = DOMAIN_CEILINGS.get(domain) if domain else None
+    return (domain, ceiling) if ceiling else None
 
 
 def default_severity(bundle, code):

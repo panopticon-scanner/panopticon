@@ -84,6 +84,29 @@ Certification is unchanged.
   unknown and the row is left out.
 - To have an unpinned requirement audited, pin it.
 
+**A reviewer's severity is held to its code's domain (#3754).** The shipped OCRDb catalog (0.6.0)
+has no severity ranges, so a reviewer's claimed severity stood whatever its code: a copy-pasted
+docstring rated CRITICAL failed the gate. Until the 0.7 catalog ships, four domains have a ceiling,
+the highest of their codes' 0.7 ceilings: test quality (TST), accessibility (ACC) and operations
+and CI hygiene (OPS) at HIGH, code quality (QAL) at MEDIUM.
+- An agent finding whose code the catalog knows, in one of the four domains, rated above the
+  ceiling, is published at the ceiling, with `severity_ceiling: {from, domain, ceiling}`; the
+  ids are in `meta.severity_ceiling`. A `severity_override` does not lift it past the ceiling.
+- The code's domain decides, not the reviewer's: a SEC code filed by a TST reviewer keeps
+  CRITICAL.
+- A claim with no code, or a code the catalog does not know, keeps its severity: lowering it
+  could pass a gate on a real defect someone left uncoded. When its reviewer's domain is one of
+  the four and it is rated above that ceiling, it carries `severity_outside_range: {domain,
+  ceiling}` (ids in `meta.severity_outside_range`).
+- Scanner findings are never touched.
+- The terminal summary has one line for each list, and the finding's card on the page says it.
+
+**The advisor's view of a severity is recorded (#3754).** The domain advisor judges whether a
+CRITICAL or HIGH claim's severity fits what the code does, and when it does not, says which it
+would assign and why (`severity_assessed`). The finding carries it, the page shows it beside the
+severity, and in 5.5 it changes nothing: no severity, gate or grade moves on one advisor's view. A
+malformed assessment is not recorded.
+
 **Where a scanner finding is can keep it out of the gate (#3755).** Whether a path is a test path
 is a fact, and each advisor used to decide it again, so one finding was confirmed in some runs and
 rejected in others and that verdict decided the gate. The controller now states it at ingest, in

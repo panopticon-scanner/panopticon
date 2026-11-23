@@ -130,6 +130,32 @@
               }
             }
           },
+          "severity_assessed": {
+            "type": [
+              "object",
+              "null"
+            ],
+            "required": [
+              "severity",
+              "reason"
+            ],
+            "properties": {
+              "severity": {
+                "type": "string",
+                "enum": [
+                  "CRITICAL",
+                  "HIGH",
+                  "MEDIUM",
+                  "LOW",
+                  "INFO"
+                ]
+              },
+              "reason": {
+                "type": "string"
+              }
+            },
+            "description": "Domain advisor (#3754): for a claim rated CRITICAL or HIGH, the severity this advisor would assign and why, when the claim's does not fit; null or absent when it fits. Recorded beside the finding as `severity_assessed` and applied to nothing in 5.5. A malformed value is not recorded."
+          },
           "missing_evidence": {
             "type": "array",
             "items": {
