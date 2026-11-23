@@ -197,10 +197,20 @@ file there runs only under `--online`, as pip-audit does for a `pyproject.toml`)
 `coverage_note` says it in a fixed sentence, for example
 "javascript not audited: no npm-shrinkwrap.json, package-lock.json, yarn.lock or pnpm-lock.yaml;
 npm-audit and osv-scanner need one". When no auditor produced anything, that sentence follows "no
-SCA tool produced output on an applicable tree". When another ecosystem's auditor did answer, the
-tree certifies as before and the sentence is the only sign that one ecosystem went unaudited: read
-`coverage_note` in the JSON, since the terminal and the HTML show it only beside NOT CERTIFIED or a
-provisional letter. It is disclosure only and moves neither the gate nor `coverage_certified`.
+SCA tool produced output on an applicable tree".
+An ecosystem that is `needs_online` or `not_run` stops certification (#3700), even when another
+ecosystem's auditor answered: an auditor reads its file and did not run, so part of the tree's
+dependencies went unaudited. Coverage is NOT CERTIFIED, a PASS gate becomes INCONCLUSIVE (exit 2)
+and the letter is provisional, as for any other gate-relevant gap; a FAIL stays FAIL.
+`tools_manifest.UNAUDITED_UNCERTIFIED` is the one list of those reasons. The visible change: an
+offline run of a tree with a JavaScript lockfile and a `pyproject.toml` is now INCONCLUSIVE until
+it runs with `--online`, where it used to PASS with a note only the JSON showed.
+`no_auditable_file` is still disclosure only and moves neither the gate nor `coverage_certified`:
+the target gives no auditor anything to read. When the tree otherwise certifies, that sentence is
+the only sign: read `coverage_note` in the JSON, since the terminal and the HTML show it only
+beside NOT CERTIFIED or a provisional letter.
+`security_gate.py`, the CI gate over raw scanner output, does not read this receipt: neither this
+rule nor the whole-tree one applies there (#3791).
 `meta.coverage.scanner_config_excluded` (#3708) names the scanner's own root config file, which a
 full scan does not hand to any review group: the one file it loaded as its config
 (`panopticon.yml`, or `.panopticon.yml` when that is the only one). It is disclosure only too,
