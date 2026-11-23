@@ -905,8 +905,8 @@ def test_a_fresh_report_that_cannot_be_looked_at_is_an_error_of_its_own(review):
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     # The first look finds nothing to set aside; the second is the one after the child.
-    with _lstat_fails(root, _report(root), 2), \
-            mock.patch.object(child, "_run_child", side_effect=wrote) as launched:
+    the_child = mock.patch.object(child, "_run_child", side_effect=wrote)
+    with the_child as launched, _lstat_fails(root, _report(root), 2):
         stopped = _resume(root)
     assert launched.call_count == 1
     assert stopped["status"] == "error", stopped
