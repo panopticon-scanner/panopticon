@@ -121,7 +121,9 @@ class TestToolsDirIntegration(unittest.TestCase):
                 code = syn.main(["--repo", "--target", "display-only-name",
                                  "--groups", groups, "--tools-dir", tools,
                                  "--out", out, findings])
-            self.assertEqual(code, 0)
+            # #3766: a direct run has no run id, so its tool coverage is never
+            # certified (INCONCLUSIVE). What it classifies is the subject here.
+            self.assertEqual(code, 2)
             with open(out, encoding="utf-8") as fh:
                 result = json.load(fh)
         self.assertNotIn("classification facts are missing or invalid",
@@ -1154,6 +1156,26 @@ class TestManifestlessCertification(unittest.TestCase):
             return real(path)
         return mock.patch("os.scandir", side_effect=scandir)
 
+    # A run the driver made: the id, and a manifest whose receipt names the capture.
+    BOUND = ("--run-id", "rid-1")
+    BOUND_MANIFEST = {"schema_version": 1, "run_id": "rid-1", "selected": ["bandit"],
+                      "produced": ["bandit"], "missing": [], "outputs": ["bandit.sarif"]}
+
+    def assert_unbound(self, rc, report, only=True, divergence=None):
+        """Not certified for having no run id -- and, with `only`, for nothing else."""
+        import scripts.integrity_messages as integrity_messages
+        integrity = report["meta"]["integrity"]
+        self.assertIs(True, integrity["tools_run_unbound"])
+        self.assertFalse(report["summary"]["coverage_certified"])
+        self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+        self.assertEqual(2, rc)
+        if only:
+            self.assertEqual(["tools_run_unbound"], sorted(
+                key for key, spec in integrity_messages.INTEGRITY_KEYS.items()
+                if spec.sinks and integrity.get(key)))
+            self.assertEqual(divergence or {},
+                             report["meta"]["coverage"]["divergence"]["tools"])
+
     def assert_not_certified(self, rc, report, tools):
         cov = report["meta"]["coverage"]
         for tool in tools:
@@ -1190,16 +1212,98 @@ class TestManifestlessCertification(unittest.TestCase):
             rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF})
         self.assert_not_certified(rc, report, ["bandit"])
 
-    def test_a_clean_run_on_the_same_path_is_unchanged(self):
+    def test_no_run_id_no_certification(self):
+        # Owner ruling, 2026-11-23, on the gates at 10d3b3fb. A tools directory that
+        # is there and no run id to bind it: read, reported, never certified.
+        for label, extra in (("no run id", ()), ("an empty run id", ("--run-id", ""))):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as d:
+                rc, report, err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF}, extra=extra)
+                self.assert_unbound(rc, report)
+                # The findings are still ingested and the report still says what ran.
+                cov = report["meta"]["coverage"]
+                self.assertEqual("empty", cov["adapters"]["bandit"]["status"])
+                self.assertEqual(["bandit"], cov["tools_ran"])
+                self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
+                self.assertEqual([], report["meta"]["integrity"]["unbound_tool_outputs"])
+                said = [line for line in err.splitlines() if "no run id" in line]
+                self.assertEqual(1, len(said), err)
+                self.assertIn("NOT certified", said[0])
+                self.assertIn("NO RUN ID", self.stdout.getvalue())
+        # An empty directory is a directory that is there.
         with tempfile.TemporaryDirectory() as d:
-            rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF})
+            rc, report, _err = self._run(d, {})
+            self.assert_unbound(rc, report)
+
+    def test_a_run_with_its_run_id_certifies_as_on_main(self):
+        with tempfile.TemporaryDirectory() as d:
+            rc, report, err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
+                                        extra=self.BOUND, manifest=self.BOUND_MANIFEST)
         cov = report["meta"]["coverage"]
         self.assertEqual("empty", cov["adapters"]["bandit"]["status"])
         self.assertEqual(["bandit"], cov["tools_ran"])
         self.assertEqual({}, cov["divergence"]["tools"])
+        self.assertIs(False, report["meta"]["integrity"]["tools_run_unbound"])
         self.assertTrue(report["summary"]["coverage_certified"])
         self.assertEqual("PASS", report["summary"]["gate"])
         self.assertEqual(0, rc)
+        self.assertNotIn("no run id", err)
+
+    def test_no_manifest_can_certify_a_call_with_no_run_id(self):
+        # The three consumers the gates found, and the rule that needs none of them
+        # closed one at a time: whatever the manifest beside the directory says.
+        selected = {"schema_version": 1, "selected": ["bandit"], "produced": ["bandit"],
+                    "missing": []}
+        cases = (
+            ("everything it selected was produced", selected,
+             {"bandit.sarif": self.EMPTY_SARIF}, ["bandit"]),
+            # 10d3b3fb: `produced` named a scanner with no capture, and that removed
+            # the scout's request for it -- PASS, certified, over an empty directory.
+            ("it says produced and there is no capture", selected, {}, ["bandit"]),
+            # 93300f1b: a request it did not select was demoted to non-gating.
+            ("the scout asked for one it did not select", selected,
+             {"bandit.sarif": self.EMPTY_SARIF}, ["bandit", "gitleaks"]),
+            # r1: an empty selection beside a capture nobody can read.
+            ("it selects nothing", dict(selected, selected=[], produced=[]),
+             {"semgrep.sarif": b"not JSON"}, None),
+            ("it names a run itself", dict(selected, run_id="rid-1", outputs=["bandit.sarif"]),
+             {"bandit.sarif": self.EMPTY_SARIF}, ["bandit"]))
+        for label, manifest, captures, scout in cases:
+            for extra in ((), ("--run-id", "")):
+                with self.subTest(case=label, extra=extra), tempfile.TemporaryDirectory() as d:
+                    rc, report, _err = self._run(d, captures, extra=extra, manifest=manifest,
+                                                 scout=scout)
+                    self.assert_unbound(rc, report, only=False)
+
+    def test_the_gate_follows_the_existing_precedence(self):
+        # A FAIL stays FAIL and `--fail-on off` stays OFF; only a PASS is taken away.
+        high = {"id": "SE-001", "title": "sqli", "severity": "HIGH", "confidence": "CERTAIN",
+                "panel": "security", "category": "injection", "source": "tool:semgrep",
+                "location": {"file": "a.py", "line_start": 1}, "citations": {"cwe": ["CWE-89"]}}
+
+        def run(d, findings, extra):
+            td = os.path.join(d, "tools")
+            os.makedirs(td)
+            fp = os.path.join(d, "findings-g1-SEC.json")
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump({"findings": findings}, fh)
+            out = os.path.join(d, "r.json")
+            with contextlib.redirect_stdout(io.StringIO()), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                rc = syn.main(["--repo", "--target", "src", "--run-dir", d, "--tools-dir", td,
+                               "--out", out, *extra, fp])
+            with open(out, encoding="utf-8") as fh:
+                return rc, json.load(fh)
+        for label, findings, extra, gate, code in (
+                ("a blocking finding", [high], ("--fail-on", "high", "--gate-unverified"),
+                 "FAIL", 1),
+                ("the gate is off", [], ("--fail-on", "off"), "OFF", 0),
+                ("otherwise", [], ("--fail-on", "high"), "INCONCLUSIVE", 2)):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as d:
+                rc, report = run(d, findings, extra)
+                self.assertEqual(gate, report["summary"]["gate"])
+                self.assertEqual(code, rc)
+                self.assertIs(True, report["meta"]["integrity"]["tools_run_unbound"])
+                self.assertFalse(report["summary"]["coverage_certified"])
 
     def test_the_scouts_request_still_gates_and_a_failed_one_says_why(self):
         # Requested and failed: `produced_unusable`, the more exact reason, not
@@ -1228,63 +1332,45 @@ class TestManifestlessCertification(unittest.TestCase):
             rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF})
         cov = report["meta"]["coverage"]
         self.assertEqual({"bandit": "produced_noscan"}, cov["divergence"]["tools"])
-        self.assertTrue(report["summary"]["coverage_certified"])
-        self.assertEqual(0, rc)
+        # Not certified for having no run id, and for nothing else: `noscan` sank no
+        # key and put nothing among the absent tools.
+        self.assert_unbound(rc, report, divergence={"bandit": "produced_noscan"})
 
-    def test_an_empty_run_id_does_not_turn_the_receipt_requirement_off(self):
+    def test_an_empty_run_id_is_no_run_id(self):
         # The driver passes `--run-id <manifest run_id or "">`. A run manifest that
-        # carries no run_id therefore sent "", which read as "no run id": no receipt
-        # was required and a MISSING tools manifest took the permissive path above.
-        # An empty run id is a run that cannot be bound to its tool output.
+        # carries no run_id therefore sends "", and a MISSING tools manifest then took
+        # the permissive path: PASS, certified. "" is read exactly as no run id is.
         for label, captures in (("clean", {"bandit.sarif": self.EMPTY_SARIF}),
                                 ("failed", {"bandit.sarif": b"not JSON"})):
             with self.subTest(case=label), tempfile.TemporaryDirectory() as d:
                 rc, report, err = self._run(d, captures, extra=("--run-id", ""))
-                self.assertFalse(report["summary"]["coverage_certified"])
-                self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
-                self.assertEqual(2, rc)
-                reason = report["meta"]["integrity"]["tools_manifest_invalid"]
-                self.assertIn("run id", reason)
+                self.assert_unbound(rc, report, only=False)
+                self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
                 self.assertIn("tool coverage is NOT certified", err)
-                # Nothing in the tools directory is bound to this run, so none is read.
-                self.assertEqual([], report["meta"]["coverage"]["tools_ran"])
-        # ... and a manifest that IS there cannot be bound to a run with no id either,
-        # whether or not it names one itself.
-        for run_id in ("rid-1", None):
-            with self.subTest(manifest_run_id=run_id), tempfile.TemporaryDirectory() as d:
-                td = os.path.join(d, "tools")
-                manifest = {"schema_version": 1, "selected": ["bandit"], "produced": ["bandit"],
-                            "missing": [], "outputs": ["bandit.sarif"]}
-                if run_id is not None:
-                    manifest["run_id"] = run_id
-                rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
-                                             extra=("--run-id", ""), manifest=manifest)
-                self.assertTrue(os.path.isdir(td))
-                self.assertFalse(report["summary"]["coverage_certified"])
-                self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
-                self.assertIn("run id", report["meta"]["integrity"]["tools_manifest_invalid"])
-                # The manifest is not used: its receipt admits no output, and its
-                # selection certifies nothing.
-                self.assertEqual([], report["meta"]["coverage"]["tools_ran"])
-                self.assertEqual(["bandit.sarif"],
-                                 report["meta"]["integrity"]["unbound_tool_outputs"])
-        # A manifest that is unreadable keeps its own, more exact reason.
+                self.assertEqual("bandit", "".join(report["meta"]["coverage"]["adapters"]))
+        # A manifest that is unreadable keeps its own reason beside this one.
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "tools-manifest.json"), "w", encoding="utf-8") as fh:
                 fh.write("not JSON")
             rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
                                          extra=("--run-id", ""))
-        reason = report["meta"]["integrity"]["tools_manifest_invalid"]
-        self.assertIn("unreadable", reason)
-        self.assertNotIn("run id", reason)
-        self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+        self.assertIn("unreadable", report["meta"]["integrity"]["tools_manifest_invalid"])
+        self.assert_unbound(rc, report, only=False)
 
     def test_an_empty_run_id_asks_nothing_of_a_run_with_no_tools(self):
         # `--tools-skipped` (the operator's --no-tools) and a call with no tools
         # directory have no tool output to bind, with or without a run id.
         with tempfile.TemporaryDirectory() as d:
-            rc, report, _err = self._run(d, {}, extra=("--run-id", "", "--tools-skipped"))
+            rc, report, err = self._run(d, {}, extra=("--run-id", "", "--tools-skipped"))
         self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
+        self.assertIs(False, report["meta"]["integrity"]["tools_run_unbound"])
+        self.assertTrue(report["summary"]["coverage_certified"])
+        self.assertEqual(0, rc)
+        self.assertNotIn("no run id", err)
+        with tempfile.TemporaryDirectory() as d:
+            rc, report, _err = self._run(d, {}, extra=("--tools-skipped",))
+        self.assertIs(False, report["meta"]["integrity"]["tools_run_unbound"])
+        self.assertEqual(0, rc)
         with tempfile.TemporaryDirectory() as d:
             fp = os.path.join(d, "findings-g1-COD.json")
             with open(fp, "w", encoding="utf-8") as fh:
@@ -1298,6 +1384,7 @@ class TestManifestlessCertification(unittest.TestCase):
                 report = json.load(fh)
         self.assertEqual(0, rc)
         self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
+        self.assertIs(False, report["meta"]["integrity"]["tools_run_unbound"])
 
     def test_a_run_manifest_without_a_run_id_survives_the_read(self):
         # Half of the fact the test above rests on, where it is decided: the read
@@ -1346,16 +1433,14 @@ class TestManifestlessCertification(unittest.TestCase):
                 self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
                 self.assertEqual(2, rc)
                 self.assertIn("cannot be listed", err)
-                # A directory that cannot be listed is not one that is not there: the
-                # empty run id is still refused for it.
-                refused = report["meta"]["integrity"]["tools_manifest_invalid"]
-                if label == "an empty run id":
-                    self.assertIn("no run id", refused)
-                elif label != "a run id and its manifest":
-                    self.assertIsNone(refused)
-        # A listable directory says nothing under the key, on every one of those paths.
+                # A directory that cannot be listed is not one that is not there: a
+                # call with no run id is unbound for it as well.
+                self.assertIs(label in ("standalone", "an empty run id"),
+                              report["meta"]["integrity"]["tools_run_unbound"])
+        # A listable directory says nothing under the key.
         with tempfile.TemporaryDirectory() as d:
-            rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF})
+            rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
+                                         extra=self.BOUND, manifest=self.BOUND_MANIFEST)
         self.assertIsNone(report["meta"]["integrity"]["tools_dir_unlistable"])
         self.assertEqual(0, rc)
 
@@ -1387,15 +1472,32 @@ class TestManifestlessCertification(unittest.TestCase):
         reason = tool_axis.listing_failure(os.path.join("/srv", secret), denied)
         self.assertNotIn(secret, reason)
         self.assertIn("Permission denied", reason)
-        # Gates item 7: the bound is 400, and a long name is cut to exactly it.
+        # Gates item 7: the bound is 400, and a long name is cut to exactly it. What
+        # is cut is the NAME: a reason that lost its error names no failure.
         long_name = os.path.join("/srv", "d" * 250, "e" * 250)
-        self.assertEqual(400, len(tool_axis.listing_failure(long_name, denied)))
+        for error, said in ((denied, "Permission denied"),
+                            (NotADirectoryError(20, "Not a directory"), "Not a directory"),
+                            (OSError(), "OSError")):
+            reason = tool_axis.listing_failure(long_name, error)
+            self.assertEqual(400, len(reason))
+            self.assertTrue(reason.endswith("d: " + said) or reason.endswith("e: " + said),
+                            reason[-40:])
+            self.assertTrue(reason.startswith("/srv/ddd"))
+        # The error has a bound of its own, inside the 400.
+        wordy = tool_axis.listing_failure(long_name, OSError(5, "x" * 900))
+        self.assertEqual(400, len(wordy))
+        self.assertTrue(wordy.endswith(": " + "x" * tool_axis.LISTING_ERROR_MAX))
+        self.assertTrue(wordy.startswith("/srv/ddd"))
+        self.assertEqual("/srv/tools: " + "x" * tool_axis.LISTING_ERROR_MAX,
+                         tool_axis.listing_failure("/srv/tools", OSError(5, "x" * 900)))
+        self.assertEqual(120, tool_axis.LISTING_ERROR_MAX)
         self.assertEqual("/srv/tools: Permission denied",
                          tool_axis.listing_failure("/srv/tools", denied))
         # ... and still is when spelling its control characters made it longer.
         spelled = tool_axis.listing_failure("/srv/" + "\n" * 300, denied)
         self.assertEqual(400, len(spelled))
         self.assertTrue(spelled.startswith("/srv/\\x0a\\x0a"))
+        self.assertTrue(spelled.endswith(": Permission denied"))
         # An error with no message of its own is named by its type.
         self.assertEqual("/srv/tools: OSError", tool_axis.listing_failure("/srv/tools", OSError()))
         # Gates item 5: a control character in the name cannot split the line. The
@@ -1465,7 +1567,8 @@ class TestManifestlessCertification(unittest.TestCase):
                 tempfile.TemporaryDirectory() as d:
             seen = []
             with scandir_failing_on({2, 3, 4}, os.path.join(d, "tools"), seen):
-                rc, report, err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF})
+                rc, report, err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
+                                            extra=self.BOUND, manifest=self.BOUND_MANIFEST)
             self.assertIsNone(report["meta"]["integrity"]["tools_dir_unlistable"])
             self.assertEqual(["bandit"], report["meta"]["coverage"]["tools_ran"])
             self.assertTrue(report["summary"]["coverage_certified"])
@@ -1473,17 +1576,21 @@ class TestManifestlessCertification(unittest.TestCase):
             self.assertNotIn("cannot be listed", err)
             self.assertEqual(1, len(seen))
         # One look on every path that judges the directory.
-        for label, extra in (("an empty run id", ("--run-id", "")),
-                             ("tools skipped", ("--tools-skipped",)),
-                             ("a run id", ("--run-id", "rid-1"))):
+        for label, extra, read in (("no run id", (), True),
+                                   ("an empty run id", ("--run-id", ""), True),
+                                   ("tools skipped", ("--tools-skipped",), False),
+                                   ("a run id and no manifest", ("--run-id", "rid-1"), False)):
             with self.subTest(case=label), tempfile.TemporaryDirectory() as d:
                 seen = []
                 with scandir_failing_on({2, 3, 4}, os.path.join(d, "tools"), seen):
                     _rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
                                                   extra=extra)
                 self.assertIsNone(report["meta"]["integrity"]["tools_dir_unlistable"])
-                self.assertEqual(["bandit.sarif"],
+                self.assertEqual([] if read else ["bandit.sarif"],
                                  report["meta"]["integrity"]["unbound_tool_outputs"])
+                self.assertEqual(["bandit"] if read else [],
+                                 report["meta"]["coverage"]["tools_ran"])
+                self.assertIs(read, report["meta"]["integrity"]["tools_run_unbound"])
                 self.assertEqual(1, len(seen))
 
     def test_an_error_while_reading_the_entries_is_a_failed_listing(self):
@@ -1539,9 +1646,51 @@ class TestManifestlessCertification(unittest.TestCase):
                                      FileNotFoundError(2, "No such file")):
             rc, report, err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF})
         self.assertIsNone(report["meta"]["integrity"]["tools_dir_unlistable"])
+        self.assertIs(False, report["meta"]["integrity"]["tools_run_unbound"])
         self.assertTrue(report["summary"]["coverage_certified"])
         self.assertEqual(0, rc)
         self.assertNotIn("cannot be listed", err)
+        self.assertNotIn("no run id", err)
+
+    def test_no_such_file_after_the_open_is_a_directory_that_was_there(self):
+        # Gates at 10d3b3fb, item 1. "Missing" read the exception's type alone, so a
+        # listing that opened, yielded a capture and then raised "no such file" was a
+        # directory that is not there: PASS, certified, with a bound receipt as well.
+        real = os.scandir
+
+        class Vanishes:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def __enter__(self):
+                self.inner.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self.inner.__exit__(*exc)
+
+            def __iter__(self):
+                yield next(iter(self.inner))
+                raise FileNotFoundError(2, "No such file or directory")
+        for label, extra, manifest in (("no run id", (), None),
+                                       ("a bound receipt", self.BOUND, self.BOUND_MANIFEST)):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as d:
+                target = os.path.join(d, "tools")
+
+                def scandir(path=".", target=target):
+                    if os.path.realpath(os.fspath(path)) == os.path.realpath(target):
+                        return Vanishes(real(path))
+                    return real(path)
+                with mock.patch("os.scandir", side_effect=scandir):
+                    rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
+                                                 extra=extra, manifest=manifest)
+                self.assertIn("No such file",
+                              report["meta"]["integrity"]["tools_dir_unlistable"])
+                self.assertEqual([], report["meta"]["coverage"]["tools_ran"])
+                self.assertFalse(report["summary"]["coverage_certified"])
+                self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+                self.assertEqual(2, rc)
+                self.assertIs(not extra, report["meta"]["integrity"]["tools_run_unbound"])
 
     @unittest.skipIf(not hasattr(os, "geteuid") or os.geteuid() == 0,
                      "needs a user that permissions apply to")
@@ -1601,10 +1750,8 @@ class TestManifestlessCertification(unittest.TestCase):
             first = self._run(d, {"bandit.sarif": self.EMPTY_SARIF}, out=out)
             second = self._run(d, {"bandit.sarif": self.EMPTY_SARIF}, out=out)
             for rc, report, _err in (first, second):
-                self.assertEqual("PASS", report["summary"]["gate"])
-                self.assertTrue(report["summary"]["coverage_certified"])
-                self.assertEqual({}, report["meta"]["coverage"]["divergence"]["tools"])
-                self.assertEqual(0, rc)
+                # Not certified for having no run id, and for nothing else.
+                self.assert_unbound(rc, report)
             # Disclosed as before: the second call saw the first one's files.
             adapters = second[1]["meta"]["coverage"]["adapters"]
             self.assertEqual({"status": "failed", "findings": 0,
@@ -1616,9 +1763,7 @@ class TestManifestlessCertification(unittest.TestCase):
                     d, {"bandit.sarif": self.EMPTY_SARIF, name: b"{}"})
                 self.assertEqual("failed", report["meta"]["coverage"]["adapters"][
                     name[:-len(".json")]]["status"])
-                self.assertEqual({}, report["meta"]["coverage"]["divergence"]["tools"])
-                self.assertTrue(report["summary"]["coverage_certified"])
-                self.assertEqual(0, rc)
+                self.assert_unbound(rc, report)
 
     def test_a_missing_directory_says_nothing_with_an_empty_run_id_too(self):
         # Gates item 6: PASS on main. The empty run id is refused for what is in the
@@ -1634,22 +1779,21 @@ class TestManifestlessCertification(unittest.TestCase):
                 self.assertEqual("PASS", report["summary"]["gate"])
                 self.assertEqual(0, rc)
                 self.assertNotIn("no run id", err)
-        # "Says nothing" is the reading of a call with no run id, the ruling included:
-        # the manifest beside it is unbound and cannot excuse the scout's request.
+        # "Says nothing" is main's reading, whole: with no directory a manifest in
+        # the run folder is read as main reads it (#3780 has what that still excuses).
         with tempfile.TemporaryDirectory() as d:
             rc, report, _err = self._run(d, {}, extra=("--run-id", ""), manifest=manifest,
                                          scout=["gitleaks"],
                                          tools_dir=os.path.join(d, "absent"))
-        self.assertEqual({"gitleaks": "requested_absent"},
+        self.assertEqual({"gitleaks": "requested_unavailable"},
                          report["meta"]["coverage"]["divergence"]["tools"])
-        self.assertEqual(2, rc)
-        # The directory there: refused, as the issue asks.
+        self.assertIs(False, report["meta"]["integrity"]["tools_run_unbound"])
+        self.assertEqual(0, rc)
+        # The directory there: never certified.
         with tempfile.TemporaryDirectory() as d:
-            rc, report, err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
-                                        extra=("--run-id", ""))
-        self.assertIn("no run id", report["meta"]["integrity"]["tools_manifest_invalid"])
-        self.assertEqual(["bandit.sarif"], report["meta"]["integrity"]["unbound_tool_outputs"])
-        self.assertEqual(2, rc)
+            rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
+                                         extra=("--run-id", ""))
+        self.assert_unbound(rc, report)
 
     def test_a_missing_tools_directory_is_unchanged(self):
         # No directory is no tool axis, as it has always been; only one that is there
@@ -1667,39 +1811,11 @@ class TestManifestlessCertification(unittest.TestCase):
                 report = json.load(fh)
         self.assertEqual(0, rc)
         self.assertIsNone(report["meta"]["integrity"]["tools_dir_unlistable"])
+        self.assertIs(False, report["meta"]["integrity"]["tools_run_unbound"])
         self.assertTrue(report["summary"]["coverage_certified"])
 
     MANIFEST = {"schema_version": 1, "selected": ["bandit"], "produced": ["bandit"],
                 "missing": []}
-
-    def test_an_unbound_manifest_adds_to_what_is_required_and_never_removes(self):
-        # Owner ruling on the gates at 93300f1b. With no run id nothing binds the
-        # manifest to this run, so it cannot excuse anything: the scout's request stays
-        # required whatever the manifest selected.
-        with self.subTest("a requested scanner the manifest did not select"), \
-                tempfile.TemporaryDirectory() as d:
-            rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
-                                         manifest=self.MANIFEST, scout=["bandit", "gitleaks"])
-            self.assertEqual({"gitleaks": "requested_absent"},
-                             report["meta"]["coverage"]["divergence"]["tools"])
-            self.assertFalse(report["summary"]["coverage_certified"])
-            self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
-            self.assertEqual(2, rc)
-        with self.subTest("requested, unselected, and its capture unusable"), \
-                tempfile.TemporaryDirectory() as d:
-            rc, report, _err = self._run(
-                d, {"bandit.sarif": self.EMPTY_SARIF, "gitleaks.sarif": b"not JSON"},
-                manifest=self.MANIFEST, scout=["gitleaks"])
-            self.assert_not_certified(rc, report, ["gitleaks"])
-            self.assertEqual({"gitleaks": "produced_unusable"},
-                             report["meta"]["coverage"]["divergence"]["tools"])
-        with self.subTest("requested and produced"), tempfile.TemporaryDirectory() as d:
-            rc, report, _err = self._run(
-                d, {"bandit.sarif": self.EMPTY_SARIF, "gitleaks.sarif": self.EMPTY_SARIF},
-                manifest=self.MANIFEST, scout=["bandit", "gitleaks"])
-            self.assertEqual({}, report["meta"]["coverage"]["divergence"]["tools"])
-            self.assertTrue(report["summary"]["coverage_certified"])
-            self.assertEqual(0, rc)
 
     def test_a_bound_manifest_still_excuses_a_request_it_did_not_select(self):
         # The control, as on main (#1031): with a run id the runner's selection is the
@@ -1714,8 +1830,9 @@ class TestManifestlessCertification(unittest.TestCase):
         self.assertTrue(report["summary"]["coverage_certified"])
         self.assertEqual(0, rc)
 
-    def test_what_an_unbound_manifest_records_as_lost_still_counts(self):
-        # The other half of the ruling, and unchanged from main: the manifest can add.
+    def test_what_a_manifest_records_as_lost_is_still_reported_with_no_run_id(self):
+        # The report still says what was produced, failed or absent, as main does;
+        # the call is not certified whatever that comes to.
         cases = (
             ("a selected scanner left no output",
              dict(self.MANIFEST, selected=["bandit", "gitleaks"], missing=["gitleaks"]),
@@ -1726,59 +1843,15 @@ class TestManifestlessCertification(unittest.TestCase):
             ("a capture its receipt does not name",
              dict(self.MANIFEST, outputs=["bandit.sarif"]), {},
              {"gitleaks.sarif": self.EMPTY_SARIF}),
-            ("a dependency audit that produced nothing",
-             dict(self.MANIFEST, dependency_audit={
-                 "applicable": ["python"], "selected": [], "produced": []}), {}, {}))
+            ("a request it did not select", self.MANIFEST,
+             {"gitleaks": "requested_unavailable"}, {}))
         for label, manifest, divergence, more in cases:
             with self.subTest(case=label), tempfile.TemporaryDirectory() as d:
                 rc, report, _err = self._run(
                     d, dict({"bandit.sarif": self.EMPTY_SARIF}, **more), manifest=manifest,
-                    scout=["bandit"])
+                    scout=["bandit", "gitleaks"] if "request" in label else ["bandit"])
                 self.assertEqual(divergence, report["meta"]["coverage"]["divergence"]["tools"])
-                self.assertFalse(report["summary"]["coverage_certified"])
-                self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
-                self.assertEqual(2, rc)
-
-    def test_every_loss_beside_an_unbound_manifest_is_named_together(self):
-        # Gates item 7: the union. A selected scanner with no output, two captures
-        # nobody selected that cannot be used, and a request the manifest left out.
-        manifest = dict(self.MANIFEST, selected=["bandit", "gitleaks"], missing=["gitleaks"])
-        with tempfile.TemporaryDirectory() as d:
-            rc, report, _err = self._run(
-                d, {"bandit.sarif": self.EMPTY_SARIF, "semgrep.sarif": b"not JSON",
-                    "pip-audit.json": b""},
-                manifest=manifest, scout=["trivy"])
-        self.assertEqual({"gitleaks": "requested_absent", "trivy": "requested_absent",
-                          "semgrep": "produced_unusable", "pip-audit": "produced_unusable"},
-                         report["meta"]["coverage"]["divergence"]["tools"])
-        self.assertEqual(["bandit"], report["meta"]["coverage"]["tools_ran"])
-        self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
-        self.assertEqual(2, rc)
-
-    def test_a_manifest_with_no_run_id_does_not_turn_the_rule_off(self):
-        # Seat r1 item 2. On a standalone call a manifest is no more bound to the run
-        # than its absence is, and it bounded the required set to its own `selected`:
-        # an empty selection beside a capture nobody can read was PASS, certified.
-        manifest = {"schema_version": 1, "selected": [], "produced": [], "missing": []}
-        for label, document in (
-                ("selects nothing", manifest),
-                ("selects another", dict(manifest, selected=["bandit"], produced=["bandit"])),
-                ("names a run", dict(manifest, run_id="rid-1"))):
-            with self.subTest(case=label), tempfile.TemporaryDirectory() as d:
-                captures = {"semgrep.sarif": b"not JSON"}
-                if document["selected"]:
-                    captures["bandit.sarif"] = self.EMPTY_SARIF
-                rc, report, _err = self._run(d, captures, manifest=document)
-                self.assert_not_certified(rc, report, ["semgrep"])
-                self.assertEqual({"semgrep": "produced_unusable"},
-                                 report["meta"]["coverage"]["divergence"]["tools"])
-        # The control: the same manifest beside captures that are all usable.
-        with tempfile.TemporaryDirectory() as d:
-            rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
-                                         manifest=dict(manifest, selected=["bandit"],
-                                                       produced=["bandit"]))
-        self.assertTrue(report["summary"]["coverage_certified"])
-        self.assertEqual(0, rc)
+                self.assert_unbound(rc, report, only=False)
 
     def test_a_run_with_a_run_id_never_reads_an_unselected_capture(self):
         # ... and must stay so: there an unselected capture is UNBOUND (#2070). It is
@@ -1829,6 +1902,7 @@ class TestUnusableScannerCertification(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):
             rc = syn.main(["--repo", "--target", "src", "--run-dir", d, "--tools-dir", td,
+                           "--run-id", "rid-1",     # #3766: the id the manifest names
                            "--fail-on", "high", "--out", out, fp])
         with open(out, encoding="utf-8") as fh:
             return rc, json.load(fh)

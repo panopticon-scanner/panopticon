@@ -1880,6 +1880,18 @@ class TestToolOutputSelection(unittest.TestCase):
             self.assertEqual((), listing.names)
             self.assertEqual(5, listing.error.errno)
             self.assertFalse(listing.missing)
+            # "Missing" is "no such file" from the OPEN. The same error met while the
+            # entries were read is a directory that was there.
+            Breaks.__iter__ = lambda self: (_ for _ in ()).throw(
+                FileNotFoundError(2, "No such file or directory"))
+            with patch("os.scandir", side_effect=lambda path: Breaks(real(path))):
+                vanished = it.list_tools_dir(d)
+            self.assertEqual(((), False), (vanished.names, vanished.missing))
+            self.assertIsInstance(vanished.error, FileNotFoundError)
+            with patch("os.scandir", side_effect=FileNotFoundError(2, "No such file")):
+                self.assertIs(True, it.list_tools_dir(d).missing)
+            with patch("os.scandir", side_effect=PermissionError(13, "Permission denied")):
+                self.assertIs(False, it.list_tools_dir(d).missing)
             # A caller's own listing is the one used: no second look.
             with patch("os.scandir", side_effect=AssertionError("looked again")):
                 self.assertEqual([], it._output_files(d, listing=listing))

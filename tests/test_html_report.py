@@ -1486,6 +1486,7 @@ class TestIntegrityFailureDetails(unittest.TestCase):
         "tools_manifest_invalid": "tools-manifest.json is not an object",
         "unbound_tool_outputs": ["semgrep.sarif"],
         "tools_dir_unlistable": "tools: Permission denied",
+        "tools_run_unbound": True,
         "delta_scope_suppressed_git_drivers": ["diff.external"],
     }
 

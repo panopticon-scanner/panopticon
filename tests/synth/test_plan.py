@@ -868,6 +868,119 @@ class TestTheGroupsShapeGate(unittest.TestCase):
             self.assertEqual(pi.out_of_scope, plan_mod.out_of_scope_findings([], []))
 
 
+class TestTheToolAxisAsItsCallersBuildIt(unittest.TestCase):
+    """#3766, from the gates at 10d3b3fb: what a caller of the tool axis that is not
+    `synthesize.main` gets -- one that builds it positionally, one that has no
+    listing to share, one that shares an empty one."""
+
+    TS = "2026-11-23T00:00:00Z"
+    MAIN_FIELDS = ("policy_mode", "tools_ran", "dispositions", "manifest", "ingested_paths",
+                   "manifest_invalid", "unbound_outputs", "suppressed", "gated_suppressed",
+                   "excluded")
+
+    def test_a_positional_caller_keeps_every_argument_in_its_field(self):
+        # The two new fields were inserted before `suppressed`, so a positional
+        # caller's gate-counted findings landed in another field: FAIL became PASS.
+        import dataclasses
+        names = [f.name for f in dataclasses.fields(tool_axis_mod.ToolAxis)]
+        self.assertEqual(list(self.MAIN_FIELDS), names[:len(self.MAIN_FIELDS)])
+        self.assertEqual(["dir_unlistable", "run_unbound"], names[len(self.MAIN_FIELDS):])
+        gated = [{"id": "T-1", "severity": "CRITICAL"}]
+        axis = tool_axis_mod.ToolAxis(
+            "run", {"bandit"}, {"bandit": {"status": "ok"}}, {"selected": []}, ["f.json"],
+            "why", ["x.sarif"], {"vendored": 2}, gated, {"globs": [], "count": 0})
+        self.assertEqual(("run", {"bandit"}, {"bandit": {"status": "ok"}}, {"selected": []},
+                          ["f.json"], "why", ["x.sarif"], {"vendored": 2}, gated,
+                          {"globs": [], "count": 0}),
+                         tuple(getattr(axis, name) for name in self.MAIN_FIELDS))
+        self.assertIsNone(axis.dir_unlistable)
+        self.assertIs(False, axis.run_unbound)
+
+    def _load(self, listing=None, **args):
+        with tempfile.TemporaryDirectory() as run_dir, \
+                contextlib.redirect_stderr(io.StringIO()):
+            return tool_axis_mod.ToolAxis.load(_cli_args(**args), run_dir, [], {}, None,
+                                               listing=listing)
+
+    def test_a_caller_with_no_listing_gets_the_axis_own_look(self):
+        # "Nobody looked" is not "not there": the rule does not depend on the caller
+        # having a listing to share.
+        with tempfile.TemporaryDirectory() as d:
+            gone = os.path.join(d, "gone")
+            a_file = os.path.join(d, "a-file")
+            with open(a_file, "w", encoding="utf-8"):
+                pass
+            self.assertIs(True, self._load(tools_dir=d).run_unbound)
+            self.assertIs(True, self._load(tools_dir=d, run_id="").run_unbound)
+            self.assertIs(False, self._load(tools_dir=gone).run_unbound)
+            self.assertIs(False, self._load(tools_dir=d, run_id="rid-1").run_unbound)
+            self.assertIs(False, self._load(tools_dir=d, tools_skipped=True).run_unbound)
+            self.assertIs(False, self._load().run_unbound)
+            self.assertIsNone(self._load(tools_dir=d).dir_unlistable)
+            self.assertIsNone(self._load(tools_dir=gone).dir_unlistable)
+            unlistable = self._load(tools_dir=a_file)
+            self.assertIn("Not a directory", unlistable.dir_unlistable)
+            self.assertIs(True, unlistable.run_unbound)
+            # ... and a listing that IS shared is the one read: no second look.
+            said_gone = ingest_tools.ToolsListing((), FileNotFoundError(2, "gone"), True)
+            self.assertIs(False, self._load(listing=said_gone, tools_dir=d).run_unbound)
+            said_there = ingest_tools.ToolsListing(())
+            self.assertIs(True, self._load(listing=said_there, tools_dir=gone).run_unbound)
+            real = os.scandir
+
+            def scandir(path="."):
+                if path == d:
+                    raise AssertionError("looked again")
+                return real(path)
+            with mock.patch("os.scandir", side_effect=scandir):
+                self.assertIs(True, self._load(listing=said_there, tools_dir=d).run_unbound)
+                with self.assertRaises(AssertionError):
+                    self._load(tools_dir=d)
+
+    def test_a_shared_listing_that_names_nothing_is_not_read_again(self):
+        # An empty listing is an answer. Reading the directory again because the
+        # first look named nothing is the second look this was built to remove.
+        with tempfile.TemporaryDirectory() as d, \
+                contextlib.redirect_stderr(io.StringIO()):
+            with open(os.path.join(d, "bandit.sarif"), "w", encoding="utf-8") as fh:
+                json.dump({"version": "2.1.0", "runs": []}, fh)
+            empty = ingest_tools.ToolsListing(())
+            _findings, dispositions, tools_ran, *_rest = plan_mod.ingest_tool_findings(
+                _cli_args(tools_dir=d), listing=empty)
+            self.assertEqual(({}, set()), (dispositions, tools_ran))
+            self.assertEqual([], ingest_tools._output_files(d, listing=empty))
+            unbound = []
+            plan_mod.ingest_tool_findings(_cli_args(tools_dir=d, tools_skipped=True),
+                                          unbound_out=unbound, listing=empty)
+            self.assertEqual([], unbound)
+            # The control: with no listing to share, each takes its own.
+            self.assertEqual(["bandit"], sorted(
+                plan_mod.ingest_tool_findings(_cli_args(tools_dir=d))[1]))
+            self.assertEqual([os.path.join(d, "bandit.sarif")], ingest_tools._output_files(d))
+
+    def test_a_failed_adapter_counts_with_findings_too(self):
+        # A partial capture: pip-audit read some of its report and could not read
+        # the rest. `failed` is the status; the findings it did yield change nothing.
+        for found in (0, 3):
+            with self.subTest(findings=found), tempfile.TemporaryDirectory() as d, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                dispositions = {"pip-audit": {"status": "failed", "findings": found,
+                                              "reason": "2 dependencies were not audited"},
+                                "bandit": {"status": "ok", "findings": 2},
+                                "notes": {"status": "failed", "findings": 0,
+                                          "reason": "no registered adapter"}}
+                axis = tool_axis_mod.ToolAxis.load(_cli_args(), d, [], dispositions,
+                                                   {"bandit"})
+                report = report_mod.build_report(report_mod.ReportInputs(
+                    run=report_mod.RunConfig(target=d, fail_on="high", timestamp=self.TS),
+                    findings=findings_mod.FindingSet(findings=[]),
+                    plan=plan_mod.PlanInputs(), tools=axis))
+                self.assertEqual({"pip-audit": "produced_unusable"},
+                                 report["meta"]["coverage"]["divergence"]["tools"])
+                self.assertFalse(report["summary"]["coverage_certified"])
+                self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+
+
 class TestManifestMustDeclareSelected(unittest.TestCase):
     """#1692: a `tools-manifest.json` carrying only `{"schema_version": 1}`
     certified a run on which no scanner ran at all.
@@ -892,14 +1005,14 @@ class TestManifestMustDeclareSelected(unittest.TestCase):
 
     TS = "2026-09-17T00:00:00Z"
 
-    def _run(self, manifest, dispositions=None, tools_ran=None, run_id=None):
+    def _run(self, manifest, dispositions=None, tools_ran=None):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "tools-manifest.json"), "w",
                       encoding="utf-8") as fh:
                 json.dump(manifest, fh)
             with contextlib.redirect_stderr(io.StringIO()) as err:
                 axis = tool_axis_mod.ToolAxis.load(
-                    _cli_args(run_id=run_id), d, [], dispositions or {}, tools_ran)
+                    _cli_args(), d, [], dispositions or {}, tools_ran)
                 report = report_mod.build_report(report_mod.ReportInputs(
                     run=report_mod.RunConfig(target=d, fail_on="high",
                                              timestamp=self.TS),
@@ -935,25 +1048,11 @@ class TestManifestMustDeclareSelected(unittest.TestCase):
         # The shape this fix must NOT reject: the runner ran and honestly
         # selected nothing. `selected: []` is a measurement; a missing key is
         # the absence of one.
-        manifest = {"schema_version": 1, "selected": [], "produced": [], "missing": []}
-        axis, report, _err = self._run(manifest)
+        axis, report, _err = self._run(
+            {"schema_version": 1, "selected": [], "produced": [], "missing": []})
         self.assertIsNotNone(axis.manifest)
         self.assertIsNone(axis.manifest_invalid)
         self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
-        # #3766 (owner ruling, 2026-11-22) moved the two lines that stood here. This
-        # helper's scout requests semgrep, and with no run id nothing binds the
-        # manifest to the run, so it cannot excuse a request it did not select: the
-        # empty selection is still a measurement, and the request is still required.
-        self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"],
-                         {"semgrep": "requested_absent"})
-        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
-        self.assertFalse(report["summary"]["coverage_certified"])
-        # With the run id that binds it, the selection is the required set, as before.
-        axis, report, _err = self._run(dict(manifest, run_id="rid-1"), run_id="rid-1")
-        self.assertIsNotNone(axis.manifest)
-        self.assertIsNone(report["meta"]["integrity"]["tools_manifest_invalid"])
-        self.assertEqual(report["meta"]["coverage"]["divergence"]["tools"],
-                         {"semgrep": "requested_unavailable"})
         self.assertEqual(report["summary"]["gate"], "PASS")
         self.assertTrue(report["summary"]["coverage_certified"])
 
@@ -1089,8 +1188,10 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                           else self._sarif(rel, tool, cwe, twin, level), fh)
             with open(os.path.join(d, "tools-manifest.json"), "w",
                       encoding="utf-8") as fh:
-                json.dump({"schema_version": 1, "selected": [adapter],
-                           "produced": [adapter], "missing": []}, fh)
+                # #3766: a run the driver made -- the id and the receipt that bind
+                # this output to it. Without them no call certifies tool coverage.
+                json.dump({"schema_version": 1, "run_id": "rid-1", "selected": [adapter],
+                           "produced": [adapter], "missing": [], "outputs": [name]}, fh)
             hunks = None
             if delta:
                 # A real diff that touches ANOTHER file: the finding below is
@@ -1109,7 +1210,7 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                     with open(path, "w", encoding="utf-8") as fh:
                         json.dump(groups_json, fh)
             args = _cli_args(tools_dir=tools, security=security, fail_on="high",
-                             target=d, run_dir=d, severity=severity,
+                             target=d, run_dir=d, severity=severity, run_id="rid-1",
                              diff_hunks=hunks, gate_scope="on-diff",
                              tools_exclude=tools_exclude)
             err = io.StringIO()
