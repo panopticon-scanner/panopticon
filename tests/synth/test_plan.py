@@ -745,6 +745,11 @@ class TestTheGroupsShapeGate(unittest.TestCase):
                 self.assertEqual(
                     plan_mod.ingest_tool_findings(_cli_args(tools_dir=os.path.join(d, "no")))[2],
                     None)
+                # #3766: and so is one that cannot be listed (here, a regular file).
+                # Nothing was ingested from it; the tool axis names the reason.
+                a_file = os.path.join(".panopticon", "tools", "x.json")
+                self.assertEqual(
+                    plan_mod.ingest_tool_findings(_cli_args(tools_dir=a_file))[2], None)
 
     def test_ingest_tool_findings_with_an_empty_tools_dir_measures_nothing_ran(self):
         with tempfile.TemporaryDirectory() as d:

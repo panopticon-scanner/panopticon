@@ -1834,6 +1834,59 @@ class TestToolOutputSelection(unittest.TestCase):
             it._output_files(d, allowed_outputs=(), unbound_out=unbound)
         self.assertEqual(names[:it.MAX_UNBOUND_OUTPUT_NAMES], unbound)
 
+    def test_the_listing_names_capture_shaped_files_only(self):
+        # #3766: the one look at a tools directory. Sorted, no hidden names, and
+        # only the two suffixes a capture has.
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("b.json", "a.sarif", "c.txt", ".h.json", "noext"):
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    fh.write("{}")
+            listing = it.list_tools_dir(d)
+            self.assertEqual(("a.sarif", "b.json"), listing.names)
+            self.assertIsNone(listing.error)
+            self.assertFalse(listing.missing)
+            gone = it.list_tools_dir(os.path.join(d, "gone"))
+            self.assertEqual(((), True), (gone.names, gone.missing))
+            a_file = it.list_tools_dir(os.path.join(d, "c.txt"))
+            self.assertIsInstance(a_file.error, NotADirectoryError)
+            self.assertEqual(((), False), (a_file.names, a_file.missing))
+
+    def test_a_listing_that_fails_part_way_names_nothing(self):
+        # #3766: half a listing is not what the directory holds. This was an
+        # uncaught error for every caller of `_output_files`.
+        real = os.scandir
+
+        class Breaks:
+            def __init__(self, inner):
+                self.inner = inner
+
+            def __enter__(self):
+                self.inner.__enter__()
+                return self
+
+            def __exit__(self, *exc):
+                return self.inner.__exit__(*exc)
+
+            def __iter__(self):
+                yield next(iter(self.inner))
+                raise OSError(5, "Input/output error")
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("semgrep.sarif", "bandit.sarif"):
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    json.dump(SARIF, fh)
+            with patch("os.scandir", side_effect=lambda path: Breaks(real(path))):
+                listing = it.list_tools_dir(d)
+                self.assertEqual([], it._output_files(d))
+            self.assertEqual((), listing.names)
+            self.assertEqual(5, listing.error.errno)
+            self.assertFalse(listing.missing)
+            # A caller's own listing is the one used: no second look.
+            with patch("os.scandir", side_effect=AssertionError("looked again")):
+                self.assertEqual([], it._output_files(d, listing=listing))
+                self.assertEqual(
+                    [os.path.join(d, "bandit.sarif")],
+                    it._output_files(d, listing=it.ToolsListing(("bandit.sarif",))))
+
     def test_glob_parity_dotfiles_still_skipped(self):
         # `glob.glob("*.json")` never matched a leading-dot name; the scandir
         # walk must not start ingesting `.hidden.json`.

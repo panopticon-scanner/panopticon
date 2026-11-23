@@ -1346,6 +1346,13 @@ class TestManifestlessCertification(unittest.TestCase):
                 self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
                 self.assertEqual(2, rc)
                 self.assertIn("cannot be listed", err)
+                # A directory that cannot be listed is not one that is not there: the
+                # empty run id is still refused for it.
+                refused = report["meta"]["integrity"]["tools_manifest_invalid"]
+                if label == "an empty run id":
+                    self.assertIn("no run id", refused)
+                elif label != "a run id and its manifest":
+                    self.assertIsNone(refused)
         # A listable directory says nothing under the key, on every one of those paths.
         with tempfile.TemporaryDirectory() as d:
             rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF})
