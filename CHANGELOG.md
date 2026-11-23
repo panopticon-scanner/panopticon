@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **A run's paths are settled once per invocation (#3779, part 2).** Every path lookup read
+  `run-manifest.json` again, and a failed read meant "no manifest": the flat `.panopticon/` path,
+  with no error. One failed read in the middle of synthesis sent the synthesize step to
+  `.panopticon/report.json` while the driver checked the tagged report of an earlier attempt
+  and then pointed the flat link at it.
+  - `driver run` now reads the manifest once, when it starts or resumes the run, and uses that
+    run's tag for every path until it returns. `driver loop` does so in each step and keeps the
+    last step's tag between steps; `driver persist` reads it once. A phase function called
+    directly, outside the driver, reads the manifest on every lookup as before.
+  - **A new run does not take a tag an earlier run's files already use.** The tag holds eight
+    characters of the run id, so two runs sharing them, with one host, mode, scope and date,
+    shared every durable file name, and one could take the other's report for its own. A new run
+    whose tag is on disk (`runs/<tag>` or any `<tag>-*` file) draws another id before it writes
+    its manifest. After eight draws it stops with the reason.
 - **Two drivers can no longer work on one review root at the same time (#3779, part 1).** Nothing
   stopped a second `driver run`, `loop` or `setup` on a root where one was already running. Each
   reads `.panopticon/`, decides and writes, so the second acted on what the first was changing: a

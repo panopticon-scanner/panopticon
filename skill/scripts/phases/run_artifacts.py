@@ -126,6 +126,18 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 "discovery-attempts.json")
 
 
+def tag_in_use(review_root, tag):
+    """Whether files of a run tagged `tag` are in `.panopticon/` (#3779): its run folder,
+    or any durable `<tag>-*` file. A `.panopticon/` that cannot be listed is a
+    `DriverError`, never "not in use"."""
+    base = os.path.join(os.path.abspath(review_root), plan_contract.ARTIFACT_DIR)
+    try:
+        return (os.path.lexists(os.path.join(base, "runs", tag))
+                or bool(safe_glob.under(base, tag + "-*")))
+    except safe_glob.Unlistable as exc:
+        raise runio.DriverError(str(exc)) from exc
+
+
 def _clear_run_artifacts(review_root):
     """--reset: clear the current run's working folder (findings / verdicts /
     coverage / scouts / dispatch / ...) so a fresh run starts, while KEEPING the

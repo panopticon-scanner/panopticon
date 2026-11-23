@@ -231,6 +231,14 @@ The host contract (5.2, plan 6):
       working on one shared tree are not excluded.
     - A lock file deleted or replaced while a driver holds it lets a second driver in. Nothing
       in the driver removes one; leave `locks/` alone while a run is going.
+- **A run's paths are settled once per invocation (#3779).** The run folder
+  (`.panopticon/runs/<tag>/`) and the report name (`<tag>-report.json`) come from the run manifest.
+  `driver run` reads the manifest once, when it starts or resumes the run, and uses that tag for
+  every path until it returns; `driver loop` does the same in each step and keeps the last step's
+  tag for its own work between steps; `driver persist` reads it once. A manifest that cannot be
+  read later in the same invocation no longer sends one step to `.panopticon/report.json` and
+  the next to the tagged report. A new run whose tag is already used by an earlier run's files
+  (the tag holds eight characters of the run id) draws another id before it writes anything.
 - **The dispatch request is bound to the run that wrote it (#1727).** `dispatch-request.json` lives
   inside the REVIEWED tree, so the driver hashes the exact bytes it writes and records that sha256
   in the run manifest — `.panopticon/run-manifest.json`, or `setup-manifest.json` under `--setup`,

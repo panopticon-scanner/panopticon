@@ -50,6 +50,9 @@ def resolve(args, held):
     try:
         resolved = loop_batch._resolve_target(args)
         held.enter_context(run_lock.hold(resolved[0], "loop"))    # #3779: before first contact
+        # #3779: one scope for the whole loop, so the paths the last `driver.run` captured
+        # also answer the loop's own lookups between two runs.
+        held.enter_context(runio.paths_scope(resolved[0]))
         first_contact.assess_loop(args, resolved)         # #3271 B2: before ANY read below
     except (first_contact.FirstContactHalt, run_lock.Refused) as exc:
         return None, str(exc)

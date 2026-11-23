@@ -35,6 +35,7 @@ from scripts.host_posture import (  # noqa: F401 -- compatibility names for #340
 from scripts.host_posture import HostLimited
 import scripts.money as money
 import scripts.model_resolver as model_resolver
+import scripts.plan_contract as plan_contract
 import scripts.setup_config as setup_config
 import scripts.phases.engine as engine
 import scripts.phases.runio as runio
@@ -53,6 +54,9 @@ import scripts.phases.validate as validate
 # How many exhausted cells the terminal `complete` message names before it
 # says "and N more" (the count beside it is always exact).
 _EXHAUSTED_NAMED = 10
+
+# How many run ids a new run draws before it gives up on a tag no earlier run uses (#3779).
+_RUN_ID_DRAWS = 8
 
 
 # #1637 P08 (owner ruling D7): `readiness` leads. `coverage` is the first
@@ -384,6 +388,20 @@ def _manifest_for_run(args, review_root, worktree, base, scope, pr_base, first, 
             worktree=worktree,
             scope=scope, pr=args.pr, pr_base=pr_base,
             model_strict=model_resolver.strict_models())
+        # #3779: the tag holds eight characters of the run id. A new run whose tag an
+        # earlier run's files already use would take that run's report for its own.
+        try:
+            for _draw in range(_RUN_ID_DRAWS):
+                if not run_artifacts.tag_in_use(review_root, run_manifest.run_tag(manifest)):
+                    break
+                manifest["run_id"] = run_manifest.new_run_id()
+            else:
+                return None, runio._error_status(
+                    "could not start a run: every run id drawn gives the tag %s, which an "
+                    "earlier run's files in %s/ already use; move them away, or run again"
+                    % (run_manifest.run_tag(manifest), plan_contract.ARTIFACT_DIR))
+        except runio.DriverError as exc:
+            return None, runio._error_status(str(exc))
         manifest["first_contact"] = first or {}
         # #3651: where this run's matrix came from, measured once so a resume reports what
         # was true when the run began. Recorded, never enforced, and not an anti-drift key.
@@ -521,7 +539,7 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
     # #3779: one driver on a root, from before first contact to the last write. A refusal
     # touches nothing, a `--pr` worktree included: that is the holder's.
     try:
-        with run_lock.hold(review_root, "run"):
+        with run_lock.hold(review_root, "run"), runio.paths_scope(review_root):
             return _run_held(args, runner, phases, review_root, worktree, pr_base)
     except run_lock.Refused as exc:
         return runio._error_status(str(exc))
@@ -529,6 +547,9 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
 
 def _run_held(args, runner, phases, review_root, worktree, pr_base):
     """`run`, from the resolved review root on, with that root held (#3779)."""
+    # #3779: the manifest is settled from the disk, as before, with nothing captured from
+    # an earlier `run` of the same loop. Its paths are captured once it is settled.
+    runio.capture_paths(review_root, None)
     if args.pr is not None:
         # A PR is a changed-files delta by definition. manifest["base"] holds the
         # user's EXPLICIT override only (anti-drift key); the gh-detected PR base
@@ -554,6 +575,7 @@ def _run_held(args, runner, phases, review_root, worktree, pr_base):
                                           first, phases)
     if refused is not None:
         return refused
+    runio.capture_paths(review_root, manifest)
     # In-memory only, and deliberately NOT a manifest field: it names where the HOST SESSION runs,
     # a property of this invocation rather than of the run, and feeds only the cost-ledger
     # transcript lookup. Not persisted, so not an anti-drift key: resuming from another session is
