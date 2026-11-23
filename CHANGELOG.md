@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **Two drivers can no longer work on one review root at the same time (#3779, part 1).** Nothing
+  stopped a second `driver run`, `loop` or `setup` on a root where one was already running. Each
+  reads `.panopticon/`, decides and writes, so the second acted on what the first was changing: a
+  second driver's `--reset` deleted the run folder under the first, and a driver that woke after
+  a newer run had finished set that run's report aside.
+  - Each of the three verbs now holds a lock on the review root from before it first reads
+    `.panopticon/` until it returns. A second one changes nothing and ends in `error`: `another
+    driver is running on this review root (pid <n>, `driver loop`, since <time>): wait for it to
+    finish, or stop it, then run again`.
+  - The lock is `flock` on a file under `$PANOPTICON_STATE_DIR/locks/`, outside the reviewed tree.
+    The operating system releases it when the process exits, so a killed driver leaves no stale
+    lock.
+  - The driver's child steps hold the same lock. A synthesis step that outlives a killed driver
+    keeps the root until it exits, so a retry cannot start beside it; the refusal names its pid
+    and says `kill <pid>`. Reviewer agents and scanner containers never hold the lock.
+  - A lock that cannot be used (a state directory on a filesystem that refuses `flock`, or one
+    that is not yours) stops the driver before it touches the tree, with the reason and the
+    remedy.
+  - Not covered: `driver persist` and `driver readiness` take no lock, and two state directories
+    (two machines or two users on one shared tree) do not exclude each other.
 - **A synthesis retry that dies without writing a report no longer ends the run on an earlier
   attempt's (#3769).** The driver took any usable report at the run's report path for the one its
   synthesize step had just written. When an attempt had published a report and then not finished

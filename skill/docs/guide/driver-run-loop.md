@@ -197,6 +197,27 @@ The host contract (5.2, plan 6):
   invocation: `complete`, `error`, or `checkpoint`). It is what the loop calls; drive it by hand
   only when debugging a phase. Re-invoking on an **already-complete** run refuses with an `error`
   naming `--reset` (#1), in every mode.
+- **One driver at a time on a review root (#3779).** `driver run`, `driver loop` and `driver setup`
+  hold a lock on the review root from before they first read `.panopticon/` until they return. A
+  second one started meanwhile changes nothing and ends in `error`: `another driver is running on
+  this review root (pid <n>, `driver loop`, since <time>): wait for it to finish, or stop it, then
+  run again`.
+  - The lock is a file under `$PANOPTICON_STATE_DIR/locks/` (default
+    `~/.local/state/panopticon/locks/`), named by a hash of the root's real path. It is not in the
+    reviewed tree. The operating system releases it when the process exits, however it exits, so a
+    killed driver leaves nothing to clear. The file itself stays: a few bytes per root.
+  - The driver's own child steps (discovery, the scanner runner, usage collection, synthesis) hold
+    the same lock. If a driver is killed outright while one is running, that step carries on, and
+    the root stays held until it exits. The next driver says so and names it: `a synthesize child
+    (pid <n>) left by a driver that is no longer running (pid <m>, ...) still holds this review
+    root: wait for it to exit, or stop it (`kill <n>`), then run again`. Reviewer agents and
+    scanner containers never hold the lock.
+  - If the lock cannot be used, the driver stops before it touches the tree: `the run lock cannot
+    be used: <reason>. ...`. The usual reason is a state directory on a filesystem that refuses
+    `flock`; point `PANOPTICON_STATE_DIR` at a directory you own on a local disk.
+  - Not covered: `driver persist` and `driver readiness` take no lock (a session host persists
+    several replies at once, and `readiness` only reads). Two state directories do not see each
+    other's locks, so two machines, or two users, working on one shared tree are not excluded.
 - **The dispatch request is bound to the run that wrote it (#1727).** `dispatch-request.json` lives
   inside the REVIEWED tree, so the driver hashes the exact bytes it writes and records that sha256
   in the run manifest — `.panopticon/run-manifest.json`, or `setup-manifest.json` under `--setup`,

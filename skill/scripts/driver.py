@@ -25,6 +25,7 @@ import scripts.delta_withdrawn as delta_withdrawn
 import scripts.diff_map as diff_map
 import scripts.first_contact as first_contact
 import scripts.matrix_provenance as matrix_provenance
+import scripts.run_lock as run_lock
 import scripts.run_manifest as run_manifest
 from scripts import hosts, loop_progress, procgroup
 from scripts.host_posture import (  # noqa: F401 -- compatibility names for #3402
@@ -517,6 +518,17 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
                                       runner=runner))
     except (RuntimeError, ValueError, OSError) as exc:
         return runio._error_status("could not resolve review root: %s" % exc)
+    # #3779: one driver on a root, from before first contact to the last write. A refusal
+    # touches nothing, a `--pr` worktree included: that is the holder's.
+    try:
+        with run_lock.hold(review_root, "run"):
+            return _run_held(args, runner, phases, review_root, worktree, pr_base)
+    except run_lock.Refused as exc:
+        return runio._error_status(str(exc))
+
+
+def _run_held(args, runner, phases, review_root, worktree, pr_base):
+    """`run`, from the resolved review root on, with that root held (#3779)."""
     if args.pr is not None:
         # A PR is a changed-files delta by definition. manifest["base"] holds the
         # user's EXPLICIT override only (anti-drift key); the gh-detected PR base

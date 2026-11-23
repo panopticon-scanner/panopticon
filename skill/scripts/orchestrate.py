@@ -140,7 +140,8 @@ def loop(args, pause=None):
     run unless the caller hands one in, and restored whatever happens."""
     pause = pause or loop_setup.PauseRequest()
     try:
-        status = _loop(args, pause)
+        with contextlib.ExitStack() as held:      # #3779: the root, for the whole loop
+            status = _loop(args, pause, held)
     finally:
         pause.restore()
     if pause.is_set() and status.get("status") == "complete":
@@ -149,9 +150,9 @@ def loop(args, pause=None):
     return status
 
 
-def _loop(args, pause):
+def _loop(args, pause, held):
     max_iterations = getattr(args, "max_iterations", None) or DEFAULT_MAX_ITERATIONS
-    setup, error = loop_setup.resolve(args)
+    setup, error = loop_setup.resolve(args, held)
     if setup is None:              # keyed on the setup, not the text: an empty message still ends it
         return _status("error", error)
     (budget, namespace, resolved, review_root, host, mode, runner, session_root,

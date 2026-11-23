@@ -55,3 +55,10 @@ def rewritten(entries):
 # changes nothing, so `rewritten` can be checked on a plain list.
 if __name__ != "scripts._bootstrap":
     sys.path[:] = rewritten(sys.path)
+    # #3779: a phase child holds its driver's run lock by an inherited descriptor
+    # (`scripts.run_lock`). It stops here: closed on exec, so nothing this process
+    # starts holds the review root, however it is started.
+    try:
+        os.set_inheritable(int(os.environ.pop("PANOPTICON_RUN_LOCK_FD", "")), False)
+    except (OSError, OverflowError, ValueError):
+        pass                          # no number, or one that names no descriptor here

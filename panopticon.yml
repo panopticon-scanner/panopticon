@@ -132,6 +132,9 @@
 #   - 2026-10-24 (#3271): `first_contact.py` (the run-start readiness halt) and `run_stamp.py`
 #     (the operator-side key that marks a `.panopticon/` as ours) are claimed beside
 #     `run_manifest.py` and `safe_write.py`, the artifact-root modules they guard.
+#   - 2026-11-22 (#3779): `run_lock.py` (one driver at a time on a review root) is claimed
+#     by `Orchestration:Driver`, beside the verbs that take the lock, with its test.
+#     `Orchestration:Core`, which holds `run_stamp.py`, is at the 48-file cap.
 #   - 2026-10-31 (#3272): `probe_cache.py` is claimed by `Orchestration:Runners`
 #     beside the external-CLI launch seam whose measurements it caches. `Hosts`
 #     was already at its 48-file cap; the cache's focused test moves with it.
@@ -396,6 +399,7 @@ groups:
       - skill/scripts/_bootstrap.py
       - skill/scripts/__init__.py
       - skill/scripts/host_posture.py
+      - skill/scripts/run_lock.py
       # #3493 / #3494: Orchestration:Hosts and Orchestration:Runners are at the
       # 48-file cap; keeping the agy and gemini guard hooks, probe harnesses,
       # and gemini runner modules here keeps both sibling leaves below the cap
@@ -414,6 +418,7 @@ groups:
       - tests/test_driver_matrix.py
       - tests/test_driver_verify.py
       - tests/test_driver_tool_verify.py
+      - tests/test_run_lock.py
       # #3403: this cross-wiring test imports driver and host_posture; moving
       # it from Hosts keeps the surface harness beside its direct tests while
       # both leaves stay below the cap.

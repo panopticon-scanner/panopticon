@@ -49,6 +49,7 @@ class _FakeProc:
     """A Popen stand-in with both pipes already at EOF, for the one assertion
     that is about the TIMEOUT ARGUMENT rather than about a real child."""
     returncode = 0
+    pid = 4242                    # a real Popen always has one (#3779 names it)
 
     def __init__(self, seen):
         self._seen = seen

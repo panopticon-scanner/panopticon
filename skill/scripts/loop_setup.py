@@ -15,14 +15,18 @@ import threading
 import scripts.first_contact as first_contact
 import scripts.hosts as hosts
 import scripts.loop_batch as loop_batch
+import scripts.run_lock as run_lock
 import scripts.money as money
 import scripts.phases.requests as requests
 import scripts.phases.runio as runio
 import scripts.runners.base as runners_base
 
 
-def resolve(args):
+def resolve(args, held):
     """(setup, None), or (None, the error message `loop` returns as an `error` status).
+
+    `held` is the caller's `ExitStack`: the review root's lock (#3779) is entered on it,
+    so the root stays held until `loop` returns.
 
     `setup` is `(budget, namespace, resolved, review_root, host, mode, runner, session_root,
     prev_req)`. Never raises for the cases `loop` reported; prints the same stderr notes."""
@@ -45,8 +49,9 @@ def resolve(args):
     # rather than raising out of loop(), which must never raise.
     try:
         resolved = loop_batch._resolve_target(args)
+        held.enter_context(run_lock.hold(resolved[0], "loop"))    # #3779: before first contact
         first_contact.assess_loop(args, resolved)         # #3271 B2: before ANY read below
-    except first_contact.FirstContactHalt as exc:
+    except (first_contact.FirstContactHalt, run_lock.Refused) as exc:
         return None, str(exc)
     except (RuntimeError, ValueError, OSError) as exc:
         return None, "driver loop: could not resolve review root: %s" % exc

@@ -19,6 +19,7 @@ import time
 import scripts.executable as executable
 import scripts.phases.runio as runio
 import scripts.procgroup as procgroup
+import scripts.run_lock as run_lock
 import scripts.loop_progress as loop_progress
 
 
@@ -35,6 +36,7 @@ def _child_env():
     env = executable.sanitize_startup_environment(os.environ)
     parts = [skill_dir, repo_devtools]
     env["PYTHONPATH"] = os.pathsep.join(os.path.realpath(part) for part in parts)
+    env.pop(run_lock.FD_ENV, None)    # #3779: set by `_run_child` alone, for a root it holds
     # These children execute installed panopticon code with a reviewed tree as
     # cwd. Ambient Python startup controls must not make that tree import code
     # before the trusted entry script. Keep the rest of the operator's env and
@@ -182,12 +184,20 @@ def _run_child(cmd, review_root, phase, timeout=None):
     if timeout is None:
         timeout = _CHILD_TIMEOUTS.get(phase, _CHILD_TIMEOUT_DEFAULT)
     name = cmd[1] if len(cmd) > 1 else cmd[0]
+    # #3779: the child holds the review root with the driver. It is the same open file,
+    # so a child that outlives a killed driver keeps the root until it exits.
+    lock = run_lock.descriptor(review_root)
+    env = _child_env()
+    if lock is not None:
+        env[run_lock.FD_ENV] = str(lock)
     try:
         proc = subprocess.Popen(cmd, cwd=review_root, text=True,  # nosec B603
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                env=_child_env(), start_new_session=True)
+                                env=env, start_new_session=True,
+                                pass_fds=() if lock is None else (lock,))
     except OSError as exc:
         raise runio.DriverError("%s: could not spawn %s: %s" % (phase, name, exc))
+    run_lock.note_child(review_root, proc.pid, phase)
     out = {"stdout": _Head(), "stderr": _Head()}
     readers = [threading.Thread(target=_capture, args=(pipe, out[key]), daemon=True)
                for key, pipe in (("stdout", proc.stdout), ("stderr", proc.stderr))]
@@ -217,5 +227,6 @@ def _run_child(cmd, review_root, phase, timeout=None):
         for reader in readers:
             if reader.is_alive():
                 reader.join(timeout=max(0.0, deadline - time.monotonic()))
+        run_lock.note_child(review_root)
     return subprocess.CompletedProcess(cmd, proc.returncode,
                                        out["stdout"].text(), out["stderr"].text())
