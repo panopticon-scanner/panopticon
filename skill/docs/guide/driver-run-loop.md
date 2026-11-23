@@ -197,6 +197,49 @@ The host contract (5.2, plan 6):
   invocation: `complete`, `error`, or `checkpoint`). It is what the loop calls; drive it by hand
   only when debugging a phase. Re-invoking on an **already-complete** run refuses with an `error`
   naming `--reset` (#1), in every mode.
+- **One driver at a time on a review root (#3779).** `driver run`, `driver loop` and `driver setup`
+  hold a lock on the review root from before they first read `.panopticon/` until they return. A
+  second one started meanwhile changes nothing and ends in `error`: `another driver is running on
+  this review root (pid <n>, `driver loop`, since <time>): wait for it to finish, or stop it, then
+  run again`.
+  - The lock is a file under `$PANOPTICON_STATE_DIR/locks/` (default
+    `~/.local/state/panopticon/locks/`). It is not in the reviewed tree. It is named by the root
+    directory's device and inode numbers, not by its path, so a link to the root, a path through
+    `..`, and the same directory typed in another letter case on a case-insensitive volume are all
+    one lock. The operating system releases it when the process exits, however it exits, so a
+    killed driver leaves nothing to clear. The file itself stays: about a kilobyte per root.
+  - **The state directory must be writable** for `run`, `loop` and `setup`: the lock makes
+    `locks/` and one file per root there. A read-only state directory, from which the stamp key
+    alone could be read, is refused with the reason.
+  - The driver's own child steps (discovery, the scanner runner, usage collection, synthesis) hold
+    the same lock. If a driver is killed outright while one is running, that step carries on, and
+    the root stays held until it exits. The next driver says so and names it: `a synthesize child
+    (pid <n>) left by a driver that is no longer running (pid <m>, ...) still holds this review
+    root: wait for it to exit, or stop it (`kill <n>`), then run again`. Reviewer agents and
+    scanner containers never hold the lock.
+  - If the lock cannot be used, the driver stops before it touches the tree: `the run lock cannot
+    be used: <reason>. ...`. The usual reasons are a state directory that cannot be written and one
+    on a filesystem that refuses `flock`; point `PANOPTICON_STATE_DIR` at a directory you own and
+    can write, on a local disk.
+  - Not covered:
+    - `driver persist` and `driver readiness` take no lock (a session host persists several
+      replies at once, and `readiness` only reads). `driver migrate-config` takes none either,
+      and it writes the root config.
+    - An entry script run by hand (`synthesize.py`, `discovery.py`, `devtools/replay_report.py`)
+      takes no lock, so it can write beside a running driver.
+    - Two state directories do not see each other's locks, so two machines, or two users,
+      working on one shared tree are not excluded.
+    - A lock file deleted or replaced while a driver holds it lets a second driver in. Nothing
+      in the driver removes one; leave `locks/` alone while a run is going.
+    - Replacing the root directory itself while a driver runs (moving it away and making a new
+      one at the same path) gives a second driver another lock: the lock is named for the
+      directory, which is what lets every spelling of its path share one.
+    - `PANOPTICON_STATE_DIR` also holds the stamp key that marks a `.panopticon/` as this
+      machine's. Pointing it somewhere else, as the refusal suggests, changes that key too, so
+      a run already in progress is not recognised from the new directory. Change it between
+      runs.
+    - A state directory inside the reviewed tree puts the lock in the tree, where the target
+      can reach it. Keep it outside.
 - **The dispatch request is bound to the run that wrote it (#1727).** `dispatch-request.json` lives
   inside the REVIEWED tree, so the driver hashes the exact bytes it writes and records that sha256
   in the run manifest — `.panopticon/run-manifest.json`, or `setup-manifest.json` under `--setup`,
