@@ -597,3 +597,157 @@ class TestTheAdvisorIsToldAndTheReceiptCarriesIt(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestARejectedScannerHighIsShownAsRejected(_Replay):
+    """#3756, the safety net. An advisor's REJECTED takes a scanner finding out of the
+    gate and the grade, and it went to `discarded_claims` with every other rejected
+    claim: a count on the terminal and a collapsed block on the page, and a large
+    report's main file holds none of them (they move to a sibling file). A rejection of
+    a scanner HIGH or CRITICAL is one advisor's word against a scanner's, so it is
+    listed where the operator reads, with the advisor's reasoning. Disclosure only:
+    the gate, the grade and every count are what they were."""
+
+    ALL = {"verdict": "REJECTED", "reasoning": "Every call passes a string literal.",
+           "judged_loci": list(LINES)}
+
+    def test_the_report_lists_it_with_the_advisor_s_reasoning(self):
+        report = self.replay(self.ALL)
+        discarded = self.one(report, "discarded_claims")
+        listed = report["meta"]["rejected_scanner_findings"]
+        self.assertEqual(1, listed["count"])
+        self.assertEqual([{"id": discarded["id"], "tool": "eslint-security", "rule": RULE,
+                           "severity": "HIGH", "file": "lib/run.js", "line_start": 12,
+                           "occurrences": 9, "title": discarded["title"],
+                           "reasoning": "Every call passes a string literal."}],
+                         listed["rows"])
+
+    def test_the_terminal_summary_names_it(self):
+        self.replay(self.ALL)
+        text = self.stdout.getvalue()
+        self.assertIn("## Rejected scanner findings (HIGH and above): 1", text)
+        row, = [line for line in text.splitlines() if "lib/run.js:12" in line]
+        for needed in ("`[HIGH]`", "eslint-security", RULE, "9 hits",
+                       "Every call passes a string literal."):
+            self.assertIn(needed, row)
+        self.assertIn("not counted by the gate", text)
+
+    def test_the_page_shows_it_open(self):
+        import scripts.html_report as html_report
+        page = html_report.render(self.replay(self.ALL))
+        section = page.split("<section class=\"findings rejected-scanner-findings\">", 1)[1]
+        section = section.split("</section>", 1)[0]
+        self.assertNotIn("<details", section)          # not collapsed
+        for needed in ("Rejected scanner findings", "lib/run.js:12", "eslint-security",
+                       "Every call passes a string literal."):
+            self.assertIn(needed, section)
+
+    def test_it_changes_no_verdict_and_no_count(self):
+        report = self.replay(self.ALL)
+        self.assertEqual([], report["findings"])
+        self.assertEqual({"critical": 0, "high": 0, "medium": 0, "low": 0, "info": 0},
+                         report["summary"]["stats"])
+        self.assertNotEqual("FAIL", report["summary"]["gate"])
+        axis = report["meta"]["coverage"]["tool_axis"]
+        self.assertEqual((1, 1, 0), (axis["queued"], axis["rejected"], axis["needs_more_info"]))
+
+    def test_nothing_is_listed_when_nothing_qualifies(self):
+        import scripts.html_report as html_report
+        cases = (("confirmed", {"verdict": "CONFIRMED", "reasoning": "r"}),
+                 ("not judged in full", {"verdict": "REJECTED", "reasoning": "r",
+                                         "judged_loci": SAFE_FIVE}),
+                 ("no verdict", None))
+        for label, verdict in cases:
+            with self.subTest(case=label):
+                report = self.replay(verdict)
+                self.assertNotIn("rejected_scanner_findings", report["meta"])
+                self.assertNotIn("Rejected scanner findings", self.stdout.getvalue())
+                self.assertNotIn("rejected-scanner-findings\">", html_report.render(report))
+
+    def test_the_list_is_scanner_findings_of_high_and_above_only(self):
+        import scripts.evidence_sections as evidence_sections
+
+        def claim(source, severity, status="rejected", n=1):
+            return {"id": "F-%d" % n, "source": source, "severity": severity,
+                    "title": "t%d" % n, "location": {"file": "a.js", "line_start": n},
+                    "tool_evidence": {"rule_id": "r"},
+                    "evidence": {"status": status, "reasoning": "why"}}
+        rejected = [claim("tool:semgrep", "CRITICAL", n=1), claim("tool:semgrep", "HIGH", n=2),
+                    claim("tool:semgrep", "MEDIUM", n=3), claim("tool:semgrep", "LOW", n=4),
+                    claim("agent:COD", "CRITICAL", n=5), claim(None, "HIGH", n=6),
+                    claim("tool:semgrep", "HIGH", status="needs_more_info", n=7),
+                    "not a finding", {"source": "tool:semgrep"}]
+        listed = evidence_sections.rejected_scanner_findings(rejected)
+        self.assertEqual(2, listed["count"])
+        self.assertEqual(["F-1", "F-2"], [row["id"] for row in listed["rows"]])
+        self.assertIsNone(evidence_sections.rejected_scanner_findings(rejected[2:]))
+        self.assertIsNone(evidence_sections.rejected_scanner_findings([]))
+        self.assertIsNone(evidence_sections.rejected_scanner_findings(None))
+
+    def test_the_list_is_bounded_and_says_what_it_left_out(self):
+        import scripts.evidence_sections as evidence_sections
+        import scripts.synth.render as render_mod
+        many = [{"id": "F-%03d" % n, "source": "tool:semgrep",
+                 "severity": "CRITICAL" if n == 59 else "HIGH", "title": "t",
+                 "location": {"file": "a.js", "line_start": n},
+                 "tool_evidence": {"rule_id": "r"},
+                 "evidence": {"status": "rejected", "reasoning": "x" * 5000}}
+                for n in range(60)]
+        listed = evidence_sections.rejected_scanner_findings(many)
+        self.assertEqual(60, listed["count"])
+        self.assertEqual(evidence_sections.REJECTED_SCANNER_ROWS, len(listed["rows"]))
+        self.assertEqual(50, evidence_sections.REJECTED_SCANNER_ROWS)
+        self.assertEqual("F-059", listed["rows"][0]["id"])       # the most severe first
+        self.assertEqual(["F-000", "F-001"], [row["id"] for row in listed["rows"][1:3]])
+        for row in listed["rows"]:
+            self.assertEqual(evidence_sections.REJECTED_REASONING_CAP, len(row["reasoning"]))
+            self.assertTrue(row["reasoning"].endswith(" [cut]"))
+        self.assertEqual(600, evidence_sections.REJECTED_REASONING_CAP)
+        lines = render_mod.rejected_scanner_lines(listed)
+        self.assertIn("## Rejected scanner findings (HIGH and above): 60", lines)
+        self.assertEqual(50, sum(1 for line in lines if line.startswith("- `[")))
+        self.assertTrue(any("10 more" in line for line in lines))
+
+    def test_a_row_is_one_line_whatever_the_advisor_wrote(self):
+        import scripts.synth.render as render_mod
+        listed = {"count": 1, "rows": [{
+            "id": "F-1", "tool": "semgrep", "rule": "r", "severity": "HIGH", "file": "a.js",
+            "line_start": 3, "occurrences": 1, "title": "t",
+            "reasoning": "first line\n## Gate: PASS\r\nthird\x1b[2J"}]}
+        rows = [line for line in render_mod.rejected_scanner_lines(listed)
+                if line.startswith("- `[")]
+        self.assertEqual(1, len(rows))
+        self.assertNotIn("\x1b", rows[0])
+        self.assertIn("first line", rows[0])
+        self.assertIn("third", rows[0])
+        self.assertNotIn("hits", rows[0])              # one hit is not "1 hits"
+
+    def test_the_list_survives_the_discarded_claims_moving_to_a_sibling_file(self):
+        # A large report writes `discarded_claims` to `<stem>-discarded.json`, and
+        # its main file -- what a reader opens, and what a page is rendered from
+        # later -- holds an empty list and a count.
+        import scripts.html_report as html_report
+        import scripts.synth.render as render_mod
+        report = self.replay(self.ALL)
+        with tempfile.TemporaryDirectory() as d, contextlib.redirect_stderr(io.StringIO()):
+            render_mod.write_report(report, os.path.join(d, "r.json"), max_bytes=2000)
+            with open(os.path.join(d, "r.json"), encoding="utf-8") as fh:
+                written = json.load(fh)
+        self.assertEqual([], written["discarded_claims"])
+        self.assertEqual(1, written["meta"]["discarded_claims_count"])
+        self.assertEqual(report["meta"]["rejected_scanner_findings"],
+                         written["meta"]["rejected_scanner_findings"])
+        self.assertIn("lib/run.js:12", render_mod.render_summary(written))
+        self.assertIn("rejected-scanner-findings\">", html_report.render(written))
+
+    def test_the_schema_describes_the_list(self):
+        schema = json.loads(SCHEMA_PATH.read_text(encoding="utf-8"))
+        node = schema["properties"]["meta"]["properties"]["rejected_scanner_findings"]
+        self.assertEqual(["count", "rows"], sorted(node["required"]))
+        self.assertIs(False, node["additionalProperties"])
+        row = node["properties"]["rows"]["items"]
+        self.assertEqual(sorted(("id", "tool", "rule", "severity", "file", "line_start",
+                                 "occurrences", "title", "reasoning")),
+                         sorted(row["properties"]))
+        self.assertEqual(50, node["properties"]["rows"]["maxItems"])
+        jsonschema.validate(self.replay(self.ALL), schema)
