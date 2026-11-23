@@ -1385,6 +1385,10 @@ class TestManifestlessCertification(unittest.TestCase):
         self.assertEqual(400, len(tool_axis.listing_failure(long_name, denied)))
         self.assertEqual("/srv/tools: Permission denied",
                          tool_axis.listing_failure("/srv/tools", denied))
+        # ... and still is when spelling its control characters made it longer.
+        spelled = tool_axis.listing_failure("/srv/" + "\n" * 300, denied)
+        self.assertEqual(400, len(spelled))
+        self.assertTrue(spelled.startswith("/srv/\\x0a\\x0a"))
         # An error with no message of its own is named by its type.
         self.assertEqual("/srv/tools: OSError", tool_axis.listing_failure("/srv/tools", OSError()))
         # Gates item 5: a control character in the name cannot split the line. The
@@ -1461,6 +1465,19 @@ class TestManifestlessCertification(unittest.TestCase):
             self.assertEqual(0, rc)
             self.assertNotIn("cannot be listed", err)
             self.assertEqual(1, len(seen))
+        # One look on every path that judges the directory.
+        for label, extra in (("an empty run id", ("--run-id", "")),
+                             ("tools skipped", ("--tools-skipped",)),
+                             ("a run id", ("--run-id", "rid-1"))):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as d:
+                seen = []
+                with scandir_failing_on({2, 3, 4}, os.path.join(d, "tools"), seen):
+                    _rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
+                                                  extra=extra)
+                self.assertIsNone(report["meta"]["integrity"]["tools_dir_unlistable"])
+                self.assertEqual(["bandit.sarif"],
+                                 report["meta"]["integrity"]["unbound_tool_outputs"])
+                self.assertEqual(1, len(seen))
 
     def test_an_error_while_reading_the_entries_is_a_failed_listing(self):
         # Gates item 2. The open succeeded and the iteration failed: a traceback, exit
@@ -1610,6 +1627,15 @@ class TestManifestlessCertification(unittest.TestCase):
                 self.assertEqual("PASS", report["summary"]["gate"])
                 self.assertEqual(0, rc)
                 self.assertNotIn("no run id", err)
+        # "Says nothing" is the reading of a call with no run id, the ruling included:
+        # the manifest beside it is unbound and cannot excuse the scout's request.
+        with tempfile.TemporaryDirectory() as d:
+            rc, report, _err = self._run(d, {}, extra=("--run-id", ""), manifest=manifest,
+                                         scout=["gitleaks"],
+                                         tools_dir=os.path.join(d, "absent"))
+        self.assertEqual({"gitleaks": "requested_absent"},
+                         report["meta"]["coverage"]["divergence"]["tools"])
+        self.assertEqual(2, rc)
         # The directory there: refused, as the issue asks.
         with tempfile.TemporaryDirectory() as d:
             rc, report, err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},

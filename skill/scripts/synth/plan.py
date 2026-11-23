@@ -558,9 +558,9 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None, listing=N
 
     #3766: `listing` is the one look at the tools directory this call ingests
     from, `ingest_tools.list_tools_dir`'s; a caller that also judges the
-    directory (`ToolAxis`) passes its own so both read the same answer. Only a
-    directory that is not there is "no tool axis" (`tools_ran` None). One that
-    could not be listed ingested nothing, which `tools_ran` says as an empty set.
+    directory (`ToolAxis`) passes its own so both read the same answer. A
+    directory that is not there, and one that could not be listed, ingest
+    nothing; which of the two it was is the `ToolAxis`'s to say.
     """
     if listing is None and args.tools_dir:
         listing = ingest_tools.list_tools_dir(args.tools_dir)
@@ -580,7 +580,7 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None, listing=N
             print("synthesize: %s appears un-ingested — pass --tools-dir %s to "
                   "include tool findings in this report"
                   % (default_tools, default_tools), file=sys.stderr)
-    if not args.tools_dir or listing.missing:
+    if not args.tools_dir or listing.error is not None:
         return [], {}, None, None, [], excluded_block(args, 0)
     dropped: list[dict[str, Any]] = []     # source-scope drops, for count/gate
     excluded: list[dict[str, Any]] = []    # #1740 fix round 2: the operator's own glob drops
