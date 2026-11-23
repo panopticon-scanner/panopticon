@@ -62,6 +62,32 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
   (#1638 P16). A confirmed finding wearing a disclosure, not a contested one: gate-eligible, and NOT
   counted as "verified" in the report's coverage line.
 
+**Where a scanner finding is can keep it out of the gate (#3755).** Whether a path is a test path
+is a fact, and each advisor used to decide it again, so one finding was confirmed in some runs and
+rejected in others and that verdict decided the gate. The controller now states it at ingest, in
+`tool_evidence.path_context`, from the path inside the review root and nothing else:
+- `test`: an ancestor directory is `test`, `tests`, `spec`, `__tests__`, `e2e`, `testdata`,
+  `fixtures` or `__fixtures__` (exact, case-sensitive). A file only named like a test
+  (`test_x.py`, `x_test.go`) is not marked, and neither is a location that is not a plain path
+  (#3771).
+- `dev_manifest`: a dependency advisory whose manifest is under such a directory, or is a
+  development requirements file (`requirements-dev.txt`, `dev-requirements.txt`,
+  `requirements-test.txt`, `test-requirements.txt`, `requirements/dev.txt`,
+  `requirements/test.txt`). Dev-only packages inside a shared lockfile are not recognised yet.
+
+The advisor is told this as settled and judges only whether the claim is true of what is at the
+location. The rule for the gate (owner's ruling, 2026-11-23):
+- In `--security standard` a finding with `path_context` is reported and not gate-eligible: it is
+  out of the gate, the grade and health, whatever the advisor's verdict.
+- In `--security redteam` it gates only when CRITICAL or secret-class, through
+  `ingest_tools.gates_when_suppressed` itself (#1578 policy C), not a copy.
+
+A row the rule kept out carries `gate: {"eligible": false, "rule": "test-path" | "dev-manifest"}`,
+`meta.coverage.tools_context_not_gated` counts them per rule, and the terminal summary and the HTML
+report say so in one line. Severity is not changed. An agent's own finding in a test path is not
+covered by this rule: when a reviewer raises a claim at the same line as such a scanner finding the
+two stay separate rows, the scanner's with its mark and the reviewer's standing on its own verdict.
+
 Grades and the CI gate count `tool_confirmed`/`advisor_confirmed` findings, plus
 `backup_scope_limited` (a primary CONFIRMED stands, #1638) — i.e. only claims an advisor verified,
 plus #3593's exact first-party Cargo advisory match. Run a verify phase (or pass

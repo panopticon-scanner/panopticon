@@ -78,6 +78,7 @@ When the claim's source is `tool:*` (a scanner rule hit — bandit, semgrep, tri
 - Is the flagged construct reachable with untrusted input in THIS code's actual call graph, or is it test scaffolding, constant input, or a guarded call site? REJECT pattern hits that are non-issues in context, and say why in `reasoning`.
 - For dependency/CVE claims: verify the package and version are actually present (manifest or lockfile) and the advisory's affected range applies. Do not confirm from the claim's title alone.
 - A sourceless Cargo.lock entry or workspace package match is not by itself grounds for rejection; it may be the reviewed project's own affected crate.
+- When the claim's `tool_evidence.path_context` is `test` or `dev_manifest`, the controller has already established that the location is a test path or a development-only manifest. That is settled: it is not grounds to REJECT and not grounds to CONFIRM, and the "test scaffolding" question above does not apply. Judge only whether the claim is true of what is at the location: the key is a key, the package and version are in that manifest and inside the advisory's range.
 - CONFIRM only when the code's behavior supports the underlying risk the rule encodes (its CWE), not merely that the pattern matched.
 - Do not invent evidence. Only cite CVEs you can verify from the provided context
   or references. Never execute code. Never modify anything.

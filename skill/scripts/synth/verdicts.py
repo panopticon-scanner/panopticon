@@ -110,6 +110,9 @@ class Resolved:
     # number: a narrowed gate that discloses nothing is the silence #1578 is
     # about, with a smaller blast radius.
     suppressed_not_gated: list = field(default_factory=list)
+    # #3755: active scanner findings the path-context rule kept out of the gate, counted
+    # per rule (`test-path`, `dev-manifest`). Each such row carries the same rule.
+    context_not_gated: dict = field(default_factory=dict)
     # #2990: the ids of the findings whose severity normalize_finding did not
     # recognise and read as CRITICAL, taken BEFORE dedupe so an absorbed one is
     # named too; published as `meta.integrity.unknown_severity_findings`.
@@ -302,7 +305,7 @@ class Published:
         (`counts_on_its_own`, the gate's own test), else the severity it is published
         at times the lines it spans (`grading.own_weight`)."""
         status = evidence_mod.derive_evidence(finding, verdict)["status"]
-        if not counts_on_its_own(status, self.caps.run):
+        if not counts_on_its_own(status, self.caps.run, finding):
             return 0
         return grading_mod.own_weight(finding, self.caps.published(finding, status, self.bundle))
 
@@ -769,11 +772,35 @@ class _Partitions:
     pre_existing_active: list
 
 
-def counts_on_its_own(status, run):
+def context_rule(finding, run):
+    """The rule that keeps `finding` out of the gate for WHERE it is, or None (#3755).
+
+    A scanner finding ingest marked as sitting in a test path or a dev-only manifest
+    (`evidence.path_context`). Owner's ruling, 2026-11-23:
+
+    - `--security standard`: reported, and not counted. Whether an advisor confirms
+      it no longer moves the gate, the grade or health.
+    - `--security redteam`: counted only when CRITICAL or secret-class. That is
+      #1578's policy C, asked of `ingest_tools.gates_when_suppressed` itself: the one
+      rule for a finding in a directory the project does not ship.
+
+    The mode is the gate's own (`gate_security_mode`), never the target's."""
+    context = evidence_mod.path_context(finding)
+    if context is None:
+        return None
+    if (run.gate_security_mode == plan_mod.REDTEAM
+            and ingest_tools.gates_when_suppressed(finding)):
+        return None
+    return evidence_mod.PATH_CONTEXT_RULES[context]
+
+
+def counts_on_its_own(status, run, finding=None):
     """Does a finding of this evidence status count for the gate, health and the
     letter? THE definition: `_partition_gate` filters the rows by it, and the merge
     asks it of each member before a row may stand for that member (`Published`), so
-    the two cannot drift (#3731)."""
+    the two cannot drift (#3731). With the `finding`, where it is counts too (#3755)."""
+    if finding is not None and context_rule(finding, run) is not None:
+        return False
     return status != "rejected" and bool(
         run.gate_unverified or status in evidence_mod.GATE_ELIGIBLE_DEFAULT)
 
@@ -791,8 +818,22 @@ def _partition_gate(findings, delta, run):
     gate_source = active
     if delta_mode and run.gate_scope == "on-diff":
         gate_source = on_diff_active
-    gate_eligible = [f for f in gate_source if counts_on_its_own(f["evidence"]["status"], run)]
+    gate_eligible = [f for f in gate_source
+                     if counts_on_its_own(f["evidence"]["status"], run, f)]
     return _Partitions(active, rejected, gate_eligible, on_diff_active, pre_existing_active)
+
+
+def _mark_context_rule(active, run):
+    """Say on each active row the path-context rule kept out of the gate that it did,
+    and which rule (#3755): `gate: {"eligible": false, "rule": ...}`. Returns the count
+    per rule, for `meta.coverage.tools_context_not_gated`."""
+    counts: dict = {}
+    for finding in active:
+        rule = context_rule(finding, run)
+        if rule is not None:
+            finding["gate"] = {"eligible": False, "rule": rule}
+            counts[rule] = counts.get(rule, 0) + 1
+    return counts
 
 
 def _scope_suppressed(gated_suppressed, delta, run):
@@ -965,6 +1006,7 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     tool_axis = _tool_axis(findings, _tool_reconciliation(ingested_tools, findings,
                                                           absorbed_into))
     partitions = _partition_gate(findings, delta, run)
+    context_not_gated = _mark_context_rule(partitions.active, run)
     gated, suppressed_not_gated = _scope_suppressed(gated_suppressed, delta, run)
     tool_names = {evidence_mod.tool_name(f) for f in findings
                   if evidence_mod.is_tool_sourced(f)}
@@ -989,4 +1031,5 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
                     unanswered_gate=matches.unanswered if fs.verdicts_supplied else 0,
                     unanswered_tools=matches.unanswered_tools if fs.verdicts_supplied else 0,
                     gated_suppressed=gated, suppressed_not_gated=suppressed_not_gated,
+                    context_not_gated=context_not_gated,
                     unknown_severity_ids=unknown_severity)

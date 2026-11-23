@@ -244,8 +244,13 @@ def dedupe(findings, bundle=LOAD):
         # was first-party in one run and queued to the advisor (or gone) in the
         # next. The general branch below keeps both: the advisory stays first-party
         # (reinforced when the agent agrees on category), the agent claim its own.
+        # #3755: nor for a scanner finding ingest placed in a test path or a dev-only
+        # manifest. Its row is out of the gate by a rule; made one row with a reviewer's
+        # claim it was in the gate when the claim was the more severe, and a confirmed
+        # claim lost its own standing when it was not.
         if (len(group) == 2 and len(tool_srcd) == 1 and len(agent_srcd) == 1
-                and not evidence_mod.is_first_party_advisory(tool_srcd[0])):
+                and not evidence_mod.is_first_party_advisory(tool_srcd[0])
+                and evidence_mod.path_context(tool_srcd[0]) is None):
             best = min(group, key=rank)
             other = agent_srcd[0] if _is_tool_sourced(best) else tool_srcd[0]
             best["reinforced"] = True

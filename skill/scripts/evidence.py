@@ -213,6 +213,24 @@ def is_first_party_advisory(finding):
             == FIRST_PARTY_PACKAGE_ORIGIN)
 
 
+#: #3755: what the controller says about where a scanner finding is. `test`: under a
+#: test directory. `dev_manifest`: a dependency advisory in a manifest that is only for
+#: development. Set at ingest (`ingest_tools.mark_path_context`), from the path alone.
+PATH_CONTEXT_TEST, PATH_CONTEXT_DEV_MANIFEST = "test", "dev_manifest"
+#: The name the report gives the rule each one puts a finding under.
+PATH_CONTEXT_RULES = {PATH_CONTEXT_TEST: "test-path", PATH_CONTEXT_DEV_MANIFEST: "dev-manifest"}
+
+
+def path_context(finding):
+    """The path context ingest stated for this scanner finding, or None (#3755).
+
+    Tool sourcing is part of the predicate, as it is for `is_first_party_advisory`: an
+    agent-authored finding cannot assert the mark and leave the gate by it."""
+    context = _tool_evidence(finding).get("path_context")
+    return (context if is_tool_sourced(finding) and isinstance(context, str)
+            and context in PATH_CONTEXT_RULES else None)
+
+
 def location_of(finding):
     """`location` as a dict (the finding's own, not a copy), `{}` for absent or malformed (#2365)."""
     loc = finding.get("location")

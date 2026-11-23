@@ -665,6 +665,7 @@ def _render_header(report):
     # outranks one that did not.
     parts.append(_render_suppressed_gated_tools(meta))
     parts.append(_render_suppressed_tools(meta))
+    parts.append(_render_context_not_gated(meta))
     parts.append(_render_sec_carve_out(meta))   # #1757: ABOVE, as the md ranks it
     parts.append(_render_excluded_tools(meta))
     parts.append(_render_model_fallbacks(meta))   # #3582
@@ -989,6 +990,22 @@ def _suppressed_rows(value):
     return [(seg, n) for seg, n in sorted(value.items())
             if isinstance(seg, str) and isinstance(n, int)
             and not isinstance(n, bool) and n > 0]
+
+
+def _render_context_not_gated(meta):
+    """#3755: scanner findings that ARE in the table and that this run's gate did not
+    count, because of where they are. The rule names are the controller's own two; the
+    rows are read as tolerantly as the suppression blocks' are."""
+    rows = _suppressed_rows((meta.get("coverage") or {}).get("tools_context_not_gated"))
+    if not rows:
+        return ""
+    total = sum(n for _rule, n in rows)
+    return ("<div class='coverage'>Not counted toward the gate: %d scanner finding%s in a "
+            "test path or dev-only manifest %s reported and not counted toward the gate, "
+            "grade or health (%s). <code>--security redteam</code> counts those that are "
+            "CRITICAL or secret-class</div>"
+            % (total, "" if total == 1 else "s", "is" if total == 1 else "are",
+               "; ".join("<code>%s</code>: %d" % (html.escape(rule), n) for rule, n in rows)))
 
 
 def _render_suppressed_gated_tools(meta):

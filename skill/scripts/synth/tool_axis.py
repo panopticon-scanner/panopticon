@@ -657,6 +657,10 @@ def reconcile(plan, tools, resolved, run=None):
         # an operator reading a PASS over a vendor-heavy tree has to see how
         # many drops the rule declined to count, and under which segment.
         "tools_suppressed_not_gated": not_gated_counts,
+        # #3755: scanner findings that ARE in the body and that the path-context rule
+        # kept out of the gate (a test path, a dev-only manifest), per rule. Keys are
+        # the controller's two rule names, counts its own: nothing here is target text.
+        "tools_context_not_gated": dict(sorted(resolved.context_not_gated.items())),
         # #1740 fix round 2: the exclusion POLICY, repaired at the read like
         # its two siblings -- `exclude_paths:` is target-authored, so a glob
         # reaching a published artifact is a target-carried input.

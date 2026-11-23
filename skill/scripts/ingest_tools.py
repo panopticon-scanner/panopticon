@@ -14,7 +14,7 @@ from typing import Any, NamedTuple
 
 from scripts import evidence as evidence_mod
 from scripts import first_party_advisory, groups_schema, plan_contract
-from scripts.tools import ADAPTERS
+from scripts.tools import ADAPTERS, ADVISORY_ADAPTERS
 from scripts.tools.base import ingest_policy_cv, strip_ansi, target_root_cv
 from scripts.tools.sarif_utils import (
     CWE_TAG,
@@ -354,6 +354,82 @@ def _plain_path(fpath):
     `./vendor/lib.js`."""
     return not (_NOT_PLAIN.search(fpath) or _SCHEME.match(fpath)
                 or ".." in fpath.split("/"))
+
+
+# #3755: the directories whose contents are tests, by full path segment, exact and
+# case-sensitive. The narrow list on purpose (coordinator, 2026-11-23): a wrong mark
+# takes a finding OUT of the gate, which reads better than the truth. `testing` is
+# often shipped library code and `specs` often holds API specifications, so neither is
+# here; a file merely NAMED like a test (`test_x.py`, `x_test.go`) is not marked either.
+TEST_DIRS = frozenset({"test", "tests", "spec", "__tests__", "e2e", "testdata",
+                       "fixtures", "__fixtures__"})
+# A requirements file that is only for development: by its own name, or `dev.txt` /
+# `test.txt` in a directory named `requirements`.
+_DEV_REQUIREMENTS = frozenset({"requirements-dev.txt", "dev-requirements.txt",
+                               "requirements-test.txt", "test-requirements.txt"})
+_DEV_REQUIREMENTS_IN_DIR = frozenset({"dev.txt", "test.txt"})
+
+
+def _is_advisory(finding):
+    """A dependency advisory: an advisory adapter's finding, or one of trivy's that
+    names a package and a version (its secrets and misconfigurations do not)."""
+    tool = evidence_mod.tool_name(finding)
+    if tool in ADVISORY_ADAPTERS:
+        return True
+    return tool == "trivy" and first_party_advisory.advisory_package(finding) is not None
+
+
+def _path_context(finding, roots):
+    """`evidence.PATH_CONTEXT_*` for one scanner finding, or None (#3755): decided from
+    the path inside the review root and nothing else. No read of the target."""
+    fpath = str((finding.get("location") or {}).get("file") or "").replace(os.sep, "/")
+    if not fpath or not _plain_path(fpath):
+        return None                       # #3771: not a file in the tree, whatever it spells
+    norm = fpath.lstrip("/")
+    for root in roots:                    # a scanner that reported the host's own path
+        if norm.startswith(root):
+            norm = norm[len(root):]
+            break
+    *dirs, base = norm.split("/")
+    in_tests = any(segment in TEST_DIRS for segment in dirs)
+    if not _is_advisory(finding):
+        return evidence_mod.PATH_CONTEXT_TEST if in_tests else None
+    if (in_tests or base in _DEV_REQUIREMENTS
+            or (base in _DEV_REQUIREMENTS_IN_DIR and dirs[-1:] == ["requirements"])):
+        return evidence_mod.PATH_CONTEXT_DEV_MANIFEST
+    return None
+
+
+def mark_path_context(findings, target_root=None):
+    """State, on each scanner finding, whether it sits in a test path or a dev-only
+    manifest (#3755): `tool_evidence.path_context`.
+
+    Whether a path is a test path is a fact. Each advisor used to decide it again
+    ("or is it test scaffolding"), so one finding was confirmed in five runs and
+    rejected in the sixth, and that verdict decided the gate. The controller states it
+    here, once, for both synthesize passes and the driver's tool queue (they all ingest
+    through this point, as #3593's first-party mark does), and `synth/verdicts` applies
+    one rule to it.
+
+    Not part of a finding's identity: fingerprints and reconciliation read other keys.
+    A finding this cannot classify is left unmarked, which leaves it in the gate."""
+    roots = []
+    for resolve in (os.path.abspath, os.path.realpath):
+        try:
+            root = resolve(os.fspath(target_root)).replace(os.sep, "/").strip("/") + "/"
+        except TypeError:                 # no root: paths are taken as they are
+            break
+        if root != "/" and root not in roots:
+            roots.append(root)
+    for finding in findings:
+        try:
+            context = _path_context(finding, roots)
+        except Exception:  # noqa: BLE001 - classification fails closed: no mark
+            continue
+        if context is not None:
+            marked = dict(evidence_mod._tool_evidence(finding))
+            marked["path_context"] = context
+            finding["tool_evidence"] = marked
 
 
 def _run_artifact_segment(fpath):
@@ -940,6 +1016,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
         # resulting queue exemption cannot drift between them.
         prior_budget_exhaustions = cargo_advisory_cache.budget_exhaustion_count
         first_party_advisory.mark(parsed, root, cargo_advisory_cache)
+        mark_path_context(parsed, root)                              # #3755
         budget_exhaustions = (
             cargo_advisory_cache.budget_exhaustion_count
             - prior_budget_exhaustions
