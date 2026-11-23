@@ -424,7 +424,10 @@ def render_summary(report):
                 for p, v in sorted(panels.items())))
         tools = div.get("tools") or {}
         if tools:
-            parts.append("tools " + ", ".join(sorted(tools)))
+            # #3766: a capture's basename, a scout's request, a manifest's list --
+            # none of these names is ours, and this is one line.
+            parts.append("tools " + ", ".join(
+                inert.inert_spelling(str(t)) for t in sorted(tools)))
         # #1644: the divergence map details a MEASURED gap; an unmeasurable one (an
         # unreadable tools manifest leaves both maps empty) is named by `coverage_note`.
         # A PEER of the divergence parts, not their fallback (#2013 review M5): a run

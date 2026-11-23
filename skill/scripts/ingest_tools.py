@@ -10,6 +10,7 @@ import json
 import os
 import re
 import sys
+from typing import Any, NamedTuple
 
 from scripts import evidence as evidence_mod
 from scripts import first_party_advisory, groups_schema, plan_contract
@@ -82,32 +83,54 @@ MAX_UNBOUND_OUTPUT_NAMES = 100
 _OUTPUT_SUFFIXES = (".sarif", ".json")
 
 
-def _output_files(tools_dir, allowed_outputs=None, unbound_out=None):
+class ToolsListing(NamedTuple):
+    """One look at a tools directory: capture basenames, or why there are none.
+
+    `error` is the `OSError` that ended the listing, at the open or while the
+    entries were read; `names` is then empty, because half a listing is not what
+    the directory holds. Everyone who judges the directory reads this one answer
+    (#3766): a second look can disagree with the first."""
+    names: tuple
+    error: Any = None
+    # True only for "no such file" from the OPEN. Every other failure is a directory
+    # that is there, or may be, and could not be read -- including a "no such file"
+    # met while the entries were read, which is a directory that was there.
+    missing: bool = False
+
+
+def list_tools_dir(tools_dir):
+    """The capture-shaped basenames in `tools_dir`, sorted: not hidden, `.sarif` or `.json`."""
+    names = []
+    try:
+        scan = os.scandir(tools_dir)
+    except OSError as exc:
+        return ToolsListing((), exc, isinstance(exc, FileNotFoundError))
+    try:
+        with scan:
+            for entry in scan:
+                if not entry.name.startswith(".") and entry.name.endswith(_OUTPUT_SUFFIXES):
+                    names.append(entry.name)
+    except OSError as exc:
+        return ToolsListing((), exc)
+    return ToolsListing(tuple(sorted(names)))
+
+
+def _output_files(tools_dir, allowed_outputs=None, unbound_out=None, listing=None):
     """Return receipt-selected output paths; disclose rejected names boundedly.
 
     No receipt preserves direct-ingestion compatibility. With a receipt, only
     its finite set of names can enter the returned list, regardless of how many
-    unrelated files are present in the directory.
+    unrelated files are present in the directory. `listing` is the caller's own
+    look at the directory, when it has one to share; a failed listing, the
+    caller's or this one's, yields nothing.
     """
     allowed = None if allowed_outputs is None else frozenset(allowed_outputs)
-    kept: list[str] = []
-    unbound: list[str] = []
-    try:
-        scan = os.scandir(tools_dir)
-    except OSError:
-        return []
-    with scan:
-        for entry in scan:
-            name = entry.name
-            if name.startswith(".") or not name.endswith(_OUTPUT_SUFFIXES):
-                continue
-            if allowed is not None and name not in allowed:
-                unbound.append(name)
-                continue
-            kept.append(entry.path)
-    kept.sort()
-    if unbound_out is not None:
-        unbound_out.extend(sorted(unbound)[:MAX_UNBOUND_OUTPUT_NAMES])
+    names = (listing if listing is not None else list_tools_dir(tools_dir)).names
+    kept = [os.path.join(tools_dir, name) for name in names
+            if allowed is None or name in allowed]
+    if unbound_out is not None and allowed is not None:
+        unbound_out.extend([name for name in names
+                            if name not in allowed][:MAX_UNBOUND_OUTPUT_NAMES])
     return kept
 # Top-level dirs that are never project source: a nested checkout, the git dir,
 # and panopticon's OWN artifact tree.
@@ -747,7 +770,7 @@ def _cap_findings(parsed, tool):
 def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=False,
                         target_root=None, suppressed_out=None, excluded_out=None,
                         security_mode="standard", allowed_outputs=None,
-                        unbound_out=None):
+                        unbound_out=None, listing=None):
     """Ingest raw tool-output files and report each adapter's disposition.
 
     Returns (findings, dispositions). dispositions maps each output file's
@@ -831,7 +854,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     gl_excluded = 0   # dropped by an explicit exclude_glob (operator policy)
     suppressed: dict[str, int] = {}   # {reason: count} controlled body drops
     for path in _output_files(tools_dir, allowed_outputs=allowed_outputs,
-                              unbound_out=unbound_out):
+                              unbound_out=unbound_out, listing=listing):
         tool = os.path.splitext(os.path.basename(path))[0]
         adapter = ADAPTERS.get(tool)
         if adapter is None:

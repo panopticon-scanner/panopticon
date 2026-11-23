@@ -1259,6 +1259,14 @@
               "type": ["string", "null"],
               "description": "#1644/#2070: this run's tools-manifest.json could not be read or cannot bind its exact output receipt to the current run — the reason, else null. With the runner's selected set or receipt untrusted, tool coverage cannot be certified; this sinking integrity fact forces INCONCLUSIVE unless a finding already forces FAIL. An absent manifest stays benign only when no run-bound tool ingest was requested. Other optional malformed fields are repaired at the read (see meta.tools.sanitized / network)."
             },
+            "tools_dir_unlistable": {
+              "type": ["string", "null"],
+              "description": "#3766: the tools directory this run was given could not be listed -- the directory and the error, redacted, on one line and bounded (400 characters), else null. It is the listing ingest read from that failed, at the open or while reading the entries; nothing in the directory was read, so tool coverage is unknown. This sinking integrity fact forces INCONCLUSIVE unless a finding already forces FAIL. A tools directory that was not given, or is not there (no such file at the open, and only that), is null. The bound cuts the directory's name, never the error."
+            },
+            "tools_run_unbound": {
+              "type": "boolean",
+              "description": "#3766 (no run id, no certification): true when this synthesize call was given a tools directory that is there (listed or not listable), was not --tools-skipped, and named no run id (absent or empty). Nothing then binds the directory's output, or a tools manifest beside it, to this call: findings are still ingested and meta.coverage still says what was produced, failed or absent, and tool coverage is never certified. This sinking integrity fact forces INCONCLUSIVE unless a finding already forces FAIL. False with a run id, with --tools-skipped, and for a tools directory that was not given or is not there. A hand run_tools.py + synthesize.py pair has no run id; a certified result comes from a driver run."
+            },
             "unbound_tool_outputs": {
               "type": "array",
               "items": {"type": "string"},
