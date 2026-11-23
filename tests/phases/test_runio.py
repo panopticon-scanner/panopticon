@@ -1614,6 +1614,15 @@ def test_a_tag_is_free_where_there_is_nothing_to_look_in(tmp_path):
     assert run_artifacts.tag_in_use(root, "T1") is False
 
 
+def test_a_link_at_a_run_folders_name_is_a_tag_in_use(tmp_path):
+    """Whatever is at the name, the name is taken: a link is looked at, not through."""
+    root = os.path.realpath(str(tmp_path / "target"))
+    runs = os.path.join(root, ".panopticon", "runs")
+    os.makedirs(runs)
+    os.symlink("nowhere", os.path.join(runs, "T1"))
+    assert run_artifacts.tag_in_use(root, "T1") is True
+
+
 def test_a_longer_tag_that_starts_the_same_is_another_run(tmp_path):
     root = os.path.realpath(str(tmp_path / "target"))
     pano = os.path.join(root, ".panopticon")
