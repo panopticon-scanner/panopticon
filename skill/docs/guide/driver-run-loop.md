@@ -909,7 +909,11 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   are the ones found near the target root: `tools-manifest.json` lists each directory the scan
   DETECTED with its reason under `excluded_dirs` and a `skipped` flag saying whether the scanners
   were told to leave it alone, and the `depth_bound` beside it says how deep that walk looked, so
-  the manifest list is a bounded subset of what ingest prunes. **Three of those prunes rest on a
+  the manifest list is a bounded subset of what ingest prunes. **A prune by path name applies only
+  to a plain path (#3771):** a location with a `..` segment, a `%`, `?`, `#`, backslash or control
+  character, or a leading scheme or drive (`https:`, `C:`) names no file in the tree, so its
+  finding is kept and reported whatever directory the text spells, and no `exclude_paths:` glob
+  excludes it. **Three of those prunes rest on a
   directory NAME and nothing else** — a vendored directory (#1578), a `venv`/`.venv`/`site-packages`
   segment with no `pyvenv.cfg` behind it, and the fixture corpus — and #1839 adds a fourth class on
   different evidence, a `pyvenv.cfg` MARKER the target wrote (`virtualenv-by-marker`), so each one
