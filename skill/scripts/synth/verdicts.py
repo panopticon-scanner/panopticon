@@ -824,13 +824,19 @@ def _partition_gate(findings, delta, run):
 
 
 def _mark_context_rule(active, run):
-    """Say on each active row the path-context rule kept out of the gate that it did,
+    """Say on each active row the path-context rule TOOK out of the gate that it did,
     and which rule (#3755): `gate: {"eligible": false, "rule": ...}`. Returns the count
-    per rule, for `meta.coverage.tools_context_not_gated`."""
+    per rule, for `meta.coverage.tools_context_not_gated`.
+
+    Only a row that would have counted without the rule: one no advisor answered is out
+    on its evidence, as it would be anywhere, and is neither marked nor counted here.
+    The key is the controller's alone: whatever a row carried under it is dropped first
+    (an agent's finding cannot arrive with it, `findings.AGENT_FORBIDDEN_FIELDS`)."""
     counts: dict = {}
     for finding in active:
+        finding.pop("gate", None)
         rule = context_rule(finding, run)
-        if rule is not None:
+        if rule is not None and counts_on_its_own(finding["evidence"]["status"], run):
             finding["gate"] = {"eligible": False, "rule": rule}
             counts[rule] = counts.get(rule, 0) + 1
     return counts

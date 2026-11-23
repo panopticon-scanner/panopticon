@@ -376,7 +376,9 @@ def _is_advisory(finding):
     tool = evidence_mod.tool_name(finding)
     if tool in ADVISORY_ADAPTERS:
         return True
-    return tool == "trivy" and first_party_advisory.advisory_package(finding) is not None
+    return (tool == "trivy"
+            and evidence_mod._tool_evidence(finding).get("kind") != SECRET_KIND
+            and first_party_advisory.advisory_package(finding) is not None)
 
 
 def _dev_only(rel):
@@ -387,7 +389,7 @@ def _dev_only(rel):
             or (base in _DEV_REQUIREMENTS_IN_DIR and dirs[-1:] == ["requirements"]))
 
 
-def _path_context(finding, roots, target_root=None):
+def _path_context(finding, roots, target_root=None, closures=None):
     """`evidence.PATH_CONTEXT_*` for one scanner finding, or None (#3755): decided from
     the path inside the review root. Nothing of the target is read but a requirements
     file's own include lines (below)."""
@@ -412,7 +414,7 @@ def _path_context(finding, roots, target_root=None):
         # `-r requirements-prod.txt` carries production's advisories. With no tree to
         # read, or a file that cannot be followed, nothing says which files they were.
         files = (pip_audit.requirement_files(os.path.join(target_root, *norm.split("/")),
-                                             target_root) if target_root else None)
+                                             target_root, closures) if target_root else None)
         if files is None or not all(_dev_only(rel) for rel in files):
             return None
     return evidence_mod.PATH_CONTEXT_DEV_MANIFEST
@@ -440,9 +442,10 @@ def mark_path_context(findings, target_root=None):
             break
         if root != "/" and root not in roots:
             roots.append(root)
+    closures: dict = {}                    # one walk per manifest, however many findings
     for finding in findings:
         try:
-            context = _path_context(finding, roots, target_root)
+            context = _path_context(finding, roots, target_root, closures)
         except Exception:  # noqa: BLE001 - classification fails closed: no mark
             continue
         if context is not None:

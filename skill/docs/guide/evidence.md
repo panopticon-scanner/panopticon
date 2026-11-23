@@ -77,8 +77,11 @@ rejected in others and that verdict decided the gate. The controller now states 
   file is followed through its `-r` and `-c` includes to the end, and it is marked only when each
   file it draws on is dev-only too. `requirements-dev.txt` holding `-r requirements-prod.txt` is
   not marked, because the scanner labels production's advisories with the dev file. When the files
-  cannot all be read (no tree at hand, a missing or oversized file, an include outside the root, a
-  cycle) there is no mark. Dev-only packages inside a shared lockfile are not recognised yet.
+  cannot all be read (no tree at hand, a missing or oversized file, something that is not a regular
+  file, an include outside the root, a cycle, or an include spelled in a way that cannot be
+  followed, such as `-rprod.txt`) there is no mark. An included file is judged by where it really
+  is, not by the name of a link to it. Dev-only packages inside a shared lockfile are not
+  recognised yet.
 
 The advisor is told this as settled and judges only whether the claim is true of what is at the
 location. The rule for the gate (owner's ruling, 2026-11-23):
@@ -87,11 +90,13 @@ location. The rule for the gate (owner's ruling, 2026-11-23):
 - In `--security redteam` it gates only when CRITICAL or secret-class, through
   `ingest_tools.gates_when_suppressed` itself (#1578 policy C), not a copy.
 
-A row the rule kept out carries `gate: {"eligible": false, "rule": "test-path" | "dev-manifest"}`,
-`meta.coverage.tools_context_not_gated` counts them per rule, and the terminal summary and the HTML
-report say so in one line. Severity is not changed. An agent's own finding in a test path is not
-covered by this rule: when a reviewer raises a claim at the same line as such a scanner finding the
-two stay separate rows, the scanner's with its mark and the reviewer's standing on its own verdict.
+A row the rule took out carries `gate: {"eligible": false, "rule": "test-path" | "dev-manifest"}`,
+`meta.coverage.tools_context_not_gated` counts them per rule (a marked finding that would not have
+counted anyway, such as one no advisor answered, is neither marked so nor counted), and the terminal
+summary and the HTML report say so in one line. Severity is not changed. An agent's own finding in a
+test path is not covered by this rule: when a reviewer raises a claim at the same line as such a
+scanner finding the two stay separate rows, the scanner's with its mark and the reviewer's standing
+on its own verdict.
 
 Grades and the CI gate count `tool_confirmed`/`advisor_confirmed` findings, plus
 `backup_scope_limited` (a primary CONFIRMED stands, #1638) — i.e. only claims an advisor verified,

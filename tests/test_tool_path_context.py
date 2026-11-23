@@ -464,23 +464,6 @@ def test_a_report_from_before_the_rule_renders_no_line():
     assert html_report._render_context_not_gated({}) == ""
 
 
-def test_a_finding_left_unanswered_is_marked_too(tmp_path, monkeypatch):
-    """No advisor answered: the row is `tool_reported`, out of the gate on its evidence
-    already, and it still says where it is and which rule covers it."""
-    monkeypatch.chdir(tmp_path)
-    adopt_panopticon(str(tmp_path))
-    tools = tmp_path / "tools"
-    tools.mkdir()
-    (tools / "gitleaks.sarif").write_text(json.dumps(SECRET["gitleaks.sarif"]), encoding="utf-8")
-    out = tmp_path / "report.json"
-    with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-        _fresh(synthesize.main,
-               ["--repo", "--target", "src", "--tools-dir", str(tools), "--out", str(out)])
-    report = json.loads(out.read_text(encoding="utf-8"))
-    assert [(row["evidence"]["status"], row["gate"]) for row in report["findings"]] == [
-        ("tool_reported", {"eligible": False, "rule": "test-path"})]
-    assert report["meta"]["coverage"]["tools_context_not_gated"] == {"test-path": 1}
-
 
 def test_the_mode_that_decides_is_the_gates_own_never_the_targets(tmp_path, monkeypatch):
     """`groups.json` is written into the reviewed tree. It may say `redteam`; the rule
@@ -585,3 +568,169 @@ def test_a_pip_audit_capture_is_labelled_from_its_own_tree_whatever_ran_before(t
     assert [finding["location"]["file"] for finding in stale] == ["requirements.txt"]
     assert [finding["location"]["file"] for finding in own] == ["requirements-dev.txt"]
     assert [evidence.path_context(finding) for finding in stale + own] == [None, None]
+
+
+# ---- seat review of #3789 at 63951780 -------------------------------------------------
+
+def test_an_include_that_is_not_a_regular_file_is_not_opened(tmp_path):
+    """A FIFO included from a dev file hung ingest: the reader opened whatever was there.
+    It is "cannot be told", at once."""
+    import os
+    import threading
+    import scripts.tools.pip_audit as pip_audit
+    root = _tree(tmp_path, {"requirements-dev.txt": "-r pipe.txt\npytest\n"})
+    os.mkfifo(root / "pipe.txt")
+    (root / "adir.txt").mkdir()
+    told = []
+    reader = threading.Thread(target=lambda: told.append(
+        pip_audit.requirement_files(str(root / "requirements-dev.txt"), str(root))), daemon=True)
+    reader.start()
+    reader.join(10)
+    assert not reader.is_alive(), "the walk is waiting on a FIFO"
+    assert told == [None]
+    found = _ingest_in(root, {"osv-scanner.json": _osv("requirements-dev.txt")})
+    assert [evidence.path_context(finding) for finding in found] == [None]
+    (root / "requirements-test.txt").write_text("-r adir.txt\n", encoding="utf-8")
+    assert pip_audit.requirement_files(str(root / "requirements-test.txt"), str(root)) is None
+    assert pip_audit.requirement_files(str(root / "pipe.txt"), str(root)) is None
+
+
+def test_a_manifests_includes_are_read_once_for_all_its_findings(tmp_path):
+    import scripts.tools.pip_audit as pip_audit
+    from unittest import mock
+    root = _tree(tmp_path, {"requirements-dev.txt": "-r requirements-test.txt\n",
+                            "requirements-test.txt": "x==1\n", "dev-requirements.txt": "y==1\n"})
+    document = {"results": [
+        {"source": {"path": "/src/requirements-dev.txt"}, "packages": [
+            {"package": {"name": "p%d" % n, "version": "1.0", "ecosystem": "PyPI"},
+             "vulnerabilities": [{"id": "GHSA-%04d" % n, "summary": "s",
+                                  "database_specific": {"severity": "HIGH"}}], "groups": []}
+            for n in range(30)]},
+        {"source": {"path": "/src/dev-requirements.txt"}, "packages": [
+            {"package": {"name": "q", "version": "1.0", "ecosystem": "PyPI"},
+             "vulnerabilities": [{"id": "GHSA-q", "summary": "s",
+                                  "database_specific": {"severity": "HIGH"}}], "groups": []}]}]}
+    with mock.patch.object(pip_audit, "_requirement_closure",
+                           wraps=pip_audit._requirement_closure) as walked:
+        found = _ingest_in(root, {"osv-scanner.json": document})
+    assert [evidence.path_context(finding) for finding in found] == ["dev_manifest"] * 31
+    assert walked.call_count == 2                     # once per manifest, not once per finding
+
+
+@pytest.mark.parametrize("line", [
+    "-rrequirements-prod.txt", "-crequirements-prod.txt", "-R requirements-prod.txt",
+    "-Rrequirements-prod.txt", "--requirement", "--constraint", "-r", "-c",
+    "--requirement:requirements-prod.txt", "--requirements requirements-prod.txt",
+])
+def test_an_include_spelled_in_a_way_the_walker_does_not_read_is_not_told(tmp_path, line):
+    """`-rprod.txt` is an include to pip. Read as "no include", a dev file holding it was
+    marked while it drew on production's file."""
+    import scripts.tools.pip_audit as pip_audit
+    root = _tree(tmp_path, {"requirements-dev.txt": "pytest\n%s\n" % line,
+                            "requirements-prod.txt": "x==1\n"})
+    assert pip_audit.requirement_files(str(root / "requirements-dev.txt"), str(root)) is None
+    found = _ingest_in(root, {"osv-scanner.json": _osv("requirements-dev.txt")})
+    assert [evidence.path_context(finding) for finding in found] == [None]
+
+
+@pytest.mark.parametrize("line", [
+    "--index-url https://example.invalid/simple", "--extra-index-url https://example.invalid",
+    "-e ./local", "--hash=sha256:abc", "-f wheels/", "--no-binary :all:", "--pre",
+    "requests  # -r requirements-prod.txt", "# -rrequirements-prod.txt", "--config-settings x=y",
+])
+def test_another_option_is_not_taken_for_an_include(tmp_path, line):
+    root = _tree(tmp_path, {"requirements-dev.txt": "pytest\n%s\n" % line,
+                            "requirements-prod.txt": "x==1\n"})
+    found = _ingest_in(root, {"osv-scanner.json": _osv("requirements-dev.txt")})
+    assert [evidence.path_context(finding) for finding in found] == ["dev_manifest"]
+
+
+def test_an_included_file_is_judged_by_where_it_really_is(tmp_path):
+    """`requirements-test.txt` that is a link to production's file is production's file."""
+    root = _tree(tmp_path, {"requirements-dev.txt": "-r requirements-test.txt\n-r tests/reqs/a.txt\n",
+                            "requirements-prod.txt": "x==1\n", "tests/reqs/a.txt": "y==1\n"})
+    (root / "requirements-test.txt").symlink_to("requirements-prod.txt")
+    found = _ingest_in(root, {"osv-scanner.json": _osv("requirements-dev.txt")})
+    assert [evidence.path_context(finding) for finding in found] == [None]
+    (root / "requirements-test.txt").unlink()
+    (root / "requirements-test.txt").symlink_to("tests/reqs/a.txt")       # a link to a dev file
+    found = _ingest_in(root, {"osv-scanner.json": _osv("requirements-dev.txt")})
+    assert [evidence.path_context(finding) for finding in found] == ["dev_manifest"]
+    (root / "prod-reqs").mkdir()
+    (root / "prod-reqs" / "a.txt").write_text("z==1\n", encoding="utf-8")
+    (root / "tests" / "linked").symlink_to("../prod-reqs")                # a linked DIRECTORY
+    (root / "requirements-dev.txt").write_text("-r tests/linked/a.txt\n", encoding="utf-8")
+    found = _ingest_in(root, {"osv-scanner.json": _osv("requirements-dev.txt")})
+    assert [evidence.path_context(finding) for finding in found] == [None]
+
+
+def test_a_root_reached_through_a_link_is_stripped_by_where_it_really_is(tmp_path):
+    """The root is really under `tests/e2e/`, it is given by an alias that is not, and the
+    scanner reports the real path: still a path inside the root, and nothing is marked."""
+    real = tmp_path / "tests" / "e2e" / "proj"
+    (real / ".panopticon").mkdir(parents=True)
+    alias = tmp_path / "alias"
+    alias.symlink_to(real)
+    reported = str(real / "src" / "app.py").lstrip("/")
+    assert "tests/e2e" in reported and "tests" not in str(alias)
+    found = _ingest(alias / ".panopticon", {"semgrep.sarif": _sarif("semgrep", reported)},
+                    target_root=str(alias))
+    assert [evidence.path_context(finding) for finding in found] == [None]
+
+
+def _trivy(uri, *, secret, text="Package: left-pad\nInstalled Version: 1.0.0\nVulnerability CVE-2099-1"):
+    tags = ["secret", "security", "HIGH"] if secret else ["vulnerability", "security", "HIGH"]
+    return {"runs": [{
+        "tool": {"driver": {"name": "trivy", "rules": [{
+            "id": "CVE-2099-1", "properties": {"security-severity": "8.0", "tags": tags}}]}},
+        "results": [{"ruleId": "CVE-2099-1", "level": "error", "message": {"text": text},
+                     "locations": [{"physicalLocation": {
+                         "artifactLocation": {"uri": uri}, "region": {"startLine": 1}}}]}]}]}
+
+
+def test_a_trivy_secret_in_a_dev_named_file_is_never_a_dev_manifest(tmp_path):
+    """Only its advisories are advisories. A secret in `requirements-dev.txt` is a
+    secret in a file at the root, whatever its message says about packages."""
+    root = _tree(tmp_path, {"requirements-dev.txt": "left-pad==1.0.0\n",
+                            "tests/package-lock.json": "{}"})
+    for uri, secret, expected in (
+            ("requirements-dev.txt", True, None),
+            ("requirements-dev.txt", False, "dev_manifest"),
+            ("tests/package-lock.json", True, "test"),
+            ("tests/package-lock.json", False, "dev_manifest")):
+        found = _ingest_in(root, {"trivy.sarif": _trivy(uri, secret=secret)})
+        assert [evidence.path_context(finding) for finding in found] == [expected], (uri, secret)
+
+
+def test_a_reviewer_cannot_write_the_gate_marker_on_its_own_finding(tmp_path, monkeypatch):
+    """An agent CRITICAL that said `gate: {eligible: false}` of itself was published so,
+    on a row that failed the gate."""
+    claim = {"id": "A-1", "title": "auth bypass", "severity": "CRITICAL", "confidence": "CERTAIN",
+             "panel": "security", "category": "auth", "location": {"file": "src/app.py", "line_start": 3},
+             "gate": {"eligible": False, "rule": "test-path"},
+             "tool_evidence": {"path_context": "test"}}
+    report = _report(tmp_path, monkeypatch, {}, "CONFIRMED", reviewer=[claim])
+    assert report["summary"]["gate"] == "FAIL"
+    assert [("gate" in row, row["severity"]) for row in report["findings"]] == [(False, "CRITICAL")]
+    assert report["meta"]["coverage"]["tools_context_not_gated"] == {}
+
+
+def test_the_marker_and_the_count_are_of_rows_the_rule_took_out(tmp_path, monkeypatch):
+    """A marked finding no advisor answered is out of the gate on its evidence, as it
+    would be anywhere. The rule did not take it out, so it is not counted as if it had."""
+    monkeypatch.chdir(tmp_path)
+    adopt_panopticon(str(tmp_path))
+    tools = tmp_path / "tools"
+    tools.mkdir()
+    (tools / "gitleaks.sarif").write_text(json.dumps(SECRET["gitleaks.sarif"]), encoding="utf-8")
+    out = tmp_path / "report.json"
+    for extra, counted in (((), {}), (("--gate-unverified",), {"test-path": 1})):
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            _fresh(synthesize.main, ["--repo", "--target", "src", "--tools-dir", str(tools),
+                                     "--out", str(out), *extra])
+        report = json.loads(out.read_text(encoding="utf-8"))
+        row = report["findings"][0]
+        assert (row["evidence"]["status"], row["tool_evidence"]["path_context"]) == (
+            "tool_reported", "test")
+        assert report["meta"]["coverage"]["tools_context_not_gated"] == counted, extra
+        assert row.get("gate") == ({"eligible": False, "rule": "test-path"} if counted else None)

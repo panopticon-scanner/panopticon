@@ -325,7 +325,9 @@ AGENT_FORBIDDEN_FIELDS = ("source", "reinforced", "corroborated", "corroborated_
                           "code_corrected_by", "backup_confirmed", evidence_mod.CATEGORY_SOURCE,
                           # #3731, #3732: what the controller says of a merge group's
                           # weight and of an aggregated finding's severity.
-                          "weight_from", "weight_with", "severity_from")
+                          "weight_from", "weight_with", "severity_from",
+                          # #3755: what the controller says of a row its gate left out.
+                          "gate")
 
 
 def cell_panel(domain):

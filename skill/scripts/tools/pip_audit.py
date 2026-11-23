@@ -493,7 +493,24 @@ def sanitize_requirements_file(path, root):
 _MAX_CLOSURE_FILES = 64
 
 
-def requirement_files(path, root):
+# Any spelling of an include that `_INCLUDE` does not take: pip reads `-rprod.txt`, and
+# `-R` is not pip's but may be another reader's. Such a line is an include this module
+# cannot follow, never "no include".
+_INCLUDE_LIKE = re.compile(r"^(?:-[rcR]|--requirement|--constraint)")
+
+
+def _read_regular(real):
+    """`_bounded` over the regular file at `real`. Opened without following a link at
+    the name and without blocking, and read only if it IS a regular file: a FIFO a
+    target includes must not hold the reader, and a device is not a requirements file."""
+    fd = os.open(real, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
+    with os.fdopen(fd, "rb") as fh:
+        if not stat.S_ISREG(os.fstat(fh.fileno()).st_mode):
+            raise OSError(errno.EINVAL, "not a regular file", real)
+        return _bounded(fh.read(_MAX_READ_BYTES + 1))
+
+
+def requirement_files(path, root, cache=None):
     """Every file the requirements file at `path` draws on (#3755): itself and its
     `-r`/`-c` includes, followed to the end, as paths inside `root` (`/`-separated, by
     where each file really is). None when that cannot be told.
@@ -505,8 +522,21 @@ def requirement_files(path, root):
     far any one scanner goes, so the answer covers whatever subset a scanner read.
 
     "Cannot be told" is anything short of having read every file: one that is absent,
-    unreadable, outside `root`, cut at the read bound, part of a cycle, or the
-    sixty-fifth. The caller makes no claim then."""
+    unreadable, not a regular file, outside `root`, cut at the read bound, part of a
+    cycle, or the sixty-fifth; and any line that looks like an include and is not one
+    this module can follow. The caller makes no claim then.
+
+    `cache` (a dict the caller keeps for one pass) holds the answer per file, so a
+    manifest with a thousand findings is walked once."""
+    if cache is None:
+        return _requirement_closure(path, root)
+    key = (os.path.realpath(path), os.path.realpath(root))
+    if key not in cache:
+        cache[key] = _requirement_closure(path, root)
+    return cache[key]
+
+
+def _requirement_closure(path, root):
     root = os.path.abspath(root)
     real_root = os.path.realpath(root)
     done: dict = {}
@@ -521,7 +551,7 @@ def requirement_files(path, root):
         if real in walking or len(done) + len(walking) >= _MAX_CLOSURE_FILES:
             return False
         try:
-            text, cut = _read_bounded(p)
+            text, cut = _read_regular(real)
         except OSError:
             return False
         if cut:
@@ -530,7 +560,11 @@ def requirement_files(path, root):
         base = os.path.dirname(os.path.abspath(p))
         for entry in _classify(text)[1]:
             m = _INCLUDE.match(entry["line"]) if entry["reason"] == "include" else None
-            if m is not None and not walk(os.path.join(base, m.group(1).strip().strip('"\''))):
+            if m is None:
+                if _INCLUDE_LIKE.match(entry["line"].strip()):
+                    return False          # an include, in a spelling this cannot follow
+                continue
+            if not walk(os.path.join(base, m.group(1).strip().strip('"\''))):
                 return False
         walking.discard(real)
         done[real] = os.path.relpath(real, real_root).replace(os.sep, "/")
