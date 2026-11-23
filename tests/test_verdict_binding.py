@@ -24,14 +24,25 @@ and bound their verdicts): one claim's verdict stood in for another's, a
 REJECTED HIGH dismissing an unanswered CRITICAL. #2991's restore covers the
 CONFIRMED-loss case instead, by reporting that claim as itself.
 """
+import contextlib
+import io
+import json
+import os
+import tempfile
 import unittest
 from pathlib import Path
+
+import jsonschema
 
 import scripts.evidence as evidence_mod
 import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
 import scripts.synth.validate_schema as validate_schema_mod
+import scripts.synthesize as syn
+from tests._test_helpers import adopt_panopticon
+from tests.synth.helpers import _chdir
+
 
 SCHEMA_PATH = Path(validate_schema_mod.REFERENCE_DIR) / validate_schema_mod.REPORT_SCHEMA
 
@@ -209,6 +220,379 @@ class LocationContractTest(unittest.TestCase):
         ))
         with SCHEMA_PATH.open(encoding="utf-8") as fh:
             jsonschema.validate(r, json.load(fh))
+
+
+# ----------------------------------------------------------------------
+# #3756: a verdict on an aggregated scanner finding covers only the hits it judged.
+#
+# A scanner rule that fires nine times in one file is ONE finding with a shown line
+# and eight `additional_loci`. The advisor was handed all nine, judged five (all
+# constants, correctly), said the sixth was "outside the claim's locus", and its one
+# REJECTED discarded all nine -- the real command injection among them, in every run.
+#
+# The rule: REJECTED means every hit is safe. A REJECTED that does not name every hit
+# in `judged_loci` is not a rejection of the finding; the finding stays in the report,
+# answered and not verified, with the lines nobody judged.
+
+RULE = "security/detect-child-process"
+# Eight calls with a constant command, and one (line 63) that interpolates a path
+# read from the filesystem: the real one.
+LINES = (12, 20, 31, 44, 58, 63, 77, 81, 95)
+REAL = 63
+SAFE_FIVE = [12, 20, 31, 44, 58]            # what the recorded verdict walked
+SOURCE = "\n".join(
+    ("  exec(`convert ${fs.readdirSync(dir)[0]} out.png`);" if n == REAL
+     else '  exec("git status");' if n in LINES else "  // ...")
+    for n in range(1, 101)) + "\n"
+
+
+def _capture(lines=LINES, path="/src/lib/run.js"):
+    return [{"filePath": path, "errorCount": len(lines), "warningCount": 0, "source": "",
+             "messages": [{"ruleId": RULE, "severity": 2, "line": n, "column": 3,
+                           "endLine": n, "endColumn": 40,
+                           "message": "Found child_process.exec() with non Literal "
+                                      "first argument"} for n in lines]}]
+
+
+class _Replay(unittest.TestCase):
+    """A recorded verdict replayed through both passes of `synthesize`."""
+
+    def replay(self, verdict, lines=LINES, extra=()):
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            adopt_panopticon(os.getcwd())
+            os.makedirs(os.path.join(d, "lib"))
+            with open(os.path.join(d, "lib", "run.js"), "w", encoding="utf-8") as fh:
+                fh.write(SOURCE)
+            agent = os.path.join(d, "findings-g1-COD.json")
+            with open(agent, "w", encoding="utf-8") as fh:
+                json.dump({"findings": []}, fh)
+            td = os.path.join(d, "tools")
+            os.makedirs(td)
+            with open(os.path.join(td, "eslint-security.json"), "w", encoding="utf-8") as fh:
+                json.dump(_capture(lines), fh)
+            self.stdout, self.stderr = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(self.stdout), \
+                    contextlib.redirect_stderr(self.stderr):
+                rc1 = syn.main(["--repo", "--emit-verify-queue", "--tools-dir", td,
+                                "--out", os.path.join(d, "unused.json"), agent])
+            self.assertEqual(0, rc1, self.stderr.getvalue())
+            with open(os.path.join(d, ".panopticon", "verify-queue.json"),
+                      encoding="utf-8") as fh:
+                queue = json.load(fh)
+            self.assertEqual(1, len(queue["entries"]))
+            entry = queue["entries"][0]
+            self.claim = entry["finding"]
+            if verdict is not None:
+                vd = os.path.join(d, "verdicts")
+                os.makedirs(vd)
+                with open(os.path.join(vd, "%s.json" % entry["queue_id"]), "w",
+                          encoding="utf-8") as fh:
+                    json.dump(dict({"run_id": queue["run_id"],
+                                    "finding_id": self.claim["id"],
+                                    "confidence": "CERTAIN", "explored": ["lib/run.js"],
+                                    "references": [], "citations": {}}, **verdict), fh)
+                extra = ("--verdicts-dir", vd, *extra)
+            out = os.path.join(d, "report.json")
+            self.stdout = io.StringIO()
+            with contextlib.redirect_stdout(self.stdout), \
+                    contextlib.redirect_stderr(self.stderr):
+                self.rc = syn.main(["--repo", "--tools-dir", td, "--fail-on", "high",
+                                    "--out", out, *extra, agent])
+            with open(out, encoding="utf-8") as fh:
+                return json.load(fh)
+
+    def one(self, report, where):
+        other = "discarded_claims" if where == "findings" else "findings"
+        self.assertEqual([], report[other])
+        self.assertEqual(1, len(report[where]))
+        return report[where][0]
+
+
+class TestARejectionCoversOnlyTheHitsItJudged(_Replay):
+    REASONING = ("Lines 12, 20, 31, 44 and 58 each pass a string literal. Line 63 is a "
+                 "different construct with a filesystem-derived path; it is outside the "
+                 "claim's locus and was not evaluated here.")
+
+    def test_the_claim_is_one_finding_with_every_hit(self):
+        self.replay(None)
+        self.assertEqual(12, self.claim["location"]["line_start"])
+        self.assertEqual(list(LINES[1:]),
+                         [locus["line_start"] for locus in self.claim["additional_loci"]])
+        self.assertEqual(9, self.claim["occurrences"])
+        self.assertEqual("HIGH", self.claim["severity"])
+
+    def test_the_recorded_case_stays_in_the_report(self):
+        # The verdict of the issue: five of nine judged, the real one named as
+        # "outside the claim". It discarded all nine.
+        report = self.replay({"verdict": "REJECTED", "reasoning": self.REASONING,
+                              "judged_loci": SAFE_FIVE})
+        finding = self.one(report, "findings")
+        ev = finding["evidence"]
+        self.assertEqual("needs_more_info", ev["status"])
+        self.assertEqual([63, 77, 81, 95], ev["unjudged_loci"])
+        self.assertIn(REAL, ev["unjudged_loci"])
+        self.assertTrue(ev["reasoning"].startswith(
+            "The advisor judged 5 of 9 flagged lines safe; 4 were not judged."), ev["reasoning"])
+        self.assertIn(self.REASONING, ev["reasoning"])
+        # Every hit is still on the finding.
+        self.assertEqual(9, finding["occurrences"])
+        self.assertEqual(8, len(finding["additional_loci"]))
+        # Not verified, so the scanner's HIGH is capped as any unverified pattern
+        # hit is (#3231), and it does not gate.
+        self.assertEqual("MEDIUM", finding["severity"])
+        self.assertEqual("HIGH", finding["severity_cap"]["from"])
+        # Answered: the advisor did reply, and the run is not short of a verdict.
+        axis = report["meta"]["coverage"]["tool_axis"]
+        self.assertEqual((1, 0, 1, 0), (axis["queued"], axis["rejected"],
+                                        axis["needs_more_info"], axis["unanswered"]))
+        # ... so certification reads exactly as it does when the rejection stands.
+        control = self.replay({"verdict": "REJECTED", "reasoning": "All constants.",
+                               "judged_loci": list(LINES)})
+        for key in ("coverage_certified", "coverage_note", "gate"):
+            self.assertEqual(control["summary"][key], report["summary"][key])
+        self.assertNotEqual("FAIL", report["summary"]["gate"])
+
+    def test_it_keeps_its_severity_and_gates_when_unverified_findings_gate(self):
+        report = self.replay({"verdict": "REJECTED", "reasoning": self.REASONING,
+                              "judged_loci": SAFE_FIVE}, extra=("--gate-unverified",))
+        finding = self.one(report, "findings")
+        self.assertEqual("HIGH", finding["severity"])
+        self.assertEqual("FAIL", report["summary"]["gate"])
+        self.assertEqual(1, self.rc)
+
+    def test_a_rejection_that_names_every_hit_stands(self):
+        # The control: as on main.
+        for judged in (list(LINES), list(reversed(LINES)), list(LINES) + [12, 12, 999]):
+            with self.subTest(judged=judged):
+                report = self.replay({"verdict": "REJECTED", "reasoning": "All constants.",
+                                      "judged_loci": judged})
+                finding = self.one(report, "discarded_claims")
+                self.assertEqual("rejected", finding["evidence"]["status"])
+                self.assertNotIn("unjudged_loci", finding["evidence"])
+                self.assertEqual("All constants.", finding["evidence"]["reasoning"])
+
+    def test_one_hit_short_is_not_a_rejection(self):
+        for missing in LINES:              # the shown line is a hit like the others
+            with self.subTest(missing=missing):
+                report = self.replay({"verdict": "REJECTED", "reasoning": "r",
+                                      "judged_loci": [n for n in LINES if n != missing]})
+                ev = self.one(report, "findings")["evidence"]
+                self.assertEqual("needs_more_info", ev["status"])
+                self.assertEqual([missing], ev["unjudged_loci"])
+                self.assertTrue(ev["reasoning"].startswith(
+                    "The advisor judged 8 of 9 flagged lines safe; 1 was not judged."))
+
+    def test_a_host_that_omits_the_field_fails_safe(self):
+        # Every verdict saved before this change, and any host whose advisor does
+        # not write the field: an answer that covers no hit.
+        report = self.replay({"verdict": "REJECTED", "reasoning": "Constants."})
+        ev = self.one(report, "findings")["evidence"]
+        self.assertEqual("needs_more_info", ev["status"])
+        self.assertEqual(list(LINES), ev["unjudged_loci"])
+        self.assertTrue(ev["reasoning"].startswith(
+            "The advisor judged 0 of 9 flagged lines safe; 9 were not judged."))
+
+    def test_a_wrong_type_is_an_absent_field(self):
+        for value in ("12, 20, 31, 44, 58, 63, 77, 81, 95", 12, None, {"12": True},
+                      [str(n) for n in LINES], [float(n) for n in LINES],
+                      [[n] for n in LINES], [{"line_start": n} for n in LINES],
+                      [True] * 9):
+            with self.subTest(value=value):
+                report = self.replay({"verdict": "REJECTED", "reasoning": "r",
+                                      "judged_loci": value})
+                ev = self.one(report, "findings")["evidence"]
+                self.assertEqual("needs_more_info", ev["status"])
+                self.assertEqual(list(LINES), ev["unjudged_loci"])
+
+    def test_a_number_that_is_no_hit_counts_for_nothing(self):
+        report = self.replay({"verdict": "REJECTED", "reasoning": "r",
+                              "judged_loci": [1, 13, 62, 64, 96, -12, 0, 10 ** 30, 12]})
+        ev = self.one(report, "findings")["evidence"]
+        self.assertEqual(list(LINES[1:]), ev["unjudged_loci"])
+
+    def test_an_advisor_cannot_say_what_was_left_unjudged(self):
+        # The list of unjudged lines is the controller's. A verdict that plants the
+        # carrier, or the published key, decides nothing.
+        report = self.replay({"verdict": "REJECTED", "reasoning": "r",
+                              "judged_loci": SAFE_FIVE, "unjudged_loci": [],
+                              evidence_mod.UNJUDGED_FIELD: []})
+        ev = self.one(report, "findings")["evidence"]
+        self.assertEqual([63, 77, 81, 95], ev["unjudged_loci"])
+
+    def test_confirmed_needs_no_list(self):
+        # One real hit makes the finding real. Rejecting says "none of these";
+        # confirming says "at least one".
+        for extra in ({}, {"judged_loci": [REAL]}, {"judged_loci": "63"}):
+            with self.subTest(extra=extra):
+                report = self.replay(dict({"verdict": "CONFIRMED",
+                                           "reasoning": "Line 63 is injectable."}, **extra))
+                finding = self.one(report, "findings")
+                self.assertEqual("tool_confirmed", finding["evidence"]["status"])
+                self.assertNotIn("unjudged_loci", finding["evidence"])
+                self.assertEqual("HIGH", finding["severity"])
+                self.assertEqual("FAIL", report["summary"]["gate"])
+
+    def test_needs_more_info_is_unchanged(self):
+        report = self.replay({"verdict": "NEEDS_MORE_INFO", "reasoning": "Cannot tell.",
+                              "judged_loci": SAFE_FIVE})
+        ev = self.one(report, "findings")["evidence"]
+        self.assertEqual("needs_more_info", ev["status"])
+        self.assertNotIn("unjudged_loci", ev)
+        self.assertEqual("Cannot tell.", ev["reasoning"])
+
+    def test_a_finding_with_one_hit_is_rejected_as_before(self):
+        for extra in ({}, {"judged_loci": [12]}, {"judged_loci": []},
+                      {"judged_loci": "nonsense"}):
+            with self.subTest(extra=extra):
+                report = self.replay(dict({"verdict": "REJECTED", "reasoning": "Constant."},
+                                          **extra), lines=(12,))
+                finding = self.one(report, "discarded_claims")
+                self.assertEqual("rejected", finding["evidence"]["status"])
+                self.assertEqual("Constant.", finding["evidence"]["reasoning"])
+
+    def test_two_hits_on_one_line_are_one_line_to_judge(self):
+        report = self.replay({"verdict": "REJECTED", "reasoning": "r", "judged_loci": [12, 20]},
+                             lines=(12, 12, 20))
+        self.assertEqual("rejected", self.one(report, "discarded_claims")["evidence"]["status"])
+        report = self.replay({"verdict": "REJECTED", "reasoning": "r", "judged_loci": [12]},
+                             lines=(12, 12, 20))
+        ev = self.one(report, "findings")["evidence"]
+        self.assertEqual([20], ev["unjudged_loci"])
+        self.assertTrue(ev["reasoning"].startswith(
+            "The advisor judged 1 of 2 flagged lines safe; 1 was not judged."))
+
+
+class TestTheLinesOfAClaim(unittest.TestCase):
+    def finding(self, *lines, source="tool:eslint-security"):
+        loci = [{"file": "a.js", "line_start": n} for n in lines[1:]]
+        f = {"id": "T-1", "source": source, "location": {"file": "a.js", "line_start": lines[0]}}
+        if loci:
+            f["additional_loci"], f["occurrences"] = loci, len(lines)
+        return f
+
+    def unjudged(self, finding, **verdict):
+        return evidence_mod.unjudged_loci(finding, dict({"verdict": "REJECTED"}, **verdict))
+
+    def test_only_a_rejection_of_an_aggregated_scanner_finding_is_checked(self):
+        many = self.finding(3, 9, 27)
+        self.assertEqual([3, 9, 27], self.unjudged(many))
+        self.assertEqual([27], self.unjudged(many, judged_loci=[9, 3]))
+        self.assertEqual([], self.unjudged(many, judged_loci=[27, 9, 3]))
+        self.assertEqual([], self.unjudged(self.finding(3)))
+        for word in ("CONFIRMED", "NEEDS_MORE_INFO", "confirmed", "", None):
+            self.assertEqual([], evidence_mod.unjudged_loci(many, {"verdict": word}))
+        self.assertEqual([], evidence_mod.unjudged_loci(many, None))
+        self.assertEqual([3, 9, 27], evidence_mod.unjudged_loci(many, {"verdict": "rejected"}))
+
+    def test_a_hit_with_no_line_can_never_be_judged(self):
+        # Nothing the advisor could write names it, so such a finding is never
+        # rejected. It can still be confirmed.
+        for odd in (None, "9", 9.0, True):
+            finding = self.finding(3, 9)
+            finding["additional_loci"][0]["line_start"] = odd
+            with self.subTest(line=odd):
+                self.assertEqual([3, None], self.unjudged(finding))
+                self.assertEqual([None], self.unjudged(finding, judged_loci=[3, 9]))
+        finding = self.finding(3, 9)
+        finding["location"]["line_start"] = None
+        self.assertEqual([None], self.unjudged(finding, judged_loci=[9]))
+        finding["additional_loci"] = ["not a locus", {"line_start": 9}]
+        self.assertEqual([None], self.unjudged(finding, judged_loci=[9]))
+
+    def test_loci_that_are_not_a_list_are_no_aggregation(self):
+        for loci in (None, [], "9", {"line_start": 9}):
+            finding = self.finding(3)
+            finding["additional_loci"] = loci
+            with self.subTest(loci=loci):
+                self.assertEqual([], self.unjudged(finding))
+
+    def test_an_agent_claim_that_carries_a_scanner_s_lines_is_not_changed(self):
+        # `corroborate._carry_aggregation` (#2361) puts a dropped scanner member's
+        # lines on an agent survivor. That claim is the agent's, about its own line,
+        # and its advisor is not asked for `judged_loci`: as on main.
+        carried = self.finding(3, 9, 27, source="agent:COD")
+        self.assertEqual([], self.unjudged(carried))
+        del carried["source"]
+        self.assertEqual([], self.unjudged(carried))
+
+
+class TestTheAdvisorIsToldAndTheReceiptCarriesIt(unittest.TestCase):
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def _reference(self, name):
+        with open(os.path.join(self.ROOT, "skill", "reference", name), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_the_prompt_says_every_hit_is_part_of_the_claim(self):
+        with open(os.path.join(self.ROOT, "skill", "agents", "advisor.md"),
+                  encoding="utf-8") as fh:
+            text = fh.read()
+        template = text.split("## Your task", 1)[1]
+        self.assertIn('"judged_loci": [', template.split("```json", 1)[1].split("```", 1)[0])
+        rule = text.split("## Tool claims", 1)[1]
+        for needed in ("`additional_loci`", "part of the claim", "`judged_loci`",
+                       "REJECTED only when every"):
+            self.assertIn(needed, rule)
+
+    def test_the_prompt_for_an_aggregated_claim_holds_every_line(self):
+        import scripts.phases.verify_tools as verify_tools
+        finding = {"id": "ESS-001", "title": "exec", "severity": "HIGH",
+                   "source": "tool:eslint-security",
+                   "location": {"file": "lib/run.js", "line_start": 12},
+                   "additional_loci": [{"file": "lib/run.js", "line_start": n}
+                                       for n in LINES[1:]],
+                   "occurrences": 9}
+        with tempfile.TemporaryDirectory() as d:
+            adopt_panopticon(d)
+            os.makedirs(os.path.join(d, "lib"))
+            with open(os.path.join(d, "lib", "run.js"), "w", encoding="utf-8") as fh:
+                fh.write(SOURCE)
+            with contextlib.redirect_stderr(io.StringIO()):
+                entry = verify_tools._tool_verify_entry(
+                    d, {"run_id": "rid-1", "host": "claude"}, "q-1", finding, "claude")
+        claim = entry["prompt"]
+        for n in LINES:
+            self.assertIn('"line_start": %d' % n, claim)
+        self.assertIn('"occurrences": 9', claim)
+
+    def test_the_receipt_schema_takes_line_numbers_and_nothing_else(self):
+        schema = self._reference("advisor-verdict-schema.json")
+        verdict = {"finding_id": "ESS-001", "verdict": "REJECTED", "confidence": "CERTAIN",
+                   "reasoning": "r", "explored": [], "references": [], "citations": {}}
+        jsonschema.validate(verdict, schema)                      # optional
+        jsonschema.validate(dict(verdict, judged_loci=[12, 20]), schema)
+        jsonschema.validate(dict(verdict, judged_loci=[]), schema)
+        for bad in ("12", [12.5], ["12"], [{"line_start": 12}], 12):
+            with self.subTest(bad=bad), self.assertRaises(jsonschema.ValidationError):
+                jsonschema.validate(dict(verdict, judged_loci=bad), schema)
+
+    def test_the_strict_generation_schema_requires_it(self):
+        # Codex generates against a closed projection in which every property is
+        # required (#3241), so its tool advisor always writes the field.
+        schema = self._reference("tool-advisor-generation-schema.json")
+        self.assertIn("judged_loci", schema["required"])
+        self.assertEqual({"type": "array", "items": {"type": "integer"}},
+                         schema["properties"]["judged_loci"])
+        self.assertEqual(sorted(schema["properties"]), sorted(schema["required"]))
+
+    def test_the_report_schema_describes_the_unjudged_lines(self):
+        schema = self._reference("report-schema.json")
+        found = []
+
+        def walk(node):
+            if isinstance(node, dict):
+                if "unjudged_loci" in node and "status" in node:
+                    found.append(node["unjudged_loci"])
+                for value in node.values():
+                    walk(value)
+            elif isinstance(node, list):
+                for value in node:
+                    walk(value)
+        walk(schema)
+        self.assertTrue(found)
+        for node in found:
+            self.assertEqual("array", node["type"])
+            self.assertEqual({"type": ["integer", "null"]}, node["items"])
 
 
 if __name__ == "__main__":

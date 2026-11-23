@@ -217,6 +217,7 @@ def _tool_reply(missing=()):
     verdict = _verdict()
     verdict.pop("code")
     verdict["missing_evidence"] = list(missing)
+    verdict["judged_loci"] = []        # #3756: required by the closed projection
     if missing:
         verdict["verdict"] = "NEEDS_MORE_INFO"
     return _as_required("tool", verdict)
