@@ -902,26 +902,17 @@ def _judged_hits_only(fs, queue):
     places below (`match_verdict`, `_own_verdict`, the member rules of
     `restore_confirmed`, `apply_verdict`), most of them without the finding in
     hand. Rewriting the loaded answer means every one of them reads the same word.
-    Both stores, because a scanner finding's answer can arrive in either: its own
-    queue-id file, or a bundle that names its id."""
-    verdicts, bundles = dict(fs.verdicts or {}), dict(fs.verdict_bundles or {})
+    The queue-id answers only: a bundle is a cell's, and no cell speaks for a
+    finding that came from none (`claim_verdict`)."""
+    verdicts = dict(fs.verdicts or {})
     changed = False
     for entry in queue:
-        finding, queue_id = entry["finding"], entry["queue_id"]
-        fid = str(finding.get("id"))
-        own = verdicts.get(queue_id)
-        if isinstance(own, dict) and str(own.get("finding_id")) == fid:
-            held = evidence_mod.judged_only(finding, own)
-            if held is not own:
-                verdicts[queue_id], changed = held, True
-        candidates = bundles.get(fid)
-        if isinstance(candidates, list):
-            held_all = [evidence_mod.judged_only(finding, c) for c in candidates]
-            if any(a is not b for a, b in zip(held_all, candidates)):
-                bundles[fid], changed = held_all, True
-    if not changed:
-        return fs
-    return dataclasses.replace(fs, verdicts=verdicts, verdict_bundles=bundles)
+        own = verdicts.get(entry["queue_id"])
+        if isinstance(own, dict):       # one that echoes another id binds to nothing, later
+            held = evidence_mod.judged_only(entry["finding"], own)
+            changed = changed or held is not own
+            verdicts[entry["queue_id"]] = held
+    return dataclasses.replace(fs, verdicts=verdicts) if changed else fs
 
 
 def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):

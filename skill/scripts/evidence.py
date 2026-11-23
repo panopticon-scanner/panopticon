@@ -472,7 +472,7 @@ def derive_evidence(finding, verdict=None):
         # confirmed, and the report says which files the backup could not see.
         # #3756: set by `judged_only`, never by an advisor (`UNJUDGED_FIELD`).
         unjudged = (verdict or {}).get(UNJUDGED_FIELD)
-        if isinstance(unjudged, list) and unjudged and v == "NEEDS_MORE_INFO":
+        if isinstance(unjudged, list) and unjudged:
             derived["unjudged_loci"] = list(unjudged)
         missing = carried_paths(verdict or {})
         if missing and v == "CONFIRMED":
