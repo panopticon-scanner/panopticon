@@ -967,8 +967,8 @@ def test_a_manifest_that_cannot_be_read_mid_run_does_not_move_the_report(review)
         arm.append(True)                               # every read after the child fails
         return done
 
-    with mock.patch.object(child, "_run_child", side_effect=child_then_no_manifest) as launched, \
-            _manifest_unreadable_from(arm):
+    the_child = mock.patch.object(child, "_run_child", side_effect=child_then_no_manifest)
+    with the_child as launched, _manifest_unreadable_from(arm):
         status = _resume(root)
     assert status["status"] == "complete", status
     assert launched.call_args.args[0][launched.call_args.args[0].index("--out") + 1] == tagged
