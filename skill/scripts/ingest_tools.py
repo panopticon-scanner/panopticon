@@ -14,7 +14,7 @@ from typing import Any, NamedTuple
 
 from scripts import evidence as evidence_mod
 from scripts import first_party_advisory, groups_schema, plan_contract
-from scripts.tools import ADAPTERS, ADVISORY_ADAPTERS
+from scripts.tools import ADAPTERS, ADVISORY_ADAPTERS, pip_audit
 from scripts.tools.base import ingest_policy_cv, strip_ansi, target_root_cv
 from scripts.tools.sarif_utils import (
     CWE_TAG,
@@ -379,9 +379,18 @@ def _is_advisory(finding):
     return tool == "trivy" and first_party_advisory.advisory_package(finding) is not None
 
 
-def _path_context(finding, roots):
+def _dev_only(rel):
+    """Whether the manifest at root-relative `rel` is only for development, by its path:
+    under a test directory, or a development requirements file."""
+    *dirs, base = rel.split("/")
+    return (any(segment in TEST_DIRS for segment in dirs) or base in _DEV_REQUIREMENTS
+            or (base in _DEV_REQUIREMENTS_IN_DIR and dirs[-1:] == ["requirements"]))
+
+
+def _path_context(finding, roots, target_root=None):
     """`evidence.PATH_CONTEXT_*` for one scanner finding, or None (#3755): decided from
-    the path inside the review root and nothing else. No read of the target."""
+    the path inside the review root. Nothing of the target is read but a requirements
+    file's own include lines (below)."""
     fpath = str((finding.get("location") or {}).get("file") or "").replace(os.sep, "/")
     if not fpath or not _plain_path(fpath):
         return None                       # #3771: not a file in the tree, whatever it spells
@@ -394,10 +403,19 @@ def _path_context(finding, roots):
     in_tests = any(segment in TEST_DIRS for segment in dirs)
     if not _is_advisory(finding):
         return evidence_mod.PATH_CONTEXT_TEST if in_tests else None
-    if (in_tests or base in _DEV_REQUIREMENTS
-            or (base in _DEV_REQUIREMENTS_IN_DIR and dirs[-1:] == ["requirements"])):
-        return evidence_mod.PATH_CONTEXT_DEV_MANIFEST
-    return None
+    if not _dev_only(norm):
+        return None
+    if base.endswith(".txt"):
+        # A requirements file includes others (`-r`, `-c`), and the scanner labels every
+        # finding with the one it was pointed at. EVERY file that produced the finding
+        # must be dev-only (coordinator, 2026-11-23): `requirements-dev.txt` holding
+        # `-r requirements-prod.txt` carries production's advisories. With no tree to
+        # read, or a file that cannot be followed, nothing says which files they were.
+        files = (pip_audit.requirement_files(os.path.join(target_root, *norm.split("/")),
+                                             target_root) if target_root else None)
+        if files is None or not all(_dev_only(rel) for rel in files):
+            return None
+    return evidence_mod.PATH_CONTEXT_DEV_MANIFEST
 
 
 def mark_path_context(findings, target_root=None):
@@ -418,12 +436,13 @@ def mark_path_context(findings, target_root=None):
         try:
             root = resolve(os.fspath(target_root)).replace(os.sep, "/").strip("/") + "/"
         except TypeError:                 # no root: paths are taken as they are
+            target_root = None
             break
         if root != "/" and root not in roots:
             roots.append(root)
     for finding in findings:
         try:
-            context = _path_context(finding, roots)
+            context = _path_context(finding, roots, target_root)
         except Exception:  # noqa: BLE001 - classification fails closed: no mark
             continue
         if context is not None:

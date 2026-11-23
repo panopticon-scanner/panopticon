@@ -73,7 +73,12 @@ rejected in others and that verdict decided the gate. The controller now states 
 - `dev_manifest`: a dependency advisory whose manifest is under such a directory, or is a
   development requirements file (`requirements-dev.txt`, `dev-requirements.txt`,
   `requirements-test.txt`, `test-requirements.txt`, `requirements/dev.txt`,
-  `requirements/test.txt`). Dev-only packages inside a shared lockfile are not recognised yet.
+  `requirements/test.txt`). Every file that produced the finding must be dev-only: a requirements
+  file is followed through its `-r` and `-c` includes to the end, and it is marked only when each
+  file it draws on is dev-only too. `requirements-dev.txt` holding `-r requirements-prod.txt` is
+  not marked, because the scanner labels production's advisories with the dev file. When the files
+  cannot all be read (no tree at hand, a missing or oversized file, an include outside the root, a
+  cycle) there is no mark. Dev-only packages inside a shared lockfile are not recognised yet.
 
 The advisor is told this as settled and judges only whether the claim is true of what is at the
 location. The rule for the gate (owner's ruling, 2026-11-23):

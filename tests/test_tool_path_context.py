@@ -38,9 +38,15 @@ def _osv(path, name="left-pad", version="1.0.0", severity="CRITICAL", advisory="
         "groups": []}]}]}
 
 
+def _pip_audit(severity="CRITICAL"):
+    return {"fixes": [], "dependencies": [{"name": "left-pad", "version": "1.0.0", "vulns": [
+        {"id": "PYSEC-2026-1", "severity": severity, "description": "RCE",
+         "fix_versions": ["2.0"], "aliases": []}]}]}
+
+
 def _ingest(tmp_path, captures, **kwargs):
     tools = tmp_path / "tools"
-    tools.mkdir(exist_ok=True)
+    tools.mkdir(parents=True, exist_ok=True)
     for name, document in captures.items():
         (tools / name).write_text(json.dumps(document), encoding="utf-8")
     with contextlib.redirect_stderr(io.StringIO()):
@@ -90,15 +96,111 @@ def test_a_location_that_is_not_a_plain_path_is_never_marked(tmp_path, path):
     assert [(finding.get("tool_evidence") or {}).get("path_context") for finding in found] == [None]
 
 
+def _tree(tmp_path, files):
+    """A review root holding `files` ({path: text}), and its tools directory."""
+    root = tmp_path / "root"
+    for path, text in files.items():
+        (root / path).parent.mkdir(parents=True, exist_ok=True)
+        (root / path).write_text(text, encoding="utf-8")
+    (root / ".panopticon").mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _ingest_in(root, captures, **kwargs):
+    return _ingest(root / ".panopticon", captures, target_root=str(root), **kwargs)
+
+
 @pytest.mark.parametrize("path", [
     "tests/tooling/package-lock.json", "e2e/package-lock.json", "spec/Gemfile.lock",
     "requirements-dev.txt", "dev-requirements.txt", "requirements-test.txt",
     "test-requirements.txt", "requirements/dev.txt", "requirements/test.txt",
-    "svc/api/requirements/dev.txt", "svc/requirements-dev.txt",
+    "svc/api/requirements/dev.txt", "svc/requirements-dev.txt", "tests/requirements.txt",
 ])
 def test_an_advisory_in_a_dev_only_manifest_is_marked(tmp_path, path):
-    found = _ingest(tmp_path, {"osv-scanner.json": _osv(path)})
+    root = _tree(tmp_path, {path: "left-pad==1.0.0\n"})
+    found = _ingest_in(root, {"osv-scanner.json": _osv(path)})
     assert _contexts(found) == {path: "dev_manifest"}
+
+
+# ---- every file that produced the finding must be dev-only -------------------------------
+
+DEV_PLUS_PROD = {"requirements-dev.txt": "-r requirements-prod.txt\npytest==8.0\n",
+                 "requirements-prod.txt": "left-pad==1.0.0\n"}
+
+
+@pytest.mark.parametrize("files, audited", [
+    (DEV_PLUS_PROD, "requirements-dev.txt"),
+    ({"requirements-dev.txt": "--requirement=requirements-prod.txt\n",
+      "requirements-prod.txt": "x==1\n"}, "requirements-dev.txt"),
+    ({"requirements-dev.txt": "-c constraints.txt\npytest\n", "constraints.txt": "x==1\n"},
+     "requirements-dev.txt"),
+    ({"requirements/dev.txt": "-r base.txt\npytest\n", "requirements/base.txt": "x==1\n"},
+     "requirements/dev.txt"),
+    ({"tests/requirements.txt": "-r ../requirements.txt\n", "requirements.txt": "x==1\n"},
+     "tests/requirements.txt"),
+    ({"requirements-dev.txt": "-r requirements-test.txt\n",                 # two levels down
+      "requirements-test.txt": "-r requirements-prod.txt\n",
+      "requirements-prod.txt": "x==1\n"}, "requirements-dev.txt"),
+], ids=["dev includes prod", "the long spelling", "a constraints file", "requirements/dev.txt on base",
+        "a test manifest on the root's", "prod two includes down"])
+def test_a_dev_file_that_draws_on_a_file_that_is_not_dev_only_is_not_marked(tmp_path, files, audited):
+    """pip-audit audits one file and follows its includes. With `requirements-dev.txt`
+    (`-r requirements-prod.txt`) and no `requirements.txt`, the dev file is the one
+    audited, and every PRODUCTION advisory was labelled with it."""
+    root = _tree(tmp_path, files)
+    for name, capture in (("osv-scanner.json", _osv(audited)), ("pip-audit.json", _pip_audit())):
+        found = _ingest_in(root, {name: capture})
+        (root / ".panopticon" / "tools" / name).unlink()      # one scanner's capture at a time
+        # pip-audit audits a root-level file only, so its label is its own; osv-scanner's
+        # is the file named. Neither finding is marked.
+        assert [evidence.path_context(finding) for finding in found] == [None], name
+        if name == "osv-scanner.json":
+            assert found[0]["location"]["file"] == audited
+
+
+@pytest.mark.parametrize("files", [
+    {"requirements-dev.txt": "-r requirements-test.txt\n-c tests/constraints.txt\npytest\n",
+     "requirements-test.txt": "coverage\n", "tests/constraints.txt": "x==1\n"},
+    {"requirements-dev.txt": "# -r requirements-prod.txt\npytest  # -r x\n",
+     "requirements-prod.txt": "x==1\n"},
+], ids=["every include is dev-only", "an include in a comment"])
+def test_a_dev_file_whose_includes_are_all_dev_only_is_marked(tmp_path, files):
+    root = _tree(tmp_path, files)
+    found = _ingest_in(root, {"osv-scanner.json": _osv("requirements-dev.txt")})
+    assert _contexts(found) == {"requirements-dev.txt": "dev_manifest"}
+
+
+@pytest.mark.parametrize("files, why", [
+    ({}, "the audited file is not there"),
+    ({"requirements-dev.txt": "-r missing.txt\n"}, "an include that is not there"),
+    ({"requirements-dev.txt": "-r ../outside.txt\n"}, "an include outside the root"),
+    ({"requirements-dev.txt": "-r requirements-dev.txt\n"}, "an include of itself"),
+    ({"requirements-dev.txt": "-r dev-requirements.txt\n",
+      "dev-requirements.txt": "-r requirements-dev.txt\n"}, "a cycle"),
+    ({"requirements-dev.txt": "x" * (2 * 1024 * 1024)}, "a file too large to read whole"),
+])
+def test_when_the_files_read_cannot_be_told_there_is_no_mark(tmp_path, files, why):
+    root = _tree(tmp_path, files)
+    (tmp_path / "outside.txt").write_text("x==1\n", encoding="utf-8")
+    found = _ingest_in(root, {"osv-scanner.json": _osv("requirements-dev.txt")})
+    assert [evidence.path_context(finding) for finding in found] == [None], why
+
+
+def test_a_requirements_file_is_not_dev_only_without_a_tree_to_read(tmp_path):
+    """The CI gate ingests a bare directory of captures. Nothing can be read there, so
+    nothing says which files produced the finding."""
+    found = _ingest(tmp_path, {"osv-scanner.json": _osv("requirements-dev.txt")})
+    assert _contexts(found) == {"requirements-dev.txt": None}
+    lock = _ingest(tmp_path / "b", {"osv-scanner.json": _osv("tests/tooling/package-lock.json")})
+    assert _contexts(lock) == {"tests/tooling/package-lock.json": "dev_manifest"}   # no includes
+
+
+def test_a_dev_requirements_file_that_is_a_link_out_of_the_tree_is_not_read(tmp_path):
+    root = _tree(tmp_path, {})
+    (tmp_path / "elsewhere.txt").write_text("x==1\n", encoding="utf-8")
+    (root / "requirements-dev.txt").symlink_to(tmp_path / "elsewhere.txt")
+    found = _ingest_in(root, {"osv-scanner.json": _osv("requirements-dev.txt")})
+    assert [evidence.path_context(finding) for finding in found] == [None]
 
 
 @pytest.mark.parametrize("path", [
@@ -113,7 +215,7 @@ def test_an_advisory_in_any_other_manifest_is_not_marked(tmp_path, path):
 
 
 def test_the_mark_is_added_to_what_the_scanner_said(tmp_path):
-    found = _ingest(tmp_path, {"osv-scanner.json": _osv("requirements-dev.txt")})
+    found = _ingest(tmp_path, {"osv-scanner.json": _osv("tests/package-lock.json")})
     said = found[0]["tool_evidence"]
     assert said["path_context"] == "dev_manifest"
     assert (said["package_name"], said["rule_id"], said["ecosystem"]) == (
@@ -167,7 +269,7 @@ def test_only_a_scanner_finding_carries_the_fact():
 # ---- the rule, through to the report ---------------------------------------------------
 
 def _report(tmp_path, monkeypatch, captures, verdict, security="standard", fail_on="high",
-            groups=None, reviewer=()):
+            groups=None, reviewer=(), root=False):
     """Both real passes of `synthesize`: the verify queue, then every scanner claim
     answered `verdict` by the advisor."""
     tmp_path.mkdir(exist_ok=True)
@@ -180,6 +282,8 @@ def _report(tmp_path, monkeypatch, captures, verdict, security="standard", fail_
     agent = tmp_path / "findings-g1-SEC.json"
     agent.write_text(json.dumps({"findings": list(reviewer)}), encoding="utf-8")
     common = ["--repo", "--target", "src", "--tools-dir", str(tools), "--fail-on", fail_on]
+    if root:                              # the reviewed tree is this directory
+        common += ["--root", str(tmp_path)]
     if security is not None:
         common += ["--security", security]
     if groups is not None:                # the TARGET's own record of the run
@@ -310,7 +414,7 @@ def test_the_claim_the_driver_hands_the_advisor_carries_the_fact(tmp_path):
     passes, so the claim it renders has the mark."""
     found = _ingest(tmp_path, {
         "gitleaks.sarif": _sarif("gitleaks", "tests/keys/id_rsa", rule="private-key", level=None),
-        "osv-scanner.json": _osv("requirements-dev.txt")})
+        "osv-scanner.json": _osv("e2e/package-lock.json")})
     assert sorted((evidence.tool_name(finding), evidence.path_context(finding))
                   for finding in found) == [("gitleaks", "test"), ("osv-scanner", "dev_manifest")]
     for finding in found:                 # and it survives the round trip a claim makes
@@ -392,3 +496,44 @@ def test_elsewhere_a_scanner_finding_and_one_claim_are_still_one_row(tmp_path, m
     report = _report(tmp_path, monkeypatch, ELSEWHERE, "CONFIRMED", reviewer=[claim])
     assert [(row["source"], row.get("reinforced")) for row in report["findings"]] == [
         ("tool:gitleaks", True)]
+
+
+def test_the_dev_plus_prod_layout_fails_the_standard_gate(tmp_path, monkeypatch):
+    """The coordinator's case, through to the gate: `requirements-dev.txt` includes
+    `requirements-prod.txt`, there is no `requirements.txt`, and pip-audit's CRITICAL is
+    labelled with the dev file. It is a production advisory: no mark, and the gate FAILs."""
+    for path, text in DEV_PLUS_PROD.items():
+        (tmp_path / path).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / path).write_text(text, encoding="utf-8")
+    report = _report(tmp_path, monkeypatch, {"pip-audit.json": _pip_audit()}, "CONFIRMED",
+                     fail_on="critical", root=True)
+    assert [(row["location"]["file"], row["severity"], row.get("gate"),
+             row["tool_evidence"].get("path_context")) for row in report["findings"]] == [
+        ("requirements-dev.txt", "CRITICAL", None, None)]
+    assert report["summary"]["gate"] == "FAIL"
+    assert report["meta"]["coverage"]["tools_context_not_gated"] == {}
+
+
+def test_a_project_whose_only_requirements_file_is_the_dev_one_is_marked(tmp_path, monkeypatch):
+    (tmp_path / "requirements-dev.txt").write_text("left-pad==1.0.0\n", encoding="utf-8")
+    report = _report(tmp_path, monkeypatch, {"pip-audit.json": _pip_audit()}, "CONFIRMED",
+                     fail_on="critical", root=True)
+    assert [(row["location"]["file"], row.get("gate")) for row in report["findings"]] == [
+        ("requirements-dev.txt", {"eligible": False, "rule": "dev-manifest"})]
+    assert report["summary"]["gate"] == QUIET
+
+
+def test_more_included_files_than_the_bound_is_not_told(tmp_path):
+    import scripts.tools.pip_audit as pip_audit
+    names = ["tests/req-%02d.txt" % n for n in range(pip_audit._MAX_CLOSURE_FILES + 1)]
+    for count, marked in ((pip_audit._MAX_CLOSURE_FILES - 1, "dev_manifest"),
+                          (pip_audit._MAX_CLOSURE_FILES, None)):
+        root = _tree(tmp_path / str(count), dict(
+            {"requirements-dev.txt": "".join("-r %s\n" % name for name in names[:count])},
+            **{name: "x==1\n" for name in names[:count]}))
+        found = _ingest_in(root, {"osv-scanner.json": _osv("requirements-dev.txt")})
+        assert [evidence.path_context(finding) for finding in found] == [marked], count
+        told = pip_audit.requirement_files(str(root / "requirements-dev.txt"), str(root))
+        assert (told is None) == (marked is None)
+        if told is not None:
+            assert told == sorted(["requirements-dev.txt"] + names[:count])

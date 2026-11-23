@@ -11,7 +11,11 @@
   - The controller now states the fact at ingest, as `tool_evidence.path_context`: `test` under
     a test directory (`test`, `tests`, `spec`, `__tests__`, `e2e`, `testdata`, `fixtures`,
     `__fixtures__`), `dev_manifest` for a dependency advisory in a manifest under one or in a
-    development requirements file. It is decided from the path inside the review root alone.
+    development requirements file. It is decided from the path inside the review root.
+  - A requirements file is dev-only only when every file it includes (`-r`, `-c`, followed to
+    the end) is dev-only too. `requirements-dev.txt` holding `-r requirements-prod.txt` is not
+    marked: the scanner labels production's advisories with the file it was pointed at. When
+    the included files cannot all be read, there is no mark.
   - The advisor is told the fact as settled, and judges only whether the claim is true of what
     is at the location.
   - **The rule (owner's ruling, 2026-11-23).** In `--security standard` such a finding is
