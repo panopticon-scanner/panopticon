@@ -14,16 +14,24 @@
   - Before the step runs, the driver now moves what an earlier attempt published (the report,
     its HTML page, the X0X and its failure log) into `.panopticon/runs/<tag>/earlier-attempt/`.
     A report found afterwards is this attempt's. A step that publishes none ends the run in
-    `error`, with the retry marker kept, whatever its status.
-  - Until the retry publishes, the `report.json` and `report.json.html` links of the earlier
-    attempt point at nothing. The earlier files are kept in the run folder, which `--reset`
-    clears; a later retry replaces them.
-  - A file that cannot be moved stops the attempt before the step runs:
-    `synthesize could not set aside an earlier attempt's <file>: <reason>`. Only regular
-    files are moved. A link, a directory or a FIFO at one of those names is left for the
-    step, which refuses it as before, and the driver takes no report through a link.
+    `error`, with the retry marker kept, whatever its status. The earlier files are kept in the
+    run folder, which `--reset` clears; a later retry replaces them.
+  - **A new run whose synthesis fails no longer leaves `.panopticon/report.json` on the run
+    before it (#3778).** The flat `report.json` and `report.json.html` links stayed on the
+    previous run's report, beside this run's `error`, so a reader of the flat path read another
+    run's verdict. The driver now removes both links first, before anything is moved and
+    whatever they point at. Until the attempt publishes, the two paths do not exist. The
+    previous run's tag-named files are not touched. A regular file at a flat name, as a
+    pre-5.1 run left, is moved with the earlier attempt's files.
+  - A name that cannot be looked at, a link that cannot be removed or a file that cannot be
+    moved stops the attempt before the step runs, with the reason, for example
+    `synthesize could not set aside an earlier attempt's <file>: <reason>`. Only "no such
+    file" counts as nothing there. Only regular files are moved. A link, a directory or a FIFO
+    at a name the step publishes at is left for the step, which refuses it as before, and the
+    driver takes no report through a link.
   - Not changed: split parts and a discarded-claims file of the earlier attempt stay where they
-    are. Only a report names them.
+    are, since only a report names them. A split report that was set aside cannot be read whole
+    from there.
 - **A local Python package with an over-long version number stays with the advisor (#3776).** A
   version holding a number past Python's integer digit limit (more than 4,300 digits) cannot be
   compared with other spellings of the same release, so a registry copy spelled differently was

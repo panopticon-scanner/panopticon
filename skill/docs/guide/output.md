@@ -228,17 +228,26 @@ published or when a written JSON artifact fails its published schema. Discarding
 finding never changes the status selected by the report's gate.
 A status of `3`, or any status not in this list, publishes no report. The driver ends the run in
 `error` with the step's last line, keeps its retry marker, and does not take a report that an
-earlier attempt of the run left on disk for this attempt's.
+earlier attempt of the run left on disk for this attempt's. When the step printed nothing, the
+reason reads `it said nothing`.
 The same holds for a step that dies under a status that is in the list (#3769): an uncaught
 exception exits `1`, and several refusals exit `2` or `4` before a report is built. Before the step
-runs, the driver moves what an earlier attempt of the run published (the report, its HTML page, the
-X0X and its failure log) into `.panopticon/runs/<tag>/earlier-attempt/`. A report found afterwards
-is therefore this attempt's, and a step that publishes none ends the run in `error`. Until this
-attempt publishes, the `.panopticon/report.json` and `report.json.html` links an earlier attempt
-made point at nothing. A file that cannot be moved stops the attempt before the step runs. Only
-regular files are moved: a link, a directory or a FIFO at one of those names is left for the step,
-which refuses it as before, and the driver takes no report through a link. Split parts and a
-discarded-claims file of the earlier attempt are left in place: only a report names them.
+runs, the driver clears the names a report is read from, in this order:
+- It removes the `.panopticon/report.json` and `report.json.html` links, whatever they point at:
+  an earlier attempt's report, or another run's (#3778). Until this attempt publishes, those two
+  paths do not exist. They then point at what this attempt published, which under status `4` can be
+  a report that failed its schema.
+- It moves what an earlier attempt of the run published (the report, its HTML page, the X0X and its
+  failure log) into `.panopticon/runs/<tag>/earlier-attempt/`, and a regular file at either flat
+  name with them. A report found afterwards is therefore this attempt's, and a step that publishes
+  none ends the run in `error`. Another run's tag-named files are not touched.
+
+A name that cannot be looked at, a link that cannot be removed or a file that cannot be moved stops
+the attempt before the step runs, with the reason. Only regular files are moved: a link, a
+directory or a FIFO at a name the step publishes at is left for the step, which refuses it as
+before, and the driver takes no report through a link. Split parts and a discarded-claims file of
+the earlier attempt are left in place, since only a report names them; a split report that was set
+aside therefore cannot be read whole or compared from where it is.
 Validation is **fail-closed**: an uninstallable `jsonschema` (a declared runtime dependency) or an
 unreadable schema file is an error, never a silent pass, because "we could not check" and "we
 checked and it passed" must not look the same. **The schema pins the *controller's* output:** every
