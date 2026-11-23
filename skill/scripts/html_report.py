@@ -1680,6 +1680,41 @@ def _render_findings(report):
 """
 
 
+def _render_rejected_scanner_findings(listed):
+    """#3756: scanner findings of HIGH and above that an advisor rejected, from
+    `meta.rejected_scanner_findings`. Open, not collapsed: a rejection removes the
+    finding from the gate, so the operator should see whose word did it."""
+    if not isinstance(listed, dict) or not listed.get("rows"):
+        return ""
+    rows, count = listed["rows"], listed.get("count") or len(listed["rows"])
+    items = []
+    for row in rows:
+        hits = row.get("occurrences") or 1
+        line = row.get("line_start")
+        items.append(
+            "<li><span class='sev sev-%s'>%s</span> <strong>%s</strong> "
+            "<code>%s:%s</code> <span class='muted'>%s %s%s</span>"
+            "<div class='integrity-note'>Advisor: %s</div></li>" % (
+                _escape(str(row.get("severity", "")).lower()), _escape(row.get("severity", "")),
+                _escape(row.get("title", "")), _escape(row.get("file") or "?"),
+                _escape(line if line is not None else "?"), _escape(row.get("tool", "")),
+                _escape(row.get("rule", "")), ", %d hits" % hits if hits > 1 else "",
+                _escape(row.get("reasoning") or "no reasoning given")))
+    more = ("<p class='muted'>... and %d more, under Discarded claims.</p>"
+            % (count - len(rows)) if count > len(rows) else "")
+    return f"""
+<section class="findings rejected-scanner-findings">
+<h2>Rejected scanner findings <span class='count'>({count})</span></h2>
+<p>An advisor answered REJECTED, so these HIGH and CRITICAL scanner findings are not
+counted by the gate or the grade. Each is one advisor's reading; check it.</p>
+<ul>
+{"".join(items)}
+</ul>
+{more}
+</section>
+"""
+
+
 def _render_discarded_claims(discarded):
     if not discarded:
         return ""
@@ -1721,6 +1756,8 @@ def render(report, compare_report=None):
             _render_header(report)
             + _render_dashboard(report)
             + _render_findings(report)
+            + _render_rejected_scanner_findings(
+                (report.get("meta") or {}).get("rejected_scanner_findings"))
             + _render_discarded_claims(report.get("discarded_claims", []))
         )
         title = f"Panopticon — {report.get('meta', {}).get('target', 'report')}"

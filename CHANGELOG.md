@@ -24,6 +24,13 @@
     finding that holds one cannot be rejected.
   - The advisor verdict schema and the Codex generation schema gain `judged_loci`; the report
     schema gains `evidence.unjudged_loci`.
+  - **A rejected scanner HIGH or CRITICAL is now shown as rejected.** A rejection takes a
+    finding out of the gate and the grade, and it was visible only as a count on the terminal
+    and inside the collapsed "Discarded claims" block of the page. Such findings are now listed
+    in the terminal summary and, open, on the page, each with its location, scanner, rule, hit
+    count and the advisor's reasoning. The report gains `meta.rejected_scanner_findings`
+    (`count`, and up to 50 `rows`), which stays in the main report file when
+    `discarded_claims` moves to a sibling file. Nothing counts differently.
 
 - **A tool finding is no longer dropped because its location spells a fixture, vendored or
   generated directory it is not in (#3771).** Suppression by path name read the scanner's reported
