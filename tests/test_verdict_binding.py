@@ -257,7 +257,7 @@ def _capture(lines=LINES, path="/src/lib/run.js"):
 class _Replay(unittest.TestCase):
     """A recorded verdict replayed through both passes of `synthesize`."""
 
-    def replay(self, verdict, lines=LINES, extra=()):
+    def replay(self, verdict, lines=LINES, extra=(), as_bundle=False):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             adopt_panopticon(os.getcwd())
             os.makedirs(os.path.join(d, "lib"))
@@ -285,12 +285,12 @@ class _Replay(unittest.TestCase):
             if verdict is not None:
                 vd = os.path.join(d, "verdicts")
                 os.makedirs(vd)
-                with open(os.path.join(vd, "%s.json" % entry["queue_id"]), "w",
-                          encoding="utf-8") as fh:
-                    json.dump(dict({"run_id": queue["run_id"],
-                                    "finding_id": self.claim["id"],
-                                    "confidence": "CERTAIN", "explored": ["lib/run.js"],
-                                    "references": [], "citations": {}}, **verdict), fh)
+                answer = dict({"run_id": queue["run_id"], "finding_id": self.claim["id"],
+                               "confidence": "CERTAIN", "explored": ["lib/run.js"],
+                               "references": [], "citations": {}}, **verdict)
+                name = "bundle" if as_bundle else entry["queue_id"]
+                with open(os.path.join(vd, "%s.json" % name), "w", encoding="utf-8") as fh:
+                    json.dump({"verdicts": [answer]} if as_bundle else answer, fh)
                 extra = ("--verdicts-dir", vd, *extra)
             out = os.path.join(d, "report.json")
             self.stdout = io.StringIO()
@@ -419,6 +419,34 @@ class TestARejectionCoversOnlyTheHitsItJudged(_Replay):
         ev = self.one(report, "findings")["evidence"]
         self.assertEqual([63, 77, 81, 95], ev["unjudged_loci"])
 
+    def test_a_partial_rejection_names_no_file_the_advisor_was_not_granted(self):
+        # `missing_evidence` on a NEEDS_MORE_INFO means "a file I could not read".
+        # This advisor rejected; whatever it put there is not that statement.
+        report = self.replay({"verdict": "REJECTED", "reasoning": "r",
+                              "judged_loci": SAFE_FIVE, "missing_evidence": ["lib/other.js"]})
+        ev = self.one(report, "findings")["evidence"]
+        self.assertEqual("needs_more_info", ev["status"])
+        self.assertNotIn("missing_evidence", ev)
+
+    def test_only_the_controller_s_list_is_published(self):
+        for word in ("CONFIRMED", "NEEDS_MORE_INFO"):
+            with self.subTest(word=word):
+                report = self.replay({"verdict": word, "reasoning": "r",
+                                      "unjudged_loci": [63],
+                                      evidence_mod.UNJUDGED_FIELD: [63]})
+                self.assertNotIn("unjudged_loci", self.one(report, "findings")["evidence"])
+
+    def test_a_scanner_finding_is_answered_by_its_own_verdict_file_only(self):
+        # Why the rule is applied to the queue-id answers and not to bundles: a cell's
+        # bundle does not speak for a finding that came from no cell, so a bundle
+        # that names a scanner finding rejects nothing, with or without the list.
+        for extra in ({}, {"judged_loci": list(LINES)}):
+            with self.subTest(extra=extra):
+                report = self.replay(dict({"verdict": "REJECTED", "reasoning": "r"}, **extra),
+                                     as_bundle=True)
+                self.assertEqual("tool_reported",
+                                 self.one(report, "findings")["evidence"]["status"])
+
     def test_confirmed_needs_no_list(self):
         # One real hit makes the finding real. Rejecting says "none of these";
         # confirming says "at least one".
@@ -498,6 +526,25 @@ class TestTheLinesOfAClaim(unittest.TestCase):
         self.assertEqual([None], self.unjudged(finding, judged_loci=[9]))
         finding["additional_loci"] = ["not a locus", {"line_start": 9}]
         self.assertEqual([None], self.unjudged(finding, judged_loci=[9]))
+        # An entry that is no locus is a hit nobody can name, not a hit that is not there.
+        finding = self.finding(3, 9)
+        finding["additional_loci"].append("not a locus")
+        self.assertEqual([None], self.unjudged(finding, judged_loci=[3, 9]))
+
+    def test_the_verdict_it_was_given_is_not_changed(self):
+        # The loaded verdict is shared: the file accounting reads it after this.
+        verdict = {"verdict": "REJECTED", "reasoning": "r", "judged_loci": [3],
+                   "missing_evidence": ["x.py"], "finding_id": "T-1"}
+        before = json.loads(json.dumps(verdict))
+        held = evidence_mod.judged_only(self.finding(3, 9), verdict)
+        self.assertEqual(before, verdict)
+        self.assertIsNot(held, verdict)
+        self.assertEqual(("NEEDS_MORE_INFO", [9], "T-1"),
+                         (held["verdict"], held[evidence_mod.UNJUDGED_FIELD],
+                          held["finding_id"]))
+        # ... and one that stands is returned as it is, not copied.
+        whole = dict(verdict, judged_loci=[3, 9])
+        self.assertIs(whole, evidence_mod.judged_only(self.finding(3, 9), whole))
 
     def test_loci_that_are_not_a_list_are_no_aggregation(self):
         for loci in (None, [], "9", {"line_start": 9}):
