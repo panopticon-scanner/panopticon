@@ -209,8 +209,10 @@ def _take(path):
             raise Refused(_UNUSABLE % ("%s is not a regular file" % path))
         if info.st_uid != os.getuid():
             raise Refused(_UNUSABLE % ("%s is owned by another user" % path))
-        if info.st_nlink != 1:            # a hard link: the record would be written over it
+        if info.st_nlink > 1:             # a hard link: the record would be written over it
             raise Refused(_UNUSABLE % ("%s has more than one name" % path))
+        if info.st_nlink < 1:             # removed since the open: a lock nobody else can see
+            raise Refused(_UNUSABLE % ("%s is no longer at its name" % path))
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as exc:

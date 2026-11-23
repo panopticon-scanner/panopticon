@@ -12,6 +12,7 @@ from unittest import mock
 
 import pytest
 
+import scripts.delta_withdrawn as delta_withdrawn
 import scripts.driver as driver
 import scripts.orchestrate as orchestrate
 import scripts.run_lock as run_lock
@@ -369,12 +370,13 @@ def _said(**fields):
     _said(verb="\x1b[2Jrun"), _said(verb="persist"), _said(verb=None),
     _said(since="yesterday"), _said(since="2026-11-23T04:00:12Z\nstatus: complete"),
     _said(since=None), _said(since=20261123),
+    _said(since="\u0662\u0660\u0662\u0666-\u0661\u0661-\u0662\u0663T\u0660\u0664:\u0660\u0660:\u0661\u0662Z"),
     _said(host="a\x1b[2Jb"), _said(host="h.example\nstatus: complete"), _said(host=7),
     _said(host=None), _said(host=""),
 ], ids=["empty", "not-json", "a-list", "no-fields", "not-utf8",
         "pid-true", "pid-negative", "pid-zero", "pid-text", "pid-float", "pid-absent",
         "pid-infinite", "verb-escape", "verb-unknown", "verb-absent",
-        "since-words", "since-then-a-line", "since-absent", "since-number",
+        "since-words", "since-then-a-line", "since-absent", "since-number", "since-other-digits",
         "host-escape", "host-then-a-line", "host-number", "host-absent", "host-empty"])
 def test_a_lock_file_that_says_nothing_usable_still_refuses_and_prints_none_of_it(root, text):
     with _another_driver(root, text=text):
@@ -1358,3 +1360,36 @@ def test_persist_still_makes_the_delta_check_without_a_lock(root, capsys):
     with _another_driver(root):
         assert driver.main(["persist", "no-such-entry", root]) == 2
     assert "started as a delta review" in capsys.readouterr().err
+
+
+def test_a_lock_file_whose_name_is_gone_is_refused(root):
+    """Removed between the open and the look: locking it would exclude nobody."""
+    real = os.fstat
+
+    def unlinked(fd):
+        info = list(real(fd))
+        info[3] = 0                       # st_nlink
+        return os.stat_result(info)
+
+    with mock.patch.object(run_lock.os, "fstat", side_effect=unlinked):
+        with pytest.raises(run_lock.Refused) as refused:
+            with run_lock.hold(root, "run"):
+                pytest.fail("held on a file with no name")
+    assert "has more than one name" not in str(refused.value)
+    assert str(refused.value).startswith(
+        "the run lock cannot be used: %s is no longer at its name. " % run_lock.lock_path(root))
+    assert _free(root)
+
+
+@pytest.mark.parametrize("verb", ["run", "loop"])
+def test_a_reset_over_a_delta_run_folder_is_not_refused(root, capsys, verb):
+    """`--reset` discards the folder #3735 refuses to resume, so the check passes it."""
+    _delta_run(root)
+    argv = [verb, root, "--host", "codex", "--no-tools", "--reset"] + (
+        ["--mode", "session"] if verb == "loop" else [])
+    with mock.patch.object(driver.engine, "run_engine",
+                           return_value={"status": "paused", "message": "stopped here"}) as engine_run:
+        driver.main(argv)
+    assert "delta review" not in capsys.readouterr().out
+    assert engine_run.called
+    assert not delta_withdrawn.is_delta_run(run_manifest.load_manifest(root))   # a new run
