@@ -52,6 +52,9 @@ def resolve(args, held):
     try:
         resolved = loop_batch._resolve_target(args)
         held.enter_context(run_lock.hold(resolved[0], "loop"))    # #3779: before first contact
+        # #3779: one scope for the whole loop, so the paths the last `driver.run` captured
+        # also answer the loop's own lookups between two runs.
+        held.enter_context(runio.paths_scope(resolved[0]))
         # #3735's check, made here with the root held (#3782) and before anything below
         # reads the run folder it refuses.
         stop = None if getattr(args, "reset", False) else delta_withdrawn.resumed_refusal(

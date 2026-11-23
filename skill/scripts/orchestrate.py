@@ -573,6 +573,14 @@ def persist_cli(args):
     except first_contact.FirstContactHalt as exc:
         print("driver persist: %s" % exc, file=sys.stderr)
         return 2
+    with runio.paths_scope(review_root):
+        if not args.setup:          # #3779: one read of the run manifest for every path below
+            runio.capture_paths(review_root, run_manifest.load_manifest(review_root))
+        return _persist(args, review_root)
+
+
+def _persist(args, review_root):
+    """`persist_cli`, from first contact on."""
     entry, refusal, run_id = persist.find_entry(review_root, args.entry_id,
                                                 namespace="setup" if args.setup else None)
     if refusal:

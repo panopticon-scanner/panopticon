@@ -938,3 +938,67 @@ def test_the_still_there_reason_is_redacted_and_bounded(tmp_path, monkeypatch):
     reason = str(stopped.value)[len(start):]
     assert token not in reason and "[REDACTED_TOKEN]" in reason
     assert len(reason) == 400 < len(str(aside))
+
+
+# ---- #3779 part 2: one answer for the run's paths, whatever a later read says --------
+
+def _manifest_unreadable_from(arm):
+    """Every read of the run manifest fails once `arm` is set: a failed read is "no
+    manifest", and a path lookup that made one answered with the flat path."""
+    real = run_manifest.load_manifest
+    return mock.patch.object(run_manifest, "load_manifest",
+                             side_effect=lambda root: None if arm else real(root))
+
+
+def test_a_manifest_that_cannot_be_read_mid_run_does_not_move_the_report(review):
+    """From the five gates on #3774: the output path, the set-aside directory, the
+    usability check and the final links each read the manifest again. One failed read
+    between them and the child writes the flat path while the driver reads the tagged
+    report of an earlier attempt."""
+    root, _manifest, valid_report = review
+    earlier = dict(valid_report, earlier_attempt=True)
+    _write(_report(root), earlier)                     # an earlier attempt's, still owed
+    _write(_pending(root), {"run_id": "earlier"})
+    tagged, flat = str(_report(root)), runio._pano(root, "report.json")
+    arm = []
+
+    def child_then_no_manifest(cmd, **kwargs):
+        done = _the_real_child(cmd, **kwargs)
+        arm.append(True)                               # every read after the child fails
+        return done
+
+    the_child = mock.patch.object(child, "_run_child", side_effect=child_then_no_manifest)
+    with the_child as launched, _manifest_unreadable_from(arm):
+        status = _resume(root)
+    assert status["status"] == "complete", status
+    assert launched.call_args.args[0][launched.call_args.args[0].index("--out") + 1] == tagged
+    report = json.loads(Path(tagged).read_text(encoding="utf-8"))
+    assert "earlier_attempt" not in report             # this attempt's, at the run's own name
+    assert os.readlink(flat) == os.path.basename(tagged)
+    assert status["artifacts"]["report"] == tagged
+    assert json.loads(Path(_aside(root, tagged)).read_text(encoding="utf-8")) == earlier
+    assert not os.path.lexists(_pending(root))
+
+
+def test_a_manifest_that_cannot_be_read_before_the_child_does_not_send_it_to_the_flat_path(review):
+    root, _manifest, _valid_report = review
+    tagged = str(_report(root))
+    arm = []
+    looked = engine.Phase("arm", "deterministic", lambda *_: bool(arm),
+                          lambda *_: arm.append(True) or engine.PhaseResult(
+                              kind="advanced", message="armed"))
+    phases = [looked,
+              engine.Phase("synthesize", "deterministic",
+                           synthesize.synthesize_done, synthesize.synthesize_execute)]
+    args = driver.parse_cli(["run", root, "--host", "codex", "--no-tools"])
+    with mock.patch.object(child, "_run_child", side_effect=_the_real_child) as launched, \
+            _manifest_unreadable_from(arm):
+        status = driver.run(args, phases=phases)
+    assert status["status"] == "complete", status
+    cmd = launched.call_args.args[0]
+    assert cmd[cmd.index("--out") + 1] == tagged
+    assert cmd[cmd.index("--groups") + 1] == os.path.join(
+        os.path.dirname(os.path.dirname(tagged)), ".panopticon", "runs",
+        os.path.basename(tagged)[:-len("-report.json")], "groups.json")
+    assert os.path.isfile(tagged) and not os.path.islink(tagged)
+    assert os.path.islink(runio._pano(root, "report.json"))

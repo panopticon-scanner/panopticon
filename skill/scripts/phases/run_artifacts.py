@@ -13,6 +13,7 @@ import sys
 import scripts.group_runner as group_runner
 import scripts.loop_batch as loop_batch
 import scripts.plan_contract as plan_contract
+import scripts.redact as redact
 import scripts.run_manifest as run_manifest
 import scripts.safe_glob as safe_glob
 import scripts.safe_write as safe_write
@@ -124,6 +125,26 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 # discovery-attempts.json's own docstring already claimed it).
                 "cell-attempts.json", "verify-attempts.json",
                 "discovery-attempts.json")
+
+
+def tag_in_use(review_root, tag):
+    """Whether files of a run tagged `tag` are in `.panopticon/` (#3779): its run folder,
+    or any durable `<tag>-*` file. Only "nothing there" is free: a `runs/` that cannot
+    be searched, or a `.panopticon/` that cannot be listed, is a `DriverError`, never
+    "not in use". (`os.path.lexists` answers False for a permission error.)"""
+    base = os.path.join(os.path.abspath(review_root), plan_contract.ARTIFACT_DIR)
+    try:
+        os.lstat(os.path.join(base, "runs", tag))
+        return True
+    except (FileNotFoundError, NotADirectoryError):
+        pass
+    except OSError as exc:
+        raise runio.DriverError("could not look for an earlier run tagged %s: %s" % (
+            tag, redact.redact_diagnostic(str(exc), 400))) from exc
+    try:
+        return bool(safe_glob.under(base, tag + "-*"))
+    except safe_glob.Unlistable as exc:
+        raise runio.DriverError(str(exc)) from exc
 
 
 def _clear_run_artifacts(review_root):

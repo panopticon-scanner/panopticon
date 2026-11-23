@@ -1,10 +1,12 @@
 """Driver I/O core: paths, artifact reads/writes, child processes, the review root."""
+import contextlib
 import copy
 import functools
 import json
 import os
 import subprocess
 import sys
+import threading
 
 import scripts.claim_scope as claim_scope
 import scripts.config_schema as config_schema
@@ -70,9 +72,61 @@ _TOP_LEVEL = frozenset({
 
 HOST_CAPABILITIES = "host-capabilities.json"
 
+#: real review root -> [scopes open on it, the run tag captured for them or None] (#3779).
+_CAPTURED: dict = {}
+#: Held for every change to it: `driver persist` takes no run lock, so scopes on one root
+#: can open and close on several threads of one process.
+_SCOPES = threading.Lock()
+
+
+@contextlib.contextmanager
+def paths_scope(review_root):
+    """One invocation's hold on `review_root`'s run paths (#3779): `driver run`, `driver
+    loop` and `driver persist` each open one. Inside it `capture_paths` records the run
+    tag, and every path lookup answers from that record. When the outermost scope on a
+    root ends, nothing is captured for it.
+
+    `_run_tag` read the manifest again on every lookup, and a failed read is "no
+    manifest": the flat path, without a word. One such read between two lookups sent
+    the synthesize child to the flat report path, the usability check to the tagged
+    report of an earlier attempt, and the relink onto the fresh file.
+
+    Keyed by the root's real path, so a second root in the same process never answers
+    from the first. Outside a scope nothing changes: a phase function called directly
+    reads the disk on every lookup, as before."""
+    key = os.path.realpath(review_root)
+    with _SCOPES:
+        entry = _CAPTURED.setdefault(key, [0, None])
+        entry[0] += 1
+    try:
+        yield
+    finally:
+        with _SCOPES:
+            entry[0] -= 1
+            if not entry[0]:
+                _CAPTURED.pop(key, None)
+
+
+def capture_paths(review_root, manifest):
+    """Record `manifest`'s run tag as `review_root`'s, for the scope open on it; with no
+    manifest, drop what was recorded. Outside a scope this does nothing."""
+    if not _CAPTURED:
+        return
+    key, tag = os.path.realpath(review_root), run_manifest.run_tag(manifest)
+    with _SCOPES:
+        entry = _CAPTURED.get(key)
+        if entry is not None:
+            entry[1] = tag
+
+
 def _run_tag(review_root):
     """The active run's folder name from the manifest, or None before one exists
-    (setup / pre-discovery) — callers then fall back to the flat top-level."""
+    (setup / pre-discovery) — callers then fall back to the flat top-level. Inside an
+    invocation that captured it (`paths_scope`), the captured one, with no read."""
+    if _CAPTURED:
+        entry = _CAPTURED.get(os.path.realpath(review_root))
+        if entry is not None and entry[1] is not None:
+            return entry[1]
     return run_manifest.run_tag(run_manifest.load_manifest(review_root))
 
 def _pano(review_root, *parts):

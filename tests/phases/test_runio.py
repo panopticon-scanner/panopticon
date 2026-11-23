@@ -18,6 +18,7 @@ import pytest
 
 from tests._test_helpers import adopt_panopticon, fake_pem, our_manifest
 import scripts.phases.runio as runio
+import scripts.phases.engine as engine_mod
 import scripts.phases.coverage as coverage
 import scripts.phases.review as review
 
@@ -1209,3 +1210,467 @@ class TestManifestDiagnosticRedaction(unittest.TestCase):
                 self.assertNotIn("AAAA", diagnostic)
                 self.assertNotIn("BBBB", diagnostic)
                 self.assertLessEqual(len(diagnostic), 300)
+
+
+# ---- #3779 part 2: the run's paths are captured once per invocation ------------------
+
+def _a_run(tmp_path, name, run_id):
+    """A review root with a run manifest of ours, and that run's tag."""
+    root = os.path.realpath(str(tmp_path / name))
+    os.makedirs(root)
+    adopt_panopticon(root)
+    manifest = run_manifest.build_manifest(
+        target=root, review_root=root, host="codex", security_mode="standard",
+        flags={"tools": False}, scope={"mode": "repo", "target": None}, run_id=run_id)
+    run_manifest.write_manifest(root, our_manifest(root, manifest))
+    return root, manifest, run_manifest.run_tag(manifest)
+
+
+def _paths(root):
+    return (runio._run_tag(root), runio._pano(root, "groups.json"), runio._report_out(root))
+
+
+def _of(root, tag):
+    pano = os.path.join(root, ".panopticon")
+    return (tag, os.path.join(pano, "runs", tag, "groups.json") if tag
+            else os.path.join(pano, "groups.json"),
+            os.path.join(pano, "%s-report.json" % tag if tag else "report.json"))
+
+
+def _no_disk():
+    """The manifest cannot be read: what one failed read is to every caller."""
+    return mock.patch.object(run_manifest, "load_manifest", return_value=None)
+
+
+def test_captured_paths_answer_without_reading_the_manifest(tmp_path):
+    """The issue's fault: one failed read between two path lookups sent the child to the
+    flat report path and the driver to the tagged one. Captured, both get one answer."""
+    root, manifest, tag = _a_run(tmp_path, "a", "a" * 32)
+    with runio.paths_scope(root):
+        runio.capture_paths(root, manifest)
+        with _no_disk() as read:
+            assert _paths(root) == _of(root, tag)
+        read.assert_not_called()
+        os.remove(run_manifest.manifest_path(root))           # even with the file gone
+        assert _paths(root) == _of(root, tag)
+    assert _paths(root) == _of(root, None)                    # the scope over: the disk again
+
+
+def test_outside_an_invocation_every_lookup_reads_the_disk_as_before(tmp_path):
+    """A phase function called directly, as tests and tools do: nothing is captured."""
+    root, manifest, tag = _a_run(tmp_path, "a", "a" * 32)
+    runio.capture_paths(root, manifest)                       # no scope: captures nothing
+    assert runio._CAPTURED == {}
+    with mock.patch.object(run_manifest, "load_manifest",
+                           wraps=run_manifest.load_manifest) as read:
+        assert _paths(root) == _of(root, tag)
+    assert read.call_count == 3                               # one read per lookup
+    with _no_disk():
+        assert _paths(root) == _of(root, None)
+
+
+def test_a_second_root_never_answers_from_the_first(tmp_path):
+    first, manifest, tag = _a_run(tmp_path, "a", "a" * 32)
+    second, _other, other_tag = _a_run(tmp_path, "b", "b" * 32)
+    bare = os.path.realpath(str(tmp_path / "c"))
+    os.makedirs(bare)
+    assert tag != other_tag
+    with runio.paths_scope(first):
+        runio.capture_paths(first, manifest)
+        assert _paths(second) == _of(second, other_tag)       # its own manifest, off the disk
+        assert _paths(bare) == _of(bare, None)
+        with _no_disk():
+            assert _paths(first) == _of(first, tag)
+            assert _paths(second) == _of(second, None)
+        with runio.paths_scope(second):                       # a scope with nothing captured
+            assert _paths(second) == _of(second, other_tag)
+            runio.capture_paths(first, None)
+            assert _paths(second) == _of(second, other_tag)
+    assert runio._CAPTURED == {}
+
+
+def test_a_link_to_the_root_answers_from_the_roots_capture(tmp_path):
+    root, manifest, tag = _a_run(tmp_path, "a", "a" * 32)
+    link = str(tmp_path / "link")
+    os.symlink(root, link)
+    with runio.paths_scope(link):
+        runio.capture_paths(root, manifest)
+        with _no_disk():
+            assert runio._run_tag(link) == runio._run_tag(root + os.sep) == tag
+            assert runio._pano(link, "groups.json") == os.path.join(
+                link, ".panopticon", "runs", tag, "groups.json")      # the path as it was given
+    assert runio._CAPTURED == {}
+    with runio.paths_scope(root):
+        runio.capture_paths(link, manifest)                   # captured through the link
+        with _no_disk():
+            assert runio._run_tag(root) == runio._run_tag(link) == tag
+    assert runio._CAPTURED == {}
+
+
+def test_a_capture_lasts_to_the_end_of_the_outermost_scope_and_can_be_dropped(tmp_path):
+    root, manifest, tag = _a_run(tmp_path, "a", "a" * 32)
+    with runio.paths_scope(root):                             # `driver loop`
+        with runio.paths_scope(root):                         # one `driver.run` inside it
+            runio.capture_paths(root, manifest)
+        with _no_disk():
+            assert _paths(root) == _of(root, tag)             # still held between two runs
+            runio.capture_paths(root, None)                   # dropped: the disk again
+            assert _paths(root) == _of(root, None)
+            runio.capture_paths(root, {})                     # no manifest is nothing to capture
+            assert _paths(root) == _of(root, None)
+    assert runio._CAPTURED == {}
+
+
+def test_a_scope_that_fails_leaves_nothing_captured(tmp_path):
+    root, manifest, _tag = _a_run(tmp_path, "a", "a" * 32)
+    with pytest.raises(RuntimeError):
+        with runio.paths_scope(root):
+            runio.capture_paths(root, manifest)
+            raise RuntimeError("the verb died")
+    assert runio._CAPTURED == {}
+
+
+def _looks(seen):
+    """A phase that records what the paths are, with the manifest unreadable."""
+    def execute(review_root, manifest):
+        with _no_disk():
+            seen.append(_paths(review_root))
+        return engine_mod.PhaseResult(kind="advanced", message="looked")
+    return engine_mod.Phase("look", "deterministic", lambda *_: bool(seen), execute)
+
+
+def _driver_run(root, *flags, phases=()):
+    args = driver.parse_cli(["run", root, "--host", "codex", "--no-tools", *flags])
+    with mock.patch.object(driver, "_establish_host_posture", return_value=None):
+        return driver.run(args, phases=phases)
+
+
+def test_a_run_captures_its_paths_for_its_phases_and_lets_them_go(tmp_path):
+    root, _manifest, tag = _a_run(tmp_path, "a", "a" * 32)
+    seen = []
+    status = _driver_run(root, phases=(_looks(seen),))
+    assert status["status"] == "complete", status
+    assert seen == [_of(root, tag)]
+    assert runio._CAPTURED == {}
+
+
+def test_a_run_settles_its_manifest_from_the_disk_and_then_captures_that_one(tmp_path):
+    """Inside `driver loop`'s scope the run before left its paths captured. `--reset`
+    starts another run: the old tag must not answer for it, nor steer the reset."""
+    root, manifest, tag = _a_run(tmp_path, "a", "a" * 32)
+    seen, settled = [], []
+    real = driver._manifest_for_run
+
+    def settle(*args, **kwargs):
+        settled.append({root: list(held) for root, held in runio._CAPTURED.items()})
+        return real(*args, **kwargs)
+
+    with runio.paths_scope(root):
+        runio.capture_paths(root, manifest)
+        with mock.patch.object(driver, "_manifest_for_run", side_effect=settle):
+            status = _driver_run(root, "--reset", phases=(_looks(seen),))
+        assert status["status"] == "complete", status
+        fresh = run_manifest.run_tag(run_manifest.load_manifest(root))
+        assert fresh != tag
+        assert settled == [{root: [2, None]}]                 # nothing captured while it settles
+        assert seen == [_of(root, fresh)]
+        with _no_disk():
+            assert _paths(root) == _of(root, fresh)           # kept for the loop's own lookups
+    assert runio._CAPTURED == {}
+
+
+def test_a_run_that_is_refused_leaves_nothing_captured_from_the_run_before(tmp_path):
+    root, manifest, tag = _a_run(tmp_path, "a", "a" * 32)
+    with runio.paths_scope(root):
+        runio.capture_paths(root, manifest)
+        status = _driver_run(root, "--security", "redteam")   # flag drift
+        assert status["status"] == "error" and "flag drift" in status["message"]
+        with _no_disk():
+            assert _paths(root) == _of(root, None)
+        assert _paths(root) == _of(root, tag)
+
+
+def test_the_loop_keeps_one_scope_open_across_its_runs(tmp_path):
+    import scripts.orchestrate as orchestrate
+    root, manifest, tag = _a_run(tmp_path, "a", "a" * 32)
+    seen = []
+
+    def run(args, resolved=None):
+        runio.capture_paths(root, manifest)                   # what `driver.run` does
+        return orchestrate._status("checkpoint" if not seen else "complete", "done",
+                                   phase="review", checkpoint="review")
+
+    def after(review_root):
+        with _no_disk():
+            seen.append(_paths(root))                         # the loop's own lookup, between runs
+        return True
+
+    args = driver.parse_cli(["loop", root, "--host", "codex", "--mode", "session", "--no-tools"])
+    with mock.patch.object(orchestrate.driver, "run", side_effect=run), \
+            mock.patch.object(orchestrate, "_after_first_run", side_effect=after):
+        status = orchestrate.loop(args)
+    assert status["status"] == "complete", status
+    assert seen == [_of(root, tag)]
+    assert runio._CAPTURED == {}
+
+
+def test_persist_reads_the_manifest_once_for_its_paths(tmp_path, capsys):
+    import scripts.orchestrate as orchestrate
+    root, _manifest, tag = _a_run(tmp_path, "a", "a" * 32)
+    seen = []
+
+    def find(review_root, entry_id, namespace=None):
+        with _no_disk():
+            seen.append(_paths(review_root))
+        return None, None, None
+
+    with mock.patch.object(orchestrate.persist, "find_entry", side_effect=find):
+        assert driver.main(["persist", "no-such-entry", root]) == 1
+    assert "no entry" in capsys.readouterr().err
+    assert seen == [_of(root, tag)]
+    assert runio._CAPTURED == {}
+
+
+def test_persist_for_setup_captures_no_review_run(tmp_path, capsys):
+    import scripts.orchestrate as orchestrate
+    root, _manifest, _tag = _a_run(tmp_path, "a", "a" * 32)
+    seen = []
+
+    def find(review_root, entry_id, namespace=None):
+        seen.append({root: list(held) for root, held in runio._CAPTURED.items()})
+        return None, None, None
+
+    with mock.patch.object(orchestrate.persist, "find_entry", side_effect=find):
+        assert driver.main(["persist", "no-such-entry", root, "--setup"]) == 1
+    capsys.readouterr()
+    assert seen == [{root: [1, None]}]
+
+
+# ---- #3779 part 2: a new run does not take a tag that is already on disk -------------
+
+def _taken_tag(run_id):
+    return run_manifest.run_tag(run_manifest.build_manifest(
+        target=".", review_root=".", host="codex", security_mode="standard",
+        scope={"mode": "repo", "target": None}, run_id=run_id))
+
+
+@pytest.mark.parametrize("left", ["runs/%s", "%s-report.json", "%s-report.json.html",
+                                  "%s-report-x0x.json", "runs/%s/"])
+def test_a_new_run_draws_its_id_again_while_its_tag_is_on_disk(tmp_path, left):
+    """The tag holds eight characters of the run id. Two runs that share them, with one
+    host, mode, scope and date, share every durable file name."""
+    root = os.path.realpath(str(tmp_path / "target"))
+    os.makedirs(root)
+    adopt_panopticon(root)
+    taken = _taken_tag("c0111de0" + "0" * 24)
+    there = os.path.join(root, ".panopticon", left % taken)
+    if left.endswith("/"):
+        os.makedirs(os.path.join(there, "findings"))
+    else:
+        os.makedirs(os.path.dirname(there), exist_ok=True)    # `runs/<tag>` as a file is taken too
+        with open(there, "w", encoding="utf-8") as fh:
+            fh.write("an earlier run's")
+    drawn = iter(["c0111de0" + "1" * 24, "c0111de0" + "2" * 24, "f4ee0000" + "3" * 24])
+    real = run_manifest.new_run_id
+    with mock.patch.object(run_manifest, "new_run_id",
+                           side_effect=lambda: next(drawn, None) or real()):
+        status = _driver_run(root)
+    assert status["status"] == "complete", status
+    manifest = run_manifest.load_manifest(root)
+    assert manifest["run_id"] == "f4ee0000" + "3" * 24
+    assert run_manifest.run_tag(manifest) != taken
+    assert os.path.lexists(there.rstrip("/"))                 # the earlier run's is untouched
+
+
+def test_a_new_run_keeps_the_first_id_it_draws_when_its_tag_is_free(tmp_path):
+    root = os.path.realpath(str(tmp_path / "target"))
+    os.makedirs(root)
+    adopt_panopticon(root)
+    other = _taken_tag("0ddba11f" + "0" * 24)                  # another run's files: not ours
+    with open(os.path.join(root, ".panopticon", other + "-report.json"), "w") as fh:
+        fh.write("{}")
+    drawn = iter(["c0111de0" + "1" * 24])
+    real = run_manifest.new_run_id
+    with mock.patch.object(run_manifest, "new_run_id",
+                           side_effect=lambda: next(drawn, None) or real()):
+        status = _driver_run(root)
+    assert status["status"] == "complete", status
+    assert run_manifest.load_manifest(root)["run_id"] == "c0111de0" + "1" * 24
+
+
+def test_a_run_that_cannot_draw_a_free_tag_stops_with_the_reason(tmp_path):
+    root = os.path.realpath(str(tmp_path / "target"))
+    os.makedirs(root)
+    adopt_panopticon(root)
+    taken = _taken_tag("c0111de0" + "0" * 24)
+    os.makedirs(os.path.join(root, ".panopticon", "runs", taken))
+    with mock.patch.object(run_manifest, "new_run_id", return_value="c0111de0" + "9" * 24):
+        status = _driver_run(root)
+    assert status["status"] == "error"
+    assert status["message"] == (
+        "could not start a run: every run id drawn gives the tag %s, which an earlier run's "
+        "files in .panopticon/ already use; move them away, or run again" % taken)
+    assert not os.path.lexists(run_manifest.manifest_path(root))
+    assert os.listdir(os.path.join(root, ".panopticon", "runs")) == [taken]
+
+
+def test_a_listing_that_fails_is_not_a_free_tag(tmp_path):
+    import scripts.safe_glob as safe_glob
+    root = os.path.realpath(str(tmp_path / "target"))
+    os.makedirs(root)
+    adopt_panopticon(root)
+    failed = safe_glob.Unlistable(os.path.join(root, ".panopticon"),
+                                  OSError(5, "Input/output error"))
+    with mock.patch.object(run_artifacts.safe_glob, "under", side_effect=failed):
+        with pytest.raises(runio.DriverError, match="Input/output error"):
+            run_artifacts.tag_in_use(root, "some-tag")
+    assert run_artifacts.tag_in_use(root, "some-tag") is False
+    assert run_artifacts.tag_in_use(str(tmp_path / "no-such-root"), "some-tag") is False
+    with mock.patch.object(run_artifacts, "tag_in_use",
+                           side_effect=runio.DriverError("could not list it")):
+        status = _driver_run(root)
+    assert (status["status"], status["message"]) == ("error", "could not list it")
+    assert not os.path.lexists(run_manifest.manifest_path(root))
+
+
+def test_the_capture_table_is_changed_only_under_its_lock(tmp_path):
+    """`persist` takes no run lock, so two of them on threads share this table. (The run
+    lock's own table raised on release for want of one: #3782, seat review 2.)"""
+    root, manifest, _tag = _a_run(tmp_path, "a", "a" * 32)
+    seen = []
+
+    class Watched(dict):
+        def setdefault(self, key, default=None):
+            seen.append(("open", runio._SCOPES.locked()))
+            return super().setdefault(key, default)
+
+        def get(self, key, default=None):
+            seen.append(("look", runio._SCOPES.locked()))
+            return super().get(key, default)
+
+        def pop(self, key, *default):
+            seen.append(("close", runio._SCOPES.locked()))
+            return super().pop(key, *default)
+
+    with mock.patch.object(runio, "_CAPTURED", Watched()):
+        with runio.paths_scope(root):
+            with runio.paths_scope(root):
+                runio.capture_paths(root, manifest)
+            runio.capture_paths(root, None)
+    assert [kind for kind, _locked in seen] == ["open", "open", "look", "look", "close"]
+    assert all(locked for _kind, locked in seen), seen
+    assert not runio._SCOPES.locked()
+
+
+def test_many_threads_opening_scopes_on_one_root_leave_nothing_captured(tmp_path):
+    import threading
+    root, manifest, tag = _a_run(tmp_path, "a", "a" * 32)
+    failed = []
+
+    def work():
+        try:
+            for _ in range(300):
+                with runio.paths_scope(root):
+                    runio.capture_paths(root, manifest)
+                    if runio._run_tag(root) != tag:
+                        failed.append("another tag")
+        except BaseException as exc:      # noqa: BLE001 - the test reports whatever it was
+            failed.append(repr(exc))
+
+    threads = [threading.Thread(target=work) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    assert failed == []
+    assert runio._CAPTURED == {}
+
+
+# ---- seat review of #3787 at 6d4c6241 -------------------------------------------------
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root searches any directory")
+def test_a_runs_directory_that_cannot_be_searched_is_not_a_free_tag(tmp_path):
+    """`lexists` answers False for a permission error, so a taken tag read as free."""
+    root = os.path.realpath(str(tmp_path / "target"))
+    runs = os.path.join(root, ".panopticon", "runs")
+    os.makedirs(os.path.join(runs, "T1"))
+    os.chmod(runs, 0o000)
+    try:
+        with pytest.raises(runio.DriverError) as refused:
+            run_artifacts.tag_in_use(root, "T1")
+    finally:
+        os.chmod(runs, 0o700)
+    assert str(refused.value).startswith("could not look for an earlier run tagged T1: ")
+    assert "Permission denied" in str(refused.value)
+    assert run_artifacts.tag_in_use(root, "T1") is True
+
+
+def test_a_tag_is_free_where_there_is_nothing_to_look_in(tmp_path):
+    root = os.path.realpath(str(tmp_path / "target"))
+    os.makedirs(os.path.join(root, ".panopticon"))
+    assert run_artifacts.tag_in_use(root, "T1") is False              # no `runs/`
+    with open(os.path.join(root, ".panopticon", "runs"), "w") as fh:  # a file where it would be
+        fh.write("")
+    assert run_artifacts.tag_in_use(root, "T1") is False
+
+
+def test_a_link_at_a_run_folders_name_is_a_tag_in_use(tmp_path):
+    """Whatever is at the name, the name is taken: a link is looked at, not through."""
+    root = os.path.realpath(str(tmp_path / "target"))
+    runs = os.path.join(root, ".panopticon", "runs")
+    os.makedirs(runs)
+    os.symlink("nowhere", os.path.join(runs, "T1"))
+    assert run_artifacts.tag_in_use(root, "T1") is True
+
+
+def test_a_longer_tag_that_starts_the_same_is_another_run(tmp_path):
+    root = os.path.realpath(str(tmp_path / "target"))
+    pano = os.path.join(root, ".panopticon")
+    os.makedirs(os.path.join(pano, "runs", "abcd"))
+    for name in ("abcd-report.json", "abcd-report.json.html", "abcdef"):
+        with open(os.path.join(pano, name), "w") as fh:
+            fh.write("{}")
+    assert run_artifacts.tag_in_use(root, "abc") is False
+    assert run_artifacts.tag_in_use(root, "abcd") is True
+    os.rmdir(os.path.join(pano, "runs", "abcd"))
+    assert run_artifacts.tag_in_use(root, "abcd") is True             # by its durable files
+    with open(os.path.join(pano, "abc-x"), "w") as fh:
+        fh.write("")
+    assert run_artifacts.tag_in_use(root, "abc") is True
+
+
+def test_the_refusal_names_the_last_tag_it_looked_for(tmp_path):
+    """Nine ids were drawn for eight checks, and the refusal named the ninth: a tag
+    nobody had looked for, and which may well have been free."""
+    root = os.path.realpath(str(tmp_path / "target"))
+    os.makedirs(root)
+    adopt_panopticon(root)
+    ids = ["%08x" % (0xa0000000 + n) + "0" * 24 for n in range(12)]
+    tags = [_taken_tag(run_id) for run_id in ids]
+    for tag in tags[:8]:                               # eight taken; the ninth is free
+        os.makedirs(os.path.join(root, ".panopticon", "runs", tag))
+    drawn = iter(ids)
+    with mock.patch.object(run_manifest, "new_run_id", side_effect=lambda: next(drawn)) as draw:
+        status = _driver_run(root)
+    assert status["status"] == "error"
+    assert status["message"] == (
+        "could not start a run: every run id drawn gives the tag %s, which an earlier run's "
+        "files in .panopticon/ already use; move them away, or run again" % tags[7])
+    assert draw.call_count == 8                        # one per tag looked for, and no more
+    assert not os.path.lexists(run_manifest.manifest_path(root))
+
+
+def test_the_eighth_draw_is_still_taken_when_it_is_free(tmp_path):
+    root = os.path.realpath(str(tmp_path / "target"))
+    os.makedirs(root)
+    adopt_panopticon(root)
+    ids = ["%08x" % (0xb0000000 + n) + "0" * 24 for n in range(12)]
+    for run_id in ids[:7]:                             # seven taken; the eighth is free
+        os.makedirs(os.path.join(root, ".panopticon", "runs", _taken_tag(run_id)))
+    drawn = iter(ids)
+    real = run_manifest.new_run_id
+    with mock.patch.object(run_manifest, "new_run_id",
+                           side_effect=lambda: next(drawn, None) or real()):
+        status = _driver_run(root)
+    assert status["status"] == "complete", status
+    assert run_manifest.load_manifest(root)["run_id"] == ids[7]
