@@ -1584,3 +1584,84 @@ def test_many_threads_opening_scopes_on_one_root_leave_nothing_captured(tmp_path
         thread.join(60)
     assert failed == []
     assert runio._CAPTURED == {}
+
+
+# ---- seat review of #3787 at 6d4c6241 -------------------------------------------------
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root searches any directory")
+def test_a_runs_directory_that_cannot_be_searched_is_not_a_free_tag(tmp_path):
+    """`lexists` answers False for a permission error, so a taken tag read as free."""
+    root = os.path.realpath(str(tmp_path / "target"))
+    runs = os.path.join(root, ".panopticon", "runs")
+    os.makedirs(os.path.join(runs, "T1"))
+    os.chmod(runs, 0o000)
+    try:
+        with pytest.raises(runio.DriverError) as refused:
+            run_artifacts.tag_in_use(root, "T1")
+    finally:
+        os.chmod(runs, 0o700)
+    assert str(refused.value).startswith("could not look for an earlier run tagged T1: ")
+    assert "Permission denied" in str(refused.value)
+    assert run_artifacts.tag_in_use(root, "T1") is True
+
+
+def test_a_tag_is_free_where_there_is_nothing_to_look_in(tmp_path):
+    root = os.path.realpath(str(tmp_path / "target"))
+    os.makedirs(os.path.join(root, ".panopticon"))
+    assert run_artifacts.tag_in_use(root, "T1") is False              # no `runs/`
+    with open(os.path.join(root, ".panopticon", "runs"), "w") as fh:  # a file where it would be
+        fh.write("")
+    assert run_artifacts.tag_in_use(root, "T1") is False
+
+
+def test_a_longer_tag_that_starts_the_same_is_another_run(tmp_path):
+    root = os.path.realpath(str(tmp_path / "target"))
+    pano = os.path.join(root, ".panopticon")
+    os.makedirs(os.path.join(pano, "runs", "abcd"))
+    for name in ("abcd-report.json", "abcd-report.json.html", "abcdef"):
+        with open(os.path.join(pano, name), "w") as fh:
+            fh.write("{}")
+    assert run_artifacts.tag_in_use(root, "abc") is False
+    assert run_artifacts.tag_in_use(root, "abcd") is True
+    os.rmdir(os.path.join(pano, "runs", "abcd"))
+    assert run_artifacts.tag_in_use(root, "abcd") is True             # by its durable files
+    with open(os.path.join(pano, "abc-x"), "w") as fh:
+        fh.write("")
+    assert run_artifacts.tag_in_use(root, "abc") is True
+
+
+def test_the_refusal_names_the_last_tag_it_looked_for(tmp_path):
+    """Nine ids were drawn for eight checks, and the refusal named the ninth: a tag
+    nobody had looked for, and which may well have been free."""
+    root = os.path.realpath(str(tmp_path / "target"))
+    os.makedirs(root)
+    adopt_panopticon(root)
+    ids = ["%08x" % (0xa0000000 + n) + "0" * 24 for n in range(12)]
+    tags = [_taken_tag(run_id) for run_id in ids]
+    for tag in tags[:8]:                               # eight taken; the ninth is free
+        os.makedirs(os.path.join(root, ".panopticon", "runs", tag))
+    drawn = iter(ids)
+    with mock.patch.object(run_manifest, "new_run_id", side_effect=lambda: next(drawn)) as draw:
+        status = _driver_run(root)
+    assert status["status"] == "error"
+    assert status["message"] == (
+        "could not start a run: every run id drawn gives the tag %s, which an earlier run's "
+        "files in .panopticon/ already use; move them away, or run again" % tags[7])
+    assert draw.call_count == 8                        # one per tag looked for, and no more
+    assert not os.path.lexists(run_manifest.manifest_path(root))
+
+
+def test_the_eighth_draw_is_still_taken_when_it_is_free(tmp_path):
+    root = os.path.realpath(str(tmp_path / "target"))
+    os.makedirs(root)
+    adopt_panopticon(root)
+    ids = ["%08x" % (0xb0000000 + n) + "0" * 24 for n in range(12)]
+    for run_id in ids[:7]:                             # seven taken; the eighth is free
+        os.makedirs(os.path.join(root, ".panopticon", "runs", _taken_tag(run_id)))
+    drawn = iter(ids)
+    real = run_manifest.new_run_id
+    with mock.patch.object(run_manifest, "new_run_id",
+                           side_effect=lambda: next(drawn, None) or real()):
+        status = _driver_run(root)
+    assert status["status"] == "complete", status
+    assert run_manifest.load_manifest(root)["run_id"] == ids[7]

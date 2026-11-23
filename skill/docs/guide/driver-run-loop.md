@@ -244,7 +244,7 @@ The host contract (5.2, plan 6):
   (`.panopticon/runs/<tag>/`) and the report name (`<tag>-report.json`) come from the run manifest.
   `driver run` reads the manifest once, when it starts or resumes the run, and uses that tag for
   every path until it returns; `driver loop` does the same in each step and keeps the last step's
-  tag for its own work between steps; `driver persist` reads it once. A manifest that cannot be
+  tag for its own work between steps; `driver persist` reads it once for its paths. A manifest that cannot be
   read later in the same invocation no longer sends one step to `.panopticon/report.json` and
   the next to the tagged report. A new run whose tag is already used by an earlier run's files
   (the tag holds eight characters of the run id) draws another id before it writes anything.

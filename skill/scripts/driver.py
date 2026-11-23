@@ -391,15 +391,17 @@ def _manifest_for_run(args, review_root, worktree, base, scope, pr_base, first, 
         # #3779: the tag holds eight characters of the run id. A new run whose tag an
         # earlier run's files already use would take that run's report for its own.
         try:
-            for _draw in range(_RUN_ID_DRAWS):
-                if not run_artifacts.tag_in_use(review_root, run_manifest.run_tag(manifest)):
+            for draw in range(_RUN_ID_DRAWS):
+                tag = run_manifest.run_tag(manifest)
+                if not run_artifacts.tag_in_use(review_root, tag):
                     break
-                manifest["run_id"] = run_manifest.new_run_id()
+                if draw + 1 < _RUN_ID_DRAWS:      # an id is drawn only to be looked for
+                    manifest["run_id"] = run_manifest.new_run_id()
             else:
                 return None, runio._error_status(
                     "could not start a run: every run id drawn gives the tag %s, which an "
                     "earlier run's files in %s/ already use; move them away, or run again"
-                    % (run_manifest.run_tag(manifest), plan_contract.ARTIFACT_DIR))
+                    % (tag, plan_contract.ARTIFACT_DIR))
         except runio.DriverError as exc:
             return None, runio._error_status(str(exc))
         manifest["first_contact"] = first or {}

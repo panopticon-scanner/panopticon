@@ -9,8 +9,8 @@
   and then pointed the flat link at it.
   - `driver run` now reads the manifest once, when it starts or resumes the run, and uses that
     run's tag for every path until it returns. `driver loop` does so in each step and keeps the
-    last step's tag between steps; `driver persist` reads it once. A phase function called
-    directly, outside the driver, reads the manifest on every lookup as before.
+    last step's tag between steps; `driver persist` reads it once for its paths. A phase
+    function called directly, outside the driver, reads the manifest on every lookup as before.
   - **A new run does not take a tag an earlier run's files already use.** The tag holds eight
     characters of the run id, so two runs sharing them, with one host, mode, scope and date,
     shared every durable file name, and one could take the other's report for its own. A new run
