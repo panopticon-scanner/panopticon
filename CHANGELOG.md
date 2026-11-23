@@ -65,6 +65,12 @@
     one that is not there. A tools manifest is looked for in the run directory (`--run-dir`, or
     the directory of `--groups`), never in the tools directory. A `tools-manifest.json` inside
     `--tools-dir` is read as a JSON file with no registered adapter.
+  - Two existing tests asserted the old exit code of such a hand call and now assert exit 2:
+    `TestReport.test_main_tools_exclude_and_fixture_prune_wired_end_to_end` (was 0 or 1) and
+    `TestToolsDirIntegration.test_direct_run_without_root_reclassifies_against_the_ingest_root`
+    (was 0). Twelve more keep every assertion and run with a run id and its receipt, as the
+    driver's runs do (`TestRedteamGatesVendoredToolFindings`, and
+    `test_valid_zero_finding_output_still_certifies` in `TestUnusableScannerCertification`).
   - With no manifest, every registered adapter with a `failed` disposition is now named as lost
     coverage, `produced_unusable` in `meta.coverage.divergence.tools`. A `.json` or `.sarif` file
     with no registered adapter is listed as before and is not named there.
