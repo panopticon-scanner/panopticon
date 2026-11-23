@@ -745,11 +745,13 @@ class TestTheGroupsShapeGate(unittest.TestCase):
                 self.assertEqual(
                     plan_mod.ingest_tool_findings(_cli_args(tools_dir=os.path.join(d, "no")))[2],
                     None)
-                # #3766: and so is one that cannot be listed (here, a regular file).
-                # Nothing was ingested from it; the tool axis names the reason.
+                # #3766: one that is there and cannot be listed (here, a regular file)
+                # is not "no tool axis". Nothing ran that anyone can read: the empty
+                # set, so a manifest's selection is still held against it.
                 a_file = os.path.join(".panopticon", "tools", "x.json")
                 self.assertEqual(
-                    plan_mod.ingest_tool_findings(_cli_args(tools_dir=a_file))[2], None)
+                    plan_mod.ingest_tool_findings(_cli_args(tools_dir=a_file))[1:3],
+                    ({}, set()))
 
     def test_ingest_tool_findings_with_an_empty_tools_dir_measures_nothing_ran(self):
         with tempfile.TemporaryDirectory() as d:

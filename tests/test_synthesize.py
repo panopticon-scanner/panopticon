@@ -1465,6 +1465,50 @@ class TestManifestlessCertification(unittest.TestCase):
         self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
         self.assertEqual(2, rc)
 
+    def test_an_unlistable_directory_still_owes_what_a_bound_manifest_selected(self):
+        # Seat of record at aaf02ea1. With a run id and its manifest, a directory that
+        # cannot be listed produced nothing anyone can read, and the selected scanner
+        # is `requested_absent`, as on main. "No tool axis" is a MISSING directory.
+        def check(rc, report):
+            self.assertEqual({"bandit": "requested_absent"},
+                             report["meta"]["coverage"]["divergence"]["tools"])
+            self.assertEqual([], report["meta"]["coverage"]["tools_ran"])
+            self.assertTrue(report["meta"]["integrity"]["tools_dir_unlistable"])
+            self.assertIs(False, report["meta"]["integrity"]["tools_run_unbound"])
+            self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+            self.assertEqual(2, rc)
+        with self.subTest("a regular file"), tempfile.TemporaryDirectory() as d:
+            a_file = os.path.join(d, "given")
+            with open(a_file, "w", encoding="utf-8"):
+                pass
+            rc, report, _err = self._run(d, {}, extra=self.BOUND,
+                                         manifest=self.BOUND_MANIFEST, tools_dir=a_file)
+            check(rc, report)
+        if hasattr(os, "geteuid") and os.geteuid() != 0:
+            with self.subTest("mode 000"), tempfile.TemporaryDirectory() as d:
+                td = os.path.join(d, "tools")
+                self.addCleanup(lambda: os.path.isdir(td) and os.chmod(td, 0o700))
+                real_main = syn.main
+
+                def locked(argv):
+                    os.chmod(td, 0)
+                    try:
+                        return real_main(argv)
+                    finally:
+                        os.chmod(td, 0o700)
+                with mock.patch.object(syn, "main", side_effect=locked):
+                    rc, report, _err = self._run(d, {"bandit.sarif": self.EMPTY_SARIF},
+                                                 extra=self.BOUND,
+                                                 manifest=self.BOUND_MANIFEST)
+                check(rc, report)
+        # The control: a directory that is not there is no tool axis, as on main.
+        with tempfile.TemporaryDirectory() as d:
+            rc, report, _err = self._run(d, {}, extra=self.BOUND,
+                                         manifest=self.BOUND_MANIFEST,
+                                         tools_dir=os.path.join(d, "absent"))
+        self.assertIsNone(report["meta"]["integrity"]["tools_dir_unlistable"])
+        self.assertEqual({}, report["meta"]["coverage"]["divergence"]["tools"])
+
     def test_the_reason_names_the_directory_redacted_bounded_and_on_one_line(self):
         import scripts.synth.tool_axis as tool_axis
         denied = PermissionError(13, "Permission denied")
