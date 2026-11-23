@@ -174,16 +174,22 @@ def test_a_dev_file_whose_includes_are_all_dev_only_is_marked(tmp_path, files):
     ({}, "the audited file is not there"),
     ({"requirements-dev.txt": "-r missing.txt\n"}, "an include that is not there"),
     ({"requirements-dev.txt": "-r ../outside.txt\n"}, "an include outside the root"),
+    ({"requirements-dev.txt": "-r ../dev-requirements.txt\n"},
+     "an include outside the root that is named like a dev file"),
     ({"requirements-dev.txt": "-r requirements-dev.txt\n"}, "an include of itself"),
     ({"requirements-dev.txt": "-r dev-requirements.txt\n",
       "dev-requirements.txt": "-r requirements-dev.txt\n"}, "a cycle"),
     ({"requirements-dev.txt": "x" * (2 * 1024 * 1024)}, "a file too large to read whole"),
 ])
 def test_when_the_files_read_cannot_be_told_there_is_no_mark(tmp_path, files, why):
+    import scripts.tools.pip_audit as pip_audit
     root = _tree(tmp_path, files)
-    (tmp_path / "outside.txt").write_text("x==1\n", encoding="utf-8")
+    for outside in ("outside.txt", "dev-requirements.txt"):
+        (tmp_path / outside).write_text("x==1\n", encoding="utf-8")
     found = _ingest_in(root, {"osv-scanner.json": _osv("requirements-dev.txt")})
     assert [evidence.path_context(finding) for finding in found] == [None], why
+    # Said as "cannot be told", not left to an error on the way.
+    assert pip_audit.requirement_files(str(root / "requirements-dev.txt"), str(root)) is None, why
 
 
 def test_a_requirements_file_is_not_dev_only_without_a_tree_to_read(tmp_path):
@@ -210,7 +216,11 @@ def test_a_dev_requirements_file_that_is_a_link_out_of_the_tree_is_not_read(tmp_
     "requirements/extra/dev.txt", "requirements/sub/test.txt",     # only directly inside it
 ])
 def test_an_advisory_in_any_other_manifest_is_not_marked(tmp_path, path):
-    found = _ingest(tmp_path, {"osv-scanner.json": _osv(path)})
+    root = tmp_path / "root"                  # the file is there to be read, and has no includes
+    (root / path).parent.mkdir(parents=True)
+    (root / path).write_text("left-pad==1.0.0\n", encoding="utf-8")
+    (root / ".panopticon").mkdir()
+    found = _ingest(root / ".panopticon", {"osv-scanner.json": _osv(path)}, target_root=str(root))
     assert _contexts(found) == {path: None}
 
 
@@ -225,9 +235,14 @@ def test_the_mark_is_added_to_what_the_scanner_said(tmp_path):
 def test_only_an_advisory_makes_a_manifest_dev_only(tmp_path):
     """A secret in `requirements-dev.txt` is a secret in a file at the root: the name
     says what the file's DEPENDENCIES are for, nothing about anything else in it."""
-    found = _ingest(tmp_path, {
+    root = tmp_path / "root"
+    (root / "tests").mkdir(parents=True)
+    (root / ".panopticon").mkdir()
+    for path in ("requirements-dev.txt", "tests/requirements-dev.txt"):
+        (root / path).write_text("left-pad==1.0.0\n", encoding="utf-8")
+    found = _ingest(root / ".panopticon", {
         "gitleaks.sarif": _sarif("gitleaks", "requirements-dev.txt", "tests/requirements-dev.txt",
-                                 rule="generic-api-key", level=None)})
+                                 rule="generic-api-key", level=None)}, target_root=str(root))
     assert _contexts(found) == {"requirements-dev.txt": None,
                                 "tests/requirements-dev.txt": "test"}
 
