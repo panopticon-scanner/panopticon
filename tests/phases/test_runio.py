@@ -1300,6 +1300,11 @@ def test_a_link_to_the_root_answers_from_the_roots_capture(tmp_path):
             assert runio._pano(link, "groups.json") == os.path.join(
                 link, ".panopticon", "runs", tag, "groups.json")      # the path as it was given
     assert runio._CAPTURED == {}
+    with runio.paths_scope(root):
+        runio.capture_paths(link, manifest)                   # captured through the link
+        with _no_disk():
+            assert runio._run_tag(root) == runio._run_tag(link) == tag
+    assert runio._CAPTURED == {}
 
 
 def test_a_capture_lasts_to_the_end_of_the_outermost_scope_and_can_be_dropped(tmp_path):
