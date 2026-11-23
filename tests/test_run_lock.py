@@ -790,7 +790,7 @@ def test_the_bootstrap_closes_a_regular_file_past_the_standard_three_and_nothing
 def test_the_lock_file_names_the_phase_child_while_it_runs(root, tmp_path):
     script = tmp_path / "reads_lock.py"
     script.write_text(      # the driver names the child just after it starts it: wait for that
-        "import json, sys, time\nwhile True:\n    said = open(sys.argv[1]).read()\n"
+        "import json, sys, time\nfor _ in range(2000):\n    said = open(sys.argv[1]).read()\n"
         "    if 'child' in json.loads(said or '{}'):\n        break\n    time.sleep(0.01)\n"
         "print(said)\n", encoding="utf-8")
     with run_lock.hold(root, "loop"):
@@ -841,7 +841,9 @@ def named():
             return json.load(fh)["child"]["pid"] == os.getpid()
     except (OSError, ValueError, KeyError):
         return False
-while not named():
+for _ in range(2000):                 # about twenty seconds, then it reports as it is
+    if named():
+        break
     time.sleep(0.01)
 with socket.create_connection(("127.0.0.1", int(sys.argv[1]))) as said:
     said.sendall(("%s %d\\n" % (sys.argv[2], os.getpid())).encode())
