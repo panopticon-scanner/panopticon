@@ -250,14 +250,27 @@ def test_the_record_is_one_write_of_one_size_so_a_reader_never_sees_part_of_one(
     assert run_lock._RECORD_SIZE <= run_lock._RECORD_MAX
 
 
-def test_a_record_too_long_for_its_size_says_nothing_and_the_root_is_still_held(root):
-    with mock.patch.object(run_lock.socket, "gethostname", return_value="\u00e9" * 255):
-        with run_lock.hold(root, "run"):
-            assert os.path.getsize(run_lock.lock_path(root)) == run_lock._RECORD_SIZE
-            with open(run_lock.lock_path(root), "rb") as fh:
-                assert fh.read().strip() == b""
-            assert not _free(root)
-    assert _free(root)
+def _host_filling(room):
+    """A machine name whose record is `room` bytes longer than one with no name."""
+    return "\u00e9" * (room // 6) + "h" * (room % 6)      # JSON spells the first as six bytes
+
+
+def test_a_record_of_exactly_its_size_is_written_and_one_byte_more_says_nothing(root):
+    empty = len(json.dumps({"host": "", "pid": os.getpid(), "since": "2026-11-23T04:00:12Z",
+                            "verb": "run"}, sort_keys=True))
+    for extra, written in ((0, True), (1, False)):
+        host = _host_filling(run_lock._RECORD_SIZE - empty + extra)
+        with mock.patch.object(run_lock.socket, "gethostname", return_value=host):
+            with run_lock.hold(root, "run"):
+                assert os.path.getsize(run_lock.lock_path(root)) == run_lock._RECORD_SIZE
+                with open(run_lock.lock_path(root), "rb") as fh:
+                    said = fh.read()
+                assert not _free(root)                # held, whatever the record says
+        assert _free(root)
+        if written:
+            assert said == said.strip() and json.loads(said)["host"] == host
+        else:
+            assert said.strip() == b""
 
 
 def test_the_longest_record_a_holder_can_write_fits_and_is_read_back(root):
