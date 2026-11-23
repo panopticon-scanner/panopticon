@@ -6,7 +6,6 @@ escapes) names a file that is not there, and its finding stays in the report."""
 import contextlib
 import io
 import json
-import os
 
 import pytest
 
