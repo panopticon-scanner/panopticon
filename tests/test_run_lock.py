@@ -396,9 +396,10 @@ def test_a_pid_no_system_holds_does_not_stop_the_refusal(root):
 
 def test_a_child_whose_record_is_unusable_is_not_named(root):
     gone = dead_pid()
-    for bad in ({"pid": "12", "phase": "synthesize"}, {"pid": 12, "phase": "\x1b[2J"},
-                {"pid": 12, "phase": "tools\x1b[2J"}, {"pid": 12, "phase": 7}, {"pid": 12},
-                {"pid": 0, "phase": "synthesize"}, ["12"], {"pid": True, "phase": "tools"}):
+    here = os.getpid()                    # a child that is running: only its record is bad
+    for bad in ({"pid": str(here), "phase": "synthesize"}, {"pid": here, "phase": "\x1b[2J"},
+                {"pid": here, "phase": "tools\x1b[2J"}, {"pid": here, "phase": 7}, {"pid": here},
+                {"pid": 0, "phase": "synthesize"}, [here], {"pid": True, "phase": "tools"}):
         with _another_driver(root, _record(pid=gone, child=bad)):
             message = _refusal(root)
         assert "lsof %s" % run_lock.lock_path(root) in message, bad
@@ -955,8 +956,9 @@ def test_a_second_driver_process_is_refused_and_the_first_is_not_disturbed(root,
 
 _STREAM_CLOSED = """\
 import json, os, sys
-closed, root, probe, out = int(sys.argv[1]), sys.argv[2], sys.argv[3], sys.argv[4]
-os.close(closed)                      # as a scheduler or a service starts a driver
+closed, root, probe, out = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
+for number in closed.split(","):      # as a scheduler or a service starts a driver
+    os.close(int(number))
 import scripts.run_lock as run_lock
 from scripts.phases import child
 said = {}
@@ -982,7 +984,7 @@ with open(sys.argv[1], "w") as fh:
 """
 
 
-@pytest.mark.parametrize("closed", [0, 1, 2])
+@pytest.mark.parametrize("closed", ["0", "1", "2", "1,2", "0,2", "0,1,2"])
 def test_a_driver_started_with_a_standard_stream_closed_holds_the_lock_above_them(
         root, tmp_path, closed):
     """`os.open` returns the lowest free number. At 1 or 2 the child's output redirection
@@ -991,7 +993,7 @@ def test_a_driver_started_with_a_standard_stream_closed_holds_the_lock_above_the
     driver_script, probe, out = tmp_path / "driver.py", tmp_path / "probe.py", tmp_path / "out"
     driver_script.write_text(_STREAM_CLOSED, encoding="utf-8")
     probe.write_text(_HANDED.format(env=run_lock.FD_ENV, bootstrap=BOOTSTRAP), encoding="utf-8")
-    child._run_child([sys.executable, str(driver_script), str(closed), root, str(probe), str(out)],
+    child._run_child([sys.executable, str(driver_script), closed, root, str(probe), str(out)],
                      review_root=root, phase="tools")
     info = os.stat(run_lock.lock_path(root))
     lock = [info.st_dev, info.st_ino]
