@@ -437,6 +437,11 @@ def _one_line(text):
     return inert.inert_spelling(" ".join(str(text).split()))
 
 
+_REJECTED_SCANNER_NOTE = ("An advisor answered REJECTED, so these are not counted by the gate "
+                          "or the grade. Each is one advisor's reading of a scanner finding; "
+                          "check it.")
+
+
 def rejected_scanner_lines(listed):
     """The summary section for `meta.rejected_scanner_findings` (#3756), or [].
 
@@ -446,8 +451,7 @@ def rejected_scanner_lines(listed):
         return []
     rows, count = listed["rows"], listed.get("count") or len(listed["rows"])
     lines = ["", "## Rejected scanner findings (HIGH and above): %d" % count,
-             "An advisor answered REJECTED, so these are not counted by the gate or the "
-             "grade. Each is one advisor's reading of a scanner finding; check it."]
+             _REJECTED_SCANNER_NOTE]
     for row in rows:
         hits = row.get("occurrences") or 1
         lines.append("- `[%s]` **%s** %s:%s (%s %s%s) — advisor: %s" % (

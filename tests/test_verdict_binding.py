@@ -288,8 +288,13 @@ class _Replay(unittest.TestCase):
                 answer = dict({"run_id": queue["run_id"], "finding_id": self.claim["id"],
                                "confidence": "CERTAIN", "explored": ["lib/run.js"],
                                "references": [], "citations": {}}, **verdict)
-                name = "bundle" if as_bundle else entry["queue_id"]
-                with open(os.path.join(vd, "%s.json" % name), "w", encoding="utf-8") as fh:
+                # The queue id names the answer's file; it is read back from the queue
+                # this run wrote, so hold it to one plain file name first.
+                name = "bundle" if as_bundle else os.path.basename(str(entry["queue_id"]))
+                self.assertEqual(name, "bundle" if as_bundle else entry["queue_id"])
+                target = os.path.realpath(os.path.join(vd, name + ".json"))
+                self.assertEqual(os.path.realpath(vd), os.path.dirname(target))
+                with open(target, "w", encoding="utf-8") as fh:
                     json.dump({"verdicts": [answer]} if as_bundle else answer, fh)
                 extra = ("--verdicts-dir", vd, *extra)
             out = os.path.join(d, "report.json")
