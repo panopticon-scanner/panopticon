@@ -413,6 +413,19 @@ OPEN_AFTER_A_FIX = [{"type": "ECOSYSTEM", "events": [
                                            ranges=[{"events": ["introduced 0", {"fixed": "1"}]}])),
     ("an event of a kind nobody knows", _package("p", "0.0.0", "GHSA-bad-0010",
                                                  ranges=[{"events": [{"introduced": "0"}, {"maybe": "1"}]}])),
+    ("the open range is listed first", _package("p", "0.0.0", "GHSA-two-0003", ranges=NO_FIX + FIXED)),
+    ("an entry that cannot be read beside one that can", _package("p", "0.0.0", "GHSA-bad-0013", affected=[
+        _affected("p", "PyPI", FIXED), "p"])),
+    ("an entry with no package beside one that can be read", _package("p", "0.0.0", "GHSA-bad-0014", affected=[
+        _affected("p", "PyPI", FIXED), {"ranges": NO_FIX}])),
+    ("an entry whose package has no name", _package("p", "0.0.0", "GHSA-bad-0015", affected=[
+        _affected("p", "PyPI", FIXED), {"package": {"ecosystem": "PyPI"}, "ranges": NO_FIX}])),
+    ("something that is not an event between two that are", _package("p", "0.0.0", "GHSA-bad-0016", ranges=[
+        {"events": [{"introduced": "0"}, "junk", {"fixed": "1"}]}])),
+    ("an event that says two things", _package("p", "0.0.0", "GHSA-bad-0017", ranges=[
+        {"events": [{"introduced": "0"}, {"fixed": "1", "introduced": "2"}]}])),
+    ("an unknown kind of event before the fix", _package("p", "0.0.0", "GHSA-bad-0018", ranges=[
+        {"events": [{"introduced": "0"}, {"maybe": "1"}, {"fixed": "2"}]}])),
     ("a fix with nothing introduced", _package("p", "0.0.0", "GHSA-bad-0011",
                                                ranges=[{"events": [{"fixed": "1"}]}])),
     ("the fix is listed before the introduction", _package("p", "0.0.0", "GHSA-bad-0012",
@@ -467,6 +480,17 @@ def test_only_the_adapters_own_yes_leaves_a_row_out(tmp_path, said):
     kept, rows = it._without_unpinned([row], str(root))
     assert (len(kept), rows) == (1, [])
     assert "ranges_end" not in kept[0]["tool_evidence"]
+
+
+@pytest.mark.parametrize("name", [None, 7, ["requests"], {"n": "requests"}])
+def test_a_row_whose_package_name_is_not_text_is_never_judged(tmp_path, name):
+    """Whatever the adapter said of its ranges: there is no name to look a pin up by."""
+    root = _tree(tmp_path, {"requirements.txt": "requests\n"})
+    row = {"source": "tool:osv-scanner", "location": {"file": "requirements.txt"},
+           "tool_evidence": {"package_name": name, "vulnerable_versions": "0.0.0",
+                             "ecosystem": "PyPI", "rule_id": "GHSA-1", "ranges_end": True}}
+    kept, rows = it._without_unpinned([row], str(root))
+    assert (len(kept), rows) == (1, [])
 
 
 def test_the_adapters_note_reaches_no_finding(tmp_path):
