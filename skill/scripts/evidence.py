@@ -145,6 +145,96 @@ def _agent_verdict(raw):
     return validate_schema_mod.repair_verdict(clean)
 
 
+# #3756: the lines of an aggregated scanner finding that a REJECTED verdict did not
+# judge, recorded by `judged_only` on the verdict it rewrites. A controller carrier
+# like `SCOPE_LIMITED_FIELD`: `_agent_verdict` strips every `_` key an advisor
+# wrote, so only this module can set it.
+UNJUDGED_FIELD = "_unjudged_loci"
+# The advisor's own statement of which of the claim's lines it examined.
+JUDGED_FIELD = "judged_loci"
+
+
+def _line(value):
+    """`value` as a line number, or None. An integer and nothing like one: `True`
+    is not line 1, and `"12"` is not what the claim was written with."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _hit_lines(finding):
+    """The distinct lines of an aggregated scanner finding's hits, or None for a
+    finding this rule does not apply to: not a scanner's, or with one hit. A hit
+    that carries no line is in the set as None."""
+    if not isinstance(finding, dict) or not is_tool_sourced(finding):
+        return None
+    loci = finding.get("additional_loci")
+    if not isinstance(loci, list) or not loci:
+        return None
+    hits = [location_of(finding).get("line_start")]
+    hits += [locus.get("line_start") if isinstance(locus, dict) else None for locus in loci]
+    return {_line(hit) for hit in hits}
+
+
+def unjudged_loci(finding, verdict):
+    """The lines of `finding` a REJECTED `verdict` does not cover, or [] (#3756).
+
+    `synth.findings.aggregate_tool_findings` makes every hit of one scanner rule in
+    one file ONE finding: a shown line and `additional_loci`. An advisor is handed
+    all of them, and its REJECTED discarded all of them, whichever it had looked
+    at -- nine hits, five judged, the real one among the four that were not. So a
+    rejection of such a finding covers the lines the advisor NAMES in `judged_loci`
+    and no others.
+
+    [] means the verdict stands as written: it is not a REJECTED, the finding is
+    not a scanner's, or it has one hit. Sorted line numbers otherwise, and a final
+    None when some hit carries no line: nothing an advisor can write names that
+    hit, so such a finding can be confirmed and can never be rejected.
+
+    Defensive about shape, both sides: the verdict's list is agent-supplied, and a
+    non-list is "said nothing" (never repaired into a list: `validate_schema`'s
+    note on adjudication fields). A number that is not one of the claim's own
+    lines counts for nothing.
+    """
+    if not isinstance(verdict, dict):
+        return []
+    if str(verdict.get("verdict", "")).upper() != "REJECTED":
+        return []
+    lines = _hit_lines(finding)
+    if lines is None:
+        return []
+    said = verdict.get(JUDGED_FIELD)
+    judged = {_line(n) for n in said} if isinstance(said, list) else set()
+    left = sorted(n for n in lines if n is not None and n not in judged)
+    return left + ([None] if None in lines else [])
+
+
+def judged_only(finding, verdict):
+    """`verdict` as it applies to `finding`: itself, or -- for a REJECTED that left
+    some of an aggregated scanner finding's lines unjudged -- a copy that is NOT a
+    rejection (#3756).
+
+    The copy says NEEDS_MORE_INFO, which already means "an advisor answered, the
+    claim is not verified and is not discarded" to every reader of a verdict's
+    word (the gate, certification, dedupe's member rules, the severity cap), so
+    none of them needs to learn about lines. It carries the unjudged lines in
+    `UNJUDGED_FIELD` for `derive_evidence` to publish, and one fixed sentence
+    ahead of the advisor's own reasoning. `missing_evidence` is dropped from it:
+    on a NEEDS_MORE_INFO that field means "a file I was not granted", which this
+    advisor did not say.
+    """
+    left = unjudged_loci(finding, verdict)
+    if not left:
+        return verdict
+    total = len(_hit_lines(finding))
+    said = verdict.get("reasoning")
+    note = "The advisor judged %d of %d flagged lines safe; %d %s not judged." % (
+        total - len(left), total, len(left), "was" if len(left) == 1 else "were")
+    rewritten = {key: value for key, value in verdict.items() if key != "missing_evidence"}
+    rewritten.update({"verdict": "NEEDS_MORE_INFO", UNJUDGED_FIELD: left,
+                      "reasoning": "%s %s" % (note, said) if isinstance(said, str) and said
+                      else note})
+    return rewritten
+
+
 def scope_limited_paths(verdict):
     """The files a NEEDS_MORE_INFO verdict says it was NOT granted, or [].
 
@@ -380,6 +470,10 @@ def derive_evidence(finding, verdict=None):
                    "citation_quality": quality}
         # #1638 P16: a CONFIRMED that survived a scope-limited backup is still
         # confirmed, and the report says which files the backup could not see.
+        # #3756: set by `judged_only`, never by an advisor (`UNJUDGED_FIELD`).
+        unjudged = (verdict or {}).get(UNJUDGED_FIELD)
+        if isinstance(unjudged, list) and unjudged and v == "NEEDS_MORE_INFO":
+            derived["unjudged_loci"] = list(unjudged)
         missing = carried_paths(verdict or {})
         if missing and v == "CONFIRMED":
             derived["status"] = BACKUP_SCOPE_LIMITED

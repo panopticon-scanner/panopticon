@@ -2133,6 +2133,11 @@
                   "backup_scope_limited"
                 ]
               },
+              "unjudged_loci": {
+                "type": "array",
+                "items": {"type": ["integer", "null"]},
+                "description": "#3756: present with status `needs_more_info` on a scanner finding that aggregates several hits of one rule in one file, when an advisor answered REJECTED and its `judged_loci` did not name every hit. The line numbers nobody judged, sorted; a final null stands for a hit that carries no line. A rejection covers only the hits it judged, so the finding stays in the report, not verified, instead of being discarded with hits the advisor never read. `reasoning` then opens with how many of the flagged lines were judged."
+              },
               "missing_evidence": {
                 "type": "array",
                 "items": {

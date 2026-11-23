@@ -188,6 +188,20 @@ scanner finding is one line, because no scanner adapter reports a span: no hit c
 weighs as its widest hit, and a hit in `additional_loci` keeps its `line_end`) would apply only
 if an adapter reported a span. The ranges that weigh in 5.4 are agent findings' own. A range that
 ends before it starts is read as one line at load.
+**A verdict on a scanner rule's hits (#3756).** The advisor is given every hit: the shown line and
+each entry of `additional_loci` are one claim. CONFIRMED needs one real hit. REJECTED means every
+hit is safe, and it takes effect only when the advisor's `judged_loci` (line numbers) names every
+one of the finding's lines. A REJECTED that leaves a line out is not a rejection: the finding
+stays in the report with `evidence.status: needs_more_info`, `evidence.unjudged_loci` lists the
+lines nobody judged, and `evidence.reasoning` opens with how many were. It is answered, not
+verified and not discarded; like any unverified pattern hit it is capped at MEDIUM unless
+`--gate-unverified` is set. A number in `judged_loci` that is not one of the finding's lines is
+ignored, and anything but a list of integers is read as no list. So an advisor verdict written
+before 5.5, or by a host that omits the field, rejects only a finding with one line. Two limits:
+a rule that fires on many lines of one file can be confirmed but will rarely be rejected, because
+the advisor must name every line; and a hit that carries no line number can never be named, so a
+finding holding one can never be rejected. A finding with one hit, and an agent's claim, are
+rejected as before.
 `meta.coverage.dependency_audit` is the dependency-audit receipt: the ecosystems the tree has a
 dependency manifest for (`applicable`), and the dedicated auditors that were `selected` and
 `produced` output. Its `unaudited` map (#3648) names each applicable ecosystem that no selected

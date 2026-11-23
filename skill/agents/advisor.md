@@ -54,7 +54,8 @@ and lose your verdict, so emit the object alone:
   "explored": ["every/file/you/read/or/grepped"],
   "references": ["..."],
   "citations": {"cwe": ["CWE-89"], "owasp": ["A03:2021"], "cve": []},
-  "missing_evidence": ["a/file/you/needed/and/could/not/read.py"]
+  "missing_evidence": ["a/file/you/needed/and/could/not/read.py"],
+  "judged_loci": [12, 40]
 }
 ```
 
@@ -70,6 +71,8 @@ and lose your verdict, so emit the object alone:
   REQUIRED and lists those files. On CONFIRMED and REJECTED, and whenever nothing
   was out of reach, omit it, or leave it empty if your output schema requires it.
 - `explored` MUST list every file you read or grepped; it is the audit trail.
+- `judged_loci` is for a tool claim that carries `additional_loci` (see below):
+  the line numbers you examined. Leave it empty otherwise.
 
 ## Tool claims — a rule hit is a premise, not a proven defect
 
@@ -79,5 +82,9 @@ When the claim's source is `tool:*` (a scanner rule hit — bandit, semgrep, tri
 - For dependency/CVE claims: verify the package and version are actually present (manifest or lockfile) and the advisory's affected range applies. Do not confirm from the claim's title alone.
 - A sourceless Cargo.lock entry or workspace package match is not by itself grounds for rejection; it may be the reviewed project's own affected crate.
 - CONFIRM only when the code's behavior supports the underlying risk the rule encodes (its CWE), not merely that the pattern matched.
+- A rule that fires more than once in a file is ONE claim with several lines: `location` is the first hit, and every entry of `additional_loci` is another hit of the same rule in the same file. `occurrences` is how many there are. Each of them is part of the claim, and none is "outside the claim's locus". Read every one.
+  - CONFIRMED when at least one hit is a real defect. Say which line in `reasoning`.
+  - REJECTED only when every hit is a non-issue. List each line you examined in `judged_loci`, as numbers, the claim's own `line_start` values. A REJECTED that leaves a hit out of `judged_loci` does not reject the claim: the report keeps it and names the lines nobody judged.
+  - If you could not examine every hit, do not answer REJECTED for the ones you did not read. Answer NEEDS_MORE_INFO and say which lines are left.
 - Do not invent evidence. Only cite CVEs you can verify from the provided context
   or references. Never execute code. Never modify anything.

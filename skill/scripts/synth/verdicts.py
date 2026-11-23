@@ -1,5 +1,6 @@
 """The verify round: emit its queue, then resolve findings against the advisor
 verdicts and the delta context."""
+import dataclasses
 from typing import Any
 from dataclasses import dataclass, field
 import copy
@@ -893,6 +894,36 @@ def _unknown_severity_ids(findings):
                    if isinstance(f, dict) and findings_mod.SEVERITY_AS_WRITTEN in f})
 
 
+def _judged_hits_only(fs, queue):
+    """`fs` with each REJECTED of an aggregated scanner finding held to the lines it
+    judged (#3756, `evidence.judged_only`).
+
+    Here, once, before anything binds a verdict: the verdict's word is read in many
+    places below (`match_verdict`, `_own_verdict`, the member rules of
+    `restore_confirmed`, `apply_verdict`), most of them without the finding in
+    hand. Rewriting the loaded answer means every one of them reads the same word.
+    Both stores, because a scanner finding's answer can arrive in either: its own
+    queue-id file, or a bundle that names its id."""
+    verdicts, bundles = dict(fs.verdicts or {}), dict(fs.verdict_bundles or {})
+    changed = False
+    for entry in queue:
+        finding, queue_id = entry["finding"], entry["queue_id"]
+        fid = str(finding.get("id"))
+        own = verdicts.get(queue_id)
+        if isinstance(own, dict) and str(own.get("finding_id")) == fid:
+            held = evidence_mod.judged_only(finding, own)
+            if held is not own:
+                verdicts[queue_id], changed = held, True
+        candidates = bundles.get(fid)
+        if isinstance(candidates, list):
+            held_all = [evidence_mod.judged_only(finding, c) for c in candidates]
+            if any(a is not b for a, b in zip(held_all, candidates)):
+                bundles[fid], changed = held_all, True
+    if not changed:
+        return fs
+    return dataclasses.replace(fs, verdicts=verdicts, verdict_bundles=bundles)
+
+
 def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     """The verdict-matching cluster (WS-0 S2): dedupe, queue, bind advisor
     verdicts, derive every finding's evidence object and fingerprint, then
@@ -923,6 +954,7 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     catalog = fs.catalog if fs.catalog is not None else load_cwe_catalog()
     ocrdb_coverage = codes_mod.validate_finding_codes(findings, ocrdb_bundle)
     queue, cut = evidence_mod.build_verify_queue(findings, run.max_verify)
+    fs = _judged_hits_only(fs, queue)
     # #3707: which cells hold each claim id, from the findings as loaded: dedupe
     # is about to collapse the instances, and a verdict speaks for its own cell's.
     held = holding_cells(fs.findings)

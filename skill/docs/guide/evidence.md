@@ -41,17 +41,19 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
   it, and only Trivy and the audit adapters, which carry no ecosystem, are judged by the lock
   alone. Gate-eligible.
 - `advisor_confirmed` / `rejected` / `needs_more_info` — advisor verdicts from the verify phase.
-  Rejected claims keep their severity and move to `discarded_claims`. A REJECTED verdict is settled
-  by one advisor: the adversarial backup round is summoned only for primary-CONFIRMED findings in
-  categories whose score reaches `score_gate.BACKUP_FLOOR`, so scepticism is spent on what would
-  reach the gate, and the asymmetry is deliberate. The rejection is auditable rather than silent —
-  every rejected claim's full advisor prose lands in `discarded_claims`. Tool-sourced findings
-  follow the same rule with no backup round at all: one advisor per finding, the first parseable
-  verdict is terminal, and it lands as a single-verdict file under `verdicts/<queue_id>.json`. A
-  verdict that lands unloadable (a parse/schema failure surfaced at
-  `meta.coverage.verdicts.unloadable`, never silently dropped) and forces `INCONCLUSIVE` — lost
-  verify coverage never certifies a clean gate (#979). That count includes a bad entry inside a
-  loadable bundle (not an object, no known verdict, or no `finding_id` echo; #2990), counted per
+  Rejected claims keep their severity and move to `discarded_claims`. A scanner finding that holds
+  several hits of one rule is rejected only when the verdict's `judged_loci` names every hit;
+  otherwise it is `needs_more_info` with `unjudged_loci` (#3756, see the output guide). A REJECTED
+  verdict is settled by one advisor: the adversarial backup round is summoned only for
+  primary-CONFIRMED findings in categories whose score reaches `score_gate.BACKUP_FLOOR`, so
+  scepticism is spent on what would reach the gate, and the asymmetry is deliberate. The rejection
+  is auditable rather than silent — every rejected claim's full advisor prose lands in
+  `discarded_claims`. Tool-sourced findings follow the same rule with no backup round at all: one
+  advisor per finding, the first parseable verdict is terminal, and it lands as a single-verdict
+  file under `verdicts/<queue_id>.json`. A verdict that lands unloadable (a parse/schema failure
+  surfaced at `meta.coverage.verdicts.unloadable`, never silently dropped) and forces `INCONCLUSIVE`
+  — lost verify coverage never certifies a clean gate (#979). That count includes a bad entry inside
+  a loadable bundle (not an object, no known verdict, or no `finding_id` echo; #2990), counted per
   entry.
 - `corroborated` — multi-panel agreement (correlated witnesses: prioritized for verification, not
   gate-eligible by default). An agent finding's panel is its review cell's (#3254), never the
