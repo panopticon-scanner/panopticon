@@ -5,9 +5,9 @@ import fcntl
 import json
 import os
 import signal
-import subprocess
+import socket
 import sys
-import time
+import threading
 from unittest import mock
 
 import pytest
@@ -17,7 +17,7 @@ import scripts.orchestrate as orchestrate
 import scripts.run_lock as run_lock
 import scripts.run_manifest as run_manifest
 from scripts.phases import child, engine, runio, setup
-from tests._test_helpers import adopt_panopticon, our_manifest
+from tests._test_helpers import adopt_panopticon, dead_pid, our_manifest
 from tests.tools.git_repo import make_git_repo
 
 SKILL = os.path.dirname(os.path.dirname(os.path.abspath(run_lock.__file__)))
@@ -55,13 +55,6 @@ def _free(root):
             return True
     except BlockingIOError:
         return False
-
-
-def _gone_pid():
-    """A pid that names no process: one that ran and was reaped."""
-    done = subprocess.Popen([sys.executable, "-c", "pass"])
-    done.wait()
-    return done.pid
 
 
 def _tree(root):
@@ -202,16 +195,12 @@ def test_the_holder_says_who_it_is_while_it_holds_and_nothing_afterwards(root):
 
 def test_the_drivers_own_descriptor_is_not_inherited_by_what_it_starts(root):
     """A reviewer agent, a probe, `git`: started by the driver without being handed the
-    descriptor, none holds the root, even one started with `close_fds=False`."""
+    descriptor, none holds the root. Close-on-exec is the kernel's, whatever starts them."""
     assert run_lock.descriptor(root) is None
     with run_lock.hold(root, "loop"):
         fd = run_lock.descriptor(root)
         assert not os.get_inheritable(fd)
-        probe = ("import os\ntry:\n    os.fstat(%d)\n    print('open')\n"
-                 "except OSError:\n    print('closed')\n" % fd)
-        started = subprocess.run([sys.executable, "-c", probe], close_fds=False,
-                                 capture_output=True, text=True, check=True)
-        assert started.stdout.strip() == "closed"
+        assert fcntl.fcntl(fd, fcntl.F_GETFD) & fcntl.FD_CLOEXEC
     assert run_lock.descriptor(root) is None
 
 
@@ -225,7 +214,7 @@ def _refusal(root):
 
 
 def test_a_child_left_by_a_driver_that_is_gone_is_named_with_what_to_do(root):
-    gone = _gone_pid()
+    gone = dead_pid()
     record = _record(pid=gone, verb="run", child={"pid": os.getpid(), "phase": "synthesize"})
     with _another_driver(root, record):
         message = _refusal(root)
@@ -244,7 +233,7 @@ def test_a_running_driver_with_a_child_is_named_as_the_driver(root):
 
 
 def test_a_holder_left_by_a_gone_driver_with_no_child_named_points_at_the_lock_file(root):
-    gone = _gone_pid()
+    gone = dead_pid()
     with _another_driver(root, _record(pid=gone, verb="loop")):
         message = _refusal(root)
     assert message == (
@@ -254,7 +243,7 @@ def test_a_holder_left_by_a_gone_driver_with_no_child_named_points_at_the_lock_f
 
 
 def test_a_driver_on_another_machine_is_named_with_its_machine_and_not_probed(root):
-    gone = _gone_pid()                    # a pid from over there means nothing here
+    gone = dead_pid()                    # a pid from over there means nothing here
     with _another_driver(root, _record(pid=gone, host="elsewhere.example")):
         message = _refusal(root)
     assert message == (
@@ -316,7 +305,7 @@ def test_a_pid_no_system_holds_does_not_stop_the_refusal(root):
 
 
 def test_a_child_whose_record_is_unusable_is_not_named(root):
-    gone = _gone_pid()
+    gone = dead_pid()
     for bad in ({"pid": "12", "phase": "synthesize"}, {"pid": 12, "phase": "\x1b[2J"},
                 {"pid": 12, "phase": "tools\x1b[2J"}, {"pid": 12, "phase": 7}, {"pid": 12},
                 {"pid": 0, "phase": "synthesize"}, ["12"], {"pid": True, "phase": "tools"}):
@@ -621,11 +610,14 @@ def test_a_phase_child_started_outside_a_held_root_is_handed_nothing(root, tmp_p
 
 
 @pytest.mark.parametrize("value", ["", "x", "987", "-1", "9" * 30, "3.5"])
-def test_a_variable_that_names_no_descriptor_does_not_stop_a_script(value):
-    started = subprocess.run(
-        [sys.executable, "-c", "import os, runpy\nrunpy.run_path(%r)\n"
-         "print(os.environ.get(%r))" % (BOOTSTRAP, run_lock.FD_ENV)],
-        env=dict(os.environ, **{run_lock.FD_ENV: value}), capture_output=True, text=True)
+def test_a_variable_that_names_no_descriptor_does_not_stop_a_script(value, tmp_path):
+    script = tmp_path / "starts.py"
+    script.write_text("import os, runpy\nrunpy.run_path(%r)\nprint(os.environ.get(%r))\n"
+                      % (BOOTSTRAP, run_lock.FD_ENV), encoding="utf-8")
+    env = dict(child._child_env(), **{run_lock.FD_ENV: value})
+    with mock.patch.object(child, "_child_env", return_value=env):
+        started = child._run_child([sys.executable, str(script)], review_root=str(tmp_path),
+                                   phase="synthesize")
     assert (started.returncode, started.stdout.strip(), started.stderr) == (0, "None", "")
 
 
@@ -661,82 +653,118 @@ def test_a_phase_child_that_fails_to_start_or_times_out_leaves_no_child_named(ro
 
 
 _DRIVER = """\
-import sys
+import os, sys
 import scripts.run_lock as run_lock
 from scripts.phases import child
-root, script, ready = sys.argv[1:4]
+root, script, port = sys.argv[1:4]
 with run_lock.hold(root, "run"):
-    child._run_child([sys.executable, script, ready], review_root=root, phase="synthesize")
+    child._run_child([sys.executable, script, port, str(os.getpid())], review_root=root,
+                     phase="synthesize")
 """
 
 _LINGERS = """\
-import os, sys, time
-with open(sys.argv[1] + ".tmp", "w") as fh:
-    fh.write(str(os.getpid()))
-os.replace(sys.argv[1] + ".tmp", sys.argv[1])
+import os, socket, sys, time
+with socket.create_connection(("127.0.0.1", int(sys.argv[1]))) as said:
+    said.sendall(("%s %d\\n" % (sys.argv[2], os.getpid())).encode())
 time.sleep(120)
 """
 
+_HOLDER = """\
+import os, socket, sys, time
+import scripts.run_lock as run_lock
+with run_lock.hold(sys.argv[1], "loop"):
+    with socket.create_connection(("127.0.0.1", int(sys.argv[2]))) as said:
+        said.sendall(("%d\\n" % os.getpid()).encode())
+    time.sleep(120)
+"""
 
-def _wait(what, seconds=20):
-    deadline = time.monotonic() + seconds
-    while time.monotonic() < deadline:
-        found = what()
-        if found:
-            return found
-        time.sleep(0.05)
-    pytest.fail("timed out waiting")
+
+class _Started:
+    """A real process, started the way the driver starts one (`child._run_child`), on a
+    thread, and the line it sends once it is ready."""
+
+    def __init__(self, tmp_path, name, text, *args, cwd):
+        self.server = socket.socket()
+        self.server.bind(("127.0.0.1", 0))
+        self.server.listen()
+        self.server.settimeout(30)
+        script = tmp_path / name
+        script.write_text(text, encoding="utf-8")
+        cmd = [sys.executable, str(script), *args, str(self.server.getsockname()[1])]
+        self.thread = threading.Thread(
+            target=child._run_child, args=(cmd,),
+            kwargs={"review_root": cwd, "phase": "tools", "timeout": 120}, daemon=True)
+        self.thread.start()
+
+    def said(self):
+        with self.server.accept()[0] as ready:
+            ready.settimeout(30)
+            return [int(word) for word in ready.makefile().readline().split()]
+
+    def running(self):
+        return self.thread.is_alive()
+
+    def ended(self):
+        self.thread.join(30)
+        self.server.close()
+        return not self.thread.is_alive()
+
+
+def _stop(*pids):
+    for pid in pids:
+        with contextlib.suppress(OSError):
+            os.kill(pid, signal.SIGKILL)
+
+
+def _until_free(root):
+    """Block until `root` is free, as a waiting process would: no polling."""
+    fd = os.open(run_lock.lock_path(root), os.O_RDWR)
+    waiting = threading.Thread(target=fcntl.flock, args=(fd, fcntl.LOCK_EX), daemon=True)
+    waiting.start()
+    waiting.join(30)
+    try:
+        assert not waiting.is_alive(), "the root was not let go"
+    finally:
+        os.close(fd)
 
 
 def test_a_child_that_outlives_its_killed_driver_holds_the_root_until_it_exits(root, tmp_path):
     """The orphaned synthesis child of the issue: a retry cannot start beside it."""
-    script, ready = tmp_path / "lingers.py", tmp_path / "ready"
-    script.write_text(_LINGERS, encoding="utf-8")
-    env = dict(os.environ, PYTHONPATH=SKILL)
-    first = subprocess.Popen([sys.executable, "-c", _DRIVER, root, str(script), str(ready)],
-                             env=env, cwd=root)
-    orphan = None
+    lingers = tmp_path / "lingers.py"
+    lingers.write_text(_LINGERS, encoding="utf-8")
+    first = _Started(tmp_path, "driver.py", _DRIVER, root, str(lingers), cwd=root)
+    pids = []
     try:
-        orphan = int(_wait(lambda: ready.exists() and ready.read_text()))
-        first.send_signal(signal.SIGKILL)
-        first.wait()
+        pids = driver_pid, orphan = first.said()
+        _stop(driver_pid)
+        assert first.ended()
         status = _run(root)
         assert status["status"] == "error"
         assert ("a synthesize child (pid %d) left by a driver that is no longer running "
-                "(pid %d, `driver run`" % (orphan, first.pid)) in status["message"]
+                "(pid %d, `driver run`" % (orphan, driver_pid)) in status["message"]
         assert "`kill %d`" % orphan in status["message"]
-        os.kill(orphan, signal.SIGKILL)
-        _wait(lambda: _free(root))
-        orphan = None
+        _stop(orphan)
+        _until_free(root)
         assert REFUSAL not in str(_run(root).get("message"))
     finally:
-        if first.poll() is None:
-            first.kill()
-            first.wait()
-        if orphan:
-            with contextlib.suppress(OSError):
-                os.kill(orphan, signal.SIGKILL)
+        _stop(*pids)
 
 
 def test_a_second_driver_process_is_refused_and_the_first_is_not_disturbed(root, tmp_path):
     """Two real processes, the second through the command line."""
-    holder = ("import sys, time\nimport scripts.run_lock as run_lock\n"
-              "with run_lock.hold(sys.argv[1], 'loop'):\n"
-              "    open(sys.argv[2], 'w').close()\n    time.sleep(120)\n")
-    ready = tmp_path / "ready"
-    env = dict(os.environ, PYTHONPATH=SKILL)
-    first = subprocess.Popen([sys.executable, "-c", holder, root, str(ready)], env=env)
+    first = _Started(tmp_path, "holder.py", _HOLDER, root, cwd=root)
+    pids = []
     try:
-        _wait(ready.exists)
-        second = subprocess.run(
+        pids = first.said()
+        second = child._run_child(
             [sys.executable, os.path.join(SKILL, "scripts", "driver.py"), "run", root,
-             "--host", "codex", "--no-tools"], env=env, capture_output=True, text=True)
+             "--host", "codex", "--no-tools"], review_root=root, phase="tools")
         assert second.returncode != 0
         assert ("another driver is running on this review root (pid %d, `driver loop`"
-                % first.pid) in second.stdout
+                % pids[0]) in second.stdout
         assert not os.path.lexists(os.path.join(root, ".panopticon"))
-        assert first.poll() is None
+        assert first.running()
     finally:
-        first.kill()
-        first.wait()
+        _stop(*pids)
+    assert first.ended()
     assert _free(root)                    # a killed holder leaves nothing to clear
