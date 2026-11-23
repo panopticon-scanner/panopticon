@@ -398,6 +398,26 @@ class TestTheDomainCeiling(unittest.TestCase):
                                      f["severity_ceiling"])
                 self.assertNotIn("severity_outside_range", f)
 
+    def test_the_record_says_the_severity_the_discipline_left(self):
+        # A reasonless override resets a claim to its code's default; when that
+        # default is above the ceiling, the record's `from` is the default, not the
+        # claim. (No shipped code has such a default: a synthetic catalog.)
+        bundle = {"domains": {"TST": {"entries": {"TST-Z9Z": {"default_severity": "CRITICAL"}}}}}
+        f = _claim("TST-Z9Z", "LOW", severity_override={"from": "LOW", "to": "LOW"})
+        with contextlib.redirect_stderr(io.StringIO()):
+            codes_mod.apply_verdict_quality([f], {}, bundle)
+        self.assertEqual("HIGH", f["severity"])
+        self.assertEqual({"from": "CRITICAL", "domain": "TST", "ceiling": "HIGH"},
+                         f["severity_ceiling"])
+
+    def test_a_ceiling_is_not_counted_as_a_missing_override(self):
+        f = _claim("TST-A1B", "CRITICAL")
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            counts = codes_mod.apply_verdict_quality([f], {}, _real_bundle())
+        self.assertEqual(0, counts["overrides"]["missing"])
+        self.assertNotIn("without severity_override", err.getvalue())
+        self.assertIn("above the TST ceiling", err.getvalue())
+
     def test_the_code_s_domain_decides_not_the_cell_s(self):
         # A SEC code written up by a TST cell is a SEC claim, and the reverse.
         f = self.apply(_claim("SEC-A2A", "CRITICAL", cell="TST"))
