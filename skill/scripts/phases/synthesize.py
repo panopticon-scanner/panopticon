@@ -308,6 +308,80 @@ def _last_line(*streams):
     return "it said nothing"
 
 
+#: Where an earlier attempt's published files go, in the run folder (#3769).
+_EARLIER = "earlier-attempt"
+#: The two flat names a reader of "the latest report" opens (§5.1).
+_FLAT = ("report.json", "report.json.html")
+
+
+def _published_at(report):
+    """Every name the child publishes at whenever it publishes `report`: the report, its
+    page, the X0X and the X0X failure log."""
+    stem = report[:-len(".json")] if report.endswith(".json") else report
+    x0x = stem + "-x0x.json"
+    return (report, report + ".html", x0x, x0x_report.failure_log_path(x0x))
+
+
+def _what_is_at(path):
+    """`path`'s own `lstat`, or None when nothing is there. Only "no such file" is
+    nothing: any other failure to look stops the attempt (#3774). Read as absent, one
+    EIO left an earlier report where it was, to be taken for this attempt's."""
+    try:
+        return os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        raise runio.DriverError("synthesize could not look at %s: %s" % (
+            os.path.basename(path), redact.redact_diagnostic(str(exc), 400))) from exc
+
+
+def _not_set_aside(path, reason):
+    return runio.DriverError("synthesize could not set aside an earlier attempt's %s: %s"
+                             % (os.path.basename(path), redact.redact_diagnostic(reason, 400)))
+
+
+def _clear_for_this_attempt(review_root, report):
+    """Leave nothing at the names a report is read from, before the child runs. A report
+    found afterwards is then this child's: the child can die with any status, a gate's
+    1 or 2 included, and leave nothing to be taken for its own (#3769).
+
+    First the flat links go, whatever they point at: another run's report (#3778) or
+    an earlier attempt's. They go before anything is moved, so a move that fails
+    leaves no flat path on an old verdict (#3774). Then what an earlier attempt
+    published, and a regular file at a flat name, are moved into the run folder: kept,
+    under names no reader takes for a report. Anything that cannot be looked at,
+    removed or moved, or is still there afterwards, stops the attempt before the child.
+
+    Only a regular file is an attempt's. A link, a directory or a FIFO at a name the
+    child publishes at is left as it is for the child, which refuses it by name, and
+    `synthesize_execute` takes no report through one."""
+    published = _published_at(report)
+    # Without a manifest the flat names are the child's own, and it judges them.
+    flat = [path for path in (runio._pano(review_root, name) for name in _FLAT)
+            if path not in published]
+    for link in flat:
+        found = _what_is_at(link)
+        if found is not None and stat.S_ISLNK(found.st_mode):
+            try:
+                safe_write.remove_artifact(link)
+            except OSError as exc:
+                raise runio.DriverError("synthesize could not remove the flat %s: %s" % (
+                    os.path.basename(link), redact.redact_diagnostic(str(exc), 400))) from exc
+    aside = runio._pano(review_root, _EARLIER)
+    for path in (*flat, *published):
+        found = _what_is_at(path)
+        if found is None or not stat.S_ISREG(found.st_mode):
+            continue
+        safe_write.confine_artifact_path(aside)
+        try:
+            os.makedirs(aside, exist_ok=True)
+            os.replace(path, os.path.join(aside, os.path.basename(path)))
+        except OSError as exc:
+            raise _not_set_aside(path, str(exc)) from exc
+        if _what_is_at(path) is not None:
+            raise _not_set_aside(path, "it is still there after the move to %s" % aside)
+
+
 def synthesize_execute(review_root, manifest):
     # #5.0-16 fallback: guarantee both integrity artifacts exist once, after
     # review and before synthesize, even when the verify phase was vacuously
@@ -510,20 +584,22 @@ def synthesize_execute(review_root, manifest):
     except OSError as exc:
         raise runio.DriverError("synthesize could not write pending marker: %s" %
                                redact.redact_diagnostic(str(exc), 400)) from exc
+    # #3769: after the marker, so an attempt stopped here is still owed.
+    _clear_for_this_attempt(review_root, report)
     proc = child._run_child(cmd, review_root=review_root, phase="synthesize")
     # #3706: a status the child returns only when it has published a report is the one
     # kind this phase may look for a report after. Any other (3 is "invalid input": a
-    # scope it refuses, a directory it could not list) is a child that wrote none, and
-    # the report on disk is then an EARLIER attempt's. Accepting it cleared the marker
-    # and ended the run `complete`, on a verdict this attempt never reached. Raised
-    # before the relink below, with the marker left: the attempt is still owed.
+    # scope it refuses, a directory it could not list) is a child that wrote none.
+    # Raised before the relink below, with the marker left: the attempt is still owed.
     if proc.returncode not in _PUBLISHED_STATUSES:
         raise runio.DriverError("synthesize wrote no report (rc=%s): %s"
                                 % (proc.returncode, _last_line(proc.stderr, proc.stdout)))
     # Gate failures still publish usable reports. Keep the report-shape check
     # shared with done(), but independent of the pending marker: a successful
     # retry must validate its output before clearing that marker (#2930).
-    if not _usable_report(review_root):
+    written = _what_is_at(report)
+    if not (written is not None and stat.S_ISREG(written.st_mode)
+            and _usable_report(review_root)):
         raise runio.DriverError("synthesize produced no usable report.json (rc=%s): %s"
                           % (proc.returncode, redact.redact_diagnostic(proc.stderr or proc.stdout, 400)))
     loop_progress.relay_summary(proc.stdout)      # #3232: `loop` only; the child stdout is captured
