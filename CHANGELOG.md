@@ -22,6 +22,18 @@
     remedy.
   - Not covered: `driver persist` and `driver readiness` take no lock, and two state directories
     (two machines or two users on one shared tree) do not exclude each other.
+- **A tool finding is no longer dropped because its location spells a fixture, vendored or
+  generated directory it is not in (#3771).** Suppression by path name read the scanner's reported
+  location as text. A location carrying URI syntax or dot segments, such as
+  `#/tests/fixtures/Cargo.lock`, `tests/fixtures/../../Cargo.lock` or its percent-escaped form,
+  spelled a suppressed directory around a file that is not in one, and a HIGH finding there was
+  dropped as `fixture-corpus`. The same held for vendored directories, virtualenvs, run artifacts
+  and bytecode, and for an operator's `exclude_paths:` globs.
+  - Suppression and exclusion by path now apply only to a plain path: no `..` segment, no `%`,
+    `?`, `#`, backslash or control character, and no leading scheme or drive. A finding at any
+    other location is kept and reported.
+  - Plain paths are suppressed as before, including `./vendor/lib.js` and names with spaces,
+    `@`, `+` or non-ASCII letters.
 - **A synthesis retry that dies without writing a report no longer ends the run on an earlier
   attempt's (#3769).** The driver took any usable report at the run's report path for the one its
   synthesize step had just written. When an attempt had published a report and then not finished
