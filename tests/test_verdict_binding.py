@@ -556,7 +556,8 @@ class TestTheLinesOfAClaim(unittest.TestCase):
     def test_an_agent_claim_that_carries_a_scanner_s_lines_is_not_changed(self):
         # `corroborate._carry_aggregation` (#2361) puts a dropped scanner member's
         # lines on an agent survivor. That claim is the agent's, about its own line,
-        # and its advisor is not asked for `judged_loci`: as on main.
+        # and its advisor is not asked for `judged_loci`: as on main. Its REJECTED
+        # still discards the carried lines; that is #3786 (5.5.x), not this rule.
         carried = self.finding(3, 9, 27, source="agent:COD")
         self.assertEqual([], self.unjudged(carried))
         del carried["source"]
