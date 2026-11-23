@@ -669,17 +669,28 @@ def _pep440_parts(text):
     return (int(epoch), tuple(release), pre, post, dev, local)
 
 
-def _pep440_key(version):
-    """A comparison key under which PEP 440-equal spellings agree (``1.2.0-rc1`` and
+def _pep440_keyed(version):
+    """``(key, unkeyable)`` for a version.
+
+    The key is one under which PEP 440-equal spellings agree (``1.2.0-rc1`` and
     ``1.2rc1``). Only used to find ambiguity, never to confirm: an unparseable version
     keys as its own lower-cased text, as does one with a number past Python's int()
-    digit limit, so it fails closed for that identity alone, not the whole lock."""
+    digit limit, so the lock still parses.
+
+    ``unkeyable`` (#3776) is true for that second case alone. Under its own text for
+    a key, another spelling of the same release (``<huge>`` and ``<huge>.0``) is a
+    different key, so its twins cannot be looked for. A version that is simply not
+    PEP 440 has no other spelling to find."""
     text = version.strip().lower()
     try:
         parts = _pep440_parts(text[1:] if text.startswith("v") else text)
     except ValueError:
-        return text
-    return text if parts is None else parts
+        return text, True
+    return (text if parts is None else parts), False
+
+
+def _pep440_key(version):
+    return _pep440_keyed(version)[0]
 
 
 def _pep508_name(name):
@@ -877,6 +888,9 @@ def _python_package_origins(lock_path, target_root, cache: IngestCache):
         # Confirmation stays an exact match; another spelling of the same release
         # only makes the identity ambiguous.
         if len(spellings[(identity[0], _pep440_key(identity[1]))]) > 1:
+            found[identity].add("unknown")
+        # #3776: nor is an identity whose twins could not be looked for.
+        if _pep440_keyed(identity[1])[1]:
             found[identity].add("unknown")
     origins.update(found)
     return origins

@@ -24,6 +24,14 @@
     step, which refuses it as before, and the driver takes no report through a link.
   - Not changed: split parts and a discarded-claims file of the earlier attempt stay where they
     are. Only a report names them.
+- **A local Python package with an over-long version number stays with the advisor (#3776).** A
+  version holding a number past Python's integer digit limit (more than 4,300 digits) cannot be
+  compared with other spellings of the same release, so a registry copy spelled differently was
+  never found and the local package's advisory was confirmed as first-party. Such an identity is
+  now unknown, for that package alone; the rest of the lock is read as before. Also pinned by a
+  test, with no change in behaviour: a registry copy is recognised as the same release across
+  spellings of the package name (`lib-x` and `Lib_X`).
+
 - **A target whose path holds `[`, `*` or `?` is reviewed like any other (#3701).** The run looked
   for its own files with `glob`, and passed the run folder's path as part of the pattern. Under a
   review root such as `repo[x]/`, `[x]` was read as a character class, so nothing matched: the
