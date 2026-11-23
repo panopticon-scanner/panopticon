@@ -50,6 +50,11 @@
         "floor_count": {"type": "integer"}
       }
     },
+    "severity_assessed": {"type": ["object", "null"],
+      "required": ["severity", "reason"],
+      "properties": {"severity": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]},
+                     "reason": {"type": "string"}},
+      "description": "Domain advisor (#3754): for a claim rated CRITICAL or HIGH, the severity this advisor would assign and why, when the claim's does not fit; null or absent when it fits. Recorded beside the finding as `severity_assessed` and applied to nothing in 5.5. A malformed value is not recorded."},
     "missing_evidence": {"type": "array", "items": {"type": "string"},
       "description": "Files this advisor needed and was NOT granted (#1638 P16). Meaningful only on a NEEDS_MORE_INFO verdict, where it marks an evidence-SCOPE failure: the finding keeps evidence.status `backup_scope_limited`, the primary CONFIRMED stands, and the report names what the backup could not see. A NEEDS_MORE_INFO without it is a substantive one and keeps its existing meaning."}
   }

@@ -145,6 +145,15 @@ def severity_after_discipline(finding, bundle):
     claim at CRITICAL with an empty `severity_override` won the merge over another
     cell's confirmed CRITICAL and was then reset to its code's LOW default here.
     `apply_verdict_quality` applies exactly this value, so the two cannot disagree."""
+    disciplined = _within_range(finding, bundle)
+    ceiling = _ceiling(finding, bundle)
+    if ceiling and _SEV_ORDINAL.get(disciplined, -1) > _SEV_ORDINAL[ceiling[1]]:
+        return ceiling[1]
+    return disciplined
+
+
+def _within_range(finding, bundle):
+    """The default/override/range discipline alone (#3330), before the ceiling."""
     severity = finding.get("severity")
     override = finding.get("severity_override")
     default = ocrdb.default_severity(bundle, finding.get("code"))
@@ -158,6 +167,33 @@ def severity_after_discipline(finding, bundle):
     if not override.get("reason"):
         return default or severity
     return _clamp_to_range(default, severity, override, bounds) if ranged else severity
+
+
+def _ceiling(finding, bundle):
+    """#3754: `(domain, ceiling)` bounding this agent finding, or None. Only a code
+    the catalog knows decides it, never the cell that wrote the claim up: with
+    `--fail-on critical`, the default, a clamp from CRITICAL to HIGH turns a FAIL
+    into a PASS, and a real defect an OPS or TST cell filed without a code must not
+    be silenced by which cell found it (`outside_range` flags that one instead)."""
+    if evidence_mod.is_tool_sourced(finding):
+        return None
+    return ocrdb.domain_ceiling(bundle, finding.get("code"))
+
+
+def outside_range(finding, bundle):
+    """#3754: `{domain, ceiling}` for an agent claim with no code the catalog knows,
+    filed by a cell of a ceilinged domain, at a severity above that ceiling; else
+    None. Nothing is changed: the claim keeps its severity and the report says it
+    is outside the range."""
+    if evidence_mod.is_tool_sourced(finding) or _ceiling(finding, bundle) is not None:
+        return None
+    if ocrdb.default_severity(bundle, finding.get("code")) is not None:
+        return None                        # a known code outside the four domains
+    domain = finding.get(evidence_mod.CELL_DOMAIN_FIELD)
+    ceiling = ocrdb.DOMAIN_CEILINGS.get(domain) if isinstance(domain, str) else None
+    if ceiling and _SEV_ORDINAL.get(finding.get("severity"), -1) > _SEV_ORDINAL[ceiling]:
+        return {"domain": domain, "ceiling": ceiling}
+    return None
 
 
 def apply_verdict_quality(findings, matched, bundle):
@@ -188,13 +224,26 @@ def apply_verdict_quality(findings, matched, bundle):
                 # look. Stated as FALSE rather than left absent, because the
                 # absent case ("no backup was summoned") is a different fact.
                 f["backup_confirmed"] = False
+        _record_assessment(f, v)
         ov = f.get("severity_override")
         default = ocrdb.default_severity(bundle, f.get("code"))
         # The one decision (#3727); what follows applies and discloses it.
         requested, applied = f.get("severity"), severity_after_discipline(f, bundle)
+        # #3754: say so when the domain's ceiling is what lowered it.
+        within, ceiling = _within_range(f, bundle), _ceiling(f, bundle)
+        if ceiling and within != applied:
+            f["severity_ceiling"] = {"from": within, "domain": ceiling[0],
+                                     "ceiling": ceiling[1]}
+            print("synthesize: %s: %s %s above the %s ceiling, published %s"
+                  % (f.get("id") or "?", f.get("code"), f["severity_ceiling"]["from"],
+                     ceiling[0], ceiling[1]), file=sys.stderr)
+        flagged = outside_range(f, bundle)
+        if flagged:
+            f["severity_outside_range"] = flagged
         if not isinstance(ov, dict):
             if applied != requested:
                 f["severity"] = applied
+            if within != requested:
                 ov_missing += 1
                 print("synthesize: %s: agent severity %s without severity_override "
                       "reverted to OCRDb %s default %s"
@@ -215,9 +264,10 @@ def apply_verdict_quality(findings, matched, bundle):
                 f["severity"] = applied
                 ov["to"] = applied
                 print("synthesize: %s: severity override %s clamped to %s "
-                      "by OCRDb %s severity_range"
-                      % (f.get("id") or "?", requested, applied,
-                         f.get("code") or "?"), file=sys.stderr)
+                      "by OCRDb %s %s"
+                      % (f.get("id") or "?", requested, applied, f.get("code") or "?",
+                         "severity_range" if within != requested
+                         else "domain ceiling (#3754)"), file=sys.stderr)
             cur = _SEV_ORDINAL.get(f.get("severity"), 0)
             base = _SEV_ORDINAL.get(default, cur)
             if cur > base:
@@ -226,3 +276,26 @@ def apply_verdict_quality(findings, matched, bundle):
                 ov_down += 1
     return {"overrides": {"count": ov_count, "up": ov_up, "down": ov_down,
                           "clamped": ov_clamped, "missing": ov_missing}}
+
+
+def ceiling_ids(findings):
+    """#3754: `({domain: [ids]}, [ids])` for `meta.severity_ceiling` and
+    `meta.severity_outside_range`: the findings the domain ceiling lowered, and the
+    uncoded ones rated above their cell's ceiling. Empty when there are none."""
+    lowered: dict = {}
+    outside = []
+    for f in findings:
+        record = f.get("severity_ceiling")
+        if isinstance(record, dict) and isinstance(record.get("domain"), str) and f.get("id"):
+            lowered.setdefault(record["domain"], []).append(f["id"])
+        if isinstance(f.get("severity_outside_range"), dict) and f.get("id"):
+            outside.append(f["id"])
+    return {k: sorted(v) for k, v in sorted(lowered.items())}, sorted(outside)
+
+
+def _record_assessment(finding, verdict):
+    """#3754, record-only in 5.5: the domain advisor's view of an agent claim's
+    severity, beside the finding. Nothing reads it to decide anything."""
+    assessed = evidence_mod.severity_assessed(verdict)
+    if assessed and not evidence_mod.is_tool_sourced(finding):
+        finding["severity_assessed"] = assessed

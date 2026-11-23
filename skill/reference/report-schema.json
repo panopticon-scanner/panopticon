@@ -87,6 +87,23 @@
           },
           "description": "#3582: every dispatch that ran on a profile fallback rung instead of its requested model, because the route's live model list lacked the requested one. `bound` is what ran; the run is never labelled with `requested`. Present only when non-empty."
         },
+        "severity_ceiling": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "TST": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+            "ACC": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+            "OPS": {"type": "array", "items": {"type": "string"}, "minItems": 1},
+            "QAL": {"type": "array", "items": {"type": "string"}, "minItems": 1}
+          },
+          "description": "#3754: the ids of the active agent findings published at their code's domain ceiling (`findings[].severity_ceiling`), per domain. Present only when there is at least one."
+        },
+        "severity_outside_range": {
+          "type": "array",
+          "items": {"type": "string"},
+          "minItems": 1,
+          "description": "#3754: the ids of the active agent findings with no known catalog code rated above their reviewer's domain ceiling and left as rated (`findings[].severity_outside_range`). Present only when there is at least one."
+        },
         "severity_capped": {
           "type": "object",
           "properties": {
@@ -1937,6 +1954,37 @@
             },
             "required": ["from", "reason"],
             "description": "#3231: present when synthesis capped this finding's severity at MEDIUM; `meta.severity_capped` lists the ids per reason."
+          },
+          "severity_ceiling": {
+            "type": "object",
+            "required": ["from", "domain", "ceiling"],
+            "additionalProperties": false,
+            "properties": {
+              "from": {"type": "string", "description": "The severity before the ceiling: the reviewer's, after the OCRDb default and range discipline."},
+              "domain": {"type": "string", "enum": ["TST", "ACC", "OPS", "QAL"]},
+              "ceiling": {"type": "string", "enum": ["HIGH", "MEDIUM"]}
+            },
+            "description": "#3754: present when an agent finding's catalog code belongs to a domain with a severity ceiling (test quality, accessibility, operations and CI hygiene, code quality) and the finding was rated above it, so it was published at the ceiling. The ceilings are the highest of each domain's codes in the OCRDb 0.7 catalog; the shipped 0.6.0 catalog has no ranges. Scanner findings never carry it. `meta.severity_ceiling` lists the ids per domain."
+          },
+          "severity_outside_range": {
+            "type": "object",
+            "required": ["domain", "ceiling"],
+            "additionalProperties": false,
+            "properties": {
+              "domain": {"type": "string", "enum": ["TST", "ACC", "OPS", "QAL"]},
+              "ceiling": {"type": "string", "enum": ["HIGH", "MEDIUM"]}
+            },
+            "description": "#3754: present when an agent finding with no catalog code, or one the catalog does not know, was filed by a reviewer of a domain with a severity ceiling and rated above it. Its severity is NOT changed: lowering it could turn a failing gate into a passing one for a real defect a reviewer left uncoded. The report says the rating is outside the range. `meta.severity_outside_range` lists the ids."
+          },
+          "severity_assessed": {
+            "type": "object",
+            "required": ["severity", "reason"],
+            "additionalProperties": false,
+            "properties": {
+              "severity": {"type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]},
+              "reason": {"type": "string", "maxLength": 400}
+            },
+            "description": "#3754: the domain advisor's view of an agent claim's severity, when it judged the claim's CRITICAL or HIGH did not fit: the severity it would assign and why (one line, at most 400 characters). Recorded only: in 5.5 it changes no severity, gate or grade."
           },
           "severity_override": {
             "type": "object",

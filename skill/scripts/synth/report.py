@@ -25,6 +25,7 @@ from . import health_basis as health_basis_mod
 from . import plan as plan_mod
 from . import severity_cap as severity_cap_mod
 from . import tool_axis as tool_axis_mod
+from . import codes as codes_mod
 from . import cost as cost_mod
 from . import verdicts as verdicts_mod
 
@@ -353,6 +354,7 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=(), model_subs
         _fill_category(f, resolved.ocrdb_bundle)
     unscored = cvss_unscored(resolved.active)
     capped = severity_cap_mod.capped_ids(resolved.active)
+    ceilinged, outside = codes_mod.ceiling_ids(resolved.active)          # #3754
     # #3270: every external app this run launched -- the host CLI off
     # host-capabilities.json, docker off the tools manifest -- repaired at both
     # reads (both are target-writable). `meta.apps` is present only when one was.
@@ -467,6 +469,8 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=(), model_subs
             **({"prior_run": prior} if prior else {}),
             **({"cvss_unscored": unscored} if unscored else {}),      # #3162
             **({"severity_capped": capped} if capped else {}),        # #3231
+            **({"severity_ceiling": ceilinged} if ceilinged else {}),  # #3754
+            **({"severity_outside_range": outside} if outside else {}),
         },
         "summary": summary,
         "groups": graded.groups,

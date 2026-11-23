@@ -356,17 +356,20 @@ class TestTheDomainCeiling(unittest.TestCase):
         return finding
 
     def test_the_table_is_the_0_7_catalogue_s_highest_ceiling_per_domain(self):
-        expected = {}
+        # The four domains the issue is about (test quality, accessibility, CI and
+        # operations hygiene, code quality), each at its 0.7 codes' highest ceiling.
+        top = {}
         for domain, block in _bundle_07()["domains"].items():
             ceilings = [entry["severity_range"]["ceiling"]
                         for entry in block["entries"].values()
                         if isinstance(entry, dict) and isinstance(entry.get("severity_range"), dict)]
-            top = max(ceilings, key=lambda s: codes_mod._SEV_ORDINAL[s])
-            if top != "CRITICAL":
-                expected[domain] = top
-        self.assertEqual(expected, ocrdb.DOMAIN_CEILINGS)
+            top[domain] = max(ceilings, key=lambda s: codes_mod._SEV_ORDINAL[s])
         self.assertEqual({"TST": "HIGH", "ACC": "HIGH", "OPS": "HIGH", "QAL": "MEDIUM"},
                          ocrdb.DOMAIN_CEILINGS)
+        self.assertEqual({domain: top[domain] for domain in ocrdb.DOMAIN_CEILINGS},
+                         ocrdb.DOMAIN_CEILINGS)
+        # Only domains whose codes stop below CRITICAL can have a ceiling at all.
+        self.assertNotIn("CRITICAL", ocrdb.DOMAIN_CEILINGS.values())
 
     def test_the_shipped_catalogue_has_no_ranges(self):
         # Why the table exists. When this fails, 0.7 has shipped and the table goes.
@@ -594,9 +597,12 @@ class TestTheAdvisorAssessesSeverityOnRecord(unittest.TestCase):
                      "verify-backup-generation-schema.json"):
             with self.subTest(schema=name):
                 strict = json.loads((root / "reference" / name).read_text(encoding="utf-8"))
-                items = strict["$defs"]["verdict"]
-                self.assertIn("severity_assessed", items["required"])
-                self.assertIn("null", json.dumps(items["properties"]["severity_assessed"]))
+                shapes = [k for k in strict["$defs"] if k.startswith("verdict") and k != "verdict_value"]
+                self.assertIn("verdict", shapes)
+                for shape in shapes:
+                    items = strict["$defs"][shape]
+                    self.assertIn("severity_assessed", items["required"], shape)
+                    self.assertIn("null", json.dumps(items["properties"]["severity_assessed"]))
         # A strict host writes null when it has nothing to say; the receipt takes it.
         import jsonschema
         verdict = {"finding_id": "F", "verdict": "CONFIRMED", "confidence": "CERTAIN",

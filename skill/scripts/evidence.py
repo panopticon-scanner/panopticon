@@ -145,6 +145,28 @@ def _agent_verdict(raw):
     return validate_schema_mod.repair_verdict(clean)
 
 
+# #3754: the domain advisor's view of a CRITICAL or HIGH claim's severity, recorded
+# beside the finding and applied to nothing in 5.5. The reason is model text about
+# the target: one line, bounded.
+SEVERITY_ASSESSED_REASON_MAX = 400
+_ASSESSED_SEVERITIES = ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")
+
+
+def severity_assessed(verdict):
+    """`{severity, reason}` from a verdict's `severity_assessed`, or None when it has
+    none or it is malformed: a severity outside the five words as written, or a
+    reason that is not a non-empty string. Never repaired: a shape the advisor did
+    not write is not an assessment it made."""
+    value = verdict.get("severity_assessed") if isinstance(verdict, dict) else None
+    if not isinstance(value, dict):
+        return None
+    severity, reason = value.get("severity"), value.get("reason")
+    if severity not in _ASSESSED_SEVERITIES or not isinstance(reason, str):
+        return None
+    reason = " ".join(reason.split())[:SEVERITY_ASSESSED_REASON_MAX]
+    return {"severity": severity, "reason": reason} if reason else None
+
+
 def scope_limited_paths(verdict):
     """The files a NEEDS_MORE_INFO verdict says it was NOT granted, or [].
 
