@@ -320,6 +320,19 @@ def test_a_running_driver_with_a_child_is_named_as_the_driver(root):
         message = _refusal(root)
     assert "another driver is running on this review root (pid %d" % os.getpid() in message
     assert "4242" not in message
+    gone = dead_pid()                              # a child that is not running is not named
+    with _another_driver(root, _record(child={"pid": gone, "phase": "tools"})):
+        assert str(gone) not in _refusal(root)
+
+
+def test_a_running_driver_and_its_running_child_are_both_named(root):
+    child_pid = os.getppid()                       # any process that is running
+    with _another_driver(root, _record(verb="run", child={"pid": child_pid, "phase": "tools"})):
+        message = _refusal(root)
+    assert message == (
+        "another driver is running on this review root (pid %d, `driver run`, since "
+        "2026-11-23T04:00:12Z; its tools child is pid %d): wait for it to finish, or stop it, "
+        "then run again" % (os.getpid(), child_pid))
 
 
 def test_a_holder_left_by_a_gone_driver_with_no_child_named_points_at_the_lock_file(root):
@@ -1192,3 +1205,156 @@ def test_a_child_that_is_not_running_is_not_named_as_the_one_to_stop(root):
         "a process left by a driver that is no longer running (pid %d, `driver run`, since "
         "2026-11-23T04:00:12Z) still holds this review root: `lsof %s` names it; wait for it "
         "to exit, or stop it, then run again" % (gone, run_lock.lock_path(root)))
+
+
+# ---- seat review 2 at 111cd06d -----------------------------------------------------
+
+def test_the_table_is_changed_only_under_its_lock(root, tmp_path):
+    """Two threads holding different roots change one table. The release iterated it
+    while another thread wrote to it, raised, and left its descriptor open: the root
+    stayed locked for the life of the process."""
+    seen = []
+
+    class Watched(dict):
+        def __setitem__(self, key, value):
+            seen.append(("set", run_lock._TABLE.locked()))
+            super().__setitem__(key, value)
+
+        def pop(self, key, *default):
+            seen.append(("pop", run_lock._TABLE.locked()))
+            return super().pop(key, *default)
+
+        def items(self):
+            seen.append(("items", run_lock._TABLE.locked()))
+            return super().items()
+
+    with mock.patch.object(run_lock, "_GIVEN", Watched()), \
+            mock.patch.object(run_lock, "_HELD", Watched()):
+        with run_lock.hold(root, "loop"):
+            with run_lock.hold(root, "run"):
+                pass
+    assert {kind for kind, _locked in seen} == {"set", "pop", "items"}
+    assert all(locked for _kind, locked in seen), seen
+    assert not run_lock._TABLE.locked()
+    assert _free(root)
+
+
+def test_a_release_that_fails_in_the_table_still_lets_the_root_go(root):
+    class Breaks(dict):
+        def items(self):
+            raise RuntimeError("dictionary changed size during iteration")
+
+    with mock.patch.object(run_lock, "_GIVEN", Breaks()):
+        with pytest.raises(RuntimeError):
+            with run_lock.hold(root, "run"):
+                assert not _free(root)
+    assert _free(root)                    # the descriptor was closed all the same
+    assert run_lock._HELD == {} and not run_lock._TABLE.locked()
+
+
+def test_many_threads_holding_their_own_roots_all_let_go(tmp_path):
+    roots = []
+    for index in range(8):
+        roots.append(str(tmp_path / ("root-%d" % index)))
+        os.mkdir(roots[-1])
+    failed = []
+
+    def work(mine):
+        try:
+            for _ in range(150):
+                with run_lock.hold(mine, "run"):
+                    run_lock.descriptor(mine)
+        except BaseException as exc:      # noqa: BLE001 - the test reports whatever it was
+            failed.append(repr(exc))
+
+    threads = [threading.Thread(target=work, args=(mine,)) for mine in roots]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    assert failed == []
+    assert (run_lock._HELD, run_lock._GIVEN) == ({}, {})
+    assert all(_free(mine) for mine in roots)
+
+
+def test_a_lock_file_with_a_second_name_is_refused_and_not_written(root):
+    """`O_NOFOLLOW` stops a link, not a hard link: the record was written over, and then
+    truncated, whatever other file of the operator's shared the inode."""
+    path = run_lock.lock_path(root)
+    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    other = os.path.join(os.path.dirname(os.path.dirname(path)), "the-operators-own-file")
+    with open(other, "w", encoding="utf-8") as fh:
+        fh.write("not a lock")
+    try:
+        os.link(other, path)
+        with pytest.raises(run_lock.Refused) as refused:
+            with run_lock.hold(root, "run"):
+                pytest.fail("held on a file with two names")
+        assert str(refused.value).startswith(
+            "the run lock cannot be used: %s has more than one name. " % path)
+        with open(other, encoding="utf-8") as fh:
+            assert fh.read() == "not a lock"
+        assert run_lock._HELD == {}
+    finally:
+        os.remove(path)
+        os.remove(other)
+    assert _free(root)
+
+
+def test_a_record_that_cannot_be_written_leaves_none_from_the_holder_before(root):
+    """A later refusal must never name a pid out of an earlier holder's record."""
+    with _another_driver(root, _record(pid=4242, verb="loop")):
+        pass                              # that holder has gone; its record is still there
+    assert os.path.getsize(run_lock.lock_path(root)) > 0
+    with mock.patch.object(run_lock.os, "pwrite", side_effect=OSError(errno.ENOSPC, "full")):
+        with run_lock.hold(root, "run"):
+            assert os.path.getsize(run_lock.lock_path(root)) == 0
+            assert not _free(root)
+        with mock.patch.object(run_lock.os, "ftruncate", side_effect=OSError(errno.EIO, "I/O")):
+            with run_lock.hold(root, "run"):          # neither works: still held, no error
+                assert not _free(root)
+    assert _free(root)
+
+
+def _delta_run(root):
+    """A run folder that was started as a delta review (#3735 refuses to resume one)."""
+    adopt_panopticon(root)
+    manifest = run_manifest.build_manifest(
+        target=root, review_root=root, host="codex", security_mode="standard",
+        flags={"tools": False}, scope={"mode": "changed", "target": None})
+    run_manifest.write_manifest(root, our_manifest(root, manifest))
+
+
+@pytest.mark.parametrize("verb", ["run", "loop"])
+def test_the_command_line_reads_nothing_under_the_root_before_it_holds_it(root, capsys, verb):
+    """`driver.main` read `run-manifest.json` for the delta check before the verb took
+    the lock, and a refused driver beside a delta manifest got that message instead."""
+    _delta_run(root)
+    argv = [verb, root, "--host", "codex", "--no-tools"] + (
+        ["--mode", "session"] if verb == "loop" else [])
+    reads = []
+    real = run_manifest.load_manifest
+
+    def read(review_root):
+        reads.append(_free(root))
+        return real(review_root)
+
+    with mock.patch.object(run_manifest, "load_manifest", side_effect=read):
+        with _another_driver(root):
+            code = driver.main(argv)
+        said = capsys.readouterr().out
+        assert code != 0 and "another driver is running on this review root" in said
+        assert "delta review" not in said
+        assert reads == []                # refused: nothing read
+        code = driver.main(argv)
+    said = capsys.readouterr().out
+    assert code != 0 and "started as a delta review and cannot be resumed" in said
+    assert reads and not any(reads)       # every read with the root held
+    assert _free(root)
+
+
+def test_persist_still_makes_the_delta_check_without_a_lock(root, capsys):
+    _delta_run(root)
+    with _another_driver(root):
+        assert driver.main(["persist", "no-such-entry", root]) == 2
+    assert "started as a delta review" in capsys.readouterr().err

@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -138,16 +139,24 @@ class TestARunStartedAsADeltaReviewIsNotResumed(unittest.TestCase):
             self.assertFalse(delta_withdrawn.is_delta_run(not_a_manifest))
 
     def test_run_loop_and_persist_stop_before_anything_starts(self):
+        # #3782: `run` and `loop` make this check themselves, with the review root held, so
+        # each is driven as far as that check here: a real directory to hold, and what
+        # comes after it (first contact, the engine, a probe) watched for a call.
+        import scripts.loop_setup as loop_setup
         for fields in self.DELTA:
             for verb in ("run", "loop", "persist"):
                 argv = [verb] + (["scout-app"] if verb == "persist" else []) + ["x"]
+                root = os.path.realpath(tempfile.mkdtemp())
+                self.addCleanup(shutil.rmtree, root, ignore_errors=True)
                 with self.subTest(verb=verb, fields=fields), \
                         mock.patch.object(runio, "resolve_review_root",
-                                          return_value=("/root", None, None)), \
+                                          return_value=(root, None, None)), \
                         mock.patch.object(run_manifest, "load_manifest",
                                           return_value=dict(fields, run_id="R")), \
-                        mock.patch("scripts.orchestrate.main_verb") as loop, \
-                        mock.patch.object(driver, "run") as run, \
+                        mock.patch("scripts.orchestrate.persist_cli") as persist, \
+                        mock.patch.object(driver.first_contact, "assess") as contact, \
+                        mock.patch.object(loop_setup.first_contact, "assess_loop") as loop, \
+                        mock.patch.object(driver.engine, "run_engine") as run, \
                         mock.patch("scripts.host_probes.run_probes") as probes:
                     out, err = io.StringIO(), io.StringIO()
                     with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
@@ -157,8 +166,9 @@ class TestARunStartedAsADeltaReviewIsNotResumed(unittest.TestCase):
                     self.assertIn(WITHDRAWN + "this run folder was started as a delta review "
                                   "and cannot be resumed (--reset discards it and starts a "
                                   "whole-repository run). " + ADVICE, said)
-                    for touched in (loop, run, probes):
+                    for touched in (persist, contact, loop, run, probes):
                         touched.assert_not_called()
+                    self.assertEqual(os.listdir(root), [])        # nothing written under it
 
     def test_a_reset_and_a_whole_repository_run_go_on(self):
         whole = {"scope": {"mode": "repo", "target": None}, "run_id": "R"}

@@ -12,10 +12,12 @@ import signal
 import sys
 import threading
 
+import scripts.delta_withdrawn as delta_withdrawn
 import scripts.first_contact as first_contact
 import scripts.hosts as hosts
 import scripts.loop_batch as loop_batch
 import scripts.run_lock as run_lock
+import scripts.run_manifest as run_manifest
 import scripts.money as money
 import scripts.phases.requests as requests
 import scripts.phases.runio as runio
@@ -50,6 +52,12 @@ def resolve(args, held):
     try:
         resolved = loop_batch._resolve_target(args)
         held.enter_context(run_lock.hold(resolved[0], "loop"))    # #3779: before first contact
+        # #3735's check, made here with the root held (#3782) and before anything below
+        # reads the run folder it refuses.
+        stop = None if getattr(args, "reset", False) else delta_withdrawn.resumed_refusal(
+            run_manifest.load_manifest(resolved[0]))
+        if stop:
+            return None, stop
         first_contact.assess_loop(args, resolved)         # #3271 B2: before ANY read below
     except (first_contact.FirstContactHalt, run_lock.Refused) as exc:
         return None, str(exc)
