@@ -355,6 +355,7 @@ groups:
       - tests/test_venv_scope.py
       - tests/test_semgrep_targets.py
       - tests/test_ingest_tools.py
+      - tests/test_ingest_plain_paths.py
       - tests/test_run_adapter.py
       - tests/test_smoke_adapters.py
       - tests/test_run_fixture_tests.py

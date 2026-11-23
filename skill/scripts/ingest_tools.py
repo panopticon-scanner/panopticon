@@ -8,6 +8,7 @@ adapter are skipped with a diagnostic. Adapters own their third-party imports.
 """
 import json
 import os
+import re
 import sys
 
 from scripts import evidence as evidence_mod
@@ -307,6 +308,31 @@ def _target_root_for(tools_dir):
     return os.sep.join(parts[:cut]) or os.sep
 
 
+# #3771: what a location is written with when it is not a plain path in the tree.
+# `%`, `?` and `#` are URI syntax, a backslash is a separator somewhere else (and how
+# ingest spells an escaped control character), and a leading `name:` is a scheme or a
+# drive. Each can make a location SPELL a directory the file is not in.
+_NOT_PLAIN = re.compile(r"[%?#\\\x00-\x1f\x7f-\x9f]")
+_SCHEME = re.compile(r"/*[A-Za-z][A-Za-z0-9+.\-]*:")
+
+
+def _plain_path(fpath):
+    """Whether `fpath` reads as the file it names: no `..` segment, no `%`, `?`, `#`,
+    backslash or control character, no scheme (#3771).
+
+    Every rule below, and the operator's globs, read `location.file` as text. The text
+    is a scanner's, about a tree the target wrote: `#/tests/fixtures/Cargo.lock` and
+    `tests/fixtures/../../Cargo.lock` both spell a fixture directory around a file that
+    is not in one, and a HIGH finding there was dropped as `fixture-corpus`. A location
+    that is not plain is suppressed and excluded by nothing: its finding is kept.
+
+    A `.` segment, a doubled or leading slash and any other character are left alone.
+    None of them moves a file out of the directory the path names, and scanners write
+    `./vendor/lib.js`."""
+    return not (_NOT_PLAIN.search(fpath) or _SCHEME.match(fpath)
+                or ".." in fpath.split("/"))
+
+
 def _run_artifact_segment(fpath):
     """The controlled suppression reason for a non-source artifact, or None.
 
@@ -567,6 +593,9 @@ def _filter_parsed_findings(parsed, include_fixtures, exclude_globs,
         # run_tools._is_excluded, so an exclude_glob behaves identically on both
         # the ingest and the scan path (a no-op on POSIX; correct on Windows).
         fpath = str((f.get("location") or {}).get("file", "")).replace(os.sep, "/")
+        if not _plain_path(fpath):                                  # #3771
+            kept.append(f)
+            continue
         # #1740 fix round 2: gitignore semantics, through the translator
         # `discovery` compiles the SAME committed `exclude_paths:` lines with
         # -- `fnmatch` here made one committed line mean two different scopes.
