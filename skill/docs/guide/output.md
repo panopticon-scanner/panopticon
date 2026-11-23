@@ -201,7 +201,7 @@ SCA tool produced output on an applicable tree".
 An ecosystem that is `needs_online` or `not_run` stops certification (#3700), even when another
 ecosystem's auditor answered: an auditor reads its file and did not run, so part of the tree's
 dependencies went unaudited. Coverage is NOT CERTIFIED, a PASS gate becomes INCONCLUSIVE (exit 2)
-and the letter is provisional, as for any other gate-relevant gap; a FAIL stays FAIL.
+and the letter stands, as for a missing scanner or the whole-tree gap; a FAIL stays FAIL.
 `tools_manifest.UNAUDITED_UNCERTIFIED` is the one list of those reasons. The visible change: an
 offline run of a tree with a JavaScript lockfile and a `pyproject.toml` is now INCONCLUSIVE until
 it runs with `--online`, where it used to PASS with a note only the JSON showed.

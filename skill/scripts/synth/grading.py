@@ -408,6 +408,11 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         # A gate-relevant gap with no named reason gets the generic one here, or the profile text
         # would become the whole NOT CERTIFIED reason and blame the gate on the group size.
         lead = note if note is not None or not gate_relevant_gap else GATE_GAP_NOTE
+        if note is None and unaudited_uncertified and not dependency_audit_gap:
+            # #3700: this gap has a name, so its own sentences lead and the generic one
+            # is not said. (The whole-tree gap keeps its #3648 order, below.)
+            lead = "; ".join(dependency_unaudited) or GATE_GAP_NOTE
+            dependency_unaudited = ()
         reason = (custom_profile if lead and PROVISIONAL_PREFIX.rstrip(": ") in lead
                   else PROVISIONAL_PREFIX + custom_profile)
         note = "; ".join(filter(None, (lead, reason)))

@@ -8,7 +8,7 @@
   `coverage_note`, which the terminal and the HTML show only beside NOT CERTIFIED.
   - An applicable ecosystem recorded as `needs_online` or `not_run` is now a gate-relevant gap
     (owner's ruling, 2026-11-20): coverage is NOT CERTIFIED, a PASS gate is INCONCLUSIVE (exit
-    2), the letter is provisional. A FAIL stays FAIL.
+    2). The letter stands, as for a missing scanner or the whole-tree gap. A FAIL stays FAIL.
   - `no_auditable_file` (a `package.json` with no lockfile) is still disclosure only.
   - **This changes results:** an offline run of such a tree is INCONCLUSIVE until it runs with
     `--online`.

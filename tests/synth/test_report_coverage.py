@@ -1171,8 +1171,15 @@ class TestDependencyAuditCoverage(unittest.TestCase):
         for sentence in (self.JS, self.PIP_ONLINE, self.RUST):
             self.assertEqual(1, after["coverage_note"].count(sentence), sentence)
 
-    def test_the_grade_follows_the_gate_as_for_any_other_gap(self):
-        """Nothing grade-specific: what the whole-tree gap does to the summary, this does."""
+    def test_the_letter_stands_as_for_any_other_gate_relevant_gap(self):
+        """Nothing grade-specific: what the whole-tree gap does to the summary, this does.
+        A gate-relevant gap moves the gate and certification and leaves the letter where
+        it is; only an incomplete panel, a custom profile or a shortfall holds it back."""
+        import scripts.synth.grading as grading_mod
+        cert = grading_mod.certify("B", [], "high", set(), set(), unaudited_uncertified=True)
+        self.assertEqual(("B", None, "INCONCLUSIVE", False), (
+            cert["overall_grade"], cert["provisional_grade"], cert["gate"],
+            cert["coverage_certified"]))
         _b, unaudited, _r = self._mixed_tree({"python": "needs_online"})
         groups = [{"name": "g1", "files": ["a.py"]}]
         with _target_with_files(groups, lines=5000) as tgt:
@@ -1202,6 +1209,46 @@ class TestDependencyAuditCoverage(unittest.TestCase):
                          (sunk["gate"], sunk["coverage_certified"], sunk["coverage_note"]))
         self.assertEqual(("PASS", True, self.JS),
                          (named["gate"], named["coverage_certified"], named["coverage_note"]))
+
+    def test_with_a_custom_profile_the_gaps_own_sentence_leads(self):
+        """The note used to open with the generic "gate-relevant coverage did not
+        complete" and name the ecosystem last, after the profile's reason."""
+        import scripts.synth.grading as grading_mod
+        profile = "custom scan profile"
+        cert = grading_mod.certify("B", [], "high", set(), set(), unaudited_uncertified=True,
+                                   dependency_unaudited=[self.PIP_ONLINE, self.JS],
+                                   custom_profile=profile)
+        self.assertEqual("%s; %s; %s%s" % (self.PIP_ONLINE, self.JS,
+                                           grading_mod.PROVISIONAL_PREFIX, profile),
+                         cert["coverage_note"])
+        # Each sentence once, and the generic one not at all: the gap has a name.
+        self.assertNotIn(grading_mod.GATE_GAP_NOTE, cert["coverage_note"])
+        # Disclosure only (no gap): the profile's reason leads, as before.
+        named = grading_mod.certify("B", [], "high", set(), set(),
+                                    dependency_unaudited=[self.JS], custom_profile=profile)
+        self.assertEqual("%s%s; %s" % (grading_mod.PROVISIONAL_PREFIX, profile, self.JS),
+                         named["coverage_note"])
+        # The whole-tree gap keeps the order it has had since #3648.
+        whole = grading_mod.certify("B", [], "high", set(), set(), dependency_audit_gap=True,
+                                    unaudited_uncertified=True,
+                                    dependency_unaudited=[self.PIP_ONLINE],
+                                    custom_profile=profile)
+        self.assertEqual("; ".join([grading_mod.GATE_GAP_NOTE,
+                                    grading_mod.PROVISIONAL_PREFIX + profile,
+                                    self.NOTE, self.PIP_ONLINE]), whole["coverage_note"])
+        # Another reason already leads: the ecosystem follows it, once.
+        broken = grading_mod.certify("B", [], "high", set(), set(), unaudited_uncertified=True,
+                                     dependency_unaudited=[self.PIP_ONLINE],
+                                     custom_profile=profile, tools_manifest_invalid="torn")
+        self.assertTrue(broken["coverage_note"].startswith("tools manifest unreadable"))
+        self.assertEqual(1, broken["coverage_note"].count(self.PIP_ONLINE))
+        self.assertTrue(broken["coverage_note"].endswith(self.PIP_ONLINE))
+        # The fact with no sentence to say (a direct call): the generic one, as before.
+        bare = grading_mod.certify("B", [], "high", set(), set(), unaudited_uncertified=True,
+                                   custom_profile=profile)
+        self.assertEqual("%s; %s%s" % (grading_mod.GATE_GAP_NOTE,
+                                       grading_mod.PROVISIONAL_PREFIX, profile),
+                         bare["coverage_note"])
 
     def test_which_reasons_stop_certification_is_one_definition(self):
         import scripts.synth.grading as grading_mod
