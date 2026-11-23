@@ -92,19 +92,21 @@ class ToolsListing(NamedTuple):
     (#3766): a second look can disagree with the first."""
     names: tuple
     error: Any = None
-
-    @property
-    def missing(self):
-        """True only for "no such file": every other failure is a directory that is
-        there, or may be, and could not be read."""
-        return isinstance(self.error, FileNotFoundError)
+    # True only for "no such file" from the OPEN. Every other failure is a directory
+    # that is there, or may be, and could not be read -- including a "no such file"
+    # met while the entries were read, which is a directory that was there.
+    missing: bool = False
 
 
 def list_tools_dir(tools_dir):
     """The capture-shaped basenames in `tools_dir`, sorted: not hidden, `.sarif` or `.json`."""
     names = []
     try:
-        with os.scandir(tools_dir) as scan:
+        scan = os.scandir(tools_dir)
+    except OSError as exc:
+        return ToolsListing((), exc, isinstance(exc, FileNotFoundError))
+    try:
+        with scan:
             for entry in scan:
                 if not entry.name.startswith(".") and entry.name.endswith(_OUTPUT_SUFFIXES):
                     names.append(entry.name)

@@ -196,6 +196,13 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
         True, "TOOLS DIRECTORY UNREADABLE — %s (it could not be listed, so no "
               "scanner output in it was read and tool coverage is unknown; run "
               "not certified)"),
+    # #3766 (owner ruling): no run id, no certification. A tools directory that is
+    # there, on a call that names no run: nothing binds its output, or a manifest
+    # beside it, to this call.
+    "tools_run_unbound": IntegrityKey(
+        True, "NO RUN ID — nothing binds the tools directory's output to this call, "
+              "so tool coverage is not certified (a certified result comes from a "
+              "driver run, which passes --run-id)"),
     # #2013 fix round 1: a delta whose scope was chosen by a suppressed
     # comparison -- raw worktree bytes against a filtered index blob.
     "delta_scope_suppressed_git_drivers": IntegrityKey(

@@ -475,13 +475,12 @@ def main(argv=None, refuse_delta=True):
         print("synthesize: %s" % exc, file=sys.stderr)
         return validate_schema_mod.ARTIFACT_INVALID  # fatal even beside an old report
     plans = plan_mod.load_dispatch_plans_detailed(panopticon_dir=run_dir)
-    # #3766: ONE look at the tools directory. The manifest state, the ingest and the
-    # tool axis all judge it, and a second look can disagree with the first.
+    # #3766: ONE look at the tools directory. The ingest and the tool axis both
+    # judge it, and a second look can disagree with the first.
     tools_listing = (ingest_tools.list_tools_dir(args.tools_dir)
                      if args.tools_dir else None)
     try:
-        manifest_state = tool_axis_mod.ToolAxis.manifest_state(
-            args, run_dir, tools_listing)
+        manifest_state = tool_axis_mod.ToolAxis.manifest_state(args, run_dir)
     except tool_axis_mod.ToolManifestError as exc:
         print(str(exc), file=sys.stderr)
         return 3              # invalid input, distinct from gate FAIL (1)
