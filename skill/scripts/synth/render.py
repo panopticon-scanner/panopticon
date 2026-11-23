@@ -237,6 +237,21 @@ def _suppressed_gated_line(gated):
             % coverage_io.venv_tally(rows, MARKER_VENV_PREFIX))
 
 
+def _context_not_gated_line(counts):
+    """#3755: scanner findings that are in the report and that this run's gate did not
+    count, because of where they are. Silent when there are none, and on a report from
+    before the rule."""
+    rows = _suppressed_rows(counts)
+    if not rows:
+        return ""
+    total = sum(n for _rule, n in rows)
+    return ("**Not counted toward the gate:** %d scanner finding%s in a test path or dev-only "
+            "manifest %s reported and not counted toward the gate, grade or health (%s). "
+            "`--security redteam` counts those that are CRITICAL or secret-class"
+            % (total, "" if total == 1 else "s", "is" if total == 1 else "are",
+               "; ".join("%s: %d" % row for row in rows)))
+
+
 def _code_span(text):
     """`text` in a Markdown code span whose fence is long enough that the text's
     own backticks stay inert -- for a glob or a path the TARGET authored.
@@ -460,6 +475,9 @@ def render_summary(report):
                            _cov.get("tools_suppressed_not_gated"))
     if sup:
         lines.insert(3, sup)
+    context = _context_not_gated_line(_cov.get("tools_context_not_gated"))
+    if context:
+        lines.insert(3, context)
     # #1701: inserted AFTER the line above so it lands ABOVE it -- a count that
     # moved this run's gate outranks a count that did not.
     sup_gated = _suppressed_gated_line(_cov.get("tools_suppressed_gated"))

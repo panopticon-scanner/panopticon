@@ -786,6 +786,15 @@
               "description": "#1578 policy C, widened through #3269 G4: `{reason: count}` for source-scope-suppressed findings that cleared the run's severity and delta/gate-scope filters but the redteam gate declined. It includes rows policy C declined because they were neither CRITICAL nor secret-class, plus every `run-artifact` or `generated-bytecode` candidate regardless of severity or secret provenance. This is a subset of `tools_suppressed`, not a third population beside it, and is empty in standard mode.",
               "$comment": "Repaired to these types at the read by synth.repair.repair_tools_suppressed, like its two siblings."
             },
+            "tools_context_not_gated": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "test-path": {"type": "integer", "minimum": 1},
+                "dev-manifest": {"type": "integer", "minimum": 1}
+              },
+              "description": "#3755: `{rule: count}` for scanner findings that ARE in `findings[]` and that this run's gate, grade and health did not count because of where they are: `test-path` (under a test directory) or `dev-manifest` (a dependency advisory in a development-only manifest). `--security standard` counts none of them; `--security redteam` counts those that are CRITICAL or secret-class (#1578 policy C), and those are not in this tally. Each counted row carries `gate: {eligible: false, rule}`. Absent from a report written before the rule."
+            },
             "language_detection_skips": {
               "type": "array",
               "maxItems": 2,
@@ -2014,6 +2023,16 @@
           "source": {
             "type": "string"
           },
+          "gate": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["eligible", "rule"],
+            "properties": {
+              "eligible": {"const": false},
+              "rule": {"enum": ["test-path", "dev-manifest"]}
+            },
+            "description": "#3755: present only on a scanner finding that this run's gate, grade and health did not count because of where it is (`tool_evidence.path_context`), naming the rule. Absent on every finding the gate treats in the ordinary way, including one in a test path that `--security redteam` counts because it is CRITICAL or secret-class."
+          },
           "reinforced": {
             "type": "boolean"
           },
@@ -2290,6 +2309,11 @@
                 ],
                 "additionalProperties": false,
                 "description": "The package identity parsed from Trivy's inert SARIF message only after #3593's first-party Cargo classification. Kept separate from package_name because the generic Trivy adapter did not emit an artifact identity, and adding one during classification would change the finding fingerprint and reconcile key across runs."
+              },
+              "path_context": {
+                "type": "string",
+                "enum": ["test", "dev_manifest"],
+                "description": "Controller-derived during tool ingest (#3755), from the finding's path inside the review root and nothing else: `test` when an ancestor directory is one of `test`, `tests`, `spec`, `__tests__`, `e2e`, `testdata`, `fixtures`, `__fixtures__` (exact, case-sensitive); `dev_manifest` when a dependency advisory's manifest is under such a directory or is a development requirements file (`requirements-dev.txt`, `dev-requirements.txt`, `requirements-test.txt`, `test-requirements.txt`, `requirements/dev.txt`, `requirements/test.txt`). A requirements file counts only when every file it includes (`-r`, `-c`, followed to the end) is dev-only too and all of them could be read. Absent otherwise, and never set on a location that is not a plain path (#3771). The advisor is told it as a fact; it is not part of the finding's identity."
               },
               "package_origin": {
                 "type": "string",

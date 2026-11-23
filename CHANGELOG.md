@@ -2,6 +2,34 @@
 
 ## Unreleased
 
+- **A scanner finding in a test path or a dev-only manifest no longer decides the gate by which
+  way its advisor leaned (#3755).** Whether a path is a test path is a fact, but each advisor
+  decided it again ("or is it test scaffolding"). In the 5.4.0 sweep one repository failed its
+  gate in every run on private keys under a test directory, each confirmed in only some runs, and
+  another's only CRITICAL, an advisory in a test-tooling lockfile, was confirmed in five runs and
+  rejected in the sixth, which graded two bands higher.
+  - The controller now states the fact at ingest, as `tool_evidence.path_context`: `test` under
+    a test directory (`test`, `tests`, `spec`, `__tests__`, `e2e`, `testdata`, `fixtures`,
+    `__fixtures__`), `dev_manifest` for a dependency advisory in a manifest under one or in a
+    development requirements file. It is decided from the path inside the review root.
+  - A requirements file is dev-only only when every file it includes (`-r`, `-c`, followed to
+    the end) is dev-only too. `requirements-dev.txt` holding `-r requirements-prod.txt` is not
+    marked: the scanner labels production's advisories with the file it was pointed at. When
+    the included files cannot all be read, there is no mark.
+  - The advisor is told the fact as settled, and judges only whether the claim is true of what
+    is at the location.
+  - **The rule (owner's ruling, 2026-11-23).** In `--security standard` such a finding is
+    reported and not gate-eligible: out of the gate, the grade and health. In `--security
+    redteam` it gates only when CRITICAL or secret-class (#1578 policy C). Severity is unchanged.
+  - The report shows it: the row carries `gate: {"eligible": false, "rule": ...}`,
+    `meta.coverage.tools_context_not_gated` counts per rule, and the summary and HTML say so.
+  - **This changes results.** A run that failed its gate only on scanner findings in test
+    paths now passes in standard mode; use `--security redteam` to gate on secrets and
+    CRITICALs there.
+  - A reviewer's own claim at the same line as such a scanner finding stays a separate row.
+    Merged into one, the scanner finding was in the gate whenever the claim was the more severe.
+  - Not covered: a file only named like a test, an agent's own finding in a test path, and
+    dev-only packages inside a shared lockfile.
 - **A run's paths are settled once per invocation (#3779, part 2).** Every path lookup read
   `run-manifest.json` again, and a failed read meant "no manifest": the flat `.panopticon/` path,
   with no error. One failed read in the middle of synthesis sent the synthesize step to
