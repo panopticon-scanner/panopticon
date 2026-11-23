@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 
 import scripts.claim_scope as claim_scope
 import scripts.config_schema as config_schema
@@ -73,6 +74,9 @@ HOST_CAPABILITIES = "host-capabilities.json"
 
 #: real review root -> [scopes open on it, the run tag captured for them or None] (#3779).
 _CAPTURED: dict = {}
+#: Held for every change to it: `driver persist` takes no run lock, so scopes on one root
+#: can open and close on several threads of one process.
+_SCOPES = threading.Lock()
 
 
 @contextlib.contextmanager
@@ -91,22 +95,28 @@ def paths_scope(review_root):
     from the first. Outside a scope nothing changes: a phase function called directly
     reads the disk on every lookup, as before."""
     key = os.path.realpath(review_root)
-    entry = _CAPTURED.setdefault(key, [0, None])
-    entry[0] += 1
+    with _SCOPES:
+        entry = _CAPTURED.setdefault(key, [0, None])
+        entry[0] += 1
     try:
         yield
     finally:
-        entry[0] -= 1
-        if not entry[0]:
-            _CAPTURED.pop(key, None)
+        with _SCOPES:
+            entry[0] -= 1
+            if not entry[0]:
+                _CAPTURED.pop(key, None)
 
 
 def capture_paths(review_root, manifest):
     """Record `manifest`'s run tag as `review_root`'s, for the scope open on it; with no
     manifest, drop what was recorded. Outside a scope this does nothing."""
-    entry = _CAPTURED.get(os.path.realpath(review_root)) if _CAPTURED else None
-    if entry is not None:
-        entry[1] = run_manifest.run_tag(manifest)
+    if not _CAPTURED:
+        return
+    key, tag = os.path.realpath(review_root), run_manifest.run_tag(manifest)
+    with _SCOPES:
+        entry = _CAPTURED.get(key)
+        if entry is not None:
+            entry[1] = tag
 
 
 def _run_tag(review_root):

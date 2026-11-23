@@ -1531,3 +1531,56 @@ def test_a_listing_that_fails_is_not_a_free_tag(tmp_path):
         status = _driver_run(root)
     assert (status["status"], status["message"]) == ("error", "could not list it")
     assert not os.path.lexists(run_manifest.manifest_path(root))
+
+
+def test_the_capture_table_is_changed_only_under_its_lock(tmp_path):
+    """`persist` takes no run lock, so two of them on threads share this table. (The run
+    lock's own table raised on release for want of one: #3782, seat review 2.)"""
+    root, manifest, _tag = _a_run(tmp_path, "a", "a" * 32)
+    seen = []
+
+    class Watched(dict):
+        def setdefault(self, key, default=None):
+            seen.append(("open", runio._SCOPES.locked()))
+            return super().setdefault(key, default)
+
+        def get(self, key, default=None):
+            seen.append(("look", runio._SCOPES.locked()))
+            return super().get(key, default)
+
+        def pop(self, key, *default):
+            seen.append(("close", runio._SCOPES.locked()))
+            return super().pop(key, *default)
+
+    with mock.patch.object(runio, "_CAPTURED", Watched()):
+        with runio.paths_scope(root):
+            with runio.paths_scope(root):
+                runio.capture_paths(root, manifest)
+            runio.capture_paths(root, None)
+    assert [kind for kind, _locked in seen] == ["open", "open", "look", "look", "close"]
+    assert all(locked for _kind, locked in seen), seen
+    assert not runio._SCOPES.locked()
+
+
+def test_many_threads_opening_scopes_on_one_root_leave_nothing_captured(tmp_path):
+    import threading
+    root, manifest, tag = _a_run(tmp_path, "a", "a" * 32)
+    failed = []
+
+    def work():
+        try:
+            for _ in range(300):
+                with runio.paths_scope(root):
+                    runio.capture_paths(root, manifest)
+                    if runio._run_tag(root) != tag:
+                        failed.append("another tag")
+        except BaseException as exc:      # noqa: BLE001 - the test reports whatever it was
+            failed.append(repr(exc))
+
+    threads = [threading.Thread(target=work) for _ in range(8)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    assert failed == []
+    assert runio._CAPTURED == {}
