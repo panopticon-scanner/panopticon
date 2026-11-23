@@ -40,7 +40,7 @@ import scripts.synth.findings as findings_mod
 import scripts.synth.report as report_mod
 import scripts.synth.validate_schema as validate_schema_mod
 import scripts.synthesize as syn
-from tests._test_helpers import adopt_panopticon
+from tests._test_helpers import adopt_panopticon, fake_pem, pem_begin
 from tests.synth.helpers import _chdir
 
 
@@ -760,6 +760,45 @@ class TestARejectedScannerHighIsShownAsRejected(_Replay):
         self.assertIn("## Rejected scanner findings (HIGH and above): 60", lines)
         self.assertEqual(50, sum(1 for line in lines if line.startswith("- `[")))
         self.assertTrue(any("10 more" in line for line in lines))
+
+    def test_a_key_the_bound_would_cut_never_reaches_any_output(self):
+        # Seat review of fd8f260d, MEDIUM: the reasoning was cut to its bound BEFORE the
+        # report's redaction, and the private-key rule needs both delimiters, so a cut
+        # that dropped the END left the key body in plain text in all three outputs.
+        import scripts.evidence_sections as evidence_sections
+        import scripts.html_report as html_report
+        body = "Qk3y" * 100
+        for label, reasoning in (
+                ("a key whose END is past the bound",
+                 "x" * 500 + fake_pem(body=body) + " and so on"),
+                ("a key with no END at all", "see " + pem_begin() + "\n" + body)):
+            with self.subTest(label):
+                report = self.replay(dict(self.ALL, reasoning=reasoning))
+                row, = report["meta"]["rejected_scanner_findings"]["rows"]
+                self.assertIn("[REDACTED_PRIVATE_KEY]", row["reasoning"])
+                self.assertLessEqual(len(row["reasoning"]),
+                                     evidence_sections.REJECTED_REASONING_CAP)
+                for where, text in (("meta", json.dumps(report["meta"])),
+                                    ("terminal", self.stdout.getvalue()),
+                                    ("page", html_report.render(report))):
+                    self.assertNotIn("Qk3yQk3y", text, where)
+                    self.assertNotIn(pem_begin(), text, where)
+
+    def test_the_page_escapes_every_field_of_a_row(self):
+        import scripts.html_report as html_report
+        hostile = "<img src=x onerror=alert(1)>"
+        html = html_report._render_rejected_scanner_findings({"count": 1, "rows": [{
+            "id": "F-1", "tool": hostile, "rule": hostile, "severity": hostile,
+            "file": hostile, "line_start": hostile, "occurrences": 2, "title": hostile,
+            "reasoning": hostile}]})
+        self.assertNotIn("<img", html)
+        self.assertEqual(8, html.count("&lt;img"))
+
+    def test_the_tool_advisor_retry_hint_names_judged_loci(self):
+        # Seat review: a retried reply follows the hint, and one without the field
+        # turns an honest full rejection into NEEDS_MORE_INFO.
+        import scripts.phases.persist as persist
+        self.assertIn('"judged_loci": [...]', persist.ENVELOPE_SHAPES["tool-advisor"])
 
     def test_a_row_is_one_line_whatever_the_advisor_wrote(self):
         import scripts.synth.render as render_mod
