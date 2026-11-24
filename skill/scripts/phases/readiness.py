@@ -520,8 +520,8 @@ def _existing_run_row(review_root):
         # #3735: `driver loop` refuses to resume it, so this row must not say it would.
         return {"tag": tag, "status": "error", "pending": 0,
                 "detail": "%s was started as a delta review and cannot be resumed: delta "
-                          "review is withdrawn in 5.4 (#3735); `--reset` starts a "
-                          "whole-repository run" % tag}
+                          "review was withdrawn in 5.4 (#3735) and removed in 5.5 (#3736); "
+                          "`--reset` starts a whole-repository run" % tag}
     if tag and not os.path.isdir(os.path.join(runs, tag)):
         # Our own manifest, and the folder it names is gone: not a run to resume, and not
         # something the target shipped either.

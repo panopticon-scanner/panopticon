@@ -23,9 +23,8 @@ import scripts.synthesize as synthesize
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DRIVER_PY = os.path.join(ROOT, "skill", "scripts", "driver.py")
-WITHDRAWN = "delta review is withdrawn in 5.4 (#3735): "
-ADVICE = ("Run a whole-repository review, or scope one with -f, -d, -g or --files. Delta "
-          "review returns when it has been rebuilt and measured.")
+WITHDRAWN = "delta review was withdrawn in 5.4 (#3735) and removed in 5.5 (#3736): "
+ADVICE = "Run a whole-repository review, or scope one with -f, -d, -g or --files."
 
 # Each flag on its own, as an operator types it, and how the refusal names it.
 DRIVER = (("--pr", ["--pr", "7"]), ("--changes (-c)", ["--changes"]), ("--changes (-c)", ["-c"]),
@@ -81,7 +80,7 @@ class TestTheDriverRefusesEveryDeltaFlag(unittest.TestCase):
                                           "--gate-scope", "all"])
         self.assertEqual(2, code)
         self.assertIn(WITHDRAWN + "--pr, --base, --gate-scope are refused. " + ADVICE, err)
-        self.assertEqual(1, err.count("delta review is withdrawn"))
+        self.assertEqual(1, err.count("delta review was withdrawn"))
 
     def test_files_with_a_base_is_refused_and_files_alone_is_not(self):
         """`--files` with `--base` wrote a hunk map and scoped the gate to it. `--files`
@@ -115,7 +114,7 @@ class TestTheDriverRefusesEveryDeltaFlag(unittest.TestCase):
                     done = subprocess.run(["env", sys.executable, DRIVER_PY, *argv], cwd=empty,
                                           capture_output=True, text=True, timeout=120, check=False)
                     self.assertEqual(2, done.returncode, done.stderr)
-                    self.assertIn("delta review is withdrawn in 5.4 (#3735)", done.stderr)
+                    self.assertIn(WITHDRAWN, done.stderr)
                     self.assertEqual([], os.listdir(empty))
 
 
@@ -202,8 +201,9 @@ class TestARunStartedAsADeltaReviewIsNotResumed(unittest.TestCase):
                 else:
                     self.assertEqual((tag, "error", 0), (row["tag"], row["status"], row["pending"]))
                     self.assertIn("was started as a delta review and cannot be resumed: delta "
-                                  "review is withdrawn in 5.4 (#3735); `--reset` starts a "
-                                  "whole-repository run", row["detail"])
+                                  "review was withdrawn in 5.4 (#3735) and removed in 5.5 "
+                                  "(#3736); `--reset` starts a whole-repository run",
+                                  row["detail"])
 
 
 class TestTheChildScriptsRefuseThemToo(unittest.TestCase):
@@ -286,7 +286,7 @@ class TestZeroIsAValue(unittest.TestCase):
                     done = subprocess.run(["env", sys.executable, DRIVER_PY, *argv], cwd=empty,
                                           capture_output=True, text=True, timeout=120, check=False)
                     self.assertEqual(2, done.returncode, done.stderr)
-                    self.assertIn("delta review is withdrawn in 5.4 (#3735)", done.stderr)
+                    self.assertIn(WITHDRAWN, done.stderr)
                     self.assertNotIn("Traceback", done.stderr)
                     self.assertEqual([], os.listdir(empty))
 

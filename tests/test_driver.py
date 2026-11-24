@@ -922,7 +922,8 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         # `--pr`. The delta code is still there and records its manifest as it did;
         # the run then stops at its first child, which refuses the delta flags too.
         self.assertEqual("error", status["status"])
-        self.assertIn("delta review is withdrawn in 5.4 (#3735)", status["message"])
+        self.assertIn("delta review was withdrawn in 5.4 (#3735) and removed in 5.5 (#3736)",
+                      status["message"])
         manifest = run_manifest.load_manifest(d)
         self.assertEqual(manifest["pr"], 7)
         self.assertEqual(manifest["worktree"], d)

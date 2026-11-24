@@ -20,9 +20,10 @@ No config key and no environment variable selects delta review. `gate_scope` in 
 committed config stays a valid key and has no effect: with no diff there is nothing
 for it to scope.
 """
-MESSAGE = ("delta review is withdrawn in 5.4 (#3735): %s. Run a whole-repository review, or "
-           "scope one with -f, -d, -g or --files. Delta review returns when it has been "
-           "rebuilt and measured.")
+MESSAGE = ("delta review was withdrawn in 5.4 (#3735) and removed in 5.5 (#3736): %s. Run a "
+           "whole-repository review, or scope one with -f, -d, -g or --files.")
+# The help text of every delta flag that is still parsed.
+FLAG_HELP = "Removed in 5.5 and refused (#3736): a delta-review flag"
 
 # argparse dest -> the flag as typed, for the driver's `run`, `loop`, `readiness` and
 # `persist`. `--diff-context` is the on-diff tolerance: it means nothing without a diff.

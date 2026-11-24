@@ -779,7 +779,8 @@ class TestTheRealChild(unittest.TestCase):
                              "--fail-on", "medium", findings=[a_finding(1, location={"file": name, "line_start": 2})],
                              beside=hunks)
             self.assertEqual(2, run[0], run[1])
-            self.assertIn("delta review is withdrawn in 5.4 (#3735): --diff-hunks, --gate-scope are refused", run[1])
+            self.assertIn("delta review was withdrawn in 5.4 (#3735) and removed in 5.5 (#3736): "
+                          "--diff-hunks, --gate-scope are refused", run[1])
             self.assertEqual([], [name for name in run[2] if name.startswith("report")])
 
     def test_the_queue_pass_writes_a_queue_without_one(self):

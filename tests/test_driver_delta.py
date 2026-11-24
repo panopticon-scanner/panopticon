@@ -176,7 +176,7 @@ class TestDriverDeltaEndToEnd(unittest.TestCase):
         d, base_sha = self._repo_with_changed_file()
         with self.assertRaises(runio.DriverError) as refused:
             discovery.discovery_execute(d, self._manifest(base_sha))
-        self.assertIn("delta review is withdrawn in 5.4 (#3735): --scope-changed, --base are "
+        self.assertIn("delta review was withdrawn in 5.4 (#3735) and removed in 5.5 (#3736): --scope-changed, --base are "
                       "refused", str(refused.exception))
         self.assertFalse(os.path.exists(runio._pano(d, "groups.json")))
         self.assertFalse(os.path.exists(runio._pano(d, "diff-hunks.json")))
