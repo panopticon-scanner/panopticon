@@ -924,6 +924,26 @@ is explicit, and the working directory is not the target).
   crafted file names run the Semgrep pass into its 900 s timeout. The scanner is then recorded
   as missing and the run is not certified. It could not produce a wrong PASS.
 
+**The `--exclude` patterns are a different matcher, and are not bounded here.** The run's exclude
+globs reach Semgrep as `--exclude=` arguments (`legacy_sarif.with_semgrep_excludes`), and a
+reviewed repository's own committed config can set them, so there the pattern and the file names
+can both be the target's.
+
+| Input to a matcher | Pattern from | Matched by | Bound |
+|---|---|---|---|
+| rule `paths.include` / `paths.exclude` | the vendored rules | wcmatch, in Semgrep's Python CLI | at most two `*` per path component, held by the image build |
+| `--exclude=` on the command line | the fixed scanner list, virtualenv paths, the run's exclude globs | semgrep-core's own glob matcher (`libs/glob/Match.ml`: the glob compiled to a PCRE2 regex) | Semgrep's own `match_limit` (1,000,000) and `depth_limit` (10,000) on every regex |
+
+- wcmatch is not involved: `target_manager.py` sends the `--exclude` patterns to semgrep-core
+  (`TargetingConf.exclude`, over `rpc_call.get_targets`) and only reads back the skip reasons. So
+  GHSA-53pm-wgxf-c6qf does not reach through them.
+- PCRE2 backtracks on a many-star pattern too, but Semgrep caps each match (`Pcre2_.ml` sets the
+  two limits on every regex it compiles). A match that hits the cap is logged and counts as no
+  match: the file is **not** excluded and is scanned. It fails toward scanning.
+- The cost of a capped match was not measured (Semgrep was not run). A target can already run
+  the Semgrep pass into its timeout more cheaply, with files that hit the rule timeout, and the
+  result is the same: the scanner is missing and the run is not certified.
+
 **What was not determined.**
 
 - Semgrep was not run. The dispatch to the Python CLI is read from Semgrep's source at tag
