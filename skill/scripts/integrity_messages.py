@@ -1,6 +1,8 @@
 """Shared integrity-key membership and operator-facing sentences."""
 from dataclasses import dataclass
 
+import scripts.inert as inert
+
 
 # Mirrors tools.base.INERT_TEXT_MAX. Kept local so this sentence module stays
 # free of the tools package; tests pin the two equal.
@@ -11,6 +13,9 @@ HTML_DETAIL_CUT = "…"
 UNKNOWN_SEVERITY_IDS_SHOWN = 10
 _NAMED_LISTS = {"unknown_severity_findings": "finding(s)", "sec_less_groups": "group(s)",
                 "scout_files_unreadable": "scout file(s)"}
+# #3780: one name in such a list, at most. The names are a target's (a file name, a
+# group name, a finding id), and the HTML only escapes what this module hands it.
+NAMED_ROW_MAX = 80
 
 
 @dataclass(frozen=True)
@@ -257,8 +262,12 @@ def raw_evidence_text(key, value):
                 by.items(), key=lambda item: (item[0][0] or "", item[0][1] or ""))))
     elif key in _NAMED_LISTS and isinstance(value, list):
         shown = value[:UNKNOWN_SEVERITY_IDS_SHOWN]
+        # Each name spelled inert and cut here, for every renderer: the terminal's
+        # wrapper bounds only the whole line, and the HTML escapes without spelling.
         text = "%d %s — %s%s" % (
-            len(value), _NAMED_LISTS[key], ", ".join(str(row) for row in shown),
+            len(value), _NAMED_LISTS[key],
+            ", ".join(_marked_prefix(inert.inert_spelling(str(row)), NAMED_ROW_MAX)
+                      for row in shown),
             ", …" if len(value) > len(shown) else "")
     elif isinstance(value, list):
         text = ", ".join(_row_evidence(key, row) for row in value)

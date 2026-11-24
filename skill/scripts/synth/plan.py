@@ -488,12 +488,19 @@ def load_scout_requests(run_dir, unreadable=None):
     reads), the content is not an object, or `tools` is there and is not a list of
     strings. Such a file was warned about and dropped, and with no tools manifest the
     scanners it asked for were then required by no one. `PlanInputs.load` publishes the
-    list as an integrity failure. What could be read still counts as requested."""
+    list as an integrity failure. What could be read still counts as requested.
+    The coverage phase's retry counter (`plan_contract.SCOUT_ATTEMPTS_NAME`) matches the
+    pattern and is not a scout: it is neither read nor counted as a profile."""
     requested: set[str] = set()
     profiles_seen = 0
     unusable: list[str] = []
     for sp in sorted(safe_glob.under(run_dir, "scout-*.json")):
         name = os.path.basename(sp)
+        if name == plan_contract.SCOUT_ATTEMPTS_NAME:
+            # The coverage phase's retry counter, `{"<group>": n}`, which the pattern
+            # also matches. It was counted as a scout profile; with a group named
+            # `tools` it would now read as a request of the wrong type.
+            continue
         try:
             sd = artifacts_mod.read_json(sp, tolerant=True, announce=True)
         except (OSError, ValueError):  # tolerant by design: never abort a run

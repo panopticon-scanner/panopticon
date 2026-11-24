@@ -14,6 +14,12 @@
   - "Cannot be read" is: the read or parse fails, the content is not an object, or `tools` is
     present and is not a list of names. `tools: []` and a missing `tools` are still a decline.
   - What the other scout files asked for still counts.
+  - The coverage phase's retry counter, `scout-attempts.json`, matches the scouts' file
+    pattern and was being counted as a scout profile. It is no longer read as one, so
+    `meta.coverage.scout_profiles_seen` is lower by one on a run that retried a scout.
+  - In the Integrity line and on the page, each name in a named list (these files, the
+    groups with no SEC cell, the findings with an unknown severity) is now spelled inert and
+    cut at 80 characters.
 - **More than one capture for one scanner is that scanner's failure (#3780).** Ingest keyed
   its record by the capture's name without the extension, so with `bandit.json` and
   `bandit.sarif` both present the file read last decided: a clean capture overwrote the record

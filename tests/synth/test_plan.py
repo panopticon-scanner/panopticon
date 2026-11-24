@@ -724,6 +724,12 @@ class TestTheGroupsShapeGate(unittest.TestCase):
             "scout-e-tools-object.json": json.dumps({"tools": {"semgrep": True}}),
             "scout-f-tools-mixed.json": json.dumps({"tools": ["gitleaks", 3]}),
             "scout-g-empty.json": "",
+            # Falsy and not a list: still a request nobody can read (only an absent or
+            # null `tools` is a decline).
+            "scout-m-tools-empty-text.json": json.dumps({"tools": ""}),
+            "scout-n-tools-false.json": json.dumps({"tools": False}),
+            "scout-o-tools-zero.json": json.dumps({"tools": 0}),
+            "scout-p-tools-empty-object.json": json.dumps({"tools": {}}),
         }
         fine = {
             "scout-h-good.json": good,
@@ -743,7 +749,53 @@ class TestTheGroupsShapeGate(unittest.TestCase):
         # What could be read still counts, the mixed list's good entry included.
         self.assertEqual({"semgrep", "bandit", "gitleaks"}, requested)
         # A profile is a file that parsed to an object, as before.
-        self.assertEqual(len(fine) + 3, seen)
+        self.assertEqual(len(fine) + 7, seen)
+
+    def test_the_retry_counter_is_not_a_scout(self):
+        """Seat review of #3797. The coverage phase keeps `scout-attempts.json`,
+        `{"<group>": n}`, beside the scouts, and the `scout-*.json` pattern matches it.
+        It was counted as a profile; with a group named `tools` whose scout was retried
+        once it is `{"tools": 1}`, which the new rule read as a request of the wrong type."""
+        import scripts.phases.coverage as coverage_phase
+        import scripts.plan_contract as plan_contract
+        with tempfile.TemporaryDirectory() as d:
+            os.makedirs(os.path.join(d, plan_contract.ARTIFACT_DIR))
+            self.assertEqual(1, coverage_phase._bump_scout_attempts(d, "tools"))
+            run = os.path.join(d, plan_contract.ARTIFACT_DIR)
+            self.assertEqual([plan_contract.SCOUT_ATTEMPTS_NAME], os.listdir(run))
+            with open(os.path.join(run, plan_contract.SCOUT_ATTEMPTS_NAME),
+                      encoding="utf-8") as fh:
+                self.assertEqual({"tools": 1}, json.load(fh))
+            unreadable: list = []
+            self.assertEqual((set(), 0), plan_mod.load_scout_requests(run, unreadable=unreadable))
+            self.assertEqual([], unreadable)
+            # Beside a real scout it is still left out, whatever it holds.
+            with open(os.path.join(run, "scout-tools.json"), "w", encoding="utf-8") as fh:
+                json.dump({"tools": ["bandit"]}, fh)
+            for counter in ('{"tools": 1}', "{{{", "[]", '{"tools": ["semgrep"]}'):
+                with open(os.path.join(run, plan_contract.SCOUT_ATTEMPTS_NAME), "w",
+                          encoding="utf-8") as fh:
+                    fh.write(counter)
+                unreadable = []
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    got = plan_mod.load_scout_requests(run, unreadable=unreadable)
+                self.assertEqual(({"bandit"}, 1, [], ""), (*got, unreadable, err.getvalue()),
+                                 counter)
+
+    def test_what_is_said_of_an_unusable_scout_is_inert(self):
+        name = "scout-a\x1b[2Jb\u202e.json"
+        for text in ("[]", json.dumps({"tools": "bandit"})):
+            with self.subTest(scout=text), tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                unreadable: list = []
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    plan_mod.load_scout_requests(d, unreadable=unreadable)
+                self.assertEqual([name], unreadable)
+                said = err.getvalue()
+                self.assertIn("scout-a\\x1b[2Jb\\u202e.json", said)
+                self.assertNotIn("\x1b", said)
+                self.assertNotIn("\u202e", said)
 
     def test_the_list_is_optional_and_the_answer_is_the_same_without_it(self):
         with tempfile.TemporaryDirectory() as d:

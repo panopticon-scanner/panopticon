@@ -1993,6 +1993,18 @@ class TestAScoutRequestThatCannotBeRead(unittest.TestCase):
                     self.assertIn("scout-COD.json", text_out)
                 self.assertIn("scout-COD.json", err)
 
+    def test_a_group_named_tools_with_a_retried_scout_certifies(self):
+        """Seat review of #3797: the coverage phase's retry counter is `{"tools": 1}`
+        for such a group. It is not a scout, and the run is what it was."""
+        rc, report, out, _err, _page = self._run({
+            "scout-tools.json": json.dumps({"tools": []}),
+            "scout-attempts.json": json.dumps({"tools": 1})})
+        self.assertEqual((0, "PASS", True), (
+            rc, report["summary"]["gate"], report["summary"]["coverage_certified"]))
+        self.assertEqual([], report["meta"]["integrity"]["scout_files_unreadable"])
+        self.assertEqual(1, report["meta"]["coverage"]["scout_profiles_seen"])
+        self.assertNotIn("SCOUT FILES UNREADABLE", out)
+
     def test_a_decline_is_still_a_decline(self):
         for text in (json.dumps({"tools": []}), json.dumps({"domains": ["COD"]}),
                      json.dumps({"tools": None})):
@@ -2062,6 +2074,23 @@ class TestAScoutRequestThatCannotBeRead(unittest.TestCase):
         self.assertIn("61 scout file(s)", line)
         self.assertLess(line.count("scout-"), 20)
         self.assertNotIn("\x1b", page)
+
+    def test_each_name_is_cut_and_inert_on_the_page_too(self):
+        """Seat review of #3797: the page escaped these names and did not spell them, so
+        a right-to-left override or a newline in a file name reached it; and one long
+        name made a 2,102-character Integrity line."""
+        import scripts.integrity_messages as integrity_messages
+        long_name = "scout-" + "x" * 240 + ".json"
+        scouts = {long_name: "{", "scout-a\u202eb\nc.json": "{"}
+        _rc, report, out, _err, page = self._run(scouts)
+        self.assertEqual(sorted(scouts), report["meta"]["integrity"]["scout_files_unreadable"])
+        line = next(line for line in out.splitlines() if "SCOUT FILES UNREADABLE" in line)
+        for text in (line, page):
+            self.assertNotIn("\u202e", text)
+            self.assertIn("scout-a\\u202eb\\x0ac.json", text)
+            self.assertNotIn("x" * integrity_messages.NAMED_ROW_MAX, text)
+            self.assertIn("x" * (integrity_messages.NAMED_ROW_MAX - 10), text)
+        self.assertLess(len(line), 400)
 
 
 class TestUnusableScannerCertification(unittest.TestCase):

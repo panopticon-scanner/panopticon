@@ -8,6 +8,10 @@ from scripts import native_language
 # is the vetted path to it; code that needs only the NAME (a dir_fd-relative
 # open, a prefix check, an operator message) reads this.
 ARTIFACT_DIR = ".panopticon"
+# The coverage phase's per-group scout retry counter (`{"<group>": n}`). It lives beside
+# the scout outputs and its name matches their `scout-*.json` pattern, so every reader
+# of that pattern leaves it out by this name (#3780): it is not a scout's reply.
+SCOUT_ATTEMPTS_NAME = "scout-attempts.json"
 
 
 def artifact_root(root):

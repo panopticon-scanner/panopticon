@@ -9,6 +9,7 @@ import scripts.groups_schema as groups_schema
 # to CHECK the dispatch request this module writes, so both sides must
 # read the same function or a run can refuse itself.
 import scripts.loop_batch as loop_batch
+import scripts.plan_contract as plan_contract
 import scripts.repo_config as repo_config
 import scripts.run_tools as run_tools
 from scripts import read_guard_hook
@@ -245,7 +246,7 @@ def _bump_scout_attempts(review_root, group):
     since #1767 a VALUE that is not a count refuses the same way, through the
     one owner of the arithmetic (`budget`), which this module's own copy of it
     answered with a bare ValueError from `int()`."""
-    return budget.bump(runio._pano(review_root, "scout-attempts.json"),
+    return budget.bump(runio._pano(review_root, plan_contract.SCOUT_ATTEMPTS_NAME),
                        group, "the scout retry budget")
 
 def coverage_execute(review_root, manifest):
