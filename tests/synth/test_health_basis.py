@@ -273,7 +273,11 @@ def test_both_human_outputs_say_why_a_custom_profile_letter_is_provisional():
             plan=plan_mod.PlanInputs(groups_meta=GROUPS)))
     note = report["summary"]["coverage_note"]
     assert report["summary"]["coverage_certified"] is True
-    assert "**Health provisional:** " + note in render_mod.render_summary(report)
+    # The line's own label says "provisional"; the note's leading "health provisional: "
+    # is not printed a second time (the HTML line has no label and keeps it).
+    assert note.startswith("health provisional: ")
+    assert ("**Health provisional:** " + note[len("health provisional: "):]
+            in render_mod.render_summary(report).splitlines())
     header = html_report._render_header(report)
     assert "<div class='provisional-health'>" in header and "group size of 15 files" in header
     assert "NOT CERTIFIED" not in header

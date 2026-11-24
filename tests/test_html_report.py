@@ -1320,12 +1320,12 @@ class TestCoverageHonesty(unittest.TestCase):
                 gate="INCONCLUSIVE",
                 coverage_certified=False,
                 coverage_note="tool layer incomplete: semgrep absent",
-                health={"score": 71.0},
             )
         )
         self.assertIn("NOT CERTIFIED", out)
         self.assertIn("tool layer incomplete: semgrep absent", out)
-        self.assertIn("Health: 71.0 / 100 (provisional)", out)     # #3672: was "B (provisional)"
+        self.assertIn("(provisional)", out)
+        self.assertIn("Health: n/a (provisional)", out)      # #3672: was "Grade: B (provisional)"
 
     def test_an_unreadable_tools_manifest_is_named_in_the_html(self):
         # #1644: the gate is what the findings say (PASS here), so the banner
@@ -1457,7 +1457,7 @@ class TestCoverageHonesty(unittest.TestCase):
         # #490 for the letter ("Grade: -"); #3672: the same for the score that replaced it.
         out = hr.render(self._report(overall_grade=None, coverage_certified=False))
         self.assertNotIn("None", out[out.index("<div class='badges'>"):].split("</div>")[0])
-        self.assertIn("Health: n/a", out)
+        self.assertIn("Health: n/a (provisional)", out)      # was "Grade: - (provisional)"
         self.assertNotIn("Grade:", out)
 
     def test_certified_pass_run_unchanged(self):

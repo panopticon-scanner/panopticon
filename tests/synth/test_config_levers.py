@@ -266,7 +266,11 @@ def test_a_report_with_levers_round_trips_the_schema():
 def test_both_human_outputs_say_why_an_exclude_made_the_letter_provisional():
     report = _report([_cov(deterministic=["COD"])])
     note = report["summary"]["coverage_note"]
-    assert "**Health provisional:** " + note in render_mod.render_summary(report)
+    # The line's own label says "provisional"; the note's leading "health provisional: "
+    # is not printed a second time (the HTML line has no label and keeps it).
+    assert note.startswith("health provisional: ")
+    assert ("**Health provisional:** " + note[len("health provisional: "):]
+            in render_mod.render_summary(report).splitlines())
     header = html_report._render_header(report)
     assert "<div class='provisional-health'>" in header and "excludes (app:COD)" in header
     assert "NOT CERTIFIED" not in header

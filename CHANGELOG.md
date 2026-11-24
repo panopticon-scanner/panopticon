@@ -13,7 +13,7 @@
     `--compare` panel. A report with no score shows `Health: n/a`.
   - **A held-back result still says so, beside the score,** on the condition the letter used and
     with the same reasons: `63.2 / 100 (provisional; 145 tool findings unanswered by their
-    advisors)`.
+    advisors)`. With no score it reads `n/a (provisional)`.
   - **The cap sentence is gone** ("capped from A by 2 confirmed CRITICAL"). It described the
     letter; Risk names the worst confirmed severity.
   - **Groups section:** each panel shows the worst gate-eligible severity
@@ -35,12 +35,16 @@
       `… A letter is certified only when every applicable review area ran, …` now begin
       `A health score is certified only …`.
   - **Printed lines reworded:** "not counted toward the gate, grade or health" is "… the gate or
-    health"; "risk level and health grade anyway" is "risk level and health anyway"; the HTML
+    health"; "not counted by the gate or the grade" (rejected scanner findings) is "… the gate
+    or health"; "risk level and health grade anyway" is "risk level and health anyway"; the
+    terminal's provisional line no longer repeats the note's own "health provisional: "; the HTML
     class `provisional-grade` is `provisional-health` and `badge grade` is gone; `synthesize
     --help` no longer says "grades".
   - Not in this change: the health bar, the trend since the last run and the next-step list.
     They follow in their own change once their spec is approved. `devtools/compare_runs.py` and
-    `devtools/matrix_stability.py` still print the letter from the JSON until 5.6.
+    `devtools/matrix_stability.py` still print the letter from the JSON until 5.6. The sample
+    run under `docs/samples/` is from before this change and still shows a letter; its page
+    says so.
 
 - **A tree with an ecosystem no auditor ran on is no longer certified (#3700).** A tree whose
   JavaScript lockfile osv-scanner audited, and whose `pyproject.toml` only pip-audit reads and

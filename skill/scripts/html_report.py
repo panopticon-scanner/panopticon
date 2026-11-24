@@ -622,7 +622,7 @@ def _render_header(report):
     elif render_mod.coverage_note_text(summary):
         # #3672 (from #3648): a certified run's note, which only the JSON showed.
         parts.append("<div class='coverage-note'>Coverage note: %s</div>"
-                     % _escape(tool_base.inert_text(render_mod.coverage_note_text(summary))))
+                     % _escape(render_mod.coverage_note_text(summary)))
     # #3667: the JSON report beside this page was split; say where its findings sit.
     split = render_mod.parts_line(report)
     if split:
@@ -1735,7 +1735,7 @@ def _render_rejected_scanner_findings(listed):
 <section class="findings rejected-scanner-findings">
 <h2>Rejected scanner findings <span class='count'>({count})</span></h2>
 <p>An advisor answered REJECTED, so these HIGH and CRITICAL scanner findings are not
-counted by the gate or the grade. Each is one advisor's reading; check it.</p>
+counted by the gate or health. Each is one advisor's reading; check it.</p>
 <ul>
 {"".join(items)}
 </ul>

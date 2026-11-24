@@ -53,6 +53,22 @@ def _with(report, **summary):
     return out
 
 
+def _every_optional_section(report):
+    """The sections a report prints only when it has something for them, so the test
+    that no surface says "grade" reads them too."""
+    report["meta"]["rejected_scanner_findings"] = {"count": 3, "rows": [
+        {"severity": "HIGH", "title": "a rejected scanner finding", "file": "a.py",
+         "line_start": 4, "tool": "bandit", "rule": "B602", "occurrences": 2,
+         "reasoning": "the argument is a constant"}]}
+    coverage = report["meta"].setdefault("coverage", {})
+    coverage["tools_context_not_gated"] = {"test-path": 2}
+    coverage["tools_suppressed_gated"] = {"vendored": 1}
+    coverage["tools_unpinned"] = {"osv-scanner": [{
+        "manifest": "requirements.txt", "packages": ["requests"], "packages_more": 0,
+        "advisories": 1, "ids": ["GHSA-aaaa-0001"], "ids_more": 0}]}
+    return report
+
+
 def _kinds():
     """One report per thing the letter used to say, each carrying letters that would be
     recognised if they were printed."""
@@ -63,7 +79,11 @@ def _kinds():
     no_health["summary"]["health"] = dict(clean["summary"]["health"], score=None)
     legacy = _with(clean, overall_grade="ZQXA")
     del legacy["summary"]["health"]
-    return {
+    # No score and coverage not certified: an old report, or one nothing was measured
+    # for. 545 of the suite's reports are of this kind (seat review of #3796).
+    unscored = _with(legacy, overall_grade=None, provisional_grade=None,
+                     coverage_certified=False, gate="PASS")
+    kinds = {
         "certified": _with(clean, overall_grade="ZQXA"),
         "capped": _with(capped, overall_grade="ZQXD", grade_cap=dict(
             capped["summary"]["grade_cap"], band_grade="ZQXB", grade="ZQXD",
@@ -81,7 +101,11 @@ def _kinds():
                                gate="INCONCLUSIVE", coverage_note="a scanner did not run"),
         "no reviewed lines": no_health,
         "a report from before health": legacy,
+        "no score and not certified": unscored,
+        "no score and held back": _with(legacy, overall_grade=None, provisional_grade="ZQXP",
+                                        grade_shortfalls=[SHORTFALL]),
     }
+    return {kind: _every_optional_section(report) for kind, report in kinds.items()}
 
 
 KINDS = _kinds()
@@ -181,8 +205,21 @@ def test_a_result_held_back_by_its_profile_says_so_on_its_own_line():
     note = report["summary"]["coverage_note"]
     assert _headline(said).startswith("**Health:** %s / 100 (provisional)  "
                                       % report["summary"]["health"]["score"])
-    assert "**Health provisional:** %s" % note in said.splitlines()
+    # The label says "provisional" once; the note's own prefix is not repeated after it.
+    assert "**Health provisional:** a custom scan profile" in said.splitlines()
+    assert "provisional: health provisional" not in said
     page = html_report.render(report)
+    assert "<div class='provisional-health'>%s</div>" % html_lib.escape(note) in page
+
+
+def test_the_provisional_line_is_inert_in_the_terminal_and_escaped_on_the_page():
+    note = grading_mod.PROVISIONAL_PREFIX + "a\x1b[2Jb <script>x</script>\nc"
+    report = _with(KINDS["held back by its profile"], coverage_note=note)
+    said = render_mod.render_summary(report)
+    assert "\x1b" not in said
+    assert "**Health provisional:** a\\x1b[2Jb <script>x</script> c" in said.splitlines()
+    page = html_report.render(report)
+    assert "<script>x</script>" not in page
     assert "<div class='provisional-health'>%s</div>" % html_lib.escape(note) in page
 
 
@@ -200,6 +237,24 @@ def test_a_shortfall_reason_is_made_inert_beside_the_score():
     assert "\x1b" not in headline and "(provisional; a" in headline
     page = html_report.render(report)
     assert "<b>c</b>" not in page and "&lt;b&gt;c&lt;/b&gt;" in page
+
+
+@pytest.mark.parametrize("kind, terminal, page_badge", [
+    # Not certified: the page's badge said "(provisional)" for the letter and still does.
+    ("no score and not certified", "**Health:** n/a  **Risk:** ", "Health: n/a (provisional)"),
+    ("no score and held back", "**Health:** n/a (provisional; %s)  **Risk:** " % SHORTFALL,
+     "Health: n/a (provisional; %s)" % SHORTFALL),
+])
+def test_a_held_back_report_with_no_score_still_says_provisional(kind, terminal, page_badge):
+    """Seat review of #3796: `n/a` alone read as settled. On the compare panel the
+    badge is the only sign, since that panel has no NOT CERTIFIED line."""
+    report = KINDS[kind]
+    assert _headline(render_mod.render_summary(report)).startswith(terminal)
+    assert "<span class='badge health'>%s</span>" % page_badge in html_report.render(report)
+    page = html_report.render(KINDS["certified"], compare_report=report)
+    panel = page[page.index('<div class="compare-panel">'):]
+    assert '<span class="badge health">%s</span>' % page_badge in panel
+    assert "Gate: %s" % report["summary"]["gate"] in panel
 
 
 @pytest.mark.parametrize("kind", ["no reviewed lines", "a report from before health"])
@@ -292,7 +347,10 @@ def test_the_note_is_said_once_where_another_line_already_carries_it(kind):
     said = render_mod.render_summary(report)
     page = html_report.render(report)
     assert "Coverage note" not in said and "Coverage note" not in page
-    assert said.count(note) == 1 and page.count(html_lib.escape(note)) == 1
+    # The terminal's provisional line drops the note's own "health provisional: ".
+    reason = note[len(grading_mod.PROVISIONAL_PREFIX):] if note.startswith(
+        grading_mod.PROVISIONAL_PREFIX) else note
+    assert said.count(reason) == 1 and page.count(html_lib.escape(note)) == 1
 
 
 def test_the_note_is_made_inert_on_both_surfaces():

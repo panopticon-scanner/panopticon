@@ -129,8 +129,11 @@ class TestHealthScoreTextRendering(unittest.TestCase):
         # as a result rather than as the absence of one.
         for summary in ({"overall_grade": None, "provisional_grade": None},
                         {"health": {"score": None}}, {"health": "63.2"}):
-            for provisional in (False, True):
-                self.assertEqual(render_mod.health_score_text(summary, provisional), "n/a")
+            text = render_mod.health_score_text(summary, False)
+            self.assertNotIn("None", text)
+            self.assertEqual("n/a", text)
+            # Held back with no score still says so (seat review of #3796).
+            self.assertEqual("n/a (provisional)", render_mod.health_score_text(summary, True))
 
 class TestRenderDelta(unittest.TestCase):
     """#449 Task 9: render_summary surfaces summary.delta -- on-diff counts,

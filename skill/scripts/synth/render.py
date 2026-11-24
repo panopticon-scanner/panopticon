@@ -31,27 +31,34 @@ def held_back(summary):
 
 
 def health_score_text(summary, provisional):
-    """The health score as the headline states it (#3672): "63.2 / 100", with
-    "(provisional; <each undone piece of verify work>)" when `provisional`, or "n/a"
-    when the report has no score. The reason for an n/a is the health line's to give."""
+    """The health score as the headline states it (#3672): "63.2 / 100", or "n/a" when
+    the report has no score, then "(provisional; <each undone piece of verify work>)"
+    when `provisional`. The reason for an n/a is the health line's to give."""
     health = summary.get("health")
-    if not isinstance(health, dict) or health.get("score") is None:
-        return "n/a"
-    return "%s / 100%s" % (health["score"],
-                           " (provisional%s)" % _shortfall_suffix(summary) if provisional else "")
+    score = ("n/a" if not isinstance(health, dict) or health.get("score") is None
+             else "%s / 100" % health["score"])
+    # Provisional is said with or without a score: on the compare panel this text is
+    # the only sign that a result is held back.
+    return score + (" (provisional%s)" % _shortfall_suffix(summary) if provisional else "")
+
+
+def _without_prefix(text, prefix):
+    """`text` without a leading `prefix`: the line's own label already says it."""
+    return text[len(prefix):] if text.startswith(prefix) else text
 
 
 def coverage_note_text(summary):
-    """`summary.coverage_note` when it is text and not empty, else None (#3672, from
-    #3648). Both renderers print it as its own line only where no other line carries
-    it: after the NOT CERTIFIED line and the provisional line have had their turn."""
+    """`summary.coverage_note` when it is text and not empty, as one inert line, else
+    None (#3672, from #3648). Both renderers print it as its own line only where no
+    other line carries it: after the NOT CERTIFIED line and the provisional line have
+    had their turn. Not bounded: a note can carry several reasons, and each matters."""
     note = summary.get("coverage_note")
-    return note if isinstance(note, str) and note else None
+    return _one_line(note) if isinstance(note, str) and note else None
 
 
 def coverage_note_line(summary):
     note = coverage_note_text(summary)
-    return None if note is None else "**Coverage note:** %s" % tool_base.inert_text(note)
+    return None if note is None else "**Coverage note:** %s" % note
 
 
 def parts_line(report):
@@ -439,7 +446,7 @@ def _one_line(text):
 
 
 _REJECTED_SCANNER_NOTE = ("An advisor answered REJECTED, so these are not counted by the gate "
-                          "or the grade. Each is one advisor's reading of a scanner finding; "
+                          "or health. Each is one advisor's reading of a scanner finding; "
                           "check it.")
 
 
@@ -533,7 +540,8 @@ def render_summary(report):
     elif held_back(s) and s.get("coverage_note"):
         # #1495: coverage is certified but the result is held back (a non-default scan
         # profile), so the reason is not in a NOT CERTIFIED line; say it beside the score.
-        lines.insert(3, "**Health provisional:** %s" % s["coverage_note"])
+        lines.insert(3, "**Health provisional:** %s" % _one_line(
+            _without_prefix(str(s["coverage_note"]), grading_mod.PROVISIONAL_PREFIX)))
     elif coverage_note_line(s):
         lines.insert(3, coverage_note_line(s))
     split = parts_line(report)
