@@ -806,6 +806,9 @@ class TestTheGroupsShapeGate(unittest.TestCase):
             ({"Web": "1"}, set(), 1, []),
             ({"Web": 1.5}, set(), 1, []),
             ({"Web": [1]}, set(), 1, []),
+            # Every value must be a count: one that is not, and it is no counter.
+            ({"Web": 1, "Auth": "x"}, set(), 1, []),
+            ({"Web": 1, "Auth": None}, set(), 1, []),
             ([1], set(), 0, [legacy]),
         )
         for counter in counters:

@@ -371,6 +371,8 @@ class TestCoveragePhase(unittest.TestCase):
                     legacy, {"domains": ["SEC"], "tools": [], "Web": 2})),
                 ("a count under a scout's key", lambda: runio._write_json(legacy, {"tools": 2})),
                 ("a value that is not a count", lambda: runio._write_json(legacy, {"Web": True})),
+                ("one count beside something else", lambda: runio._write_json(
+                    legacy, {"Web": 2, "Auth": "x"})),
                 ("an empty object", lambda: runio._write_json(legacy, {})),
                 ("a torn file", lambda: open(legacy, "w").write('{"Web": 2')),
                 ("an array", lambda: runio._write_json(legacy, [2]))):
