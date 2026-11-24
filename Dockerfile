@@ -395,6 +395,13 @@ ENV TRIVY_CACHE_DIR=/opt/trivy-cache
 # refreshing — see https://github.com/semgrep/semgrep-rules/commits/develop
 # DO NOT replace this with a placeholder SHA: #1272 did exactly that
 # (1234567890abcdef…), which does not exist and fails the checkout.
+#
+# #3762: after the corrections, `check_rule_paths.py` fails this build if any
+# rule carries a `paths` pattern with more than two `*` in one path component.
+# Semgrep matches target file names against those patterns with wcmatch, whose
+# pinned version is polynomial in that number (GHSA-53pm-wgxf-c6qf), and Semgrep
+# pins wcmatch below the fix. See DEVELOPMENT.md, "Advisories Semgrep's pins
+# hold open".
 ARG SEMGREP_RULES_REF=40b8c63f75dc7c22c8a77482d73bfb864b146f7e
 COPY tools-image/semgrep /opt/panopticon/semgrep-corrections
 RUN : "asset-refresh ${ASSET_REFRESH}" \
@@ -406,6 +413,8 @@ RUN : "asset-refresh ${ASSET_REFRESH}" \
     && grep -rLE '^rules:' --include='*.yml' --include='*.yaml' /opt/semgrep-rules \
        | xargs -r rm -f \
     && python3 /opt/panopticon/semgrep-corrections/apply_corrections.py \
+       --rules-root /opt/semgrep-rules \
+    && python3 /opt/panopticon/semgrep-corrections/check_rule_paths.py \
        --rules-root /opt/semgrep-rules \
     && chmod -R a+rX /opt/semgrep-rules
 

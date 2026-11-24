@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- **The advisories Semgrep's pins hold open are assessed; none is exploitable in a scan (#3762).**
+  Semgrep 1.185.0 pins `mcp==1.29.0`, `opentelemetry-api~=1.37.0` and `wcmatch~=8.3`, so the
+  tools image carries eight published advisories that cannot be bumped away (#3619). Each was
+  checked against the adapter's exact Semgrep command and container, from Semgrep's own source.
+  - **mcp (five) and opentelemetry-api (two): not reached.** The mcp ones need the SDK's client
+    side, which Semgrep never calls, or an MCP HTTP server, which only `semgrep mcp` starts. The
+    OpenTelemetry parser is called only under `--trace`, on environment variables the adapter
+    does not pass.
+  - **wcmatch: reached, and now held by the image build.** Semgrep matches every target file
+    name against each rule's `paths` patterns with wcmatch, which is polynomial in the number of
+    `*` in a pattern. The vendored rules have at most two per path component (worst match
+    measured: 1.8 ms; the advisory's four-star shape: 1.7 s for one file name). The build now
+    runs `tools-image/semgrep/check_rule_paths.py` and fails if a rule carries a pattern with
+    more than two `*` in one path component, or a rule file it cannot read. No scan result
+    changes.
+  - `DEVELOPMENT.md` ("Advisories Semgrep's pins hold open") has the table, what was not
+    determined, and what to watch upstream before retrying #3619.
 - **Delta review's code is deleted (#3736).** Delta review was a review of a diff: `--pr`,
   `--changes` (`-c`), `--base` and the on-diff gate scope. 5.4 withdrew it (#3735) and left its
   code in the tree behind a refusal. The code is now gone: `diff_map.py`, `synth/delta.py`, the

@@ -799,7 +799,8 @@ requirements are 1.183.0's plus `structlog~=26.1.0`, which 1.184.0 added)
 constrains `boltons`, `exceptiongroup`, `pyjwt` (to its major line: `<3,>=2.15.0`, where 1.178.0 held it to 2.13.x),
 `structlog` (`~=26.1.0`), `tomli` (`~=2.4.0`), and `wcmatch`; it also pins `mcp==1.29.0` and
 `opentelemetry-api~=1.37.0`, so a security update for either cannot be taken until Semgrep moves
-them (#3619). Pinned OpenTelemetry packages constrain `importlib-metadata`,
+them (#3619; what the open advisories mean for a scan is assessed under "Advisories Semgrep's
+pins hold open", below). Pinned OpenTelemetry packages constrain `importlib-metadata`,
 `protobuf`, and `wrapt`. These filters match dependency names across the root entry, including the
 same name in `pyproject.toml`; they are not specific to the tools file. Revisit them when upgrading
 the scanner roots and other pinned parents together. They use `update-types`, so security updates
@@ -852,6 +853,123 @@ it YAML-parses every workflow, requires each `uses:` reference to carry a 40-hex
 requires every job to inherit or declare `permissions:`, and confines `pull_request_target` to
 `security-fork.yml`. The project does not interpret workflow `run:` shell in its Python test suite;
 the actionlint/zizmor CI change is maintained separately from this test-only rule.
+
+### Advisories Semgrep's pins hold open (#3762)
+
+Semgrep pins three packages in the tools closure at versions with published advisories, and no
+Semgrep release moves them yet (checked through 1.186.0). Assessed on 2026-11-24, at Semgrep
+1.185.0, against the way the adapter runs it. **None is exploitable in a panopticon scan.** Seven
+of the eight advisories are not reached at all. The eighth is reached, and the image build holds
+the condition that keeps it harmless.
+
+| Package (pin) | Advisory | What it needs | In our scan |
+|---|---|---|---|
+| mcp 1.29.0 | GHSA-qx49-fqc8-xw99 (high) | the SDK's OAuth **client** | not reached |
+| mcp 1.29.0 | GHSA-5h93-6whr-6q8j | the SDK's HTTP **client** transports | not reached |
+| mcp 1.29.0 | GHSA-rwrf-2pqf-9j8j | a **client** calling a server's tool | not reached |
+| mcp 1.29.0 | GHSA-w4fh-qvv9-3v23 | an MCP **HTTP server** with bearer auth | not reached |
+| mcp 1.29.0 | GHSA-84m7-p3x7-pcfv | an MCP **HTTP server**, stateful | not reached |
+| opentelemetry-api 1.37.0 | GHSA-mf5v-w3w3-f6cg | parsing an untrusted `traceparent` | not reached |
+| opentelemetry-api 1.37.0 | GHSA-xcq7-p3pf-p88h | parsing an untrusted `tracestate` | not reached |
+| wcmatch 8.5.2 | GHSA-53pm-wgxf-c6qf | an untrusted name, a pattern with several `*` | reached; bounded by a build check |
+
+**How the adapter runs Semgrep** (`tools/legacy_sarif.TOOL_CMD`, `run_tools.py`):
+
+- `semgrep scan --config /opt/semgrep-rules --metrics=off --disable-version-check --jobs=3
+  --x-ignore-semgrepignore-files --no-git-ignore --exclude=… --timeout=5 --timeout-threshold=3
+  --max-target-bytes=1000000 --sarif /src`. Redteam adds `--disable-nosem`. A second pass over
+  Dockerfile-like names uses a subset of the same rules.
+- In a container with `--network none`, no `-e`, all capabilities dropped, the target mounted
+  read-only and the working directory outside it. The image sets no `SEMGREP_*` or `OTEL_*`
+  variable.
+- `semgrep scan` without `--experimental` is handed to Semgrep's Python CLI
+  (`Scan_subcommand.ml` raises `Pysemgrep.Fallback`), so these Python packages are loaded.
+
+**mcp.** Semgrep imports the package when its CLI starts, and calls into it only from
+`semgrep mcp`. Three advisories are in the SDK's client side, which no Semgrep code calls under
+any command. The other two are in an MCP HTTP server, which only
+`semgrep mcp --transport streamable-http` starts. The adapter runs `scan`, and the container has
+no network.
+
+**opentelemetry-api.** In a scan Semgrep calls the vulnerable parser in one place,
+`telemetry.Telemetry.extract`. It runs only under `--trace`, which has no environment variable,
+and it parses a `traceparent` built from `SEMGREP_TRACE_PARENT_TRACE_ID` and
+`SEMGREP_TRACE_PARENT_SPAN_ID`. The adapter passes neither the flag nor any environment, and a
+target cannot set either. The `tracestate` parser is never called there: the carrier holds no
+`tracestate`.
+
+**wcmatch.** This one is reached. For each rule, Semgrep matches every candidate file's path
+against the rule's `paths.include` and `paths.exclude` with `wcmatch.glob.globmatch`
+(`target_manager._globmatch`). The paths are the target's, so the input is the attacker's. The
+patterns are ours: they come from the vendored rules, and a target cannot add a rule (the config
+is explicit, and the working directory is not the target).
+
+- The vendored rules at the pinned commit carry 111 distinct path patterns. None has more than
+  two `*` in one path component. The advisory needs several: the cost is O(n^k) for k stars, and
+  a name is at most 255 bytes.
+- Measured with wcmatch 8.5.2, using Semgrep's own preprocessing and flags: 8,320 hostile paths
+  at filesystem limits (255-byte names, 4,096-byte paths), built from each pattern's own text.
+  The slowest match took 1.8 ms; none took 0.1 s.
+- The same harness on the advisory's patterns: four stars, 1.7 s for one 255-byte name; five
+  stars, 6.2 s at 150 bytes. So the pinned version is affected, and what bounds us is the shape
+  of the patterns we ship.
+- **The image build holds that shape.** `tools-image/semgrep/check_rule_paths.py` runs on the
+  vendored tree, after the corrections, and fails the build when a rule has a `paths` pattern
+  with more than two `*` in one path component (`**` counts as two). It fails closed: a rule file
+  that does not parse, or a `paths` value that is not the shape Semgrep reads, fails the build
+  too, and the message names the file. So a `SEMGREP_RULES_REF` bump cannot bring a slow pattern
+  in unseen. If the build fails this way, do not raise the limit: correct or drop the rule
+  through `tools-image/semgrep/corrections.json`, or wait for a Semgrep that admits wcmatch 11.2.
+- Without the check, a pattern with four or more `*` in one component would let a target with
+  crafted file names run the Semgrep pass into its 900 s timeout. The scanner is then recorded
+  as missing and the run is not certified. It could not produce a wrong PASS.
+
+**The `--exclude` patterns are a different matcher, and are not bounded here.** The run's exclude
+globs reach Semgrep as `--exclude=` arguments (`legacy_sarif.with_semgrep_excludes`), and a
+reviewed repository's own committed config can set them, so there the pattern and the file names
+can both be the target's.
+
+| Input to a matcher | Pattern from | Matched by | Bound |
+|---|---|---|---|
+| rule `paths.include` / `paths.exclude` | the vendored rules | wcmatch, in Semgrep's Python CLI | at most two `*` per path component, held by the image build |
+| `--exclude=` on the command line | the fixed scanner list, virtualenv paths, the run's exclude globs | semgrep-core's own glob matcher (`libs/glob/Match.ml`: the glob compiled to a PCRE2 regex) | Semgrep's own `match_limit` (1,000,000) and `depth_limit` (10,000) on every regex |
+
+- wcmatch is not involved: `target_manager.py` sends the `--exclude` patterns to semgrep-core
+  (`TargetingConf.exclude`, over `rpc_call.get_targets`) and only reads back the skip reasons. So
+  GHSA-53pm-wgxf-c6qf does not reach through them.
+- PCRE2 backtracks on a many-star pattern too, but Semgrep caps each match (`Pcre2_.ml` sets the
+  two limits on every regex it compiles). A match that hits the cap is logged and counts as no
+  match: the file is **not** excluded and is scanned. It fails toward scanning.
+- The cost of a capped match was not measured (Semgrep was not run). A target can already run
+  the Semgrep pass into its timeout more cheaply, with files that hit the rule timeout, and the
+  result is the same: the scanner is missing and the run is not certified.
+
+**What was not determined.**
+
+- Semgrep was not run. The dispatch to the Python CLI is read from Semgrep's source at tag
+  `v1.185.0`; the `semgrep-core` binary in the wheel is assumed to be built from it.
+- The match times were measured on macOS with CPython 3.14. The image is Linux with CPython
+  3.12. The package files are identical (same hashes as the pinned wheel).
+- The patterns were read from `semgrep/semgrep-rules` at `SEMGREP_RULES_REF`, not from a built
+  image. The tree was rebuilt in a scratch directory the way the Dockerfile builds it (2,113
+  rule files, 318 pattern uses), and the check passes on it. The five rule files
+  `tools-image/semgrep` replaces carry no path pattern.
+- Only the three packages named in #3762 were assessed, and only against the adapter's command.
+  Anything that runs `semgrep mcp`, or `semgrep scan --trace`, from this image is outside it.
+
+**Reassess when** the Semgrep pin moves, `SEMGREP_RULES_REF` moves, the adapter's Semgrep command
+or container flags change, or a new advisory lands on one of the three packages.
+
+**Retrying #3619.** The bumps become possible when a Semgrep release changes its requirements:
+`mcp` to 1.30.0 or later, `opentelemetry-api` to a range that admits 1.45.2, and `wcmatch` to a
+range that admits 11.2 (today `mcp==1.29.0`, `opentelemetry-api~=1.37.0`, `wcmatch~=8.3`). For
+wcmatch, also watch for Semgrep dropping the Python matcher: its own comment says the filter is
+duplicated in OCaml and is to be removed. To read a release's requirements:
+
+```bash
+curl -s https://pypi.org/pypi/semgrep/<version>/json \
+  | python3 -c "import json,sys; print('\n'.join(r for r in json.load(sys.stdin)['info']['requires_dist'] if r.startswith(('mcp', 'opentelemetry-api', 'wcmatch'))))"
+```
 
 ## Versioning
 Scheme: a **minor** bump (2.x.0) per release round; **major** (x.0.0) reserved for breaking
