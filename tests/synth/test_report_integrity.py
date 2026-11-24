@@ -8,7 +8,6 @@ import os
 import tempfile
 import unittest
 import scripts.synthesize as syn
-import scripts.synth.delta as delta_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.grading as grading_mod
 import scripts.synth.plan as plan_mod
@@ -90,7 +89,6 @@ class TestIntegrity(unittest.TestCase):
                          dict(integ, tools_manifest_invalid=None,
                               unbound_tool_outputs=[],
                               tools_dir_unlistable=None, tools_run_unbound=False,
-                              delta_scope_suppressed_git_drivers=None,
                               unknown_severity_findings=[], sec_less_groups=[]))
         self.assertEqual(r["summary"]["gate"], "INCONCLUSIVE")
 
@@ -142,9 +140,6 @@ class TestIntegrity(unittest.TestCase):
         # #3766: appended by reconcile beside the two above.
         "tools_dir_unlistable",
         "tools_run_unbound",
-        # #2013 fix round 1: appended by reconcile beside the key above, and
-        # stated on every report for the same reason.
-        "delta_scope_suppressed_git_drivers",
         # #2990: appended by reconcile from the resolved findings.
         "unknown_severity_findings",
         # #3245: appended by reconcile from the coverage records.
@@ -188,9 +183,6 @@ class TestIntegrity(unittest.TestCase):
                 "tools_dir_unlistable": None,
                 # #3766: true only for a tools directory that is there and no run id.
                 "tools_run_unbound": False,
-                # #2013 fix round 1: None means this run was not delta-scoped,
-                # or nothing was suppressed -- never "not measured".
-                "delta_scope_suppressed_git_drivers": None,
                 # #2990: no finding carried an unknown severity.
                 "unknown_severity_findings": [],
                 # #3245: no coverage records, so no group is named.
@@ -228,9 +220,6 @@ class TestIntegrity(unittest.TestCase):
                 "tools_dir_unlistable": None,
                 # #3766: true only for a tools directory that is there and no run id.
                 "tools_run_unbound": False,
-                # #2013 fix round 1: None means this run was not delta-scoped,
-                # or nothing was suppressed -- never "not measured".
-                "delta_scope_suppressed_git_drivers": None,
                 # #2990: no finding carried an unknown severity.
                 "unknown_severity_findings": [],
                 # #3245: no coverage records, so no group is named.
@@ -336,7 +325,7 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         "dispatch_plan_missing", "dispatch_plan_mismatched",
         "invalid_dispatch_plans", "invalid_verify_queue",
         "tools_manifest_invalid", "unbound_tool_outputs", "tools_dir_unlistable",
-        "tools_run_unbound", "delta_scope_suppressed_git_drivers"})
+        "tools_run_unbound"})
     # Published beside them and read by no gate: a counter, a disclosure, or
     # (cross_domain_findings) a deliberate report-only signal.
     REPORTED = frozenset({
@@ -364,7 +353,6 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
     # below has to name them explicitly.
     RECONCILE_ADDS = frozenset({"tools_manifest_invalid", "unbound_tool_outputs",
                                 "tools_dir_unlistable", "tools_run_unbound",
-                                "delta_scope_suppressed_git_drivers",
                                 "unknown_severity_findings", "sec_less_groups"})
     # One truthy value per key, in the shape the key really carries.
     TRUTHY: dict = {
@@ -405,7 +393,6 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         "unbound_tool_outputs": ["semgrep.sarif"],
         "tools_dir_unlistable": "tools: Permission denied",
         "tools_run_unbound": True,
-        "delta_scope_suppressed_git_drivers": ["diff.external"],
         # #2271: git's own stderr, which is target-influenced free text.
         "discovery_git_failure": "exit 128: fatal: <ROOT>/.git: not a directory",
         "discovery_files_truncated": 7,
@@ -424,10 +411,9 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
     def _inputs(self, key=None, *also):
         """build_report inputs with `key` alone made truthy.
 
-        `tools_manifest_invalid` and `delta_scope_suppressed_git_drivers` are
-        driven through their OWN inputs: `reconcile` computes both over
-        whatever section it was handed, so a value planted in the section
-        would be overwritten and the probe would prove nothing. `also` names
+        `tools_manifest_invalid` is driven through its OWN input: `reconcile`
+        computes it over whatever section it was handed, so a value planted in
+        the section would be overwritten and the probe would prove nothing. `also` names
         further keys to make truthy, for the ordering test below; only
         section-settable keys belong there, for that same reason.
         """
@@ -435,7 +421,6 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         for name in (key, *also):
             if name:
                 section[name] = self.TRUTHY[name]
-        delta_key = key == "delta_scope_suppressed_git_drivers"
         # #2990: reconcile reads this key off the findings, so it is driven by
         # one finding whose severity normalize_finding does not know.
         unknown = ([findings_mod.normalize_finding(
@@ -445,14 +430,11 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         return report_mod.ReportInputs(
             run=report_mod.RunConfig(target="t", fail_on="high", timestamp=self.TS),
             findings=findings_mod.FindingSet(findings=unknown),
-            delta=delta_mod.DeltaContext(
-                diff_hunks={"base": "main", "hunks": {}} if delta_key else None),
             plan=plan_mod.PlanInputs(
                 groups_meta=self.G, integrity=section,
                 # #3245: reconcile reads this key off the coverage records.
                 coverages=([{"group": "g1", "effective": ["COD"]}]
-                           if "sec_less_groups" in (key, *also) else None),
-                git_drivers_suppressed=self.SUPPRESSED_DRIVERS if delta_key else None),
+                           if "sec_less_groups" in (key, *also) else None)),
             tools=tool_axis_mod.ToolAxis(
                 manifest_invalid=(self.TRUTHY[key]
                                   if key == "tools_manifest_invalid" else None),
@@ -467,7 +449,7 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         re-states the expression cannot fail when the expression is the bug."""
         inp = self._inputs(key)
         resolved = verdicts_mod.resolve_findings(
-            inp.findings, inp.delta, inp.run,
+            inp.findings, inp.run,
             gated_suppressed=inp.tools.gated_suppressed)
         return tool_axis_mod.reconcile(inp.plan, inp.tools, resolved,
                                        run=inp.run).integrity_ok

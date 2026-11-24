@@ -768,9 +768,9 @@ class TestTheRealChild(unittest.TestCase):
         self.same(self.child(findings=[], scans=tool(lone)), self.child(findings=[], scans=tool(twin)))
 
     def test_the_child_refuses_a_hunk_map(self):
-        # #3735: delta review is withdrawn in 5.4, and the real child refuses `--diff-hunks` before it reads
-        # or writes anything. (This was the `--diff-hunks` case of round 2's B3: a hunk map's keys were read as
-        # written while the finding's path was spelled. That code is unreachable now and is deleted in 5.5.)
+        # #3735, #3736: delta review is gone, and the real child refuses `--diff-hunks` before it reads or
+        # writes anything. (This was the `--diff-hunks` case of round 2's B3: a hunk map's keys were read as
+        # written while the finding's path was spelled. That code was deleted in 5.5.)
         for text in (LONE, SPELLED):
             name = "src/b%s.py" % text
             hunks = {"diff-hunks.json": {"base": "main", "base_source": "explicit", "diff_context": 5,

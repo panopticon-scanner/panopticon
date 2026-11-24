@@ -39,8 +39,9 @@ VERDICT_TO_CONFIDENCE = {"CONFIRMED": "CERTAIN", "PLAUSIBLE": "LIKELY"}
 
 MODE_TO_REVIEW_TYPE = {
     "repo": "repo", "file": "file", "directory": "directory",
-    "group": "group", "files": "changes", "changes": "changes",
-    "changed": "changes", "pr": "pr",
+    # `files` is the scoped whole-file review (`--files`); its report has always been
+    # typed `changes`. The delta modes (`changed`, `changes`, `pr`) went with #3736.
+    "group": "group", "files": "changes",
 }
 
 PANEL_ORDER = evidence_mod.PANELS
@@ -223,9 +224,8 @@ def normalize_finding(f):
         f.pop("location", None)
     elif loc.get("line_start") is not None:
         loc.setdefault("line_end", loc.get("line_start"))
-        # #3731: a range that ends before it starts is one line, the start. Left as
-        # written, the delta classifier read `line_end` and the health weight did not:
-        # a claim at line 52 with `line_end: 1` was off a hunk at 50-55.
+        # #3731: a range that ends before it starts is one line, the start, for every
+        # reader of the range.
         if _inverted(loc):
             # Announced, as `validate_schema.repair_finding` announces its repairs.
             # (An agent's finding has no id yet: its file and line say which it is.)
@@ -472,15 +472,11 @@ def severity_floor_admits(finding, fail_on):
     """Is `finding` at or above the `--fail-on` severity floor? (#2222)
 
     THE definition of that floor, for the same #688 reason the rank above is
-    aliased rather than copied. Two readers: `grading.gate_verdict`, which is
-    this predicate under `any()` once the gate is armed, and
-    `delta.zero_hunk_population`, which counts the findings a zero-hunk run's
-    gate WOULD have judged. Those two disagreeing about the threshold is exactly
-    the drift #2222 was filed about, so there is one spelling of it.
+    aliased rather than copied. Its reader is `grading.gate_verdict`, which is
+    this predicate under `any()` once the gate is armed.
 
     A falsy `fail_on` admits everything: `gate_verdict` returns OFF before
-    reading a severity at all, and the zero-hunk population then narrows by the
-    evidence policy alone (owner ruling 2026-09-28). An unknown severity NAME
+    reading a severity at all. An unknown severity NAME
     raises `ValueError` here exactly as the inline threshold this replaces did;
     argparse constrains the flag to the four real ones.
     """

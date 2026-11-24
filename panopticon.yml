@@ -414,7 +414,6 @@ groups:
       tests:
       - tests/test_driver.py
       - tests/test_driver_cli.py
-      - tests/test_driver_delta.py
       - tests/test_driver_entry.py
       - tests/test_driver_matrix.py
       - tests/test_driver_verify.py
@@ -643,7 +642,6 @@ groups:
       - tests/test_tests_axis.py
       - tests/test_diff_map.py
       - tests/test_diff_map_fail_closed.py
-      - tests/test_pr_worktree_integration.py
       - tests/test_plan_contract.py
       - tests/test_safe_glob.py
       - tests/test_panopticon_literal_ratchet.py

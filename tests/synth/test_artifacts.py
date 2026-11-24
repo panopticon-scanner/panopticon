@@ -11,7 +11,7 @@ import pytest
 
 import scripts.group_runner as group_runner
 import scripts.safe_write as safe_write
-from scripts.synth import artifacts, cost, coverage_io, delta, integrity, plan, tool_axis
+from scripts.synth import artifacts, cost, coverage_io, integrity, plan, tool_axis
 from tests._test_helpers import REPO_ROOT
 
 
@@ -43,10 +43,10 @@ def test_deep_json_preserves_fallback_and_announces_rejection(tmp_path, capsys,
     assert filename in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("kind", ["manifest", "plan", "queue", "delta"])
+@pytest.mark.parametrize("kind", ["manifest", "plan", "queue"])
 def test_deep_json_retains_invalid_artifact_fact(tmp_path, kind):
     names = {"manifest": "tools-manifest.json", "plan": "dispatch-plan-driver.json",
-             "queue": "verify-queue.json", "delta": "diff-hunks.json"}
+             "queue": "verify-queue.json"}
     (tmp_path / names[kind]).write_text("[" * 200000 + "]" * 200000)
     if kind == "manifest":
         result = _load_manifest(tmp_path)
@@ -56,12 +56,9 @@ def test_deep_json_retains_invalid_artifact_fact(tmp_path, kind):
         valid, seen, invalid = plan.load_dispatch_plans_detailed(str(tmp_path))
         assert valid == [] and seen == 1
         assert len(invalid) == 1 and "nested deeper than 64 levels" in invalid[0]["reason"]
-    elif kind == "queue":
+    else:
         queue, reason = integrity.load_verify_queue(str(tmp_path))
         assert queue is None and "nested deeper than 64 levels" in reason
-    else:
-        data, report = delta.load_diff_hunks_report(str(tmp_path / names[kind]))
-        assert data == {} and report.payload_malformed == delta.MALFORMED_UNREADABLE
 
 
 def test_manifest_oversize_is_invalid_before_repair(tmp_path):

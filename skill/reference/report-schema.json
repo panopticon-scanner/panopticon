@@ -50,6 +50,7 @@
         },
         "review_type": {
           "type": "string",
+          "description": "What the run reviewed. `changes` is a `--files` run. `pr` is in no report written since 5.5, when delta review was removed (#3736); a report from before can carry it.",
           "enum": [
             "repo",
             "file",
@@ -807,13 +808,13 @@
             "tools_suppressed_gated": {
               "type": "object",
               "additionalProperties": {"type": "integer", "minimum": 0},
-              "description": "#1701/#3269 G4: `{reason: count}` for source-scope-suppressed findings that remain absent from `findings[]` but THIS RUN'S redteam gate counted. Policy C admits only CRITICAL or secret-class findings; the driver then applies its operator-selected severity and delta/gate-scope filters. This map never includes `run-artifact` or `generated-bytecode`, which are gated in neither mode. Read beside `tools_suppressed`: per reason, the two counts partition what ingest suppressed from the body into gated and not gated. `{}` is the standard-mode answer and any redteam run where no suppressed finding moved the gate. These findings bypass tool verification because they are not in the report body.",
+              "description": "#1701/#3269 G4: `{reason: count}` for source-scope-suppressed findings that remain absent from `findings[]` but THIS RUN'S redteam gate counted. Policy C admits only CRITICAL or secret-class findings; the driver then applies its operator-selected severity filter. This map never includes `run-artifact` or `generated-bytecode`, which are gated in neither mode. Read beside `tools_suppressed`: per reason, the two counts partition what ingest suppressed from the body into gated and not gated. `{}` is the standard-mode answer and any redteam run where no suppressed finding moved the gate. These findings bypass tool verification because they are not in the report body.",
               "$comment": "Repaired to these types at the read by synth.repair.repair_tools_suppressed, like its sibling."
             },
             "tools_suppressed_not_gated": {
               "type": "object",
               "additionalProperties": {"type": "integer", "minimum": 0},
-              "description": "#1578 policy C, widened through #3269 G4: `{reason: count}` for source-scope-suppressed findings that cleared the run's severity and delta/gate-scope filters but the redteam gate declined. It includes rows policy C declined because they were neither CRITICAL nor secret-class, plus every `run-artifact` or `generated-bytecode` candidate regardless of severity or secret provenance. This is a subset of `tools_suppressed`, not a third population beside it, and is empty in standard mode.",
+              "description": "#1578 policy C, widened through #3269 G4: `{reason: count}` for source-scope-suppressed findings that cleared the run's severity filter but the redteam gate declined. It includes rows policy C declined because they were neither CRITICAL nor secret-class, plus every `run-artifact` or `generated-bytecode` candidate regardless of severity or secret provenance. This is a subset of `tools_suppressed`, not a third population beside it, and is empty in standard mode.",
               "$comment": "Repaired to these types at the read by synth.repair.repair_tools_suppressed, like its two siblings."
             },
             "tools_unpinned": {
@@ -926,7 +927,7 @@
                   "description": "How many files the carve-out kept for SEC review. The MEASUREMENT, not a recount of the list above: it survives the bound applied to `files`."
                 }
               },
-              "description": "#1757 (AGT-1355709320), owner ruling 2026-09-25: *a target-authored `exclude_paths` may not remove a file the deterministic SEC floor matches from the SEC domain; such an exclusion is disclosed in the report's coverage section instead of silently applied. Other domains keep honouring the exclusion.* Since #3338 that floor includes every code-shaped file, while explicit documentation and known assets remain prunable. This key is that disclosure. The floor exists so operator taste cannot hide code from security review, and SEC is already NON_EXCLUDABLE against a per-group `exclude:` (#1084) -- but the top-level path prune ran BEFORE grouping and reached the same outcome through an unguarded door, which is the asymmetry run-14 found. A review cell is (group x domain) and no domain can be restricted to a subset of a group's files, so `discovery` puts the carved files in one dedicated group named `exclude_paths_sec_carve_out` whose coverage is pinned to exactly `[\"SEC\"]` (`phases/coverage.py`, off the group entry's `sec_carve_out` marker); they do NOT rejoin their natural groups, so COD/ARC/TST and the rest still honour the exclusion. The TOOL axis is unchanged -- see `tools_excluded`. ABSENT, not zero, on a run that committed no `exclude_paths:` at all: zero behaviour change is zero output change, the rule `groups.json`'s own `exclude_paths` key already follows. Present with `count: 0` when globs were committed and matched no code-shaped file. An operator-authored `--pr` config gets the same treatment, deliberately: the ruling's rationale is that nobody's taste hides code from security review. SCOPE: like every other per-run disclosure this describes THIS RUN's surface, so a narrowing scope flag narrows it -- `--scope-dir` keeps the carved files under that directory, while `--scope-file` and `--scope-group` carve nothing at all (their universes come out of the already-pruned listing). A `count: 0` on a scoped run therefore means \"nothing in this run's scope\", not \"nothing in the repository\" -- unlike `groups.json`'s `excluded_count`, which those three flags leave at the whole-repo number."
+              "description": "#1757 (AGT-1355709320), owner ruling 2026-09-25: *a target-authored `exclude_paths` may not remove a file the deterministic SEC floor matches from the SEC domain; such an exclusion is disclosed in the report's coverage section instead of silently applied. Other domains keep honouring the exclusion.* Since #3338 that floor includes every code-shaped file, while explicit documentation and known assets remain prunable. This key is that disclosure. The floor exists so operator taste cannot hide code from security review, and SEC is already NON_EXCLUDABLE against a per-group `exclude:` (#1084) -- but the top-level path prune ran BEFORE grouping and reached the same outcome through an unguarded door, which is the asymmetry run-14 found. A review cell is (group x domain) and no domain can be restricted to a subset of a group's files, so `discovery` puts the carved files in one dedicated group named `exclude_paths_sec_carve_out` whose coverage is pinned to exactly `[\"SEC\"]` (`phases/coverage.py`, off the group entry's `sec_carve_out` marker); they do NOT rejoin their natural groups, so COD/ARC/TST and the rest still honour the exclusion. The TOOL axis is unchanged -- see `tools_excluded`. ABSENT, not zero, on a run that committed no `exclude_paths:` at all: zero behaviour change is zero output change, the rule `groups.json`'s own `exclude_paths` key already follows. Present with `count: 0` when globs were committed and matched no code-shaped file. An operator-authored config gets the same treatment, deliberately: the ruling's rationale is that nobody's taste hides code from security review. SCOPE: like every other per-run disclosure this describes THIS RUN's surface, so a narrowing scope flag narrows it -- `--scope-dir` keeps the carved files under that directory, while `--scope-file` and `--scope-group` carve nothing at all (their universes come out of the already-pruned listing). A `count: 0` on a scoped run therefore means \"nothing in this run's scope\", not \"nothing in the repository\" -- unlike `groups.json`'s `excluded_count`, which those three flags leave at the whole-repo number."
             },
             "test_inventory": {
               "type": "object",
@@ -950,7 +951,7 @@
                   }
                 }
               },
-              "description": "#2013: the TARGET's own Git driver commands this scan ran with EMPTIED. Every git call on a review target goes through a probe that refuses to run a command the reviewed tree configured (#1985/#2006); refusing such a target outright made a git-lfs (`git lfs install --local`) or git-crypt checkout unreviewable on every path that touches git, so the probe now overrides each `filter.*.clean/.process/.smudge`, `diff.external` and `diff.*.command/.textconv` it finds with `-c <key>=` (plus that driver's `required` flag, which would otherwise turn the emptied command into a hard error), proves each override took, and discloses the keys here. It changes what git COMPARES, not what any reviewer was shown (agents read the worktree; the probe never checks anything out): a clean filter is what makes the index blob equal the worktree, so paths under a suppressed driver compare as MODIFIED — dirtiness for them is unknown and a delta may include them. That is why this rides the artifact and not only the run manifest, and why a delta-scoped run over such a comparison cannot certify its coverage (see meta.integrity.delta_scope_suppressed_git_drivers). Stated on every report, `[]` included: the field's absence must never be readable as `the target configured none`. `[]` means no driver was emptied under this run's probe; it does NOT distinguish a run whose manifest predates this field, which the driver also threads as nothing (reachable only on a run resumed across that upgrade). Repaired at the read (`synth.repair.repair_git_drivers_suppressed`): the key half is repository-authored."
+              "description": "#2013: the TARGET's own Git driver commands this scan ran with EMPTIED. Every git call on a review target goes through a probe that refuses to run a command the reviewed tree configured (#1985/#2006); refusing such a target outright made a git-lfs (`git lfs install --local`) or git-crypt checkout unreviewable on every path that touches git, so the probe now overrides each `filter.*.clean/.process/.smudge`, `diff.external` and `diff.*.command/.textconv` it finds with `-c <key>=` (plus that driver's `required` flag, which would otherwise turn the emptied command into a hard error), proves each override took, and discloses the keys here. It changes what git COMPARES, not what any reviewer was shown (agents read the worktree; the probe never checks anything out): a clean filter is what makes the index blob equal the worktree, so paths under a suppressed driver compare as MODIFIED — dirtiness for them is unknown. That is why this rides the artifact and not only the run manifest. Stated on every report, `[]` included: the field's absence must never be readable as `the target configured none`. `[]` means no driver was emptied under this run's probe; it does NOT distinguish a run whose manifest predates this field, which the driver also threads as nothing (reachable only on a run resumed across that upgrade). Repaired at the read (`synth.repair.repair_git_drivers_suppressed`): the key half is repository-authored."
             },
             "resume": {
               "type": [
@@ -958,158 +959,6 @@
                 "null"
               ],
               "description": "Resume accounting for fan-out/verify phases; null on fresh full runs."
-            },
-            "delta": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "description": "Delta-review disclosure (#449); null outside delta mode, which includes a payload that was rejected or carried no `base` -- a run that was GIVEN a diff-hunks path says so in the sibling `delta_artifact` below, which is how a rejected artifact is told apart from a run that was never passed `--diff-hunks` (#2169). Every key is pinned under `properties` so the schema-parity walk descends into this block (#2169, #1602 in miniature); the seven keys copied verbatim out of `.panopticon/diff-hunks.json` are type-pinned too, and safely so, because the loader now REPAIRS them at the read (#2382): a value of the wrong type is read as null and named in `delta_artifact.keys_repaired`, so the pin states what the read already enforces instead of letting a hand-supplied artifact end a paid-for run on a terminal schema error. The driver's discovery phase rewrites or removes that file, so the exposure the repair closes is the direct `synthesize.py --diff-hunks <path>` invocation, not a `driver run`.",
-              "properties": {
-                "base": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "description": "The base the artifact resolved, copied verbatim from it (normally a ref or commit string); any truthy value is what makes the review a delta one. Never null here: a `base` the artifact omitted or that was repaired at the read (see `delta_artifact.keys_repaired`) makes the review a non-delta one, and this whole block is null instead."
-                },
-                "base_source": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "description": "How the artifact says it chose that base (`explicit`, `fallback`, ...), copied verbatim from it. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
-                },
-                "base_commit": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "description": "The artifact's own anchor commit for the base, so a later reader can reconstruct the delta after branch tips move; null when it resolved none. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
-                },
-                "delta_start": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "description": "The artifact's own anchor commit for the start of the delta; null when it resolved none. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
-                },
-                "delta_end": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "description": "The artifact's own anchor commit for the end of the delta; null when it resolved none. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
-                },
-                "includes_uncommitted": {
-                  "type": [
-                    "boolean",
-                    "null"
-                  ],
-                  "description": "Whether the artifact says the diff it measured included uncommitted worktree changes. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
-                },
-                "files_changed": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "description": "The ARTIFACT's own count of changed files, which is not the size of the map this run classified against -- compare `hunks_files` below. Null when absent from the artifact or repaired at the read (see `delta_artifact.keys_repaired`)."
-                },
-                "diff_context": {
-                  "type": "integer",
-                  "description": "Lines of tolerance this run allowed around a hunk when classifying a finding on-diff (`--diff-context`, default 5)."
-                },
-                "hunks_files": {
-                  "type": "integer",
-                  "description": "Files in the hunk map this run actually classified against; 0 on an ACTIVE delta means the map matched no finding, so every one classified off-diff and a `--gate-scope on-diff` gate had nothing left to fail on."
-                },
-                "hunks_ranges": {
-                  "type": "integer",
-                  "description": "Line ranges in that same map. 0 on an ACTIVE delta with gate-eligible findings present under `--gate-scope on-diff` makes that run read INCONCLUSIVE rather than PASS (#2178, narrowed by #2222); with no such finding it keeps its PASS, because a legitimately empty change is not a defect. A named file with no range of its own is a separate hazard: a finding there fails OPEN to on-diff."
-                },
-                "ranges_dropped": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "description": "Malformed hunk ranges the loader discarded -- one per range that was not a two-integer pair. The file stays in the map and is merely narrower; a WHOLE lost path is counted separately as `paths_dropped` (#2169), not as one of these. Since #2405, widened by #2517 (owner ruling 2026-10-02), a non-zero value here is one of the FOUR shapes -- with `paths_dropped`, `paths_emptied_by_drops` and `payload_malformed` -- that turn a PASS gate INCONCLUSIVE under `--gate-scope on-diff` when gate-eligible findings exist: the map that chose the gate's scope is provably damaged. Null when this context was not built by reading a file."
-                },
-                "paths_dropped": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "description": "Whole paths the loader discarded, because the value under the path was not a list of ranges at all (#2169). Such a file leaves the map entirely, so every finding in it classifies off-diff -- a strictly more expensive loss than a dropped range. Since #2517 (owner ruling 2026-10-02) a non-zero value here is one of the FOUR shapes -- with `ranges_dropped`, `paths_emptied_by_drops` and `payload_malformed` -- that turn a PASS gate INCONCLUSIVE under `--gate-scope on-diff` when gate-eligible findings exist (the reason lands in `summary.coverage_note`). Its direction is the fail-OPEN one: the dropped file's findings LEFT the gate's source set rather than being admitted to it, so such a run reported a PASS over findings the artifact had hidden. It never fires on a legitimate change shape, because the loader drops a path only for a value that is not a list at all and no `diff_map.parse` output produces one. Null when this context was not built by reading a file."
-                },
-                "paths_without_ranges": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "description": "Paths the map NAMES whose list of ranges is empty (#2381). Not a loss: the file stays in the map, and every finding in it classifies ON-diff by `diff_map.classify`'s changed-file fail-open, so under `--gate-scope on-diff` every finding in this many files is admitted to the gate's source set on the artifact's word rather than on a measured range. Non-zero is not by itself a defect -- a deletion-only, binary, mode-only or same-content rename change legitimately carries a key with no range -- but a truncated or hand-edited map looks exactly the same from here, and no other key in either block distinguishes them: `ranges_dropped` and `paths_dropped` are both zero for this shape, and the whole-map disclosures require `hunks_ranges: 0`. Classification is unchanged by this counter; the gate reads only its `paths_emptied_by_drops` subset (#2405); the remainder is disclosed, never reclassified. A path whose every range was malformed is counted BOTH here and in `ranges_dropped` -- two facts about one path, and `paths_emptied_by_drops` below is how many of the paths counted here are of that kind. Null when this context was not built by reading a file."
-                },
-                "paths_emptied_by_drops": {
-                  "type": [
-                    "integer",
-                    "null"
-                  ],
-                  "description": "How many of `paths_without_ranges` above arrived NON-empty and were emptied by the loader because every range under the path was malformed (#2386): the sub-population a BROKEN artifact produced, as opposed to the one that arrived `[]`. That difference (`paths_without_ranges` minus this) is what it recovers -- a gate rule can treat this count as suspicious without firing on every legitimate deletion-only, binary, mode-only or same-content rename change, which the merged counter could not. Since #2405 a non-zero value here, a non-zero `ranges_dropped`, a non-zero `paths_dropped` (#2517, the fourth shape), or a set `payload_malformed` turns a PASS gate INCONCLUSIVE under `--gate-scope on-diff` when gate-eligible findings exist (the reason lands in `summary.coverage_note`); it never fires on a legitimate deletion-only change and knowingly misses a truncated map that arrived `[]`. A subset, not a sibling: every path counted here is also counted in `paths_without_ranges`, and every one of them dropped at least one range, so `ranges_dropped` is non-zero too. Classification is unchanged by either counter. Null when this context was not built by reading a file."
-                },
-                "payload_malformed": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "description": "Why the payload was rejected in whole or in part, from the closed vocabulary `unreadable` / `not an object` / `hunks not an object` / `unsupported schema_version` / `generation-mismatch`. Only `hunks not an object` can reach this block, because the other four -- `unsupported schema_version` included, which rejects the whole payload (#2382), and `generation-mismatch`, which rejects an artifact whose `run_id` is not the one the reader was told to expect (#2107): a hunk map from a different discovery generation than this run's `groups.json`, so the review covered one surface and the gate would have scoped to another -- leave no `base` and hence no delta review; there the sibling `delta_artifact` carries the reason. The #2405 gate rule NAMES this key so its measure is total over that vocabulary, but no value here can publish its reason: `hunks not an object` leaves the hunk map empty, so `hunks_ranges` is 0 and such a run reads INCONCLUSIVE under the older zero-hunk refusal (#2178) instead. Null when nothing was rejected, and null when this context was not built by reading a file."
-                },
-                "on_diff_total": {
-                  "type": "integer",
-                  "description": "Active findings this run classified as on-diff."
-                },
-                "pre_existing_total": {
-                  "type": "integer",
-                  "description": "Active findings this run classified as pre-existing (off-diff)."
-                }
-              }
-            },
-            "delta_artifact": {
-              "type": [
-                "object",
-                "null"
-              ],
-              "description": "What ATTEMPTING to read `.panopticon/diff-hunks.json` cost: an object whenever a `--diff-hunks` path was given and a read was attempted -- whether or not it succeeded, and whether or not the resulting delta was active -- and null when none was given (a direct caller, or a run never passed the flag), so the block's presence alone is the fact (#2169). That is what it publishes: a rejected payload carries no `base`, so `delta` above is null exactly as it is for a run given no artifact at all, and rather than dressing a rejection up as an active delta, `delta` is left alone for consumers that read its truthiness as \"this was a delta review\".",
-              "properties": {
-                "payload_malformed": {
-                  "type": [
-                    "string",
-                    "null"
-                  ],
-                  "description": "Why the payload was rejected in whole or in part, from the same closed vocabulary `delta.payload_malformed` uses; unlike that key, all five values can appear here, including the four (`unreadable` -- which covers a path that does not exist -- `not an object`, `unsupported schema_version`, which rejects a payload carrying a `schema_version` that is not the int 1, and `generation-mismatch`, which rejects a payload whose `run_id` is not the generation the reader was told to expect: the driver's discovery phase stamps both halves of a delta discovery and the synthesize phase passes `--diff-hunks-run-id`, so a hunk map from another generation than this run's `groups.json` -- or one carrying no stamp at all -- is refused rather than scoping this run's gate. A hand-run `synthesize.py` is covered too: with no flag the expectation defaults to the `run_id` on the `groups.json` that run read, and only an inventory carrying no stamp either leaves the payload unchecked. The refusal is published HERE rather than being withheld at the phase, so it is told apart from a run that was never a delta one, #2107) that leave no `base` and so no `delta` block at all. The #2405 gate rule names this key so its measure is total over the vocabulary, and no value here reaches that reason in a real run: `hunks not an object` is the only one that leaves an ACTIVE delta and it empties the hunk map, so the zero-hunk refusal (#2178) is what such a run publishes, while the other four degrade the gate to the wider scope, which fails closed. Null when nothing was rejected."
-                },
-                "keys_repaired": {
-                  "type": "array",
-                  "items": {
-                    "type": "string"
-                  },
-                  "description": "The artifact-carried keys of `meta.coverage.delta` that carried a value of the wrong type and were read as NULL (#2382), in the loader's table order: `base`, `base_source`, `base_commit`, `delta_start`, `delta_end`, `includes_uncommitted`, `files_changed`. Empty when every one of those the artifact carried had the type pinned for it above; a key ABSENT from the artifact is not a repair, because `meta.coverage.delta` publishes it as null either way. `base` in this list is the expensive entry: the review is NOT a delta one, `delta` above is null exactly as it is for a run given no artifact, and the gate scopes to every active finding -- which is why the list lives in THIS block, the one written whenever `--diff-hunks` was passed, rather than in the block the repair can null. A repair is also printed on stderr in the #957 register. Never null here, because this block is written only when a read was attempted."
-                },
-                "ranges_dropped": {
-                  "type": "integer",
-                  "description": "Malformed hunk ranges the loader discarded, as `delta.ranges_dropped` -- one of the four shapes that turn an on-diff PASS gate INCONCLUSIVE (#2405, the fourth added by #2517); never null here, because this block is written only when a read was attempted."
-                },
-                "paths_dropped": {
-                  "type": "integer",
-                  "description": "Whole paths the loader discarded, as `delta.paths_dropped` -- since #2517 (owner ruling 2026-10-02) one of the four shapes that turn an on-diff PASS gate INCONCLUSIVE when gate-eligible findings exist, and the fail-OPEN one: the dropped file leaves the map, so every finding in it classifies off-diff and leaves the gate's source set instead of being admitted to it. Never null here, for the same reason as its siblings."
-                },
-                "paths_without_ranges": {
-                  "type": "integer",
-                  "description": "Paths the map names with no range of their own, as `delta.paths_without_ranges` -- the fail-open shape, in which every finding in such a file reaches a `--gate-scope on-diff` gate as on-diff; never null here, for the same reason as its siblings. `paths_emptied_by_drops` below splits them, and the gate reads only that subset (#2405); the remainder is disclosed, never reclassified."
-                },
-                "paths_emptied_by_drops": {
-                  "type": "integer",
-                  "description": "How many of `paths_without_ranges` above the loader emptied itself, because every range under the path was malformed, as `delta.paths_emptied_by_drops` -- the sub-population a BROKEN artifact produced, told apart from the one that arrived `[]` (#2386). It recovers which rangeless paths came from a damaged artifact. Since #2405 a non-zero value here, a non-zero `ranges_dropped`, a non-zero `paths_dropped` (#2517, the fourth shape), or a set `payload_malformed` turns a PASS gate INCONCLUSIVE under `--gate-scope on-diff` when gate-eligible findings exist (the reason lands in `summary.coverage_note`); it never fires on a legitimate deletion-only change and knowingly misses a truncated map that arrived `[]`. That rule needs an ACTIVE delta, i.e. a read that resolved a `base` and so published the `delta` block above; a payload rejected outright leaves no `base`, and there the gate degrades to the wider scope, which fails closed. Never null here, for the same reason as its siblings."
-                }
-              }
             },
             "ocrdb": {
               "type": ["object", "null"],
@@ -1338,11 +1187,6 @@
               "items": {"type": "string"},
               "description": "#2070: scanner-output basenames present in the tools directory but absent from this run's exact output receipt. They are disclosed, never ingested, and force INCONCLUSIVE."
             },
-            "delta_scope_suppressed_git_drivers": {
-              "type": ["array", "null"],
-              "items": {"type": "string"},
-              "description": "#2013 fix round 1: the suppressed target Git driver keys that scoped this run's DELTA, else null. Emptying a `filter.*.clean` removes the equality it created between the index blob and the worktree, so git then compares raw worktree bytes against a filtered blob and paths under a suppressed driver compare as MODIFIED (measured: index `ptr payload`, worktree `BIG payload`, plain `git status` clean, the probe's `status` reporting the path modified). On a full-repo scan that costs `target_dirty` in the run manifest and nothing the findings depend on, so `meta.coverage.git_drivers_suppressed` discloses it and certification is unaffected. On a delta-scoped run (`--changes`, or any diff-hunks map with a base: `--scope-changed` / `--pr`) the inflated comparison CHOSE the reviewed file set and the on-diff gate's scope, so this caveat is named, `summary.coverage_certified` is false and `coverage_note` says why. Like every other reason in this section it forces `summary.gate` to INCONCLUSIVE through `integrity_ok`, never past a FAIL. Null means this run was not delta-scoped, or suppressed nothing — never `not measured`."
-            },
             "plans_seen": {
               "type": "integer"
             },
@@ -1363,7 +1207,7 @@
             },
             "discovery_files_truncated": {
               "type": ["integer", "null"],
-              "description": "#2271: how many discovered files were beyond the discovery cap and therefore never reviewed — the reviewed surface is a PREFIX of the intended one. An integer on every scan, `0` included, because a reader comparing two runs needs to see that this one reviewed the whole tree rather than part of it; on a delta run this counts the changed set, not the repository listing, and `groups.json`'s `discovery.surface` says which; null = not measured (no discovery block: a direct synthesize.py call over hand-collected findings, or a run folder written before the block existed). It does NOT gate certification, which is the precedence this disclosure already had before it reached the report at all. A negative or non-integer count publishes null: it is not a measurement discovery can produce."
+              "description": "#2271: how many discovered files were beyond the discovery cap and therefore never reviewed — the reviewed surface is a PREFIX of the intended one. An integer on every scan, `0` included, because a reader comparing two runs needs to see that this one reviewed the whole tree rather than part of it; null = not measured (no discovery block: a direct synthesize.py call over hand-collected findings, or a run folder written before the block existed). It does NOT gate certification, which is the precedence this disclosure already had before it reached the report at all. A negative or non-integer count publishes null: it is not a measurement discovery can produce."
             }
           }
         },
@@ -1819,13 +1663,6 @@
               "description": "#3528: plain-language warning that the policy score is pending calibration and comparable only across the same version, review type and layout fingerprint."
             }
           }
-        },
-        "delta": {
-          "type": [
-            "object",
-            "null"
-          ],
-          "description": "Delta gate summary: on-diff and pre-existing per-severity counts; null outside delta mode."
         }
       }
     },
@@ -1923,24 +1760,6 @@
           "fingerprint": {
             "type": "string",
             "description": "Stable identity of the CLAIM (panel/category/file/title-derived, and, for a tool finding naming an artifact, `tool_evidence.package_name`), the same identity the verify queue keys a verdict on. Exported so a consumer can bind a finding across runs and across the queue. KNOWN DIVERGENCE: the queue disambiguates a collision with a `-<n>` suffix that never appears here, so a fingerprint -> queue_id lookup is ambiguous for a colliding pair."
-          },
-          "delta": {
-            "type": ["object", "null"],
-            "description": "#449 on-diff classification against the run's diff-hunks.json, stamped on every finding in delta mode and absent outside it. `on_diff` fails OPEN (true) where the file changed but the finding carries no line, so a delta gate never silently drops a claim it could not place.",
-            "properties": {
-              "on_diff": {
-                "type": "boolean"
-              },
-              "hunk": {
-                "type": ["array", "null"],
-                "items": {
-                  "type": "integer"
-                }
-              },
-              "distance": {
-                "type": ["integer", "null"]
-              }
-            }
           },
           "category": {
             "type": "string",

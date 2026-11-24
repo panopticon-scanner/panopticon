@@ -47,6 +47,28 @@ def _without_prefix(text, prefix):
     return text[len(prefix):] if text.startswith(prefix) else text
 
 
+# #3736: delta review (a review of a diff) was withdrawn in 5.4 and its code removed in
+# 5.5. A report one of those runs wrote can still be opened, compared or re-rendered,
+# and read with no sign of it a gate that judged a diff would pass for a
+# whole-repository result. This is the whole of what is said: fixed text, nothing
+# copied from the report.
+DELTA_REVIEW_NOTE = ("this report was made by a delta review, which was withdrawn in 5.4 and "
+                     "removed in 5.5. It reviewed a diff, and by default its gate judged only "
+                     "findings on changed lines. It is not a whole-repository result.")
+
+
+def was_delta_review(report):
+    """Was `report` written by a delta review? Its `meta.coverage.delta` block or its
+    `summary.delta` counts are there and hold something. Reports written since 5.5
+    carry neither key; a whole-repository report from before carries both as null."""
+    if not isinstance(report, dict):
+        return False
+    meta, summary = report.get("meta"), report.get("summary")
+    coverage = meta.get("coverage") if isinstance(meta, dict) else None
+    return bool((isinstance(coverage, dict) and coverage.get("delta"))
+                or (isinstance(summary, dict) and summary.get("delta")))
+
+
 def coverage_note_text(summary):
     """`summary.coverage_note` when it is text and not empty, as one inert line, else
     None (#3672, from #3648). Both renderers print it as its own line only where no
@@ -644,27 +666,10 @@ def render_summary(report):
         if "%s" in body:
             body = body % integrity_mod.evidence_text(key, value)
         lines.insert(3, "**%s:** %s" % ("Integrity" if spec.sinks else "Note", body))
-    delta = s.get("delta")
-    if delta:
-        on = delta.get("on_diff") or {}
-        pre = delta.get("pre_existing") or {}
-        delta_lines = [
-            "**On-diff:** " + (", ".join(
-                "%s %d" % (k.upper(), v) for k, v in on.items() if v) or "none"),
-            "",
-            "**Pre-existing (files you touched, not gating):** " + (", ".join(
-                "%s %d" % (k.upper(), v) for k, v in pre.items() if v) or "none"),
-        ]
-        high_plus = (pre.get("critical", 0) or 0) + (pre.get("high", 0) or 0)
-        if high_plus:
-            delta_lines.append("")
-            delta_lines.append(
-                "⚠ %d pre-existing HIGH+ issue(s) in files you touched "
-                "— strongly recommend fixing before merge "
-                "(not gating this change)." % high_plus)
-        delta_lines.append("")
-        groups_idx = lines.index("## Groups")
-        lines[groups_idx:groups_idx] = delta_lines
+    # #3736: a report an earlier build made by a delta review still renders. Nothing of
+    # the delta is drawn; one fixed line says what kind of report this is.
+    if was_delta_review(report):
+        lines.insert(3, "**Delta review:** %s" % DELTA_REVIEW_NOTE)
     for g in report["groups"]:
         # #3672: the worst gate-eligible severity per panel, read back from the stored
         # rollup letter. The JSON keeps `panel_grades`.
@@ -728,7 +733,7 @@ def redact_report_secrets(report):
     already copied finding titles into `summary.top_issues` and
     `groups[].key_findings`, so a token in a title survived into the summary
     and the HTML. Walking the whole tree makes the backstop total: `meta`,
-    `summary`, `groups`, `cross_panel`, `delta` and anything a future producer
+    `summary`, `groups`, `cross_panel` and anything a future producer
     adds are covered without being named here. Structured fields are safe by
     construction -- the patterns are anchored to well-formed secret formats, so
     ids, codes, grades, hashes, file paths and the verbatim

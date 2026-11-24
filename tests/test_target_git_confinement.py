@@ -849,24 +849,24 @@ class TargetGitDriversAreSuppressed(unittest.TestCase):
         os.utime(big, (self.OLD, self.OLD))
         return repo, marker
 
-    def _report(self, rows, delta):
-        """A report built over `rows`, as a delta-scoped or full-repo run."""
+    def _report(self, rows, review_type):
+        """A report built over `rows`, for a run of one review type."""
         return report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(
                 target="src", fail_on="high", timestamp="2026-01-01T00:00:00Z",
-                review_type="changes" if delta else "repo"),
+                review_type=review_type),
             findings=findings_mod.FindingSet(findings=[]),
             plan=plan_mod.PlanInputs(git_drivers_suppressed=rows)))
 
-    def test_a_filtered_path_reads_as_modified_and_a_delta_run_is_not_certified(self):
-        """The measured cost of suppression, and what it costs certification.
+    def test_a_filtered_path_reads_as_modified_and_that_is_disclosed(self):
+        """The measured cost of suppression, and that it is disclosure-grade.
 
         With the clean filter emptied git compares the RAW worktree against the
         FILTERED index, so a path nobody touched reads as modified: dirtiness
-        for it is unknown and a delta may include it. That is disclosure-grade
-        on a full-repo scan (the findings are unaffected) and
-        certification-grade on a delta-scoped one, where the inflated
-        comparison chooses the reviewed file set and the gate's scope.
+        for it is unknown. The findings are unaffected, so the report discloses
+        the suppression and certification does not move. (#3736: the one run it
+        did move was a delta review, where that comparison chose the reviewed
+        files; a `--files` run was typed like one and is in the loop below.)
         """
         repo, marker = self._lfsish_repo()
         suppressed = []
@@ -878,26 +878,14 @@ class TargetGitDriversAreSuppressed(unittest.TestCase):
         self.assertFalse(os.path.exists(marker))
 
         rows = [{"repo": r, "key": k} for r, k in suppressed]
-        delta = self._report(rows, delta=True)
-        self.assertIs(delta["summary"]["coverage_certified"], False)
-        self.assertIn("delta scope inflated by suppressed git drivers",
-                      delta["summary"]["coverage_note"])
-        self.assertEqual(
-            delta["meta"]["integrity"]["delta_scope_suppressed_git_drivers"],
-            ["filter.lfsish.clean"])
-        # Through the mechanism, not beside it: the caveat is in the integrity
-        # dict, so `integrity_ok` is false and the gate moves like every other
-        # integrity failure. Without this the `integrity_ok` limb could be
-        # deleted with a green board (`coverage_certified` alone would still
-        # sink) -- the shape review I2 flagged.
-        self.assertEqual(delta["summary"]["gate"], "INCONCLUSIVE")
-
-        full = self._report(rows, delta=False)
-        self.assertIs(full["summary"]["coverage_certified"], True)
-        self.assertEqual(full["summary"]["gate"], "PASS")
-        self.assertIsNone(
-            full["meta"]["integrity"]["delta_scope_suppressed_git_drivers"])
-        self.assertEqual(full["meta"]["coverage"]["git_drivers_suppressed"], rows)
+        for review_type in ("repo", "changes"):
+            with self.subTest(review_type=review_type):
+                report = self._report(rows, review_type)
+                self.assertIs(report["summary"]["coverage_certified"], True)
+                self.assertEqual(report["summary"]["gate"], "PASS")
+                self.assertNotIn("delta_scope_suppressed_git_drivers",
+                                 report["meta"]["integrity"])
+                self.assertEqual(report["meta"]["coverage"]["git_drivers_suppressed"], rows)
 
     def test_the_same_key_in_two_repositories_is_disclosed_twice(self):
         """Pins the deliberate deviation from ruling 2 (review I2).

@@ -56,7 +56,9 @@ def layout_fingerprint(groups):
 def _review_type(raw):
     if raw == "repo":
         return "full"
-    if raw in ("changes", "pr"):
+    if raw == "changes":
+        # A `--files` run: typed `changes` since before delta review was removed (#3736),
+        # and this value is in every such report, so it keeps its name.
         return "delta"
     return "file-scoped"
 

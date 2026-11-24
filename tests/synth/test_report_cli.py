@@ -9,7 +9,6 @@ import unittest
 from unittest import mock
 import scripts.synthesize as syn
 import scripts.synth.findings as findings_mod
-import scripts.synth.delta as delta_mod
 import scripts.synth.grading as grading_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.tool_axis as tool_axis_mod
@@ -240,7 +239,6 @@ class ReportInputsTest(unittest.TestCase):
         explicit = report_mod.build_report(report_mod.ReportInputs(
             run=self._run(),
             findings=findings_mod.FindingSet(findings=[dict(f)]),
-            delta=delta_mod.DeltaContext(),
             plan=plan_mod.PlanInputs(),
             tools=tool_axis_mod.ToolAxis(),
             cost=cost_mod.CostInputs(),
@@ -250,7 +248,7 @@ class ReportInputsTest(unittest.TestCase):
         cov = terse["meta"]["coverage"]
         self.assertEqual(cov["tool_policy_mode"], "unknown")
         self.assertEqual(cov["scout_profiles_seen"], 0)
-        self.assertIsNone(cov["delta"])
+        self.assertNotIn("delta", cov)                 # #3736: the delta block is gone
         self.assertIsNone(cov["resume"])
         self.assertIsNone(terse["meta"]["cost"]["tokens"])
         self.assertEqual(terse["meta"]["integrity"]["plans_seen"], 0)
@@ -264,11 +262,6 @@ class ReportInputsTest(unittest.TestCase):
         fs = findings_mod.FindingSet(findings=[])
         with self.assertRaises(dataclasses.FrozenInstanceError):
             fs.verdicts = {}
-
-    def test_delta_context_active_needs_a_base(self):
-        self.assertFalse(delta_mod.DeltaContext().active)
-        self.assertFalse(delta_mod.DeltaContext(diff_hunks={"hunks": {}}).active)
-        self.assertTrue(delta_mod.DeltaContext(diff_hunks={"base": "main", "hunks": {}}).active)
 
     def test_legacy_positional_signature_is_gone(self):
         with self.assertRaises(TypeError):
@@ -285,11 +278,11 @@ class ReportInputsTest(unittest.TestCase):
         inp = report_mod.ReportInputs(
             run=self._run(), findings=findings_mod.FindingSet(findings=[dict(f)]),
             plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}]))
-        resolved = verdicts_mod.resolve_findings(inp.findings, inp.delta, inp.run,
+        resolved = verdicts_mod.resolve_findings(inp.findings, inp.run,
                                                  gated_suppressed=inp.tools.gated_suppressed)
         reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved,
                                              run=inp.run)
-        graded = grading_mod.grade_report(inp.run, resolved, reconciled, delta=inp.delta)
+        graded = grading_mod.grade_report(inp.run, resolved, reconciled)
         cost = cost_mod.cost_section(inp.cost, 0, resolved.verdict_stats["queued"])
         by_hand = report_mod.assemble(inp.run, resolved, reconciled, graded, cost)
         self.assertEqual(whole, by_hand)
@@ -316,11 +309,11 @@ class ReportInputsTest(unittest.TestCase):
                 tools=tool_axis_mod.ToolAxis(gated_suppressed=[gated]))
         whole = report_mod.build_report(inputs())
         inp = inputs()
-        resolved = verdicts_mod.resolve_findings(inp.findings, inp.delta, inp.run,
+        resolved = verdicts_mod.resolve_findings(inp.findings, inp.run,
                                                  gated_suppressed=inp.tools.gated_suppressed)
         reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved,
                                              run=inp.run)
-        graded = grading_mod.grade_report(inp.run, resolved, reconciled, delta=inp.delta)
+        graded = grading_mod.grade_report(inp.run, resolved, reconciled)
         cost = cost_mod.cost_section(inp.cost, 0, resolved.verdict_stats["queued"])
         by_hand = report_mod.assemble(inp.run, resolved, reconciled, graded, cost)
         self.assertEqual(whole["summary"]["gate"], "FAIL")
@@ -330,11 +323,6 @@ class ReportInputsTest(unittest.TestCase):
 
 class RunConfigLoaderTest(unittest.TestCase):
     """WS-0 S3: RunConfig.from_args resolves the CLI against groups.json."""
-
-    def test_explicit_changes_beats_a_discovered_repo_mode(self):
-        run = report_mod.RunConfig.from_args(
-            _cli_args(changes=True), {"mode": "repo"}, DEFAULT_TIMESTAMP)
-        self.assertEqual(run.review_type, "changes")
 
     def test_discovered_mode_maps_to_review_type(self):
         run = report_mod.RunConfig.from_args(_cli_args(), {"mode": "files"}, DEFAULT_TIMESTAMP)
@@ -358,11 +346,12 @@ class RunConfigLoaderTest(unittest.TestCase):
 
     def test_flags_are_carried_verbatim(self):
         run = report_mod.RunConfig.from_args(
-            _cli_args(target="t", fail_on="high", gate_unverified=True, max_verify=7,
-                      gate_scope="all"), {"mode": "repo"}, DEFAULT_TIMESTAMP)
+            _cli_args(target="t", fail_on="high", gate_unverified=True, max_verify=7),
+            {"mode": "repo"}, DEFAULT_TIMESTAMP)
         self.assertEqual((run.target, run.fail_on, run.timestamp, run.gate_unverified,
-                          run.max_verify, run.gate_scope),
-                         ("t", "high", DEFAULT_TIMESTAMP, True, 7, "all"))
+                          run.max_verify),
+                         ("t", "high", DEFAULT_TIMESTAMP, True, 7))
+        self.assertFalse(hasattr(run, "gate_scope"))         # #3736
 
     def test_host_capabilities_defaults_to_empty_dict_when_omitted(self):
         # A caller that predates 5.1 surface 2 (or a code path that just

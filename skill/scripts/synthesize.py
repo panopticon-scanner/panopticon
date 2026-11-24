@@ -32,7 +32,6 @@ import scripts.redact as redact
 import scripts.safe_write as safe_write
 import scripts.x0x_report as x0x_report
 import scripts.synth.findings as findings_mod
-import scripts.synth.delta as delta_mod
 import scripts.synth.plan as plan_mod
 import scripts.synth.tool_axis as tool_axis_mod
 import scripts.synth.integrity as integrity_mod
@@ -80,11 +79,10 @@ def build_parser():
     ap.add_argument("--severity", metavar="LEVEL", type=str.lower,
                     choices=["all", "medium", "high", "critical"], default="all",
                     help="Minimum severity to include in the report (all, medium, high, critical)")
-    scope = ap.add_mutually_exclusive_group()
-    scope.add_argument("--repo", action="store_true",
-                       help="Explicitly declare a repository-wide review type")
-    scope.add_argument("--changes", "-c", action="store_true",
-                       help="Withdrawn in 5.4 and refused (#3735): a changes/diff review type")
+    ap.add_argument("--repo", action="store_true",
+                    help="Explicitly declare a repository-wide review type")
+    ap.add_argument("--changes", "-c", action="store_true", default=None,
+                    help=delta_withdrawn.FLAG_HELP)
     ap.add_argument("--out", default=None)
     ap.add_argument("--run-id", default=None,
                     help="driver run-manifest run_id -> X0X generated_by.run_id")
@@ -175,19 +173,18 @@ def build_parser():
     ap.add_argument("--max-verify", type=int, default=None, metavar="N",
                     help="Cap the verify queue at the top-priority N entries "
                          "(pass the same value to both passes)")
+    # #3736: the delta review's flags. Its code is gone; the flags are still parsed so
+    # that each is refused by name (`delta_withdrawn`), not as an unrecognized argument.
+    # Every default is None: a value is one the caller typed. None takes a type or a
+    # list of choices, and `--changes` above is outside the scope group, so no value and
+    # no company turns the refusal into argparse's own error.
     ap.add_argument("--diff-hunks", metavar="PATH", default=None,
-                    help="Withdrawn in 5.4 and refused (#3735): the delta review's "
-                         "diff-hunks.json (#449)")
+                    help=delta_withdrawn.FLAG_HELP)
     ap.add_argument("--diff-hunks-run-id", metavar="ID", default=None,
-                    help="The run generation --diff-hunks must carry (#2107): a "
-                         "foreign or absent run_id rejects the payload, so the "
-                         "gate widens instead of scoping to another run's diff. "
-                         "Omitted, it defaults to the run_id on the --groups "
-                         "inventory this run read -- the other half of the pair")
-    ap.add_argument("--diff-context", type=int, default=5, metavar="N",
-                    help="Withdrawn in 5.4 and refused (#3735): the on-diff tolerance")
-    ap.add_argument("--gate-scope", choices=["on-diff", "all"], default="on-diff",
-                    help="Withdrawn in 5.4 and refused (#3735): the delta review's gate scope")
+                    help=delta_withdrawn.FLAG_HELP)
+    ap.add_argument("--diff-context", default=None, metavar="N",
+                    help=delta_withdrawn.FLAG_HELP)
+    ap.add_argument("--gate-scope", default=None, help=delta_withdrawn.FLAG_HELP)
     ap.add_argument("files", nargs="*")
     return ap
 
@@ -359,20 +356,16 @@ def _listing_refused(run):
 
 
 @_listing_refused
-def main(argv=None, refuse_delta=True):
+def main(argv=None):
     """Main entry point: load findings, enrich citations, build and validate report.
 
-    #3735: the delta flags are refused (`delta_withdrawn`). `refuse_delta` is for the
-    tests of the delta code that is still in the tree; no command line can pass it."""
+    #3735, #3736: the delta flags are refused (`delta_withdrawn`)."""
     parser = build_parser()
     args = parser.parse_args(argv)
-    if refuse_delta:
-        withdrawn = delta_withdrawn.refusal(
-            delta_withdrawn.typed(parser, argv, delta_withdrawn.SYNTHESIZE_FLAGS),
-            delta_withdrawn.SYNTHESIZE_FLAGS)
-        if withdrawn:
-            print("synthesize: %s" % withdrawn, file=sys.stderr)
-            return 2
+    withdrawn = delta_withdrawn.refusal(args, delta_withdrawn.SYNTHESIZE_FLAGS)
+    if withdrawn:
+        print("synthesize: %s" % withdrawn, file=sys.stderr)
+        return 2
 
     if args.compare:
         return _compare(args)
@@ -409,7 +402,7 @@ def main(argv=None, refuse_delta=True):
     report_writes = [args.out or os.path.join(plan_contract.ARTIFACT_DIR, "report.json"), args.html_out]
     writes = ([args.run_dir or (os.path.dirname(groups_path) if groups_path else "")
                or plan_contract.ARTIFACT_DIR] if args.emit_verify_queue else report_writes)
-    reads = (groups_path, args.run_dir, args.tools_dir, args.verdicts_dir, args.diff_hunks)
+    reads = (groups_path, args.run_dir, args.tools_dir, args.verdicts_dir)
     if _first_contact(args, reads + (tuple(report_writes) if args.emit_verify_queue else ()),
                       writes):
         return 2
@@ -566,14 +559,6 @@ def main(argv=None, refuse_delta=True):
     cost = cost_mod.CostInputs.load(
         run_dir, args.verdicts_dir,
         tool_axis_mod.tools_produced_from_dispositions(dispositions))
-    # #2107 review round 1: `gj` is the inventory this run actually read, and
-    # its `run_id` is the generation the hunk map must share. Passed as the
-    # DEFAULT expectation so the hand-run path -- `--groups` auto-discovered
-    # above, `--diff-hunks` supplied by the operator, no driver in sight -- is
-    # bound too; `--diff-hunks-run-id` overrides, and an unstamped inventory
-    # expects nothing.
-    delta = delta_mod.DeltaContext.from_args(args, gj.get("run_id"))
-
     # #1034/#1: a corrupt/malformed OCRDb bundle must exit with a code CI can
     # tell apart from a gate FAIL (1) or INCONCLUSIVE (2). Validate it up front
     # (build_report loads it again internally) and return 3 loudly, rather than
@@ -585,7 +570,7 @@ def main(argv=None, refuse_delta=True):
         return 3
 
     report = report_mod.build_report(report_mod.ReportInputs(
-        run=run, findings=fs, delta=delta, plan=plan, tools=tools, cost=cost))
+        run=run, findings=fs, plan=plan, tools=tools, cost=cost))
     # #run7 SEC-B2C / #1634: the whole-tree backstop, before any shareable
     # artifact. The inputs were already masked above; this catches text
     # produced since (advisor reasoning merged into finding.evidence) and

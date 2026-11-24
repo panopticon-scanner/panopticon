@@ -258,7 +258,7 @@ class TestTheChildScriptsRefuseThemToo(unittest.TestCase):
         """The refusal asks whether a flag was typed; it does not change what an
         untyped one means to the code below it."""
         args = synthesize.build_parser().parse_args([])
-        self.assertEqual(("on-diff", 5, None, False),
+        self.assertEqual((None, None, None, None),
                          (args.gate_scope, args.diff_context, args.diff_hunks, args.changes))
         self.assertEqual([], delta_withdrawn.given(
             delta_withdrawn.typed(synthesize.build_parser(), [], delta_withdrawn.SYNTHESIZE_FLAGS),
@@ -329,13 +329,13 @@ class TestNoCodeLiftsTheRefusal(unittest.TestCase):
                 if isinstance(node, ast.arg) and node.arg == "refuse_delta":
                     holders.add(os.path.relpath(path, ROOT))
         self.assertGreater(seen, 150)
-        self.assertEqual({"skill/scripts/discovery.py", "skill/scripts/synthesize.py"}, holders)
+        self.assertEqual({"skill/scripts/discovery.py"}, holders)
 
     def test_the_parameter_defaults_to_refusing(self):
         import inspect
-        for function in (discovery.main, discovery._repo_scan, discovery._repo_scan_args,
-                         synthesize.main):
+        for function in (discovery.main, discovery._repo_scan, discovery._repo_scan_args):
             self.assertIs(True, inspect.signature(function).parameters["refuse_delta"].default)
+        self.assertNotIn("refuse_delta", inspect.signature(synthesize.main).parameters)
 
 
 class TestAHunkMapLeftInARunFolderTurnsNothingOn(unittest.TestCase):

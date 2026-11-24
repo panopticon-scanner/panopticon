@@ -429,7 +429,7 @@ def sarif_to_findings(sarif, tool_name, group, prefix, start=1,
                 # key at all, so every consumer that reads location.file saw a
                 # different shape than the located case. Emit the same keys with
                 # empty values instead: the finding stays reportable and readers
-                # (ingest prune, reconcile's location_file, the delta gate) all
+                # (ingest prune, reconcile's location_file) all
                 # already treat "" as "no file".
                 loc = {"file": "", "line_start": None}
                 locs = res.get("locations") or []

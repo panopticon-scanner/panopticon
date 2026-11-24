@@ -660,7 +660,7 @@ class TestADeletedDispatchPlanIsDeletedEvidence(unittest.TestCase):
             plan=plan_mod.PlanInputs(groups_meta=[{"name": "g1", "files": ["a.py"]}],
                                      integrity=dict(section)))
         resolved = verdicts_mod.resolve_findings(
-            inp.findings, inp.delta, inp.run,
+            inp.findings, inp.run,
             gated_suppressed=inp.tools.gated_suppressed)
         return tool_axis_mod.reconcile(inp.plan, inp.tools, resolved,
                                        run=inp.run).integrity_ok
