@@ -332,8 +332,11 @@ told (the read or parse fails, the content is not an object, or `tools` is there
 list of names) is listed in `meta.integrity.scout_files_unreadable`, the run is not certified, a
 PASS gate is INCONCLUSIVE, and the `**Integrity:**` line names the files. This holds with a
 manifest too: the file is a damaged run artifact. A scout that asks for no tools (`tools: []`, or
-no `tools` at all) is a decline, as before. `scout-attempts.json` is the coverage phase's retry
-counter, not a scout: it is not read here and is not counted in `scout_profiles_seen`.
+no `tools` at all) is a decline, as before. The coverage phase's retry counter is
+`scout_attempts.json`, outside the scouts' `scout-<group>.json` pattern, so it is never read as
+one. A counter an earlier build left as `scout-attempts.json` (also the scout file of a group
+named `attempts`) is recognised by its shape, an object of counts with no `tools` or `domains`
+key, and passed over.
 What a call with no `--run-id` certifies over a tools directory (#3766): nothing. A
 `synthesize` call given a tools directory that is there, without `--tools-skipped` and without a run
 id (absent, or the empty `--run-id ""` the driver sends for a run manifest that carries no

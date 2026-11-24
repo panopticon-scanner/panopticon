@@ -14,9 +14,20 @@
   - "Cannot be read" is: the read or parse fails, the content is not an object, or `tools` is
     present and is not a list of names. `tools: []` and a missing `tools` are still a decline.
   - What the other scout files asked for still counts.
-  - The coverage phase's retry counter, `scout-attempts.json`, matches the scouts' file
-    pattern and was being counted as a scout profile. It is no longer read as one, so
+  - **The coverage phase's scout retry counter is renamed** `scout_attempts.json` (it was
+    `scout-attempts.json`). The old name matched the scouts' file pattern and is the scout
+    output of a group named `attempts`, a valid name: the two shared one file and overwrote
+    each other, and the counter was counted as a scout profile. So
     `meta.coverage.scout_profiles_seen` is lower by one on a run that retried a scout.
+    - A run resumed across the upgrade keeps what it spent: the coverage phase moves a
+      counter it finds under the old name to the new one.
+    - Synthesis tells a counter left under the old name by its shape (an object of counts
+      with no `tools` or `domains` key) and passes it over; anything else there is read as a
+      scout's reply.
+    - The one case that reads worse: a run in flight at the upgrade, with a group named
+      `tools` or `domains` whose scout had been retried. Its old counter (`{"tools": 1}`)
+      cannot be told from a scout's reply and is named as unreadable. Delete
+      `scout-attempts.json` from the run folder, or re-run with `--reset`.
   - In the Integrity line and on the page, each name in a named list (these files, the
     groups with no SEC cell, the findings with an unknown severity) is now spelled inert and
     cut at 80 characters.

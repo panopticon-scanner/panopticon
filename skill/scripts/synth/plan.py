@@ -489,22 +489,24 @@ def load_scout_requests(run_dir, unreadable=None):
     strings. Such a file was warned about and dropped, and with no tools manifest the
     scanners it asked for were then required by no one. `PlanInputs.load` publishes the
     list as an integrity failure. What could be read still counts as requested.
-    The coverage phase's retry counter (`plan_contract.SCOUT_ATTEMPTS_NAME`) matches the
-    pattern and is not a scout: it is neither read nor counted as a profile."""
+    The coverage phase's retry counter no longer matches the pattern. One left under
+    its old name by an earlier build (`plan_contract.is_legacy_scout_attempts`) is not a
+    scout: it is neither judged nor counted as a profile."""
     requested: set[str] = set()
     profiles_seen = 0
     unusable: list[str] = []
     for sp in sorted(safe_glob.under(run_dir, "scout-*.json")):
         name = os.path.basename(sp)
-        if name == plan_contract.SCOUT_ATTEMPTS_NAME:
-            # The coverage phase's retry counter, `{"<group>": n}`, which the pattern
-            # also matches. It was counted as a scout profile; with a group named
-            # `tools` it would now read as a request of the wrong type.
-            continue
         try:
             sd = artifacts_mod.read_json(sp, tolerant=True, announce=True)
         except (OSError, ValueError):  # tolerant by design: never abort a run
             unusable.append(name)
+            continue
+        if (name == plan_contract.LEGACY_SCOUT_ATTEMPTS_NAME
+                and plan_contract.is_legacy_scout_attempts(sd)):
+            # A run from before the counter was renamed left its counter here. It is
+            # not a scout's reply and was never a profile. The same name is group
+            # `attempts`'s scout output, which is read like any other.
             continue
         if not isinstance(sd, dict):
             unusable.append(name)

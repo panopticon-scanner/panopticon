@@ -1996,14 +1996,41 @@ class TestAScoutRequestThatCannotBeRead(unittest.TestCase):
     def test_a_group_named_tools_with_a_retried_scout_certifies(self):
         """Seat review of #3797: the coverage phase's retry counter is `{"tools": 1}`
         for such a group. It is not a scout, and the run is what it was."""
+        import scripts.plan_contract as plan_contract
         rc, report, out, _err, _page = self._run({
             "scout-tools.json": json.dumps({"tools": []}),
-            "scout-attempts.json": json.dumps({"tools": 1})})
+            plan_contract.SCOUT_ATTEMPTS_NAME: json.dumps({"tools": 1})})
         self.assertEqual((0, "PASS", True), (
             rc, report["summary"]["gate"], report["summary"]["coverage_certified"]))
         self.assertEqual([], report["meta"]["integrity"]["scout_files_unreadable"])
         self.assertEqual(1, report["meta"]["coverage"]["scout_profiles_seen"])
         self.assertNotIn("SCOUT FILES UNREADABLE", out)
+
+    def test_a_counter_left_under_the_old_name_is_not_a_scout(self):
+        rc, report, _out, _err, _page = self._run({
+            "scout-Web.json": json.dumps({"tools": []}),
+            "scout-attempts.json": json.dumps({"Web": 2})})
+        self.assertEqual((0, "PASS", True), (
+            rc, report["summary"]["gate"], report["summary"]["coverage_certified"]))
+        self.assertEqual(1, report["meta"]["coverage"]["scout_profiles_seen"])
+
+    def test_a_group_named_attempts_is_held_to_what_its_scout_asked_for(self):
+        """The delta check on #3797. `attempts` is a valid group name and its scout
+        writes `scout-attempts.json`. Passed over by name, its request was dropped and
+        the run certified: the silence this issue exists to remove."""
+        rc, report, _out, _err, _page = self._run(
+            {"scout-attempts.json": json.dumps({"domains": ["SEC"], "tools": ["bandit"]})})
+        self.assertEqual(["bandit"], report["meta"]["coverage"]["scout_requested"])
+        self.assertEqual(1, report["meta"]["coverage"]["scout_profiles_seen"])
+        self.assertEqual((2, "INCONCLUSIVE", False), (
+            rc, report["summary"]["gate"], report["summary"]["coverage_certified"]))
+        self.assertEqual([], report["meta"]["integrity"]["scout_files_unreadable"])
+        # And torn, it is named.
+        rc, report, out, _err, _page = self._run({"scout-attempts.json": '{"tools": ["bandit"]'})
+        self.assertEqual(["scout-attempts.json"],
+                         report["meta"]["integrity"]["scout_files_unreadable"])
+        self.assertEqual(2, rc)
+        self.assertIn("SCOUT FILES UNREADABLE", out)
 
     def test_a_decline_is_still_a_decline(self):
         for text in (json.dumps({"tools": []}), json.dumps({"domains": ["COD"]}),

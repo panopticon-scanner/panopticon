@@ -1,6 +1,7 @@
 """Tests for scripts.synth.plan: dispatch plans, coverage cells, out-of-scope, the tool
 axis and its loaders.
 """
+import fnmatch
 import contextlib
 import io
 import os
@@ -751,52 +752,88 @@ class TestTheGroupsShapeGate(unittest.TestCase):
         # A profile is a file that parsed to an object, as before.
         self.assertEqual(len(fine) + 7, seen)
 
-    def test_the_retry_counter_is_not_a_scout(self):
-        """Seat review of #3797. The coverage phase keeps `scout-attempts.json`,
-        `{"<group>": n}`, beside the scouts, and the `scout-*.json` pattern matches it.
-        It was counted as a profile; with a group named `tools` whose scout was retried
-        once it is `{"tools": 1}`, which the new rule read as a request of the wrong type."""
+    def test_the_retry_counter_is_outside_the_scouts_pattern(self):
+        """Seat review of #3797, then its delta. The coverage phase kept its retry
+        counter, `{"<group>": n}`, in `scout-attempts.json`: a name the scouts' pattern
+        matches, and the scout output of a group named `attempts`. It was counted as a
+        scout profile, and for a group named `tools` it read as a request of the wrong
+        type. The counter has a name of its own now."""
         import scripts.phases.coverage as coverage_phase
         import scripts.plan_contract as plan_contract
+        self.assertFalse(fnmatch.fnmatch(plan_contract.SCOUT_ATTEMPTS_NAME, "scout-*.json"))
+        self.assertEqual("scout-attempts.json", plan_contract.LEGACY_SCOUT_ATTEMPTS_NAME)
         with tempfile.TemporaryDirectory() as d:
-            os.makedirs(os.path.join(d, plan_contract.ARTIFACT_DIR))
-            self.assertEqual(1, coverage_phase._bump_scout_attempts(d, "tools"))
             run = os.path.join(d, plan_contract.ARTIFACT_DIR)
+            os.makedirs(run)
+            self.assertEqual(1, coverage_phase._bump_scout_attempts(d, "tools"))
             self.assertEqual([plan_contract.SCOUT_ATTEMPTS_NAME], os.listdir(run))
-            with open(os.path.join(run, plan_contract.SCOUT_ATTEMPTS_NAME),
-                      encoding="utf-8") as fh:
-                self.assertEqual({"tools": 1}, json.load(fh))
             unreadable: list = []
             self.assertEqual((set(), 0), plan_mod.load_scout_requests(run, unreadable=unreadable))
             self.assertEqual([], unreadable)
-            # Beside a real scout it is still left out, whatever it holds.
-            with open(os.path.join(run, "scout-tools.json"), "w", encoding="utf-8") as fh:
-                json.dump({"tools": ["bandit"]}, fh)
-            for counter in ('{"tools": 1}', "{{{", "[]", '{"tools": ["semgrep"]}'):
-                with open(os.path.join(run, plan_contract.SCOUT_ATTEMPTS_NAME), "w",
-                          encoding="utf-8") as fh:
-                    fh.write(counter)
-                unreadable = []
-                with contextlib.redirect_stderr(io.StringIO()) as err:
-                    got = plan_mod.load_scout_requests(run, unreadable=unreadable)
-                self.assertEqual(({"bandit"}, 1, [], ""), (*got, unreadable, err.getvalue()),
-                                 counter)
 
-    def test_only_the_counter_itself_is_left_out(self):
-        """A group may be named `login-attempts`; its scout is a scout."""
-        import scripts.plan_contract as plan_contract
+    def test_a_group_named_attempts_has_its_scout_read(self):
+        """The delta's case: `attempts` is a valid group name, and its scout writes
+        `scout-attempts.json`. Skipping that name dropped the group's request in silence."""
         with tempfile.TemporaryDirectory() as d:
-            for name, text in ((plan_contract.SCOUT_ATTEMPTS_NAME, '{"login-attempts": 2}'),
-                               ("scout-login-attempts.json", '{"tools": ["bandit"]}'),
-                               ("scout-attempts-api.json", "{"),
-                               ("scout-attempts.json.json", "[]")):
-                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
-                    fh.write(text)
+            with open(os.path.join(d, "scout-attempts.json"), "w", encoding="utf-8") as fh:
+                json.dump({"domains": ["SEC"], "tools": ["bandit"]}, fh)
             unreadable: list = []
+            self.assertEqual(({"bandit"}, 1), plan_mod.load_scout_requests(d, unreadable=unreadable))
+            self.assertEqual([], unreadable)
+            # Torn, it is named like any other scout.
+            with open(os.path.join(d, "scout-attempts.json"), "w", encoding="utf-8") as fh:
+                fh.write('{"tools": ["bandit"]')
             with contextlib.redirect_stderr(io.StringIO()):
-                got = plan_mod.load_scout_requests(d, unreadable=unreadable)
-        self.assertEqual(({"bandit"}, 1), got)
-        self.assertEqual(["scout-attempts-api.json", "scout-attempts.json.json"], unreadable)
+                self.assertEqual((set(), 0), plan_mod.load_scout_requests(d, unreadable=unreadable))
+            self.assertEqual(["scout-attempts.json"], unreadable)
+
+    def test_a_counter_left_under_the_old_name_is_told_by_its_shape(self):
+        """A run from before the rename can still hold the counter at the old name. A
+        counter is an object of counts with no `tools` or `domains` key; anything else
+        there is a scout's reply and is judged as one."""
+        import scripts.plan_contract as plan_contract
+        legacy = plan_contract.LEGACY_SCOUT_ATTEMPTS_NAME
+        counters = ({"Web": 1}, {"Web": 2, "login-attempts": 3}, {"attempts": 1})
+        replies = (
+            ({"tools": ["bandit"]}, {"bandit"}, 1, []),
+            ({"domains": ["SEC"]}, set(), 1, []),
+            ({"domains": ["SEC"], "tools": ["bandit"], "Web": 1}, {"bandit"}, 1, []),  # main's mix
+            ({}, set(), 1, []),
+            # A count under a key a scout's reply has: it could be either, so it is read.
+            ({"tools": 1}, set(), 1, [legacy]),
+            ({"domains": 2, "Web": 1}, set(), 1, []),
+            ({"Web": True}, set(), 1, []),
+            ({"Web": "1"}, set(), 1, []),
+            ({"Web": 1.5}, set(), 1, []),
+            ({"Web": [1]}, set(), 1, []),
+            ([1], set(), 0, [legacy]),
+        )
+        for counter in counters:
+            with self.subTest(counter=counter), tempfile.TemporaryDirectory() as d:
+                self.assertTrue(plan_contract.is_legacy_scout_attempts(counter))
+                with open(os.path.join(d, legacy), "w", encoding="utf-8") as fh:
+                    json.dump(counter, fh)
+                with open(os.path.join(d, "scout-Web.json"), "w", encoding="utf-8") as fh:
+                    json.dump({"tools": ["semgrep"]}, fh)
+                unreadable: list = []
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    got = plan_mod.load_scout_requests(d, unreadable=unreadable)
+                self.assertEqual(({"semgrep"}, 1, [], ""), (*got, unreadable, err.getvalue()))
+        for reply, requested, seen, named in replies:
+            with self.subTest(reply=reply), tempfile.TemporaryDirectory() as d:
+                self.assertFalse(plan_contract.is_legacy_scout_attempts(reply))
+                with open(os.path.join(d, legacy), "w", encoding="utf-8") as fh:
+                    json.dump(reply, fh)
+                unreadable = []
+                with contextlib.redirect_stderr(io.StringIO()):
+                    got = plan_mod.load_scout_requests(d, unreadable=unreadable)
+                self.assertEqual((requested, seen, named), (*got, unreadable))
+        # Only at that name: the same counts in any other scout file are a scout's.
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("scout-attempts-api.json", "scout-login-attempts.json"):
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    json.dump({"Web": 1}, fh)
+            self.assertEqual((set(), 2), plan_mod.load_scout_requests(d))
 
     def test_what_is_said_of_an_unusable_scout_is_inert(self):
         name = "scout-a\x1b[2Jb\u202e.json"

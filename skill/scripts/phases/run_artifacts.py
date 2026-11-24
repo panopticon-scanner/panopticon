@@ -121,10 +121,12 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 # #1809: its three siblings are run-scoped for the same
                 # reason, and an unreadable one now names --reset as the
                 # remedy, so the legacy flat sweep has to actually clear them
-                # (`scout-*.json` already covers the scout counter, and
+                # (`scout-*.json` covers a scout counter left under its old name, and
                 # discovery-attempts.json's own docstring already claimed it).
                 "cell-attempts.json", "verify-attempts.json",
-                "discovery-attempts.json")
+                "discovery-attempts.json",
+                # #3780: the scout counter's name since it left the scouts' pattern.
+                plan_contract.SCOUT_ATTEMPTS_NAME)
 
 
 def tag_in_use(review_root, tag):

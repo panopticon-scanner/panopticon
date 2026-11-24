@@ -10,6 +10,7 @@ from scripts import hosts
 from scripts import native_unparsed
 from scripts import read_guard_hook
 from tests._test_helpers import write_host_evidence
+import scripts.plan_contract as plan_contract
 import scripts.findings_contract as findings_contract
 import scripts.group_runner as group_runner
 import scripts.phases.runio as runio
@@ -820,7 +821,7 @@ class TestTornRetryLedgerIsNotAnEmptyOne(unittest.TestCase):
              lambda: verify._verify_attempts(self.root, "Auth", "SEC", "primary"), 0),
             ("verify._bump_verify_attempts", runio._pano(self.root, verify._VERIFY_ATTEMPTS_FILE),
              lambda: verify._bump_verify_attempts(self.root, "Auth", "SEC", "primary"), 1),
-            ("coverage._bump_scout_attempts", runio._pano(self.root, "scout-attempts.json"),
+            ("coverage._bump_scout_attempts", runio._pano(self.root, plan_contract.SCOUT_ATTEMPTS_NAME),
              lambda: coverage._bump_scout_attempts(self.root, "Auth"), 1),
             ("discovery._bump_discovery_attempts",
              runio._pano(self.root, "discovery-attempts.json"),
