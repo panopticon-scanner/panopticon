@@ -172,8 +172,7 @@ def _loop(args, pause, held):
         # `run_dir` is not needed here: `Guards` ignores it outside headless mode, and the
         # settings/allowlist/scope paths it resolves depend only on `session_root`, which does not
         # change across a run.
-        guards = Guards(mode, session_root=session_root,
-                        assessed=first_contact.contact_roots(args, review_root))
+        guards = Guards(mode, session_root=session_root, assessed=(review_root,))
     # #1662: what a Ctrl-C has to take back. Bound BEFORE the try -- which (#2200) now opens
     # before `_first_run`, so the interrupt can land before the first batch ever opens one.
     batch = None
@@ -246,7 +245,7 @@ def _loop(args, pause, held):
                 setattr(runner, attr, getattr(args, attr))
         if guards is None:
             guards = Guards(mode, run_dir=run_dir, session_root=session_root,
-                            assessed=first_contact.contact_roots(args, review_root))
+                            assessed=(review_root,))
         ledger = ledger_mod.Ledger(run_dir)
         while status.get("status") == "checkpoint":
             iterations += 1
@@ -553,17 +552,8 @@ def _inside_artifact_dir(review_root, path):
 
 
 def persist_cli(args):
-    """`driver persist ENTRY_ID [--file PATH] [--setup] [--pr N] [--base REF] [target]` ->
-    exit code.
-
-    I6: base/pr are threaded exactly as `driver run` threads them. A `--pr` run's review
-    root is the PR worktree, and resolving `target` alone read the dispatch request from
-    the operator's own checkout instead -- so every persist against a `--pr` run refused
-    with "no entry in the current dispatch request", with nothing to say which run it
-    had looked in.
-    """
-    review_root, _wt, _pr = runio.resolve_review_root(
-        args.target, base=getattr(args, "base", None), pr=getattr(args, "pr", None))
+    """`driver persist ENTRY_ID [--file PATH] [--setup] [target]` -> exit code."""
+    review_root = runio.resolve_review_root(args.target)
     # #3452: a separate process, so it makes first contact itself -- read-only, before the
     # manifest and request are read. A symlinked or non-directory `.panopticon/` halts, and
     # so does an unstamped one (H2): persist is only meaningful on a tree `driver run`

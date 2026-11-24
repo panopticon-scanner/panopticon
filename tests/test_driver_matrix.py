@@ -410,7 +410,14 @@ class TestCliFlagsResolveTheCommittedConfig(unittest.TestCase):
             flags = driver._cli_flags(args, review_root=d)
             self.assertEqual(flags["max_per_group"], 12)
             self.assertEqual(flags["fail_on"], "high")
-            self.assertEqual(flags["gate_scope"], "all")
+            # #3736: a committed `gate_scope:` is a retired key. It reaches no flag, it is
+            # not refused, and the resolution says it is ignored.
+            self.assertNotIn("gate_scope", flags)
+            self.assertNotIn("diff_context", flags)
+            res = driver._resolve_config(args, review_root=d)
+            self.assertEqual([], res.refused)
+            self.assertEqual(1, sum("gate_scope" in line and "ignored since 5.5" in line
+                                    for line in res.disclosures))
             args = argparse.Namespace(max_per_group=3, max_verify=None,
                                       fail_on="critical", gate_scope=None)
             flags = driver._cli_flags(args, review_root=d)
@@ -431,14 +438,14 @@ class TestCliFlagsResolveTheCommittedConfig(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "panopticon.yml"), "w", encoding="utf-8") as fh:
                 fh.write("version: 1\ngroups: {}\nsettings:\n  allow_unenforced: true\n"
-                         "  diff_context: 40\n")
+                         "  max_turns: 40\n")
             args = argparse.Namespace(max_per_group=None, max_verify=None)
             flags = driver._cli_flags(args, review_root=d)
             self.assertIsNone(flags["allow_unenforced"])
-            self.assertIsNone(flags["diff_context"])
+            self.assertNotIn("max_turns", flags)
             self.assertEqual(sorted(r["key"] for r in
                                     driver._resolve_config(args, review_root=d).refused),
-                             ["allow_unenforced", "diff_context"])
+                             ["allow_unenforced", "max_turns"])
 
     def test_a_committed_tools_false_cannot_switch_the_scanners_off(self):
         with tempfile.TemporaryDirectory() as d:

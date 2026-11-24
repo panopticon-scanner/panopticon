@@ -8,7 +8,6 @@ from scripts import claim_scope
 from scripts import discovery_catalog
 from scripts import dot_paths
 from scripts import safe_git
-from scripts import repo_config
 from scripts import tests_axis
 
 
@@ -62,129 +61,6 @@ def _git(repo, args, timeout=30, text=True):
         raise subprocess.CalledProcessError(proc.returncode, proc.args,
                                             proc.stdout, proc.stderr)
     return proc
-def _nul_separated_paths(raw):
-    """The non-empty paths in `git ... -z` output, decoded like os.fsdecode.
-
-    Splitting on NUL, never str.splitlines(): splitlines() also breaks on a
-    lone \r, \x0b, \x0c, \x1c-\x1e, \x85 and U+2028/9 (#1738), every one of
-    which a filename may legally carry -- a fragment is then a path that does
-    not exist, and the real file is lost. os.fsdecode is the spelling every
-    other surface here uses (`_git_listed_files`, diff_map's hunk keys), so
-    the file sets stay comparable as plain strings."""
-    return [os.fsdecode(chunk) for chunk in (raw or b"").split(b"\0") if chunk]
-
-
-def _unreviewable_reason(full):
-    """Why a path git listed is not reviewable surface, in the operator's terms."""
-    if os.path.islink(full):
-        return "is a symlink leaf"
-    if not os.path.lexists(full):
-        return "no longer exists in the working tree"
-    if not os.path.isfile(full):
-        return ("is not a regular file (a directory or nested repository, a "
-                "device, or a dangling symlink)")
-    return "resolves outside the repository"
-def collect_changed_files(repo, base=None, exclude=()):
-    """Collect repo-relative paths changed since the merge base (or HEAD~1).
-
-    When ``base`` is given (a resolved ref name or sha), the changed set is
-    computed against ``merge-base(HEAD, base)`` -- the SAME computation
-    ``diff_map.hunk_map`` uses to build the on-diff hunk map -- with NO
-    HEAD~1 fallback: an unresolvable ``base`` returns None (a bad delta base
-    is a loud failure upstream, never a silent downgrade). This keeps the
-    reviewed file set and the on-diff hunk map scoped to one shared base.
-
-    When ``base`` is None (legacy/no-delta callers), tries the default upstream
-    branches (main, then master) first and HEAD~1 only as THIS path's last resort.
-
-    ``exclude`` (fix round 2 item 3, #1681): repo-root-relative names dropped from
-    the changed set before it is returned -- the ``--pr-worktree`` caller passes the
-    root config names, the SAME ones ``diff_map.hunk_map`` excludes, so the reviewed
-    file set and the on-diff hunk map keep agreeing (the ``--find-renames`` invariant
-    below) instead of diverging on the one file `_sync_config` just overwrote. A plain
-    (non-PR) delta review passes none.
-
-    Only files that still exist in the working tree are returned. Returns
-    None if no git history is available."""
-    if base is not None:
-        try:
-            mb = _git(repo, ["merge-base", "HEAD", base]).stdout.strip()
-        except safe_git.RepositoryRefused:
-            raise            # a refused tree is not "no history" (#2006)
-        except Exception:
-            return None
-        if not mb:
-            return None
-    else:
-        mb = None
-        for branch in ("main", "master"):
-            try:
-                mb = _git(repo, ["merge-base", "HEAD", branch]).stdout.strip()
-                if mb:
-                    break
-            except safe_git.RepositoryRefused:
-                raise        # (#2006) never "try the next branch" on a refusal
-            except Exception:
-                continue
-        if not mb:
-            try:
-                mb = _git(repo, ["rev-parse", "HEAD~1"]).stdout.strip()
-            except safe_git.RepositoryRefused:
-                raise
-            except Exception:
-                return None
-    changed = set()
-    untracked = set()
-    try:
-        # --find-renames: same rename semantics as diff_map.hunk_map, so the reviewed
-        # file set and the on-diff hunk map cannot diverge on a similarity edge (#978).
-        # -z + text=False + os.fsdecode (#1739), the SAME treatment
-        # _git_listed_files already gives the whole-repo listing: without -z git
-        # C-quotes any path carrying a byte >= 0x80 (default core.quotepath) or a
-        # `"`, `\`, tab or newline (whatever quotepath says) -- and that spelling is
-        # not a file, so the isfile filter below dropped the changed file out of the
-        # reviewed set in silence. core.quotepath=false is belt and braces; with -z
-        # git never quotes at all.
-        out = _git(repo, ["-c", "core.quotepath=false", "diff", "--name-only",
-                          "--diff-filter=d", "--find-renames", "-z", mb],
-                   text=False)
-        changed.update(_nul_separated_paths(out.stdout))
-    except safe_git.RepositoryRefused:
-        raise
-    except Exception as e:
-        print(f"Warning: git diff failed: {e}", file=sys.stderr)
-        return None
-    # Include new untracked files so a branch with only added files isn't empty.
-    try:
-        out = _git(repo, ["-c", "core.quotepath=false", "ls-files", "--others",
-                          "--exclude-standard", "-z"], text=False)
-        untracked.update(_nul_separated_paths(out.stdout))
-        changed.update(untracked)
-    except safe_git.RepositoryRefused:
-        raise
-    except Exception:
-        pass
-    for name in exclude:
-        changed.discard(name)          # a deliberate drop: never warned about
-    out = []
-    for p in sorted(changed):
-        full = os.path.join(repo, p)
-        # Untracked links have no hunks; a tracked link target change does.
-        if p not in untracked or not os.path.islink(full):
-            reviewable = (os.path.isfile(full)
-                          and claim_scope.confined_to_root(repo, p))
-        else:
-            reviewable = False
-        if reviewable:
-            out.append(p.replace(os.sep, "/"))
-        else:
-            # #1739: the drop itself is correct -- the reviewed set is files --
-            # but doing it in silence is what made the quoting bug invisible
-            # for as long as it lived. One line per path, naming which and why.
-            print("Warning: git lists %r as changed, but it %s; it is NOT in "
-                  "the reviewed file set." % (p, _unreviewable_reason(full)),
-                  file=sys.stderr)
-    return out
 def test_candidates(path):
     """Generate candidate test file paths for a given implementation file."""
     d, base = os.path.split(path)
@@ -238,38 +114,6 @@ def _is_fixture_dir(rel):
     return (parts[-1] == "fixtures" and len(parts) >= 2
             and parts[-2] in FIXTURE_PARENT_DIRS)
 
-def resolve_base(repo, explicit=None, pr_base=None, runner=subprocess.run):
-    """(base_ref, source). First candidate that resolves to a real commit:
-    explicit -> pr_base -> main -> master. No HEAD~1. A given explicit/pr_base
-    that does NOT resolve returns (None,'unresolved') without falling through -
-    a bad --base is a loud failure, not a silent downgrade to a branch tip."""
-    def _resolves(ref):
-        # #2006: the target's git, on the target's config, choosing this run's
-        # delta base -- through the same probe as every other call here.
-        # `runner` stays the injection seam the tests use; the probe takes it.
-        try:
-            r = safe_git.probe(repo, ["rev-parse", "--verify", "-q", ref + "^{commit}"],
-                               runner=runner)
-            return r.returncode == 0
-        except (subprocess.SubprocessError, OSError):
-            return False
-    if explicit:
-        return (explicit, "explicit") if _resolves(explicit) else (None, "unresolved")
-    if pr_base:
-        # #947 FIXME-3: acquire_pr fetches only the PR head, so the base may
-        # exist locally only as origin/<name> -- and a STALE local branch of
-        # that name would silently mis-anchor the delta. Prefer the remote
-        # ref, fall back to the bare name; a machine-derived pr_base may try
-        # both (unlike an explicit --base, which never falls through).
-        origin_ref = "origin/%s" % pr_base
-        if _resolves(origin_ref):
-            return origin_ref, "pr-base"
-        return (pr_base, "pr-base") if _resolves(pr_base) else (None, "unresolved")
-    for ref in ("main", "master"):
-        if _resolves(ref):
-            return ref, "fallback"
-    return None, "unresolved"
-
 def _ancestor_dirs(rel):
     parts = rel.split("/")
     return ["/".join(parts[:i]) for i in range(1, len(parts))]  # excludes the file itself
@@ -279,30 +123,6 @@ def prune_fixture_files(paths, include_fixtures):
     if include_fixtures:
         return list(paths)
     return [p for p in paths if not any(_is_fixture_dir(d) for d in _ancestor_dirs(p))]
-def resolve_base_or_die(repo, explicit, pr_base, on_fail=None):
-    """Resolve the delta base, or fail loudly and return None.
-
-    Returns ``(base, source)`` on success — the SAME base every downstream
-    step (the reviewed file set via ``collect_changed_files``, and the on-diff
-    hunk map via ``write_diff_hunks``) must share (Finding A: they used to
-    resolve independently and could disagree). On an unresolvable base it
-    prints the loud failure message, runs ``on_fail()`` (e.g. release a
-    worktree), and returns None — the caller then ``return 2`` with NO
-    artifact written. Does NOT itself emit diff-hunks.json; callers resolve
-    the base FIRST, then compute the file set against it, THEN write the
-    artifact.
-    """
-    base, source = resolve_base(repo, explicit=explicit, pr_base=pr_base)
-    if base is None:
-        print("panopticon: could not resolve a base ref for delta review.\n"
-              "  Anchor the review to a fixed commit or a base-branch tip:\n"
-              "  pass --base <ref|sha>, or ensure main/master exists.",
-              file=sys.stderr)
-        if on_fail:
-            on_fail()
-        return None
-    return base, source
-
 # #1576 (run-13 OPS-4065418712): the most reviewable files one discovery hands
 # back. Exclusion, partitioning, the four narrowing scopes and max_per_group
 # chunking all run on the list this bound already built, so none of them bound it.
@@ -340,7 +160,7 @@ _PRUNE_CLASSES = ("dot_path", "exclude_dir", "git_segment")   # #2377 disclosure
 def _filter_reviewable(paths, include_fixtures, pruned_fixtures, isfile, info=None):
     """Apply the discovery policy to a candidate path list.
 
-    Shared by the git listing and the `--scope-changed` branch (#2272), so both get
+    One filter for every file list discovery builds (#2272), so each gets
     the treatment the walk applies inline: EXCLUDE_DIRS / EXCLUDE_DIR_GLOBS on every
     ancestor segment (a repo that TRACKS node_modules still shouldn't review it), the
     one ``dot_paths.allowed`` policy, the #434 fixture prune (recorded in
@@ -446,9 +266,8 @@ def _confine_scope_path(repo, raw, universe, flag):
     return p
 def _resolve_scope(args, repo, allf, catalog, info, pruned_fixtures, excluded_files,
                    carved_files, _apply_exclude):
-    """The five --scope-* resolvers: (scoped, excluded, carved, delta), or the exit code (#3395)."""
+    """The four --scope-* resolvers: (scoped, excluded, carved), or the exit code (#3395)."""
     scoped = None
-    _delta = None
     if args.scope_group:
         if args.scope_group not in catalog:
             print("unknown group %r for --scope-group" % args.scope_group,
@@ -487,36 +306,6 @@ def _resolve_scope(args, repo, allf, catalog, info, pruned_fixtures, excluded_fi
             return 2
         scoped = [sf] + [t for t in related_tests(repo, [sf]) if t in allf]
         carved_files = []           # #1757: `sf` came OUT of pruned `allf`
-    elif args.scope_changed:
-        res = resolve_base_or_die(repo, args.base, args.pr_base)
-        if res is None:
-            return 2
-        base, source = res
-        changed = collect_changed_files(
-            repo, base=base,
-            exclude=repo_config.CONFIG_NAMES if args.pr_worktree else ())
-        if changed is None:
-            print("could not determine changed files; is %s a git repo?" % repo,
-                  file=sys.stderr)
-            return 2
-        # Delta-path parity (#1136, #2272, #2376): --scope-changed rebuilds `scoped`
-        # from git-diff output, which never passed the whole-repo filters above, so it
-        # asks the SAME `_filter_reviewable` and the SAME `_cap_discovered` bound the
-        # listing gets -- a future delta-path filter goes THROUGH them, never beside
-        # them. Both overwrite `info`, so the block describes the surface this run
-        # REVIEWED, not the listing it was filtered from. Then committed exclude_paths
-        # prune, re-deriving excluded_files from the changed set, not the whole-repo
-        # count the --scope-dir/-file/-group branches keep (they narrow pruned `allf`).
-        # `pruned_fixtures` is cleared before that pass (#2410) so the fixture roots
-        # the artifact discloses are this surface's too, not the listing's.
-        info["surface"] = "changed"
-        del pruned_fixtures[:]
-        scoped = _cap_discovered(_filter_reviewable(
-            changed, include_fixtures=(args.security == "redteam"),
-            pruned_fixtures=pruned_fixtures, info=info,
-            isfile=lambda rel: _is_confined_regular(repo, rel)), info)
-        scoped, excluded_files, carved_files = _apply_exclude(scoped)
-        _delta = (base, source)
     elif args.scope_files:
         # #2023: confine EVERY entry the way the singular confines its one --
         # inside the repo root, and a file this scan discovered -- BEFORE any of
@@ -526,7 +315,7 @@ def _resolve_scope(args, repo, allf, catalog, info, pruned_fixtures, excluded_fi
         #
         # The universe rejoins `excluded_files` because a committed
         # `exclude_paths:` glob is review-scope policy, not confinement, and
-        # #1136 requires a named-but-excluded file to be PRUNED from the delta
+        # #1136 requires a named-but-excluded file to be PRUNED from the scope
         # (rc 0, disclosed in `excluded_count`) rather than refuse the run.
         # `_apply_exclude` below is what prunes it, so every entry that survives this
         # branch is in `allf` -- the same invariant the singular gets from its own
@@ -542,10 +331,4 @@ def _resolve_scope(args, repo, allf, catalog, info, pruned_fixtures, excluded_fi
             entries.append(p)
         scoped = prune_fixture_files(entries, args.security == "redteam")
         scoped, excluded_files, carved_files = _apply_exclude(scoped)  # parity (#1136)
-        _delta = None
-        if args.base:
-            res = resolve_base_or_die(repo, args.base, None)
-            if res is None:
-                return 2
-            _delta = res
-    return scoped, excluded_files, carved_files, _delta
+    return scoped, excluded_files, carved_files

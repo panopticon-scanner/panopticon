@@ -184,16 +184,6 @@ class GroupsTest(_Case):
         self.assertEqual(2, row["committed"])                 # Core_1 and Core_2: src/ holds two
         self.assertFalse([name for name in row["derived"] if name.startswith("Core")])
 
-    def test_a_delta_scope_is_not_counted(self):
-        # #3735: no command line reaches this in 5.4 (`readiness -c` is refused); the row
-        # is asked directly for the plan a delta run would have had.
-        for plan in ({"scope": {"mode": "changed", "target": None}}, {"base": "main"}, {"pr": 3}):
-            with self.subTest(plan=plan), mock.patch.object(discovery, "main") as main:
-                row = readiness_plan.groups_row(self.root, plan)
-                self.assertIsNone(row["committed"])
-                self.assertIn("delta scope", row["detail"])
-                main.assert_not_called()
-
     def test_a_discovery_failure_is_a_row_never_a_traceback(self):
         for raised in (RuntimeError("boom"), SystemExit(2), ValueError("refused")):
             with self.subTest(raised=raised), \

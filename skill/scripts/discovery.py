@@ -5,9 +5,8 @@ BEFORE dispatching review subagents.
 
 The focused discovery/matrix module: repo file discovery, root-config
 matrix assignment, the --repo-scan CLI (whole-repo and the
---scope-file/--scope-dir/--scope-group/--scope-changed/--scope-files
-filters), and delta review support (--base/--pr-base resolution,
-diff-hunks.json emission). Extracted from the now-retired orchestrator.py
+--scope-file/--scope-dir/--scope-group/--scope-files
+filters). Extracted from the now-retired orchestrator.py
 in P6.5 -- discovery.py is the sole discovery entry point the 5.0 driver
 subprocesses.
 """
@@ -29,7 +28,6 @@ if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
     import runpy
     runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
 from scripts import delta_withdrawn
-from scripts import diff_map
 # #1740 fix round 2: ONE module object, so the glob compiler this module and
 # the TOOL side share is one cache and one disclosure ledger, not two.
 from scripts import groups_schema
@@ -108,43 +106,6 @@ def _refused(exc):
             % exc)
 
 
-
-
-def _worktree_dirty(repo, exclude=()):
-    """True when repo's working tree has uncommitted changes (git status
-    --porcelain -z is non-empty) -- used to set diff-hunks.json's
-    includes_uncommitted for the P6.3 --repo-scan delta scopes: True for a
-    live tree (e.g. -c usage), False for a clean checkout.
-
-    ``exclude`` (#1681 fix round 3, M4): repo-root-relative names whose status
-    lines are not dirt. The ``--pr-worktree`` caller passes the root config names
-    -- the SAME ones `write_diff_hunks` and
-    `discovery_scope.collect_changed_files` exclude --
-    because `diff_map._sync_config` wrote the operator's config into that worktree
-    before this ran: without it the answer is True on every --pr run, and the
-    driver's own sync is declared as the PR author's uncommitted work."""
-    r = discovery_scope._git(repo, ["status", "--porcelain", "-z"], text=False)
-    names = set(exclude)
-    records = (r.stdout or b"").split(b"\0")
-    i = 0
-    while i < len(records) - 1:
-        record = records[i]
-        i += 1
-        if len(record) < 4 or record[2:3] != b" ":
-            return True  # malformed status must not look clean
-        paths = [os.fsdecode(record[3:])]
-        if b"R" in record[:2] or b"C" in record[:2]:
-            if i >= len(records) - 1:
-                return True
-            paths.append(os.fsdecode(records[i]))
-            i += 1
-        # #3273 P1: the run's own artifact directory (untracked; a tracked one
-        # halts at first contact, H1) is never the author's uncommitted work.
-        if any(path not in names and path.split("/")[0] != plan_contract.ARTIFACT_DIR for path in paths):
-            return True
-    if records[-1]:
-        return True  # incomplete NUL record must not look clean
-    return False
 
 
 def _even_sizes(total, n_chunks):
@@ -236,44 +197,6 @@ def load_catalog(repo):
     except ValueError as e:
         raise ValueError("catalog parse error: %s" % e) from e
 
-
-def write_diff_hunks(repo, base, source, out_path, tolerance, includes_uncommitted,
-                     exclude=()):
-    """Write .panopticon/diff-hunks.json (#449) for the delta-review synth step.
-
-    ``base_commit``/``delta_start``/``delta_end`` anchor the artifact to real commits
-    (``diff_map.diff_anchors``) so a later reviewer can reconstruct the exact delta even if branch
-    tips move. The RUN binding is stamped by ``phases/discovery.py`` after this write, and the synth
-    loader rejects a map whose stamp is not the inventory's (#2107).
-
-    ``exclude`` goes straight to ``diff_map.hunk_map``: non-empty only for a ``--pr``
-    worktree naming the root config filenames the operator's sync just overwrote
-    there (#1681) -- without it that overwrite is attributed to the PR in this very
-    artifact. One disclosure line documents the exclusion, so it is never a silent gap."""
-    if exclude:
-        print("panopticon --pr: excluding %s from the delta map (this "
-              "worktree's root config is the operator's, never the PR's)"
-              % ", ".join(sorted(exclude)), file=sys.stderr)
-    hmap = diff_map.hunk_map(repo, base, exclude=exclude) if base else {}
-    anchors = diff_map.diff_anchors(repo, base) if base else {
-        "base_commit": None, "delta_start": None, "delta_end": None}
-    artifact = {"schema_version": 1,
-                "base": base, "base_source": source,
-                "base_commit": anchors["base_commit"],
-                "delta_start": anchors["delta_start"],
-                "delta_end": anchors["delta_end"],
-                "includes_uncommitted": includes_uncommitted,
-                "diff_context": tolerance,
-                "files_changed": len(hmap),
-                "hunks": {p: [list(r) for r in rs] for p, rs in hmap.items()}}
-    safe_write.atomic_write(out_path, json.dumps(artifact, indent=2) + "\n")
-
-def _hunks_path_for(out, repo):
-    """Place diff-hunks.json beside --out, or under the selected repository.
-
-    Shared by every mode that emits or removes the artifact."""
-    return (os.path.join(os.path.dirname(os.path.abspath(out)), "diff-hunks.json")
-            if out else os.path.join(repo, plan_contract.ARTIFACT_DIR, "diff-hunks.json"))
 
 def _validate_artifact_output(repo, path):
     """Reject writes through a target-controlled ``.panopticon`` symlink."""
@@ -403,8 +326,7 @@ def _discovery_block(info):
     whole tree rather than a prefix of it. `pruned` is null -- NOT zeros -- wherever
     nothing counted the drops: the walk path prunes inline and counts nothing, and a
     zero nobody measured is a false disclosure, the reading `meta.tools` gives an
-    absent manifest. `surface` is "changed" only on a --scope-changed run, whose
-    numbers then describe the delta it REVIEWED and not the listing it came from.
+    absent manifest.
     """
     counts = info.get("pruned", {})          # None (not {}) = nothing measured
     return {"method": info.get("method"),
@@ -412,7 +334,7 @@ def _discovery_block(info):
             "files_truncated": info.get("files_truncated", 0),
             "pruned": None if counts is None else dict(
                 dict.fromkeys(discovery_scope._PRUNE_CLASSES, 0), **counts),
-            "surface": info.get("surface", "repo"),
+            "surface": "repo",       # the one surface since #3736; the key stays for readers
             "git_failure": info.get("git_failure")}
 
 
@@ -891,24 +813,23 @@ def _committed_exclude_paths(repo, doc=None):
 
 
 
-def main(argv=None, refuse_delta=True):
+def main(argv=None):
     """The CLI entry point, and the ONE place a refused target tree becomes an
     operator-readable exit rather than a traceback (#2006 fix round 1).
 
-    Discovery touches the target's git from several depths -- the changed-file
-    diff, the repo listing, the uncommitted-work probe -- and a `RepositoryRefused`
-    from any of them means the same thing and deserves the same sentence.
+    Discovery touches the target's git from more than one depth, and a
+    `RepositoryRefused` from any of them means the same thing and deserves the
+    same sentence.
 
-    #3735: the delta flags are refused (`delta_withdrawn`). `refuse_delta` is for the
-    tests of the delta code that is still in the tree; no command line can pass it."""
+    #3735, #3736: the delta flags are refused (`delta_withdrawn`)."""
     try:
-        return _repo_scan(argv, refuse_delta)
+        return _repo_scan(argv)
     except safe_git.RepositoryRefused as exc:
         print(_refused(exc), file=sys.stderr)
         return 2
 
 
-def _repo_scan_args(argv, refuse_delta=True):
+def _repo_scan_args(argv):
     """--repo-scan's parser and argument checks: (args, repo), or the exit code (#3395)."""
     ap = argparse.ArgumentParser(description="panopticon repo-scan discovery/matrix resolver",
                                  allow_abbrev=False)
@@ -920,19 +841,16 @@ def _repo_scan_args(argv, refuse_delta=True):
                     help="Write JSON output to this file instead of stdout")
     ap.add_argument("--security", choices=["standard", "redteam"], default="standard",
                     help="Security review mode")
-    ap.add_argument("--base", default=None,
-                    help="Withdrawn in 5.4 and refused (#3735): the base of a delta review")
-    ap.add_argument("--pr-base", default=None,
-                    help="PR base branch (gh-detected) for --repo-scan "
-                         "--scope-changed; resolved with origin/<base> "
-                         "preference (#947).")
-    ap.add_argument("--diff-context", type=int, default=5,
-                    help="Withdrawn in 5.4 and refused (#3735): the on-diff tolerance")
-    ap.add_argument("--pr-worktree", action="store_true",
-                    help="`target`/`--repo` is a --pr worktree the driver just "
-                         "synced with the operator's root config (#1681): "
-                         "exclude that sync from the delta map instead of "
-                         "attributing it to the PR.")
+    # #3736: delta review's flags (and `--scope-changed` below). Its code is gone; they
+    # are still parsed so that each is refused by name (`delta_withdrawn`), never as an
+    # unrecognized argument. Every default is None or False: a value is one the caller
+    # typed. None takes a type, and `--scope-changed` is outside the scope group, so no
+    # value and no company turns the refusal into argparse's own error.
+    ap.add_argument("--base", default=None, help=delta_withdrawn.FLAG_HELP)
+    ap.add_argument("--pr-base", default=None, help=delta_withdrawn.FLAG_HELP)
+    ap.add_argument("--diff-context", default=None, help=delta_withdrawn.FLAG_HELP)
+    ap.add_argument("--pr-worktree", action="store_true", help=delta_withdrawn.FLAG_HELP)
+    ap.add_argument("--scope-changed", action="store_true", help=delta_withdrawn.FLAG_HELP)
     ap.add_argument("--repo-scan", action="store_true")
     # Scope filters (P6.2): narrow the discovered file universe to a target
     # BEFORE the same matrix assignment runs, rather than switching modes.
@@ -940,16 +858,12 @@ def _repo_scan_args(argv, refuse_delta=True):
     scope.add_argument("--scope-file", metavar="PATH", default=None)
     scope.add_argument("--scope-dir", metavar="DIR", default=None)
     scope.add_argument("--scope-group", metavar="NAME", default=None)
-    scope.add_argument("--scope-changed", action="store_true")
     scope.add_argument("--scope-files", nargs="+", metavar="PATH", default=None)
     args = ap.parse_args(argv)
-    if refuse_delta:
-        withdrawn = delta_withdrawn.refusal(
-            delta_withdrawn.typed(ap, argv, delta_withdrawn.DISCOVERY_FLAGS),
-            delta_withdrawn.DISCOVERY_FLAGS)
-        if withdrawn:
-            print("panopticon: %s" % withdrawn, file=sys.stderr)
-            return 2
+    withdrawn = delta_withdrawn.refusal(args, delta_withdrawn.DISCOVERY_FLAGS)
+    if withdrawn:
+        print("panopticon: %s" % withdrawn, file=sys.stderr)
+        return 2
     if args.max_per_group < 1:
         print("panopticon: --max-per-group must be >= 1", file=sys.stderr)
         return 2
@@ -999,8 +913,8 @@ def _group_by_catalog(result, allf, catalog, args, carved_files):
     # After BOTH grouping paths, and never back into `allf`: the other domains
     # keep honouring the exclusion. The sink name is reserved (`groups_schema`),
     # so a committed group cannot already own it -- the matrix read refused above.
-    # `carved_files` is whatever the run's own scope left: the two delta flags
-    # re-derive it with the exclusion, and each narrowing flag narrows it above.
+    # `carved_files` is whatever the run's own scope left: each narrowing flag
+    # narrows it above.
     exclude_carve_out.install(result, carved_files, args.max_per_group, chunk_files)
 
 
@@ -1015,10 +929,10 @@ def _write_result(result, args):
         emit(result)
 
 
-def _repo_scan(argv=None, refuse_delta=True):
+def _repo_scan(argv=None):
     """Resolve --repo-scan discovery/matrix targets to grouped file lists and
     emit as JSON. The sole mode the 5.0 driver invokes."""
-    parsed = _repo_scan_args(argv, refuse_delta)
+    parsed = _repo_scan_args(argv)
     if isinstance(parsed, int):
         return parsed
     args, repo = parsed
@@ -1100,7 +1014,7 @@ def _repo_scan(argv=None, refuse_delta=True):
         excluded_files, carved_files, _apply_exclude)
     if isinstance(resolved, int):
         return resolved
-    scoped, excluded_files, carved_files, _delta = resolved
+    scoped, excluded_files, carved_files = resolved
     if scoped is not None:
         allf = scoped
         impl, tests = partition_test_files(allf)
@@ -1117,32 +1031,12 @@ def _repo_scan(argv=None, refuse_delta=True):
                   "(discovery.py) to review it"
                   % ", ".join(root_config), file=sys.stderr)
     _say_pruned(result["discovery"]["pruned"], result["discovery"]["surface"])
-    writes = [w for w in (args.out, _delta and _hunks_path_for(args.out, repo)) if w]
     try:
-        if writes:
-            _first_contact(writes)
+        if args.out:
+            _first_contact([args.out])
     except ValueError as exc:          # a first-contact halt, or an in-target PATH entry
         print("panopticon: %s" % exc, file=sys.stderr)
         return 2
-    if _delta is not None:
-        base, source = _delta
-        # True for -c live tree; also true for a --pr worktree now that
-        # _sync_config's overwrite of the root config dirties it too (#1681 fix round
-        # 2 item 6). M4: the same exclusion, on the same flag, for all three -- the
-        # sync is not the PR's uncommitted work any more than it is the PR's hunk.
-        _cfg_exclude = repo_config.CONFIG_NAMES if args.pr_worktree else ()
-        includes_uncommitted = _worktree_dirty(repo, exclude=_cfg_exclude)
-        write_diff_hunks(repo, base, source,
-                         _hunks_path_for(args.out, repo), args.diff_context,
-                         includes_uncommitted, exclude=_cfg_exclude)
-    else:
-        # #5.0-07: a NON-delta (whole-repo) scan must be authoritative and drop
-        # any stale diff-hunks.json left by a prior -c/--pr run — otherwise the
-        # driver's file-existence check re-scopes this whole-repo run to the old
-        # diff and PASSES vacuously.
-        _stale_hunks = _hunks_path_for(args.out, repo)
-        if os.path.isfile(_stale_hunks):
-            os.remove(_stale_hunks)
     _group_by_catalog(result, allf, catalog, args, carved_files)
     if pruned_fixtures:
         result.setdefault("excluded", {})["fixture_dirs"] = sorted(pruned_fixtures)

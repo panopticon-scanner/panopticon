@@ -591,19 +591,6 @@ def test_a_run_on_a_held_root_is_refused_before_it_touches_the_tree(root, flags)
     assert _tree(root) == before
 
 
-def test_a_run_refused_on_a_pr_worktree_leaves_the_worktree_to_its_holder(root):
-    """The worktree is the running driver's: a refusal does not release it. (`--pr` is
-    withdrawn at the command line, #3735; `driver.run` still takes it from a caller.)"""
-    args = driver.build_parser().parse_args(
-        ["run", root, "--host", "codex", "--no-tools", "--pr", "7"])
-    with _another_driver(root), \
-            mock.patch.object(driver.diff_map, "release_worktree") as release:
-        status = driver.run(args, phases=(), resolved=(root, root, "main"))
-    assert status["status"] == "error"
-    assert status["message"].startswith("another driver is running")
-    release.assert_not_called()
-
-
 def test_the_loop_holds_its_root_across_every_run_and_lets_go_after(root):
     seen = []
 

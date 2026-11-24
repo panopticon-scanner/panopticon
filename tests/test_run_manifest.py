@@ -39,7 +39,7 @@ class TestRunManifest(unittest.TestCase):
 
     def _params(self, **over):
         p = dict(target=self.root, review_root=self.root, host="claude",
-                 security_mode="standard", base=None,
+                 security_mode="standard",
                  flags={"fail_on": "high", "severity": "all", "tools": True})
         p.update(over)
         return p
@@ -73,10 +73,25 @@ class TestRunManifest(unittest.TestCase):
         self.assertEqual([dict(sub, entry="review-g-SEC"), dict(sub, entry="review-g-COD")],
                          rm.load_manifest(self.root)["model_substitutions"])
 
-    def test_worktree_defaults_none_and_is_stored(self):
-        self.assertIsNone(rm.build_manifest(**self._params())["worktree"])
-        m = rm.build_manifest(**self._params(), worktree="/tmp/pr-wt")
-        self.assertEqual(m["worktree"], "/tmp/pr-wt")
+    def test_a_new_manifest_carries_no_delta_keys(self):
+        """#3736: `base`, `pr`, `pr_base` and `worktree` were the delta review's. A
+        manifest written now has none of them, and the builder takes none."""
+        m = rm.build_manifest(**self._params())
+        for key in ("base", "pr", "pr_base", "worktree"):
+            self.assertNotIn(key, m)
+            with self.assertRaises(TypeError):
+                rm.build_manifest(**self._params(), **{key: "x"})
+        self.assertNotIn("gate_scope", m["flags"])
+        self.assertNotIn("diff_context", m["flags"])
+
+    def test_a_manifest_from_before_still_resumes_when_it_was_not_a_delta_run(self):
+        """A run folder made by 5.4 carries the old keys, all null, and the two old
+        flags. They are not anti-drift keys any more: a bare resume conflicts with nothing."""
+        m = rm.build_manifest(**self._params())
+        m.update(base=None, pr=None, pr_base=None, worktree=None)
+        m["flags"].update(gate_scope="on-diff", diff_context=None)
+        self.assertEqual([], rm.conflicting_flags(m, flags=dict(self._params()["flags"])))
+        self.assertEqual([], rm.conflicting_flags(m))
 
     def test_new_run_id_is_distinct(self):
         self.assertNotEqual(rm.new_run_id(), rm.new_run_id())
@@ -295,33 +310,6 @@ class TestRunManifest(unittest.TestCase):
         conflicts = rm.conflicting_flags(
             m, scope={"mode": "group", "target": "Checkout"})
         self.assertTrue(any("scope" in c for c in conflicts))
-
-    def test_pr_defaults_none_and_is_stored(self):
-        self.assertIsNone(rm.build_manifest(**self._params())["pr"])
-        m = rm.build_manifest(**self._params(), pr=7)
-        self.assertEqual(m["pr"], 7)
-
-    def test_scope_changed_and_pr_recorded_and_conflict(self):
-        m = rm.build_manifest(target=".", review_root=".", host="claude",
-                              security_mode="standard", base="main",
-                              scope={"mode": "changed", "target": None}, pr=7)
-        self.assertEqual(m["scope"]["mode"], "changed")
-        self.assertEqual(m["pr"], 7)
-        conflicts = rm.conflicting_flags(m, pr=9)
-        self.assertTrue(any("pr" in c for c in conflicts))
-
-    def test_pr_base_defaults_none_and_is_stored(self):
-        # Finding B: pr_base is a DERIVED field (like worktree) -- the gh-detected
-        # PR base, threaded to orchestrator's --pr-base for origin-preference.
-        self.assertIsNone(rm.build_manifest(**self._params())["pr_base"])
-        m = rm.build_manifest(**self._params(), pr_base="main")
-        self.assertEqual(m["pr_base"], "main")
-
-    def test_pr_base_is_not_an_anti_drift_key(self):
-        # A PR's base is fixed by the PR, not a user knob -- pr_base must NOT be a
-        # conflicting_flags key (only pr/scope/base gate drift).
-        m = rm.build_manifest(**self._params(), pr_base="main")
-        self.assertEqual(rm.conflicting_flags(m), [])
 
     def test_the_manifest_records_the_config_resolution_beside_the_flags(self):
         settings = cs.resolve_settings(

@@ -336,7 +336,7 @@ class TestNoThirdPartyImportAtModuleLevelOnTheDriverPath(unittest.TestCase):
             "import json\n"
             "import scripts.hosts\n"
             "from scripts.tools import egress\n"
-            "import diff_map\n"
+            "import safe_git\n"
         )
         self.assertEqual([], module_level_third_party(source))
 

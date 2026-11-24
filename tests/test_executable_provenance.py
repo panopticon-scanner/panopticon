@@ -11,7 +11,6 @@ import tempfile
 import unittest
 from unittest import mock
 
-import scripts.diff_map as diff_map
 import scripts.executable as executable
 import scripts.phases.runio as runio
 import scripts.run_tools as run_tools
@@ -470,52 +469,6 @@ class TestManifestGitBoundary(unittest.TestCase):
                     runio._manifest_committed(target, manifest)
             self.assertFalse(os.path.exists(marker))
 
-
-class TestDiffGitBoundary(unittest.TestCase):
-    @staticmethod
-    def _git(root, *args):
-        subprocess.run([shutil.which("git"), "-C", root, *args], check=True,
-                       capture_output=True)
-
-    def test_hunk_map_ignores_target_git_and_uses_external_git(self):
-        git = shutil.which("git")
-        self.assertTrue(git)
-        with tempfile.TemporaryDirectory() as target:
-            self._git(target, "init", "-q")
-            self._git(target, "config", "user.email", "t@example.com")
-            self._git(target, "config", "user.name", "T")
-            with open(os.path.join(target, "a.py"), "w", encoding="utf-8") as fh:
-                fh.write("old\n")
-            self._git(target, "add", "a.py")
-            self._git(target, "commit", "-qm", "base")
-            self._git(target, "branch", "base")
-            with open(os.path.join(target, "a.py"), "w", encoding="utf-8") as fh:
-                fh.write("new\n")
-            marker = os.path.join(target, "git-ran")
-            _program(os.path.join(target, "git"),
-                     "printf forged > %s\nexit 0\n" % marker)
-            path = os.pathsep.join([target, os.path.dirname(git)])
-            with mock.patch.dict(os.environ, {"PATH": path}, clear=False):
-                with self.assertRaisesRegex(diff_map.DiffMapError,      # #3270 (D2)
-                                            "is inside the target; remove it"):
-                    diff_map.hunk_map(target, "base")
-            with mock.patch.dict(os.environ, {"PATH": os.path.dirname(git)}, clear=False):
-                mapped = diff_map.hunk_map(target, "base")
-            self.assertIn("a.py", mapped)
-            self.assertFalse(os.path.exists(marker))
-
-    def test_hunk_map_fails_loud_when_only_target_git_exists(self):
-        with tempfile.TemporaryDirectory() as target:
-            marker = os.path.join(target, "git-ran")
-            _program(os.path.join(target, "git"),
-                     "printf forged > %s\nexit 0\n" % marker)
-            with mock.patch.dict(os.environ, {"PATH": target}, clear=False):
-                with self.assertRaisesRegex(diff_map.DiffMapError, "is inside the target"):
-                    diff_map.hunk_map(target, "main")              # #3270 (D2)
-            with mock.patch.dict(os.environ, {"PATH": "."}, clear=False):
-                with self.assertRaisesRegex(diff_map.DiffMapError, "trusted PATH"):
-                    diff_map.hunk_map(target, "main")
-            self.assertFalse(os.path.exists(marker))
 
 
 class TestDockerBoundary(unittest.TestCase):

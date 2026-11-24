@@ -634,7 +634,7 @@ def run_setup_flow(args, runner=subprocess.run, phases=SETUP_PHASES, posture=Non
     evidence the caller arranged, and no production caller passes it. Its
     refusal -- a posture that moved, a planted shadow shell -- is this verb's
     `error` status, the same one every other refusal here speaks."""
-    review_root, _wt, _pr = runio.resolve_review_root(args.target, runner=runner)
+    review_root = runio.resolve_review_root(args.target, runner=runner)
     try:                              # #3779: one driver on a root, setup included
         with run_lock.hold(review_root, "setup"):
             return _setup_flow_held(args, runner, phases, posture, review_root)

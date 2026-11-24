@@ -636,7 +636,7 @@ def disarm_previous(guards, prev_req):
 
     I4: CALLED only once this invocation has a live checkpoint of its own. An
     invocation that lands on complete/error instead never reaches here, so an
-    errored re-entry (flag drift, a bad --pr) leaves the previous fan-out's
+    errored re-entry (flag drift, a bad target) leaves the previous fan-out's
     grants exactly as it found them -- that fan-out is still running under
     them. Deferring the teardown past `_first_run`'s posture probe changes
     nothing that probe measures: probe_write_guard_armed proves the MECHANISM
@@ -815,6 +815,6 @@ def prove_output_schema_shape(run_dir, host, runner, pending, env_for, review_ro
 
 
 def _resolve_target(args):
-    """`(review_root, worktree, pr_base)` -- resolved ONCE per invocation and passed down (#1616 item 6):
-    `driver.run` takes it as `resolved=`, not a `gh pr view` and a worktree acquisition per iteration."""
-    return runio.resolve_review_root(args.target, base=args.base, pr=args.pr)
+    """The review root -- resolved ONCE per invocation and passed down (#1616 item 6): `driver.run`
+    takes it as `resolved=`, not a git probe per iteration."""
+    return runio.resolve_review_root(args.target)

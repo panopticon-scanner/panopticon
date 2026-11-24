@@ -8,12 +8,12 @@ The root config is TARGET-AUTHORED and read before dispatch, so a key under
                `max_per_group: 100000` collapses the whole matrix into one
                unreadable cell and `max_groups: 1` collapses it the other way.
   gate      -- how the review JUDGES (security mode, gate threshold, report
-               severity floor, gate scope, scanners, verify cap). Honoured
+               severity floor, scanners, verify cap). Honoured
                only when the value is at least as strict as panopticon's own
                default: a target may tighten its own review, never loosen it.
   operator  -- per-invocation choices belonging to the person RUNNING the
-               review (allow_unenforced, egress/online, diff_context, host,
-               base, pr, the scope selectors, the loop's bounds). Refused on
+               review (allow_unenforced, egress/online, host,
+               the scope selectors, the loop's bounds). Refused on
                sight: disclosed, ignored, counted.
 
 The command line wins in both directions and is never clamped. A refused
@@ -33,7 +33,7 @@ import os
 from collections import namedtuple
 
 GRAIN_KEYS = ("include_fixtures", "max_groups", "max_per_group")
-GATE_KEYS = ("fail_on", "gate_scope", "max_verify", "security", "severity", "tools")
+GATE_KEYS = ("fail_on", "max_verify", "security", "severity", "tools")
 # Every per-invocation flag of `driver run` / `driver loop`, plus the two
 # egress names a future spec may introduce. Enumerated rather than inferred:
 # tests/test_config_schema.py walks the real parser and fails on a dest that
@@ -47,13 +47,23 @@ GATE_KEYS = ("fail_on", "gate_scope", "max_verify", "security", "severity", "too
 # `settings:` would be asking the driver to throw away a batch record of its
 # own review, which is precisely the acceptance only an operator may give.
 # `progress` (#2108) changes what the terminal shows, never what the run does.
+# `base`, `pr`, `scope_changed`, `gate_scope` and `diff_context` are the delta review's
+# flags (#3736). The driver still parses them, to refuse each by name, so each still has
+# a class here; in a committed config the last two are RETIRED_KEYS, read before any class.
 OPERATOR_ONLY_KEYS = (
     "allow_target_build", "allow_unenforced", "base", "concurrency",
-    "diff_context", "discard_batch", "egress", "entry_timeout", "host",
+    "diff_context", "discard_batch", "egress", "entry_timeout", "gate_scope", "host",
     "max_budget_usd", "max_iterations", "max_turns", "mode", "no_tools",
     "online", "pr", "progress", "reset", "scope_changed", "scope_dir", "scope_file",
     "scope_files", "scope_group", "session_dir", "setup", "target",
 )
+# #3736: settings of the delta review, which was removed in 5.5. A committed config that
+# still spells one is not broken by it and is not refused: the key is read, ignored, and
+# disclosed as ignored, with this one sentence. Silence would let a repository believe
+# its `gate_scope: all` still widened a gate.
+RETIRED_KEYS = ("diff_context", "gate_scope")
+RETIRED_NOTICE = ("ignored since 5.5: delta review was removed (#3736), and every audit is "
+                  "whole-repository")
 CLASS_OF = dict([(k, "grain") for k in GRAIN_KEYS]
                 + [(k, "gate") for k in GATE_KEYS]
                 + [(k, "operator") for k in OPERATOR_ONLY_KEYS])
@@ -78,7 +88,6 @@ GATE_OFF_REFUSED = ("the repository's own config asked to turn the gate off; REF
 FAIL_ON_CHOICES = ("critical", "high", "medium", "low", FAIL_ON_OFF)
 
 ENUM_KEYS = {"fail_on": FAIL_ON_CHOICES,
-             "gate_scope": ("on-diff", "all"),
              "security": ("standard", "redteam"),
              "severity": ("all", "critical", "high", "medium")}
 
@@ -90,11 +99,9 @@ CLAMPS = {"max_per_group": (8, 48), "max_groups": (4, 64)}
 # The ratchet's DIRECTION, weakest first. Written down rather than inferred,
 # because "stricter" points a different way for each key: a LOWER `fail_on`
 # threshold fails on more findings, a HIGHER `severity` floor reports fewer,
-# `gate_scope: all` judges more than `on-diff`, and `tools: false` removes an
-# input from every panel.
+# and `tools: false` removes an input from every panel.
 STRICTNESS = {
     "fail_on": (FAIL_ON_OFF, "critical", "high", "medium", "low"),
-    "gate_scope": ("on-diff", "all"),
     "security": ("standard", "redteam"),
     "severity": ("critical", "high", "medium", "all"),
     "tools": (False, True),
@@ -106,7 +113,7 @@ STRICTNESS = {
 #                        (#3673, owner ruling 2026-11-15; it was None, gate OFF).
 #                        `off` is the weakest state, so a committed `off` is a
 #                        loosening like any other and is refused.
-#   gate_scope  on-diff, severity all  -- synthesize.build_parser defaults.
+#   severity    all   -- synthesize.build_parser's default.
 #   security    standard -- phases/runio._DEFAULTS.
 #   tools       True  -- the parser's default is None, but only
 #                        `flags["tools"] is False` skips the scan
@@ -116,7 +123,7 @@ STRICTNESS = {
 #                        Uncapped is the strictest setting there is, which is
 #                        why a committed max_verify is refused: see the spec's
 #                        2026-09-18 Amendments note, finding 1.
-DEFAULTS = {"fail_on": DEFAULT_FAIL_ON, "gate_scope": "on-diff", "max_verify": None,
+DEFAULTS = {"fail_on": DEFAULT_FAIL_ON, "max_verify": None,
             "security": "standard", "severity": "all", "tools": True}
 
 # Why a refusal is a refusal, for the two keys whose default is ALREADY the
@@ -297,6 +304,13 @@ def parse_settings(doc):
             refused.append(_refusal(name, shown, "value is not a finite number"))
             disclosures.append(_line(name, shown,
                                      "refused (value is not a finite number)"))
+            continue
+        if full in RETIRED_KEYS:
+            # #3736: before any class. Whatever the value, the key does nothing now.
+            shown = _recorded(value) if scalar else None
+            if scalar:
+                requested[name] = shown
+            disclosures.append(_line(name, shown, RETIRED_NOTICE))
             continue
         klass = CLASS_OF.get(full)
         # The unknown-key branch (and its TOP_LEVEL_GRAIN hint) is checked

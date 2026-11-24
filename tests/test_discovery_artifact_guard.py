@@ -1,13 +1,9 @@
 """Artifact-output symlink-escape and scope-guard tests."""
 import os
-import contextlib
-import io
 import tempfile
 import unittest
-from unittest import mock
 
-from scripts import discovery_scope
-from tests.discovery_test_helpers import orchestrator, touch, init_repo, git_cmd
+from tests.discovery_test_helpers import orchestrator
 
 
 class TestArtifactOutputGuard(unittest.TestCase):
@@ -28,36 +24,3 @@ class TestArtifactOutputGuard(unittest.TestCase):
             os.symlink(outside, os.path.join(d, ".panopticon"))
             self.assertEqual(orchestrator.main(["--repo", d, "--repo-scan"]), 2)
             self.assertEqual(orchestrator.main(["--repo", d, "--repo-scan", "--out", os.path.join(d, ".panopticon", "out.json")]), 2)
-
-    def test_scope_changed_non_git_repo_refuses_base_resolution(self):
-        with tempfile.TemporaryDirectory() as d:
-            touch(d, "src/app.py")
-            # Base resolution refuses a non-git repo before collection begins.
-            self.assertEqual(orchestrator.main(["--repo", d, "--repo-scan", "--scope-changed"], refuse_delta=False), 2)
-
-    def test_scope_changed_collection_failure_refuses_artifact(self):
-        with tempfile.TemporaryDirectory() as d:
-            touch(d, "src/app.py")
-            init_repo(d)
-            git_cmd(d, "add", ".")
-            git_cmd(d, "commit", "-q", "-m", "init")
-            out = os.path.join(d, ".panopticon", "changed.json")
-            stderr = io.StringIO()
-            with mock.patch.object(discovery_scope, "collect_changed_files", return_value=None) as collect, \
-                    contextlib.redirect_stderr(stderr):
-                rc = orchestrator.main(["--repo", d, "--repo-scan", "--scope-changed",
-                                        "--base", "HEAD", "--out", out], refuse_delta=False)
-            self.assertTrue(collect.called)
-            self.assertEqual(rc, 2)
-            self.assertEqual(stderr.getvalue(),
-                             "could not determine changed files; is %s a git repo?\n" % d)
-            self.assertFalse(os.path.exists(out))
-
-    def test_scope_files_fails_with_bad_base(self):
-        with tempfile.TemporaryDirectory() as d:
-            touch(d, "src/app.py")
-            init_repo(d)
-            git_cmd(d, "add", ".")
-            git_cmd(d, "commit", "-q", "-m", "init")
-            # bad base -> resolve_base_or_die returns None -> return 2
-            self.assertEqual(orchestrator.main(["--repo", d, "--repo-scan", "--scope-files", "src/app.py", "--base", "nope"], refuse_delta=False), 2)

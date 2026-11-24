@@ -64,7 +64,7 @@ BOOTSTRAP_FOR = {SCRIPTS: "_bootstrap.py", DEVTOOLS: "_skill_bootstrap.py"}
 # Rule 5: E402 suppressions per surface. Shrink-only: a count that goes down is
 # lowered here in the same change, and one that goes up fails. The 26 in tests/
 # are real (imports after conftest's environment setup, and the like).
-E402_CEILING = {"skill/scripts": 0, "devtools": 0, "tests": 26}
+E402_CEILING = {"skill/scripts": 0, "devtools": 0, "tests": 23}
 
 _MUTATORS = frozenset({"insert", "append", "extend", "remove", "pop", "clear",
                        "reverse", "sort", "__setitem__", "__delitem__",
@@ -990,7 +990,7 @@ raise SystemExit(pytest.main(["-c", str(root / "pyproject.toml"), "--collect-onl
                               *sys.argv[2:]], plugins=[Check()]))
 '''
         with tempfile.TemporaryDirectory() as directory:
-            selected = [TESTS / "test_diff_map.py", TESTS / "test_tree_baseline.py"]
+            selected = [TESTS / "test_safe_git.py", TESTS / "test_tree_baseline.py"]
             for order in (selected, list(reversed(selected))):
                 result = _python(["-c", code, str(ROOT), *(str(p) for p in order)],
                                  directory, [], timeout=45)

@@ -138,7 +138,7 @@ class TestResolveReviewRoot(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, HALTS):
                 runio.resolve_review_root(target)
         self.assertFalse(os.path.exists(marker), "repository Git executed before root was established")
-        self.assertEqual(runio.resolve_review_root(target), (checkout, None, None))
+        self.assertEqual(runio.resolve_review_root(target), checkout)
 
     def test_subdirectory_target_rejects_enclosing_checkout_git(self):
         self._assert_enclosing_checkout_git_is_not_executed("directory")
@@ -156,7 +156,7 @@ class TestResolveReviewRoot(unittest.TestCase):
         requested, other = self._git_repo(), self._git_repo()
         with mock.patch.dict(os.environ, {"GIT_DIR": os.path.join(other, ".git"),
                                          "GIT_WORK_TREE": other}):
-            self.assertEqual(runio.resolve_review_root(requested), (requested, None, None))
+            self.assertEqual(runio.resolve_review_root(requested), requested)
 
     def test_linked_worktree_keeps_its_own_root(self):
         d = self._git_repo()
@@ -168,44 +168,36 @@ class TestResolveReviewRoot(unittest.TestCase):
                        check=True, capture_output=True, timeout=30)
         sub = os.path.join(linked, "sub")
         os.makedirs(sub)
-        self.assertEqual(runio.resolve_review_root(sub), (linked, None, None))
+        self.assertEqual(runio.resolve_review_root(sub), linked)
 
     def test_missing_trusted_git_falls_back_to_requested_directory(self):
         d = self._git_repo()
         empty = os.path.realpath(tempfile.mkdtemp())       # a PATH with no git on it
         self.addCleanup(lambda: shutil.rmtree(empty, ignore_errors=True))
         with mock.patch.dict(os.environ, {"PATH": empty}):
-            self.assertEqual(runio.resolve_review_root(d), (d, None, None))
+            self.assertEqual(runio.resolve_review_root(d), d)
 
     def test_resolves_repo_root_from_subdir(self):
         d = self._git_repo()
         sub = os.path.join(d, "pkg")
         os.makedirs(sub)
-        root, wt, pr_base = runio.resolve_review_root(sub)
-        self.assertEqual(root, d)
-        self.assertIsNone(wt)
-        self.assertIsNone(pr_base)
+        self.assertEqual(runio.resolve_review_root(sub), d)
 
     def test_resolves_repo_root_from_file_target(self):
         d = self._git_repo()
         f = os.path.join(d, "a.py")
         open(f, "w").close()
-        root, wt, pr_base = runio.resolve_review_root(f)
-        self.assertEqual(root, d)
+        self.assertEqual(runio.resolve_review_root(f), d)
 
     def test_non_git_dir_returns_target(self):
         with tempfile.TemporaryDirectory() as d:
             d = os.path.realpath(d)
-            root, wt, pr_base = runio.resolve_review_root(d)
-            self.assertEqual(root, d)
-            self.assertIsNone(wt)
-            self.assertIsNone(pr_base)
+            self.assertEqual(runio.resolve_review_root(d), d)
 
     def test_a_non_git_target_reached_through_a_symlink_is_resolved(self):
         # #1640 fix round 1, the reviewer's extra. The git branch already
-        # returns `realpath(rev-parse --show-toplevel)`, and the --pr branch a
-        # path under that resolved repo; only this fallback handed back the
-        # root AS GIVEN. #1640's write guard refuses a findings path whose
+        # returns `realpath(rev-parse --show-toplevel)`; only this fallback
+        # handed back the root AS GIVEN. #1640's write guard refuses a findings path whose
         # review-root component is itself a symlink, so a non-git directory
         # reviewed through a link (`~/work/proj -> /Volumes/x/proj`) met a loud
         # refusal from the guard for what is the operator's own path, not an
@@ -217,10 +209,7 @@ class TestResolveReviewRoot(unittest.TestCase):
         os.makedirs(real)
         link = os.path.join(d, "via-link")
         os.symlink(real, link)
-        root, wt, pr_base = runio.resolve_review_root(link)
-        self.assertEqual(real, root)
-        self.assertIsNone(wt)
-        self.assertIsNone(pr_base)
+        self.assertEqual(real, runio.resolve_review_root(link))
 
     def test_a_non_git_file_target_still_returns_its_directory(self):
         # The fallback's other shape: a FILE target resolves to the directory
@@ -232,34 +221,7 @@ class TestResolveReviewRoot(unittest.TestCase):
         open(os.path.join(real, "a.py"), "w").close()
         link = os.path.join(d, "via-link")
         os.symlink(real, link)
-        root, _wt, _pr = runio.resolve_review_root(os.path.join(link, "a.py"))
-        self.assertEqual(real, root)
-
-    def test_pr_uses_diff_map_worktree(self):
-        # A worktree that EXISTS, as an acquire always returns: #3270's
-        # first-contact PATH check reads it, and an unverifiable root fails closed.
-        worktree = os.path.realpath(tempfile.mkdtemp())
-        self.addCleanup(lambda: shutil.rmtree(worktree, ignore_errors=True))
-        with mock.patch("scripts.diff_map.acquire_pr",
-                        return_value={"worktree": worktree, "base": "main",
-                                      "head_sha": "abc"}) as acq:
-            root, wt, pr_base = runio.resolve_review_root(".", pr=7)
-        self.assertEqual(root, worktree)
-        self.assertEqual(wt, worktree)
-        self.assertEqual(pr_base, "main")
-        acq.assert_called_once()
-
-    def test_a_pr_worktree_gets_the_first_contact_check_too(self):
-        # #3270: no git is resolved on this branch (the acquire is the seam), so
-        # only the first-contact check can see the worktree's own `bin`.
-        worktree = os.path.realpath(tempfile.mkdtemp())
-        self.addCleanup(lambda: shutil.rmtree(worktree, ignore_errors=True))
-        os.makedirs(os.path.join(worktree, "bin"))
-        with mock.patch("scripts.diff_map.acquire_pr",
-                        return_value={"worktree": worktree, "base": "main", "head_sha": "abc"}), \
-                mock.patch.dict(os.environ, {"PATH": os.path.join(worktree, "bin")}):
-            with self.assertRaisesRegex(ValueError, HALTS):
-                runio.resolve_review_root(".", pr=7)
+        self.assertEqual(real, runio.resolve_review_root(os.path.join(link, "a.py")))
 
     def test_git_probe_timeout_falls_back_not_raises(self):
         # #run7 OPS-A1A: a hung git rev-parse (wedged index.lock, credential
@@ -269,9 +231,8 @@ class TestResolveReviewRoot(unittest.TestCase):
         d = self._git_repo()
         def wedged(cmd, **kw):
             raise subprocess.TimeoutExpired(cmd, kw.get("timeout"))
-        root, wt, pr_base = runio.resolve_review_root(d, runner=wedged)
-        self.assertEqual(root, d)          # fell back to the target dir, no hang
-        self.assertIsNone(wt)
+        # fell back to the target dir, no hang
+        self.assertEqual(runio.resolve_review_root(d, runner=wedged), d)
 
 class TestRedactOutput(unittest.TestCase):
     def test_redacts_common_secret_formats(self):

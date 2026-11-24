@@ -379,13 +379,6 @@ def _among(root, roots):
     return any(os.path.realpath(root) == os.path.realpath(r) for r in roots)
 
 
-def contact_roots(args, review_root):
-    """The roots first contact checks before the session root: the operator's
-    checkout under --pr, then the review root. `driver loop` hands the same
-    tuple to its session guards, so the mark skips them as the contact does."""
-    return ((args.target,) if getattr(args, "pr", None) else ()) + (review_root,)
-
-
 def mark_session_root(root, assessed=(), runner=None):
     """Mark the session root ours before the session guards first write their
     state there (#3532), so the next invocation's read-only contact verifies
@@ -403,23 +396,13 @@ def mark_session_root(root, assessed=(), runner=None):
 
 def assess_loop(args, resolved):
     """`driver loop`'s first contact (#3271 B2), in `driver loop` and `driver
-    loop --setup` alike: H1-H3 on the review root and, under --pr, on the
-    operator's checkout, BEFORE the loop reads a manifest, a dispatch request
-    or a crash record, and before it deletes anything a crash record names.
-    Each iteration's `driver.run` / `run_setup_flow` then makes the whole
-    contact, H4 included. A halt releases a --pr worktree, as `driver.run`'s does."""
-    review_root, worktree = resolved[0], resolved[1]
+    loop --setup` alike: H1-H3 on the review root (`resolved`), BEFORE the loop
+    reads a manifest, a dispatch request or a crash record, and before it deletes
+    anything a crash record names. Each iteration's `driver.run` /
+    `run_setup_flow` then makes the whole contact, H4 included."""
     reset = getattr(args, "reset", False)
-    try:
-        roots = contact_roots(args, review_root)
-        for root in roots:
-            assess_artifacts(root, reset=reset)
-        _assess_session_root(session_root(args), roots, reset=reset)
-    except FirstContactHalt:
-        if worktree:
-            import scripts.diff_map as diff_map
-            diff_map.release_worktree(worktree, repo=args.target)
-        raise
+    assess_artifacts(resolved, reset=reset)
+    _assess_session_root(session_root(args), (resolved,), reset=reset)
 
 
 def _owning_roots(path):
@@ -499,8 +482,8 @@ def assess_standalone(cwd, read_paths, write_paths=(), *, root_hints=(), runner=
 def assess(review_root, manifest_name, *, reset=False, host=None, other_roots=(), runner=None,
            walk_every_time=False, session_dir=None):
     """The whole first contact for the run whose manifest is `manifest_name`:
-    H1-H3 on `review_root` (and on each of `other_roots` -- the operator's own
-    checkout under --pr, which the run copies its report into), then, unless
+    H1-H3 on `review_root` (and on each of `other_roots`, when a caller names
+    further trees the run writes to), then, unless
     that stamped manifest is resuming, the one H4 walk. Returns the record a
     NEW manifest carries as `first_contact`, or None on a resume.
 

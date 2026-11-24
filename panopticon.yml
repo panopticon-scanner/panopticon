@@ -623,7 +623,6 @@ groups:
       - skill/scripts/exclude_carve_out.py
       - skill/scripts/groups_schema.py
       - skill/scripts/tests_axis.py
-      - skill/scripts/diff_map.py
       - skill/scripts/delta_withdrawn.py
       - skill/scripts/plan_contract.py
       - skill/scripts/safe_glob.py
@@ -640,8 +639,6 @@ groups:
       - tests/test_discovery_surface.py
       - tests/test_groups_schema.py
       - tests/test_tests_axis.py
-      - tests/test_diff_map.py
-      - tests/test_diff_map_fail_closed.py
       - tests/test_plan_contract.py
       - tests/test_safe_glob.py
       - tests/test_panopticon_literal_ratchet.py

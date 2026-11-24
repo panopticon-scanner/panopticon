@@ -28,9 +28,7 @@ def test_every_driver_scope_mode_has_a_schema_valid_review_type():
                     "scope producer changed shape; extend the completeness walk"
                 modes.add(value.value)
     assert modes, "the completeness walk must observe the driver's modes"
-    # (`changed` is the driver's delta arm. The report no longer knows it; the driver
-    # loses the arm in the next commit, which takes this allowance out again.)
-    assert modes - {"changed"} <= findings.MODE_TO_REVIEW_TYPE.keys()
+    assert modes <= findings.MODE_TO_REVIEW_TYPE.keys()
     schema_path = Path(__file__).resolve().parents[2] / "skill/reference/report-schema.json"
     schema = json.loads(schema_path.read_text())
     allowed = schema["properties"]["meta"]["properties"]["review_type"]["enum"]

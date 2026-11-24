@@ -1,4 +1,4 @@
-"""Phase 7 -- validate: the working-tree baseline, delta and worktree finalization."""
+"""Phase 7 -- validate: the working-tree baseline and what changed since it."""
 import hashlib
 import io
 import json
@@ -7,12 +7,10 @@ import stat
 import subprocess
 import sys
 
-import scripts.diff_map as diff_map
 import scripts.plan_contract as plan_contract
 import scripts.run_manifest as run_manifest
 import scripts.safe_git as safe_git
 import scripts.redact as redact
-import scripts.safe_glob as safe_glob
 import scripts.safe_write as safe_write
 from . import engine
 from . import runio
@@ -365,9 +363,6 @@ def validate_done(review_root, manifest, runner=subprocess.run):
 
 def validate_execute(review_root, manifest, runner=subprocess.run):
     delta = _tree_delta(review_root, runner)
-    # The PR worktree (when review_root IS the worktree) is released by run()
-    # AFTER the run completes, NOT here: releasing mid-machine would delete the
-    # review root (report.json + manifest) and break cursor derivation. (Ruling A)
     runio._write_json(runio._pano(review_root, "validate.json"),
                 {"schema_version": 1, "run_id": manifest["run_id"],
                  "tree_clean": not delta, "unexpected_changes": delta})
@@ -379,163 +374,3 @@ def validate_execute(review_root, manifest, runner=subprocess.run):
                  "reviewer side effects outside %s/" % plan_contract.ARTIFACT_DIR)
         raise runio.DriverError("validate: %s: " % cause + "; ".join(delta[:10]))
     return engine.PhaseResult(kind="advanced", message="validate: clean tree")
-
-# #3225: the largest report artifact `--pr` surfaces into the caller's tree --
-# the 16 MiB the synth reader and readiness already accept for a report. An
-# over-cap source is a FAILED surface (the worktree is kept), never a partial copy.
-MAX_SURFACED_BYTES = 1 << 24
-# The *at calls the confined surface makes. `os.replace` is `renameat` under
-# the same entry `os.supports_dir_fd` lists for `os.rename`.
-_DIR_FD_CALLS = (os.open, os.mkdir, os.symlink, os.rename, os.unlink)
-
-
-def _open_caller_artifact_dir(target):
-    """`<target>/.panopticon` as a HELD directory fd, or raise (#3225).
-
-    A hostile default branch can commit `.panopticon` as a symlink. First
-    contact vets the caller checkout too under --pr (`driver.run` passes it
-    as `other_roots`; `assess_loop` does the same), but once, at the start.
-    `plan_contract.artifact_root` gives the readable refusal, but it is a
-    check on a path, and a path can be swapped after it passes:
-    `safe_write.confine_artifact_path` would not notice, since it anchors on
-    the realpath of `.panopticon` -- the link's target, once it is a link. So
-    the directory is opened once, O_NOFOLLOW relative to the target, and
-    every write is made relative to that fd. Renaming the name later cannot
-    move a write out of the tree. No dir_fd support means no surface: a
-    path-based fallback would reopen exactly this race."""
-    missing = [f.__name__ for f in _DIR_FD_CALLS if f not in os.supports_dir_fd]
-    if missing:
-        raise ValueError("no dir_fd support for %s" % ", ".join(missing))
-    plan_contract.artifact_root(target)
-    tfd = os.open(target, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        try:
-            os.mkdir(plan_contract.ARTIFACT_DIR, 0o755, dir_fd=tfd)
-        except FileExistsError:
-            pass
-        return os.open(plan_contract.ARTIFACT_DIR, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                       dir_fd=tfd)
-    finally:
-        os.close(tfd)
-
-
-def _unlink_at(dfd, name):
-    try:
-        os.unlink(name, dir_fd=dfd)       # a name in the held dir, never followed
-    except FileNotFoundError:
-        pass
-
-
-def _surface_into(dfd, src_dir, names):
-    """Stage every artifact in the held dir, then publish in reverse.
-
-    Each leaf is created O_EXCL|O_NOFOLLOW and `os.replace`d onto its final
-    name, so a planted leaf link is swapped, never written through. Nothing is
-    published unless every source read and staged, and the failures are
-    returned rather than raised, so the caller keeps the worktree."""
-    staged, failed = [], []
-    try:
-        for name in names:
-            tmp = "%s.finalize-%d.tmp" % (name, os.getpid())
-            try:
-                data = safe_write.read_regular_bytes(os.path.join(src_dir, name),
-                                                     MAX_SURFACED_BYTES)
-                _unlink_at(dfd, tmp)              # our own interrupted leftover
-                fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                             0o644, dir_fd=dfd)
-                staged.append(tmp)
-                with os.fdopen(fd, "wb") as stream:
-                    stream.write(data)
-            except (OSError, ValueError) as e:
-                failed.append((name, e))
-                return failed
-        for tmp, name in reversed(list(zip(staged, names))):
-            try:
-                os.replace(tmp, name, src_dir_fd=dfd, dst_dir_fd=dfd)
-            except OSError as e:
-                failed.append((name, e))
-        return failed
-    finally:
-        for tmp in staged:
-            _unlink_at(dfd, tmp)
-
-
-def _relink_at(dfd, link, name):
-    """`link -> name` in the held dir: a fresh link swapped onto the old name,
-    so a planted `report.json` link is replaced, never followed."""
-    tmp = "%s.relink-%d.tmp" % (link, os.getpid())
-    _unlink_at(dfd, tmp)
-    os.symlink(name, tmp, dir_fd=dfd)
-    try:
-        os.replace(tmp, link, src_dir_fd=dfd, dst_dir_fd=dfd)
-    except OSError:
-        _unlink_at(dfd, tmp)
-        raise
-
-def _finalize_worktree(review_root, manifest):
-    """On a completed --pr run, review_root IS the disposable worktree. Surface
-    report.json to the caller's target .panopticon/ BEFORE releasing the worktree
-    so the deliverable survives disposal (spec §4: no leak + report available).
-    Best-effort surface; release is tolerant. No-op when there is no worktree."""
-    worktree = manifest.get("worktree")
-    if not worktree:
-        return
-    target = manifest.get("target") or review_root
-    tag = run_manifest.run_tag(manifest)
-    src_dir = os.path.join(review_root, plan_contract.ARTIFACT_DIR)
-    dst_dir = os.path.join(target, plan_contract.ARTIFACT_DIR)
-    # §5.1: surface the durable, top-level, tag-named outputs (report + optional
-    # split part + html) so the caller's report is complete and self-consistent even
-    # when split, then re-link report.json there. Falls back to a flat report.json
-    # copy if there is no tag (no manifest — should not happen post-run).
-    # #run7 OPS-E1A: surface EVERY durable tag-named artifact, not just part2 --
-    # a split report (run-7 produced 4 parts + discarded + x0x) otherwise loses
-    # part3+ on worktree release.
-    def report_names():
-        if tag:
-            names = sorted(os.path.basename(p) for p in
-                           safe_glob.under(src_dir, tag + "-report*.json"))
-            names.append(f"{tag}-report.json.html")
-        else:
-            names = ["report.json"]
-        # #3225: the main report first, so `_surface_into` publishes it LAST and
-        # its siblings are already in place when it goes live.
-        names = [n for n in names if os.path.isfile(os.path.join(src_dir, n))]
-        names.sort(key=lambda n: n != (f"{tag}-report.json" if tag else "report.json"))
-        return names
-
-    failed = []
-    try:
-        # #3706: a worktree `.panopticon/` that cannot be listed raises here. It is a
-        # failed surface like any other below, so the worktree is kept, where it used to
-        # read as "no report parts" and the only other copy was released.
-        names = report_names()
-        dfd = _open_caller_artifact_dir(target)
-    except (OSError, ValueError, safe_glob.Unlistable) as e:
-        failed.append((plan_contract.ARTIFACT_DIR, e))
-    else:
-        try:
-            failed = _surface_into(dfd, src_dir, names)
-            if tag and not failed and f"{tag}-report.json" in names:
-                for link, name in (("report.json", f"{tag}-report.json"),
-                                   ("report.json.html", f"{tag}-report.json.html")):
-                    if name in names:
-                        try:
-                            _relink_at(dfd, link, name)
-                        except OSError as e:
-                            failed.append((link, e))
-        finally:
-            os.close(dfd)
-    # #run7 OPS-E1A: the worktree is the ONLY other copy of the report. If ANY
-    # artifact failed to surface, releasing it (git worktree remove --force) would
-    # destroy the deliverable irrecoverably while run() still returns
-    # status:complete. Keep the worktree and fail LOUD instead of silent loss.
-    if failed:
-        detail = "; ".join("%s (%s)" % (n, e) for n, e in failed)
-        print("driver: FAILED to surface %d report artifact(s) to %s: %s -- KEEPING "
-              "the worktree %s so the deliverable is recoverable (copy the report out, "
-              "then `git -C %s worktree remove --force %s`)."
-              % (len(failed), dst_dir, detail, worktree, target, worktree),
-              file=sys.stderr, flush=True)
-        return
-    diff_map.release_worktree(worktree, repo=target)

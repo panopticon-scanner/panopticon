@@ -14,8 +14,7 @@ unknown or unenumerated spelling fails CLOSED into the preflight.
 A repository-configured command is SUPPRESSED, not refused (#2013). #2006
 refused the target, which made every git-lfs (`git lfs install --local`) or
 git-crypt checkout unreviewable on every path that touches git -- discovery's
-dirty check, the manifest's provenance, the delta map, validate's baseline --
-with no override. The preflight now collects each such key and empties it with
+listing, the manifest's provenance, validate's baseline -- with no override. The preflight now collects each such key and empties it with
 a `-c <key>=` override on every later launch, proves each override took, and
 discloses the pairs it neutralized. The refusal survives exactly where the
 proof fails: a key that still reads non-empty is never run.
@@ -23,22 +22,16 @@ proof fails: a key that still reads non-empty is never run.
 WHAT SUPPRESSION COSTS, measured (#2013 fix round 1): a clean filter is what
 makes the index blob equal the worktree, so emptying it leaves git comparing
 RAW worktree bytes against a FILTERED index blob. Paths under a suppressed
-driver therefore compare as MODIFIED: dirtiness for them is unknown and a delta
-may include them. Measured on the canonical git-lfs shape -- index blob
-`ptr payload`, worktree `BIG payload`, plain `git status` clean, this probe's
-`status` reporting ` M big.bin`. That is why the suppression is disclosed
-rather than silent, and why a DELTA-scoped run over a suppressed comparison
-cannot certify its coverage (`synth/tool_axis.reconcile`).
+driver therefore compare as MODIFIED: dirtiness for them is unknown. Measured on
+the canonical git-lfs shape -- index blob `ptr payload`, worktree `BIG payload`,
+plain `git status` clean, this probe's `status` reporting ` M big.bin`. That is
+why the suppression is disclosed rather than silent.
 
-`mutate` is the ONE entry point here allowed to WRITE to the target repository
-(#2012): the same fresh environment, hooks pin and driver neutralization as
-`probe`, and an unskippable preflight. Its callers are the `--pr` worktree
-lifecycle (`worktree add`, `worktree remove`, `update-ref -d`). It exists
-because `git worktree add` is a CHECKOUT: it runs the target's smudge filters
-and its `post-checkout` hook, so `diff_map.acquire_pr` used to execute
-target-authored code on the operator's machine on every `--pr` run.
+`probe` is the one entry point, and it is READ-ONLY. The write door (`mutate`,
+#2012) served the `--pr` worktree lifecycle and went with delta review (#3736):
+nothing here writes to a target repository.
 
-Neither entry point polices its CALLER's argv (#3273 cut 17). Every caller is
+`probe` does not police its CALLER's argv beyond its shape (#3273 cut 17). Every caller is
 our own code and puts a literal subcommand first, so a target-derived token --
 a pathspec after `--`, a ref, a resolved SHA -- never sits where git reads a
 global option. What the target controls is its repository, and that is what
@@ -136,21 +129,6 @@ def _no_hooks_path():
     return _HOOKS_PATH
 
 
-def no_hooks_path():
-    """`_no_hooks_path()` for the ONE caller that cannot use `probe`/`mutate`.
-
-    `diff_map.acquire_pr`'s `git fetch` keeps the operator's environment,
-    because the credential helper lives there (#2012), so it cannot be a probe
-    launch -- but a fetch is a REF TRANSACTION, and `reference-transaction`
-    fires from the target's `core.hooksPath` on it (measured: a repository whose
-    contributing docs say `git config core.hooksPath .githooks`, which is the
-    common real shape, ran its own committed hook on the acquisition's fetch).
-    That caller pins the same directory this module pins on every launch, rather
-    than inventing a second empty directory nobody has proved is empty.
-    """
-    return _no_hooks_path()
-
-
 def _launch_argv(resolved, directory, command, drivers=()):
     """The argv for one probe launch: trusted git, cwd, every suppression.
 
@@ -232,14 +210,11 @@ def _is_command_setting(key):
     `filter.*.clean/.process` by `status` (and anything that compares worktree
     content), `diff.external` and `diff.<driver>.command/.textconv` by every
     diff-producing subcommand -- and an external driver's output REPLACES
-    git's, so obeying one silently emptied the hunk map as well as running
+    git's, so obeying one silently replaces what a diff says as well as running
     target code (#2006 fix round 2, C1).
 
-    `filter.<driver>.smudge` was added by #2013 for completeness, when nothing
-    here checked out; #2012 made it load-bearing for a real caller. `mutate`'s
-    `worktree add` IS a checkout, so `.smudge` and `.process` (the long-running
-    filter protocol serves smudge too) are the ones in this set that the target
-    gets to run on the `--pr` route -- emptying them is what stops it.
+    `filter.<driver>.smudge` is here for completeness (#2013): nothing here
+    checks out, and emptying it costs nothing.
 
     AVAILABILITY (#2006 fix round 2, M6, resolved by #2013): these are
     REPO-LOCAL keys, so global-config git-lfs is unaffected
@@ -250,117 +225,14 @@ def _is_command_setting(key):
     cost the module docstring names: paths under a suppressed driver compare as
     modified.
 
-    `merge.<driver>.driver` is deliberately absent: no subcommand `probe` or
-    `mutate` runs performs a MERGE. `mutate`'s `worktree add --detach` is a
-    plain checkout of one commit -- filters yes, merge driver never -- and
-    overriding a key would claim a suppression for a command we never invoke.
-    Revisit if either entry point ever merges (`worktree add` of a branch that
-    needs one, `checkout -m`).
+    `merge.<driver>.driver` is deliberately absent: no subcommand `probe` runs
+    performs a MERGE, and overriding a key would claim a suppression for a
+    command we never invoke.
     """
     if key.startswith("filter.") and key.endswith((".clean", ".process", ".smudge")):
         return True
     return key == "diff.external" or (
         key.startswith("diff.") and key.endswith((".command", ".textconv")))
-
-
-def _is_transport_command_setting(key, remote):
-    """Whether `key` makes a FETCH of `remote` run a command the CHECKOUT's
-    config named.
-
-    `diff_map.acquire_pr`'s fetch is the one git call that keeps the operator's
-    environment (a private repository's PR head is only fetchable through their
-    credential helper), so it is the one call a repo-local setting can still
-    reach. It is REFUSED there rather than emptied (#2041 owner ruling: "refuse
-    with remedy"), which is why these keys are deliberately absent from
-    `_is_command_setting`/`_driver_keys`: those are the keys the probe EMPTIES
-    on every launch, and emptying `core.sshCommand` would break the private
-    repository the fetch exemption exists for. The remedy is the operator's own
-    GLOBAL config, which the fetch still honours.
-
-    MEASURED on git 2.50 (#2012's review and #2041's, with both of the fetch's
-    pins applied): a repo-local `core.sshCommand` ran on the fetch of an
-    `ssh://` remote, `remote.<name>.uploadpack` on the fetch of a local-path
-    remote, and `core.askPass` on the fetch of an http remote that answered 401
-    -- both halves of that trigger are repo-local, since `remote.<name>.url` is
-    too. `GIT_ASKPASS` in the operator's ENVIRONMENT outranks the repo's
-    `core.askPass`, so this entry protects the operator who does not set it,
-    which is the default. The rest are the same class by git's own documentation
-    rather than by measurement -- `core.gitProxy` is the proxy command for
-    `git://`,
-    `remote.<name>.vcs` selects the remote-helper program `git-remote-<vcs>`,
-    `credential.helper` and `credential.<url>.helper` are command lines (a
-    leading `!` makes one an outright shell line) run on an https auth
-    challenge, and `protocol.allow`/`protocol.ext.allow` unlock the `ext::`
-    helper -- git's default for `ext` is `never` -- that a repo-local
-    `remote.<name>.url` is free to name. Other `protocol.<scheme>.allow` keys
-    are NOT here: `protocol.file.allow=always` is the documented way to keep
-    local-path submodules working since git 2.38.1, and no other scheme hands
-    a command line to git.
-
-    `remote` is the ONE remote name the caller's fetch names (#2041 M3), so a
-    `remote.<other>.*` key is not a key THIS fetch would execute and the
-    operator keeps it. Required rather than defaulted: a call site that does not
-    know which remote it fetches cannot answer this question.
-
-    Normalizes first, so a hand-written key answers the way git would compare
-    it (`_canonical_key`: section and variable lowered, subsection kept). The
-    keys the caller reads out of `config --list` are canonical already.
-    """
-    parts = _canonical_key(key).split(".")
-    if len(parts) < 2:
-        return False
-    section, variable = parts[0], parts[-1]
-    if section == "core":
-        return len(parts) == 2 and variable in ("sshcommand", "gitproxy", "askpass")
-    if section == "remote":
-        # A subsection is mandatory (`remote.uploadpack` names no remote and git
-        # runs nothing for it) and it must be the remote the fetch NAMES, which
-        # git compares case-sensitively -- `[remote "Origin"]` is a different
-        # remote, and `_canonical_key` keeps that half's case for exactly this.
-        return (len(parts) > 2 and variable in ("uploadpack", "vcs")
-                and ".".join(parts[1:-1]) == remote)
-    if section == "credential":
-        return variable == "helper"        # bare, or per-URL (dots and all)
-    if section == "protocol":
-        # Bare (`protocol.allow`) or the `ext` scheme only; see the docstring.
-        return variable == "allow" and parts[1:-1] in ([], ["ext"])
-    return False
-
-
-def _transport_value_arms_the_key(key, value):
-    """Whether `value` actually arms transport `key` (#2041 M3).
-
-    Empty never arms: a key set and then emptied (`git config core.sshCommand
-    ""`) runs nothing. `protocol.*` is a PERMISSION rather than a command line
-    and `never` is its HARDENING value, so refusing on it would refuse the
-    operator who closed the hole. Everything else arms it, including a value git
-    will die on: git parses these case-sensitively (`always`/`never`/`user`), so
-    `Never` is a configuration error rather than a lock.
-    """
-    if not value:
-        return False
-    if _canonical_key(key).split(".", 1)[0] == "protocol":
-        return value != "never"
-    return True
-
-
-def transport_command_keys(settings, remote):
-    """The keys in `settings` a fetch of `remote` would execute, sorted.
-
-    The public face of `_is_transport_command_setting`, for
-    `diff_map.acquire_pr`: it reads the checkout's own config (every scope the
-    fetch reads -- see `repository_settings`) immediately before the one
-    unconfined call and refuses when this is not empty (#2041).
-
-    An emptied value, and a `protocol.*` value of `never`, arm nothing and do
-    not refuse (`_transport_value_arms_the_key`). A GLOBAL or system value never
-    appears here at all, because the caller's read keeps only the repository's
-    own scopes -- moving the setting there is the remedy the refusal names, so
-    refusing on it would refuse the fix.
-    """
-    return sorted(key for key, value in settings.items()
-                  if _transport_value_arms_the_key(key, value)
-                  and _is_transport_command_setting(key, remote))
 
 
 def _filter_driver(key):
@@ -385,16 +257,6 @@ def _is_required_flag(key):
     string as a false boolean).
     """
     return _filter_driver(key) is not None and key.endswith(".required")
-
-
-def _canonical_key(key):
-    """`key` with its section and variable name lowercased, as `config --list`
-    prints them. The SUBSECTION keeps its case, because git compares that half
-    case-sensitively -- so this normalizes exactly what git normalizes."""
-    parts = key.split(".")
-    if len(parts) < 2:
-        return key.lower()
-    return ".".join([parts[0].lower(), *parts[1:-1], parts[-1].lower()])
 
 
 def _driver_keys(settings):
@@ -430,69 +292,6 @@ def _settings(stdout):
     return settings
 
 
-# The `--show-scope` labels for config the REPOSITORY carries: `.git/config`
-# and every file it includes (`local`, measured -- an `include.path` key is
-# labelled with the including file's scope), plus `$GIT_DIR/config.worktree`
-# (`worktree`). `global`/`system` are the OPERATOR's, which is the remedy the
-# `--pr` refusal points at, and `command` is the probe's own `-c` pins.
-_REPOSITORY_SCOPES = ("local", "worktree")
-# Every label git prints; anything else means the listing is not the shape
-# this parser reads, and the caller must not treat it as "nothing set".
-_SCOPE_LABELS = ("system", "global", "local", "worktree", "command", "unknown")
-
-
-def repository_settings(stdout):
-    """`config --null --list --show-scope --includes` as {key: value}, for the
-    settings the REPOSITORY itself carries. Last value wins, like `_settings`.
-
-    For `diff_map.acquire_pr`, which must see every transport command setting
-    its fetch would obey from this checkout -- and only those (#2041). Why
-    `--show-scope` and a filter rather than a scope FLAG, all measured on git
-    2.50.1:
-
-    - `--local` is `.git/config` plus its includes, but NOT
-      `$GIT_DIR/config.worktree`, which the fetch DOES read once
-      `extensions.worktreeConfig` is set. Two more lines in the same hostile
-      `.git/config` and a `--local` read sees nothing (C1: measured through
-      `acquire_pr`, the command ran).
-    - `--worktree` is not the fix. With the extension ON it lists the worktree
-      file ALONE -- the `.git/config` keys drop out of the read, so the payload
-      simply stays where it was. With the extension OFF it DIES (`rc=128`,
-      "--worktree cannot be used with multiple working trees unless the config
-      extension worktreeConfig is enabled") in any checkout that has a second
-      worktree, which is an ordinary operator setup. Both measured through
-      `acquire_pr`: the first as the command running, the second as a refusal
-      to resolve the review root.
-    - `--show-scope` takes no scope flag, so it reads exactly what the fetch
-      reads and labels each entry's file class. Keeping `local` and `worktree`
-      is the repository's own config, whichever of its files carries the key.
-
-    Records alternate `scope` and `key\nvalue`, each NUL-terminated (measured),
-    so a value containing a newline cannot shift the pairing; an unpaired
-    trailing record -- git's output ends with a NUL, and a truncated read could
-    leave one -- is ignored rather than guessed at.
-
-    FAIL CLOSED on shape: a listing that is empty (under the probe's own
-    environment the `command` pins always print, so a real listing never is)
-    or that carries a label git does not print raises `ValueError`, because
-    `{}` would read as "nothing set" and the caller's refusal would pass
-    silently on a git whose `--show-scope` output changed (#2041 review 2).
-    """
-    settings = {}
-    records = stdout.split("\0")
-    if len(records) < 2:
-        raise ValueError("safe Git: the config listing is empty, not scope-labelled")
-    for index in range(0, len(records) - 1, 2):
-        if records[index] not in _SCOPE_LABELS:
-            raise ValueError("safe Git: the config listing is not scope-labelled (%r)"
-                             % records[index][:40])
-        if records[index] not in _REPOSITORY_SCOPES:
-            continue
-        key, _, value = records[index + 1].partition("\n")
-        settings[key] = value
-    return settings
-
-
 def _with_options(args, options):
     """`args` with `options` inserted immediately AFTER its subcommand.
 
@@ -517,15 +316,8 @@ def _needs_preflight(args):
     return any(token.split("=", 1)[0] in excluded for token in args)
 
 
-def _guarded(root, args, runner, timeout, text, suppressed, mutating):
-    """The shared body of `probe` and `mutate`; see both for the contract.
-
-    ONE implementation on purpose (#2012): a mutating call needs every
-    suppression a read-only one needs and one more besides (it checks out), so a
-    second copy of this machinery would be a second place to forget the
-    fsmonitor `-c`, the hooks pin or the confirmation re-read. `mutating`
-    changes exactly one thing: the preflight is not optional.
-    """
+def _guarded(root, args, runner, timeout, text, suppressed):
+    """The body of `probe`; see it for the contract."""
     def preflight_failure(proc):
         """A failed ROOT preflight, as a result for the command the caller asked for.
 
@@ -552,10 +344,7 @@ def _guarded(root, args, runner, timeout, text, suppressed, mutating):
     prepared = list(args)
     if name in _DIFF_PRODUCING:
         prepared = _with_options(prepared, _NO_DRIVERS)
-    # A MUTATING call never asks: writing to the repository is the one case where skipping
-    # the config read would be trading the whole guarantee for two saved launches, and
-    # `worktree add` reaches a smudge command that no read-only subcommand does.
-    if not mutating and not _needs_preflight(args):
+    if not _needs_preflight(args):
         return runner(_launch_argv(resolved, root, prepared), capture_output=True, text=text,
                       errors="surrogateescape" if text else None, timeout=timeout, env=env)
 
@@ -696,36 +485,12 @@ def probe(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=N
     command lines the target authored.
 
     A caller that CARES what the answer means should pass the list: paths under a suppressed driver
-    compare as modified, so dirtiness for them is unknown and a delta may include them (see the
-    module docstring).
+    compare as modified, so dirtiness for them is unknown (see the module docstring).
 
     The preflight allowlist is the other way round: a subcommand nobody classified takes the
     preflight. Argv is checked too (#3256, `safe_git_shapes`): a non-read refuses before any launch,
-    and a caller that means to WRITE must say so by calling `mutate`.
+    and there is no call here that writes.
     """
     if (refusal := safe_git_shapes.refusal(list(args), _subcommand_index(list(args)))):
         raise RepositoryRefused(refusal)
-    return _guarded(root, args, runner, timeout, text, suppressed, mutating=False)
-
-
-def mutate(root, args, runner=subprocess.run, timeout=15, text=True, suppressed=None):
-    """The ONLY call in this module allowed to WRITE to the target repository.
-
-    Same contract as `probe` -- fresh allowlisted environment, trusted git resolved outside the
-    checkout, `core.fsmonitor=false`, `core.hooksPath` pinned to a directory this process owns and
-    never writes to, every repository-configured `filter.*`/`diff.*` command emptied and re-read to
-    prove the override took, one shared deadline -- plus one difference (#2012): the preflight is
-    never skipped.
-
-    WHY it exists rather than the caller keeping its own environment: `git worktree add` CHECKS OUT
-    the fetched tree, so on the old path the target's `filter.*.smudge` command ran (against PR
-    content, with the operator's environment) and its `post-checkout` hook ran from whatever
-    `core.hooksPath` the repository asked for. Both measured; see
-    `tests/test_diff_map.py::TestPrAcquisitionIsConfined`.
-
-    What it does NOT promise: that the write itself is safe to lose. A target whose config cannot be
-    neutralized is still REFUSED (`RepositoryRefused`), which for a teardown means the caller's
-    tolerance (#1082) leaves a worktree behind -- a leaked temporary directory, traded for never
-    running target code. `release_worktree` documents that choice.
-    """
-    return _guarded(root, args, runner, timeout, text, suppressed, mutating=True)
+    return _guarded(root, args, runner, timeout, text, suppressed)

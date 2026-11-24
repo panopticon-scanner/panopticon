@@ -392,8 +392,8 @@ def probe_shadow_shells(host, review_root):
     """The REVIEWED tree ships nothing that shadows our enforcement shells.
 
     `review_root` is the tree under review -- `runio.resolve_review_root`'s
-    answer, which for `--pr` is the PR WORKTREE and from a subdirectory is the
-    git toplevel. It is emphatically not `args.target`: scanning that scanned
+    answer, which from a subdirectory is the git toplevel. It is emphatically
+    not `args.target`: under `--pr` (removed in 5.5) scanning that scanned
     the operator's own checkout, the one tree guaranteed clean, while the
     hostile `.claude/agents/panopticon-scout.md` sat unread in the worktree.
 
@@ -605,8 +605,8 @@ def probe_discovery_surface(host, review_root, disclose=None):
     The shadow-shell scan's generalisation (spec §7.3 / D8 covers one class of
     file, `panopticon-*` agent shells; this covers the whole surface the #1657
     spike mapped and #1717 narrowed). Same shape, same reasoning, same tree:
-    `review_root` is `runio.resolve_review_root`'s answer -- the PR WORKTREE
-    under `--pr` -- and never `args.target`, the one checkout guaranteed clean.
+    `review_root` is `runio.resolve_review_root`'s answer, and never
+    `args.target`.
 
     Registry-driven: every path comes from `HostSpec.discovery_surface`, so a
     host with an empty tuple is a no-op and this module holds no host

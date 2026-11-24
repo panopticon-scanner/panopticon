@@ -576,19 +576,6 @@ class TestDriverLoopMakesFirstContactFirst(_Trees):
         self.assertEqual([True], [n.startswith(".panopticon.unverified-") for n in os.listdir(root)
                                   if n.startswith(".panopticon.")])
 
-    def test_under_pr_the_operator_s_checkout_is_assessed_and_the_worktree_released(self):
-        checkout, worktree = self._tree(False), self._tree(False)
-        adopt_panopticon(checkout)
-        with open(os.path.join(checkout, ".panopticon", "run-manifest.json"), "w",
-                  encoding="utf-8") as fh:
-            json.dump({"run_id": "planted"}, fh)
-        with mock.patch("scripts.diff_map.release_worktree") as release:
-            status = self._loop(checkout, "--pr", "7", resolved=(worktree, "/wt/7", "main"))
-        self.assertEqual(("error", H2), (status["status"], status["message"]))
-        release.assert_called_once_with("/wt/7", repo=checkout)
-        self.assertFalse(os.path.lexists(os.path.join(worktree, ".panopticon")))
-
-
 
 # A read-scope row granting the whole filesystem, as a planted file would.
 _PLANTED_ROW = {"planted": {"files": [], "dirs": ["/"], "reads": []}}

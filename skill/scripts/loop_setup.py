@@ -47,18 +47,18 @@ def resolve(args, held):
     # driver.run()/run_setup_flow(), which rewrites dispatch-request.json for whatever checkpoint
     # this invocation lands on. A fresh run has no manifest/run folder yet, so load_dispatch_request
     # (just below) reads back None -- "no previous entries", never an error (Task 6 ruling 3). A
-    # resolve failure (a bad --pr, e.g.) is reported the same way driver.run() itself reports it
+    # resolve failure (a bad target, e.g.) is reported the same way driver.run() itself reports it
     # rather than raising out of loop(), which must never raise.
     try:
         resolved = loop_batch._resolve_target(args)
-        held.enter_context(run_lock.hold(resolved[0], "loop"))    # #3779: before first contact
+        held.enter_context(run_lock.hold(resolved, "loop"))       # #3779: before first contact
         # #3779: one scope for the whole loop, so the paths the last `driver.run` captured
         # also answer the loop's own lookups between two runs.
-        held.enter_context(runio.paths_scope(resolved[0]))
+        held.enter_context(runio.paths_scope(resolved))
         # #3735's check, made here with the root held (#3782) and before anything below
         # reads the run folder it refuses.
         stop = None if getattr(args, "reset", False) else delta_withdrawn.resumed_refusal(
-            run_manifest.load_manifest(resolved[0]))
+            run_manifest.load_manifest(resolved))
         if stop:
             return None, stop
         first_contact.assess_loop(args, resolved)         # #3271 B2: before ANY read below
@@ -66,7 +66,7 @@ def resolve(args, held):
         return None, str(exc)
     except (RuntimeError, ValueError, OSError) as exc:
         return None, "driver loop: could not resolve review root: %s" % exc
-    review_root = resolved[0]
+    review_root = resolved
     # I5 then I8: the mode fallback asks whether THIS host has a runner, so the
     # host has to be resolved first.
     host, _source = runio.resolve_host(

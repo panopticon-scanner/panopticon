@@ -78,17 +78,11 @@ def git_output(repo, *args):
         ) from exc
 
 
-# #3735: delta review is withdrawn in 5.4 and `discovery.main` refuses these flags. The
-# delta code is still in the tree, and its tests reach it below that refusal.
-DELTA_FLAGS = ("--scope-changed", "--base", "--pr-base", "--pr-worktree", "--diff-context")
-
-
 def run_scan_helper(d, *extra):
     buf = io.StringIO()
     err = io.StringIO()
     with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(err):
-        rc = orch.main(["--repo", d, "--repo-scan", *extra],
-                       refuse_delta=not any(flag in extra for flag in DELTA_FLAGS))
+        rc = orch.main(["--repo", d, "--repo-scan", *extra])
     val = buf.getvalue().strip()
     data = json.loads(val) if val else {}
     return rc, data, err.getvalue()

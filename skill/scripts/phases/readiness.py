@@ -94,8 +94,8 @@ def _git_root_row(review_root):
     """`setup_preflight._check_git_root`, recorded but NOT gating.
 
     `runio.resolve_review_root` supports a non-git target BY DESIGN -- it falls
-    back to reviewing the directory itself, and what degrades is delta scoping
-    (`-c`/`--pr`/`--base`) and the clean-tree baseline, not the review. A
+    back to reviewing the directory itself, and what degrades is the
+    clean-tree baseline, not the review. A
     readiness step that refused one would invent a restriction the engine does
     not have, which is a product change rather than a preflight. `driver
     setup`'s own readiness keeps it gating, and should: setup is where an
@@ -261,7 +261,7 @@ NOT_MEASURED_ON_HOST = ("not measured on host %s — the stored run measured ano
                         "`driver run` probes")
 
 # Fix round 1, F4: `tools_image`'s remedy names `--no-tools`, and this one has
-# to name its own way out for the same reason. `-f`/`-d`/`-g`/`--pr` reviews run
+# to name its own way out for the same reason. `-f`/`-d`/`-g` reviews run
 # fine with no committed matrix (`discovery._declares_groups`' adopt-all
 # fallback); only the whole-repo scope degrades to `<directory>_N` chunking. The verb
 # shares no scope flag -- deliberately -- so it reports the whole-repo answer
@@ -494,8 +494,8 @@ def _existing_run_row(review_root):
 
     `status` is the last state RECORDED for that run: `complete` (a durable
     report exists), `error` (the run stopped at the readiness checkpoint, which
-    wrote its verdict; or it was started as a delta review, which 5.4 does not
-    resume, #3735), `checkpoint` (a dispatch request with entries still
+    wrote its verdict; or it was started as a delta review, which is not
+    resumed, #3735), `checkpoint` (a dispatch request with entries still
     pending), and `started` for a run folder that exists but has recorded none
     of those yet.
 
@@ -664,7 +664,7 @@ def preflight(target=".", host=None, online=None, plan=None):
     machine was fine" is only useful if the operator can see which host it
     meant.
     """
-    review_root = runio.resolve_review_root(target)[0]
+    review_root = runio.resolve_review_root(target)
     reset = bool((plan or {}).get("reset"))
     # `reset` as `driver loop` passes it: a `--reset` run is minted from argv, so the outgoing
     # manifest's host must not be the host this document is about (#3671).
@@ -778,7 +778,7 @@ def emit_preflight(target=".", host=None, as_json=False, stream=None, online=Non
     # planted one (a symlink, a non-directory, an escape) is refused here, before
     # `preflight` reads -- and prints -- anything through it. Not ready: 1.
     try:
-        plan_contract.artifact_root(runio.resolve_review_root(target)[0])
+        plan_contract.artifact_root(runio.resolve_review_root(target))
     except ValueError as exc:
         print("driver readiness: %s" % exc, file=sys.stderr)
         return 1

@@ -368,7 +368,7 @@ def _verify_entry(review_root, manifest, group, domain, files, cell, host,
     # list above, the findings JSON's `location` fields are carried verbatim from
     # the panel's raw claims and stay repo-relative on disk (_render_findings) —
     # Part A's abspath can't reach into that payload. The advisor inherits the
-    # HOST's cwd (the user's checkout), never review_root/the --pr worktree, so
+    # HOST's cwd (the user's checkout), never review_root, so
     # without this header a relative `location` resolves against the wrong tree.
     # #1638 P16: the backup round's grant is a bounded closure, and the advisor
     # has to be able to say it was too small. The block sits BETWEEN the

@@ -6,9 +6,8 @@ the deterministic SEC floor matches from the SEC domain; such an exclusion is
 disclosed in the report's coverage section instead of silently applied. Other
 domains keep honouring the exclusion.* Since #3338 that means every code-shaped
 file, while explicit documentation and known assets remain prunable. The floor
-exists so operator taste cannot hide code from security review, and in `--pr`
-mode the PR cannot touch the config at all -- so the operator-authored config
-gets exactly the same treatment.
+exists so operator taste cannot hide code from security review: the
+operator-authored config gets exactly the same treatment.
 
 A review cell is (group x domain) and nothing in the matrix restricts a domain to
 a SUBSET of a group's files, so the carve-out has to be a GROUP: code-shaped

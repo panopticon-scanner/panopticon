@@ -80,11 +80,7 @@ def _discovery_argv(review_root, plan, out):
 
 def groups_row(review_root, plan):
     """What discovery will dispatch, by running discovery: the committed leaves (and their `_N`
-    chunks) and what it derives beside them. A delta scope depends on a diff, so it is not counted."""
-    scope = plan.get("scope") or {"mode": "repo"}
-    if scope.get("mode") == "changed" or plan.get("pr") is not None or plan.get("base"):
-        return {"ok": None, "committed": None, "derived": None,
-                "detail": "not counted for a delta scope: it depends on the diff"}
+    chunks) and what it derives beside them."""
     tmp = tempfile.mkdtemp(prefix="panopticon-readiness-")
     err = io.StringIO()
     try:

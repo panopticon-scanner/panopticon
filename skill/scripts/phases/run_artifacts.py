@@ -103,9 +103,11 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 # between the staging open and the replace -- --reset is the corrupt-baseline remedy.
                 "tree-baseline.txt*",
                 "verify-queue.json", "findings-*.json",
-                # #5.0-07: stale delta artifacts must not survive a --reset and silently delta-scope
-                # (or content-check) the next run. #5.0-16: the driver's own dispatch plan clears
-                # too, so a --reset run re-declares cells from fresh coverage.
+                # #5.0-07: a stale content snapshot must not survive a --reset and content-check
+                # the next run. `diff-hunks.json` is the removed delta review's hunk map (#3736):
+                # nothing reads it, and a --reset still clears one an older build left. #5.0-16:
+                # the driver's own dispatch plan clears too, so a --reset run re-declares cells
+                # from fresh coverage.
                 "diff-hunks.json", "out-file-hashes.json",
                 "dispatch-plan-driver.json",
                 # #1637 P08: the readiness verdict and the per-cell

@@ -914,8 +914,8 @@ class TestTheTerminalBlockAnswersATornLedgerWithAStatus(unittest.TestCase):
         complete = {"status": "complete", "phase": None, "checkpoint": None,
                     "group": None, "dispatch_request": None, "advanced": [],
                     "message": "all phases complete"}
-        with mock.patch("scripts.driver._establish_host_posture", return_value=None),                 mock.patch("scripts.phases.validate.capture_tree_baseline"),                 mock.patch("scripts.phases.validate._finalize_worktree"),                 mock.patch("scripts.phases.engine.run_engine", return_value=complete):
-            return driver.run(args, resolved=(self.root, None, None))
+        with mock.patch("scripts.driver._establish_host_posture", return_value=None),                 mock.patch("scripts.phases.validate.capture_tree_baseline"),                 mock.patch("scripts.phases.engine.run_engine", return_value=complete):
+            return driver.run(args, resolved=self.root)
 
     def test_a_torn_ledger_in_the_terminal_block_is_an_error_status(self):
         first = self._run()                       # mints this run's manifest

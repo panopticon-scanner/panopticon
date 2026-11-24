@@ -821,7 +821,7 @@ class TestAHostLimitedResumeStaysPaused(unittest.TestCase):
             with mock.patch("scripts.driver._establish_host_posture", return_value=pause), \
                     mock.patch("scripts.phases.validate.capture_tree_baseline"), \
                     mock.patch("scripts.phases.engine.run_engine") as engine:
-                status = driver.run(args, resolved=(root, None, None))
+                status = driver.run(args, resolved=root)
             self.assertEqual("paused", status["status"], status)
             self.assertEqual("paused: the host is limited", status["message"])
             engine.assert_not_called()

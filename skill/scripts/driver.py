@@ -22,7 +22,6 @@ if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
 
 import scripts.config_schema as config_schema
 import scripts.delta_withdrawn as delta_withdrawn
-import scripts.diff_map as diff_map
 import scripts.first_contact as first_contact
 import scripts.matrix_provenance as matrix_provenance
 import scripts.run_lock as run_lock
@@ -120,8 +119,6 @@ def _cli_flags(args, review_root=None, resolution=None):
            else _resolve_config(args, review_root)).effective
     values = {"fail_on": getattr(args, "fail_on", None) or cfg.get("fail_on"),
               "severity": getattr(args, "severity", None) or cfg.get("severity"),
-              "gate_scope": getattr(args, "gate_scope", None) or cfg.get("gate_scope"),
-              "diff_context": getattr(args, "diff_context", None),
               "tools": tools_flag if tools_flag is not None
                        else (True if cfg.get("tools") else None),
               "online": True if getattr(args, "online", False) else None,
@@ -149,8 +146,6 @@ def _scope_from_args(args):
         return {"mode": "directory", "target": args.scope_dir}
     if getattr(args, "scope_group", None):
         return {"mode": "group", "target": args.scope_group}
-    if getattr(args, "scope_changed", False):
-        return {"mode": "changed", "target": None}
     if getattr(args, "scope_files", None):
         return {"mode": "files", "target": list(args.scope_files)}
     return None
@@ -207,8 +202,13 @@ def build_parser():
         p.add_argument("--host", default=None, type=_host_choice,
                        choices=list(hosts.driver_hosts()))
         p.add_argument("--security", default=None, choices=["standard", "redteam"])
-        p.add_argument("--base", default=None)
-        p.add_argument("--pr", type=int, default=None)
+        # #3736: delta review's flags (`--base`, `--pr`, `--gate-scope`, `--diff-context`
+        # and `-c` below). Its code is gone; they are still parsed so that each is refused
+        # by name (`delta_withdrawn`), never as an unrecognized argument. None takes a
+        # type or a list of choices, and `-c` is outside the scope group: whatever value
+        # or company one is typed with, the answer is the refusal and not argparse's own.
+        p.add_argument("--base", default=None, help=delta_withdrawn.FLAG_HELP)
+        p.add_argument("--pr", default=None, help=delta_withdrawn.FLAG_HELP)
         p.add_argument("--reset", action="store_true")
         # Match synthesize's accepted values and case handling at the entry
         # point, before a review can spend work on an invalid child argument.
@@ -218,8 +218,8 @@ def build_parser():
                        choices=list(config_schema.FAIL_ON_CHOICES), default=None)
         p.add_argument("--severity", type=str.lower,
                        choices=["all", "medium", "high", "critical"], default=None)
-        p.add_argument("--gate-scope", choices=["on-diff", "all"], default=None)
-        p.add_argument("--diff-context", type=int, default=None)
+        p.add_argument("--gate-scope", default=None, help=delta_withdrawn.FLAG_HELP)
+        p.add_argument("--diff-context", default=None, help=delta_withdrawn.FLAG_HELP)
         tools_group = p.add_mutually_exclusive_group()
         tools_group.add_argument("--tools", action="store_true")
         tools_group.add_argument("--no-tools", action="store_true")
@@ -254,8 +254,8 @@ def build_parser():
         scope.add_argument("-f", "--file", dest="scope_file", default=None)
         scope.add_argument("-d", "--directory", dest="scope_dir", default=None)
         scope.add_argument("-g", "--group", dest="scope_group", default=None)
-        scope.add_argument("-c", "--changes", dest="scope_changed",
-                           action="store_true")
+        p.add_argument("-c", "--changes", dest="scope_changed",
+                       action="store_true", help=delta_withdrawn.FLAG_HELP)
         scope.add_argument("--files", dest="scope_files", nargs="+", default=None)
         if verb == "readiness":
             p.add_argument("--json", action="store_true",
@@ -322,13 +322,9 @@ def build_parser():
     pp.add_argument("--file", default=None, help="the reply text; stdin when absent")
     pp.add_argument("--setup", action="store_true",
                     help="the entry belongs to `driver setup`'s scan checkpoint")
-    # I6: the same two flags `run`/`loop` take, for the same reason. A `--pr`
-    # run's review root is the PR WORKTREE, so a persist that resolved
-    # `target` alone read the dispatch request out of the operator's own
-    # checkout and refused every entry as unknown. Threaded verbatim into
-    # resolve_review_root.
-    pp.add_argument("--base", default=None)
-    pp.add_argument("--pr", type=int, default=None)
+    # #3736: the two delta flags `persist` took for a `--pr` run. Parsed, to be refused.
+    pp.add_argument("--base", default=None, help=delta_withdrawn.FLAG_HELP)
+    pp.add_argument("--pr", default=None, help=delta_withdrawn.FLAG_HELP)
     # #1681 Task 7: the one-shot legacy-tree migrator. No `--host`/scope flags
     # -- it writes one file and says what it wrote, it is not a review.
     mp = sub.add_parser("migrate-config")
@@ -348,7 +344,7 @@ def _positive_int(text):
     return value
 
 
-def _manifest_for_run(args, review_root, worktree, base, scope, pr_base, first, phases):
+def _manifest_for_run(args, review_root, scope, first, phases):
     """The run manifest: reset, fresh build, or resume with the drift policy -- `(manifest, None)`,
     or `(None, status)` when the run must stop (#3396: moved out of run unchanged)."""
     if args.reset:
@@ -382,11 +378,9 @@ def _manifest_for_run(args, review_root, worktree, base, scope, pr_base, first, 
             host=args.host or runio._DEFAULTS["host"],
             security_mode=(args.security or resolution.effective.get("security")
                            or runio._DEFAULTS["security"]),
-            base=base, flags=_cli_flags(args, review_root=review_root,
-                                        resolution=resolution),
+            flags=_cli_flags(args, review_root=review_root, resolution=resolution),
             config=resolution,
-            worktree=worktree,
-            scope=scope, pr=args.pr, pr_base=pr_base,
+            scope=scope,
             model_strict=model_resolver.strict_models())
         # #3779: the tag holds eight characters of the run id. A new run whose tag an
         # earlier run's files already use would take that run's report for its own.
@@ -419,7 +413,7 @@ def _manifest_for_run(args, review_root, worktree, base, scope, pr_base, first, 
             # `conflicting_flags` reads None as "no opinion", which is what
             # keeps a bare `driver run` resume from conflicting with itself.
             security_mode=args.security or resolution.effective.get("security"),
-            base=base, flags=cli_flags, scope=scope, pr=args.pr)
+            flags=cli_flags, scope=scope)
         # #3582 (#3627 review 1): the manifest's `model_strict` is the run's truth; a
         # resume under a different strict state would mix models within one run.
         recorded = manifest.get(run_manifest.MODEL_STRICT)
@@ -479,14 +473,13 @@ def _manifest_for_run(args, review_root, worktree, base, scope, pr_base, first, 
 
 
 def _complete_message(result, review_root, manifest):
-    """A `complete` result with the worktree finalized and any exhausted cells named, or the error
-    status a refusal there becomes (#3396: moved out of run unchanged)."""
-    # #1809: both calls below READ the run's own artifacts -- the worktree state, and
-    # `exhausted_cells` -> `cell-attempts.json` -- and this block sat outside every `try` above,
-    # so a refusal here escaped `main()` as a traceback and a host parsing stdout got no status
-    # JSON at all: the exact failure `engine.EngineStalled`'s conversion exists to prevent.
+    """A `complete` result with any exhausted cells named, or the error status a refusal there
+    becomes (#3396: moved out of run unchanged)."""
+    # #1809: the call below READS the run's own artifacts -- `exhausted_cells` ->
+    # `cell-attempts.json` -- and this block sat outside every `try` above, so a refusal here
+    # escaped `main()` as a traceback and a host parsing stdout got no status JSON at all: the
+    # exact failure `engine.EngineStalled`'s conversion exists to prevent.
     try:
-        validate._finalize_worktree(review_root, manifest)
         # #1616 item 2: `review_done` counts an exhausted cell as done -- which is what stops
         # one unrecoverable cell wedging the run -- so a run that lost cells to their retry
         # budget completes with the same status and the same message as one where every cell
@@ -521,33 +514,29 @@ def run(args, runner=subprocess.run, phases=PHASES, resolved=None):
         model_resolver.validate_env_overrides(getattr(args, "host", None))
     except ValueError as exc:
         return runio._error_status(str(exc))
-    # `resolved` is `runio.resolve_review_root`'s own (review_root, worktree,
-    # pr_base), already computed by a caller that holds it (#1616 item 6, fix
-    # round 1): `orchestrate.loop` calls this once per ITERATION, and on a
-    # `--pr` run every resolution is a `gh pr view` and a worktree
-    # acquisition. Default None keeps the standalone `driver run` entrypoint
+    # `resolved` is `runio.resolve_review_root`'s own answer, already computed by a
+    # caller that holds it (#1616 item 6, fix round 1): `orchestrate.loop` calls this
+    # once per ITERATION. Default None keeps the standalone `driver run` entrypoint
     # resolving exactly as it did -- including its injected `runner`, which is
     # how the failure path below is tested.
     #
-    # #5.0-14: resolving the review root can fail loudly for a --pr run (gh
-    # auth/network, a bad PR number, worktree acquisition) — keep it inside the
-    # status protocol instead of letting a raw RuntimeError escape run().
+    # #5.0-14: keep a failed resolution inside the status protocol instead of
+    # letting a raw RuntimeError escape run().
     try:
-        review_root, worktree, pr_base = resolved if resolved is not None else (
-            runio.resolve_review_root(args.target, base=args.base, pr=args.pr,
-                                      runner=runner))
+        review_root = resolved if resolved is not None else (
+            runio.resolve_review_root(args.target, runner=runner))
     except (RuntimeError, ValueError, OSError) as exc:
         return runio._error_status("could not resolve review root: %s" % exc)
     # #3779: one driver on a root, from before first contact to the last write. A refusal
-    # touches nothing, a `--pr` worktree included: that is the holder's.
+    # touches nothing.
     try:
         with run_lock.hold(review_root, "run"), runio.paths_scope(review_root):
-            return _run_held(args, runner, phases, review_root, worktree, pr_base)
+            return _run_held(args, runner, phases, review_root)
     except run_lock.Refused as exc:
         return runio._error_status(str(exc))
 
 
-def _run_held(args, runner, phases, review_root, worktree, pr_base):
+def _run_held(args, runner, phases, review_root):
     """`run`, from the resolved review root on, with that root held (#3779)."""
     # #3779: the manifest is settled from the disk, as before, with nothing captured from
     # an earlier `run` of the same loop. Its paths are captured once it is settled.
@@ -556,29 +545,17 @@ def _run_held(args, runner, phases, review_root, worktree, pr_base):
     stop = _resumed_delta_refusal(args, review_root)
     if stop:
         return runio._error_status(stop)
-    if args.pr is not None:
-        # A PR is a changed-files delta by definition. manifest["base"] holds the
-        # user's EXPLICIT override only (anti-drift key); the gh-detected PR base
-        # flows separately via manifest["pr_base"] -> orchestrator --pr-base, so
-        # resolve_base applies its origin/<base> preference (#947 / spec §4 L51).
-        base = args.base
-        scope = {"mode": "changed", "target": None}
-    else:
-        base = args.base
-        scope = _scope_from_args(args)
+    scope = _scope_from_args(args)
     # #5.0-09 / #3271: first contact BEFORE any write or delete under .panopticon/ --
     # a tracked or unstamped one, a symlinked one or one holding a stray link, and
     # an out-of-tree hard link all halt here, on every tree this run writes to.
     try:
         first = first_contact.assess(review_root, "run-manifest.json", reset=args.reset,
-                                     host=args.host, other_roots=(args.target,) if args.pr else (),
+                                     host=args.host,
                                      session_dir=first_contact.session_root(args))
     except first_contact.FirstContactHalt as exc:
-        if worktree:
-            diff_map.release_worktree(worktree, repo=args.target)
         return runio._error_status(str(exc))
-    manifest, refused = _manifest_for_run(args, review_root, worktree, base, scope, pr_base,
-                                          first, phases)
+    manifest, refused = _manifest_for_run(args, review_root, scope, first, phases)
     if refused is not None:
         return refused
     runio.capture_paths(review_root, manifest)
@@ -682,8 +659,8 @@ def parse_cli(argv=None):
         parser.error("--discard-batch and --reset are contradictory: "
                      "--discard-batch keeps the run and rolls back one batch "
                      "record, --reset discards the whole run folder")
-    # #3735: delta review is withdrawn in 5.4. Refused here, on every verb that takes
-    # the flags, before a root is resolved, a PR worktree acquired or a file written.
+    # #3735, #3736: delta review was withdrawn in 5.4 and removed in 5.5. Refused here, on
+    # every verb that takes the flags, before a root is resolved or a file written.
     withdrawn = delta_withdrawn.refusal(args, delta_withdrawn.DRIVER_FLAGS)
     if withdrawn:
         parser.error(withdrawn)
@@ -710,7 +687,7 @@ def _resumed_delta_run(args):
     if getattr(args, "reset", False):
         return None
     try:
-        review_root = runio.resolve_review_root(args.target)[0]
+        review_root = runio.resolve_review_root(args.target)
     except (runio.DriverError, RuntimeError, ValueError, OSError):
         return None         # no root: the verb itself says why
     return _resumed_delta_refusal(args, review_root)
@@ -721,13 +698,13 @@ def main(argv=None):
     if args.verb == "readiness":
         # Its own exit code, not `emit_status`': the verb speaks no status protocol, and
         # `driver readiness && driver loop` is the reason it exists (#1637 P10).
-        root = runio.resolve_review_root(args.target)[0]
+        root = runio.resolve_review_root(args.target)
         resolution = _resolve_config(args, root)
         return readiness.emit_preflight(args.target, host=args.host, as_json=args.json,
                                         online=args.online, plan={
             "flags": _cli_flags(args, root, resolution), "scope": _scope_from_args(args),
             "security": args.security or resolution.effective.get("security"),
-            "reset": args.reset, "base": args.base, "pr": args.pr})
+            "reset": args.reset})
     if args.verb == "setup":
         # #1737 fix round 1: WITH the posture step, exactly as
         # `orchestrate.loop --setup` passes it. `driver setup` dispatches an
