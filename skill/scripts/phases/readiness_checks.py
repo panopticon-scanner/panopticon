@@ -22,7 +22,9 @@ import os
 import shutil
 import subprocess
 
+import scripts.advisory_data as advisory_data
 import scripts.hosts as hosts
+import scripts.scanner_config as scanner_config
 import scripts.setup_preflight as setup_preflight
 import scripts.tools_image as tools_image
 from scripts.tools import egress
@@ -109,6 +111,38 @@ def _docker_checks(tools_flag):
             detail = image_remedy(tools_image.DEFAULT_IMAGE)
         rows.append((name, ok, detail))
     return rows
+
+ADVISORY_DATA_ROW = "advisory-data"
+
+
+def advisory_data_row(tools_flag, image_ok):
+    """How old the tools image's advisory data is, as a readiness row (#3798).
+
+    The scanners run offline against data frozen in the image, so this is asked HERE,
+    before the first dispatch: an operator who learns it from the report has already
+    paid for the review. The row is `True` with the dates when every source is current,
+    and `warn` with the sentence when one is stale or of unknown age. It is never
+    `False`: stale data does not stop a run (owner direction 2026-11-24).
+
+    It reads the image with one short launch (`advisory_data.read_argv`), through the
+    same docker seam the two rows above use. A launch that cannot start, times out or
+    fails reads as unknown, and so warns. The `driver readiness` verb does not call
+    this: it promises to launch nothing.
+    """
+    if tools_flag is False:
+        return (ADVISORY_DATA_ROW, None, _NOT_APPLICABLE)
+    if not image_ok:
+        return (ADVISORY_DATA_ROW, None, "not read: the tools image is not available")
+    runner = DOCKER_RUNNER if DOCKER_RUNNER is not None else setup_preflight.DEFAULT_RUNNER
+    done = setup_preflight._probe(
+        runner, advisory_data.read_argv("docker", tools_image.DEFAULT_IMAGE,
+                                        scanner_config.privilege_drop_flags()),
+        timeout=advisory_data.READ_TIMEOUT)
+    block = advisory_data.from_launch(getattr(done, "returncode", None),
+                                      getattr(done, "stdout", None))
+    stale = advisory_data.warning(block)
+    return (ADVISORY_DATA_ROW, "warn" if stale else True, stale or advisory_data.line(block))
+
 
 SESSION_REMEDY = (
     "not on PATH — install `%(binary)s`, or drive this host in session mode: "

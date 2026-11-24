@@ -7,6 +7,7 @@ import html
 import json
 import re
 
+import scripts.advisory_data as advisory_data
 import scripts.config_schema as config_schema
 import scripts.evidence as evidence
 import scripts.evidence_sections as evidence_sections
@@ -672,6 +673,9 @@ def _render_header(report):
     parts.append(_render_test_inventory(meta))
     # #2013: what the TARGET's own git config would have run, and did not.
     parts.append(_render_suppressed_git_drivers(meta))
+    # #3798: how old the scanners' advisory data was. Appended only when there is a
+    # block, so every other page is unchanged.
+    parts.extend(_render_advisory_data(meta))
     # #1701: the gated count first -- a suppression that moved this run's gate
     # outranks one that did not.
     parts.append(_render_suppressed_gated_tools(meta))
@@ -851,6 +855,21 @@ def _render_test_inventory(meta):
             % (" &middot; ".join("%s: %s" % (_escape(str(g)), _escape(str(st)))
                                  for g, st in flagged),
                "one of these groups" if len(flagged) > 1 else "this group"))
+
+
+def _render_advisory_data(meta):
+    """The advisory-data line, and the warning above it when a source is stale or of
+    unknown age (#3798). Both are this module's fixed words around dates
+    `advisory_data` rebuilt from the block; nothing of the block is copied. A warning,
+    not a failure: it uses no failure styling and moves nothing."""
+    block = (meta.get("coverage") or {}).get("advisory_data") if isinstance(meta, dict) else None
+    dates = advisory_data.line(block)
+    if not dates:
+        return []
+    stale = advisory_data.warning(block)
+    found = ["<div class='coverage' role='note'>Advisory data warning: %s</div>" % _escape(stale)
+             ] if stale else []
+    return found + ["<div class='coverage'>Advisory data: %s</div>" % _escape(dates)]
 
 
 def _render_suppressed_git_drivers(meta):

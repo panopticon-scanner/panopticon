@@ -4,6 +4,7 @@ import os
 import sys
 import uuid
 
+import scripts.advisory_data as advisory_data
 import scripts.host_disclosure as host_disclosure
 import scripts.hosts as hosts
 import scripts.inert as inert
@@ -601,6 +602,14 @@ def render_summary(report):
         _cov.get("language_detection_skips"))
     if cleanup:
         lines.insert(3, cleanup)
+    # #3798: how old the scanners' advisory data was. The warning lands above the
+    # dates, and neither moves the gate or certification.
+    advisory = advisory_data.line(_cov.get("advisory_data"))
+    if advisory:
+        lines.insert(3, "**Advisory data:** %s" % advisory)
+    stale = advisory_data.warning(_cov.get("advisory_data"))
+    if stale:
+        lines.insert(3, "**Advisory data warning:** %s" % stale)
     for line in reversed(build_disclosure.not_run_lines(_cov)):   # #3265
         lines.insert(3, "**Tool not run:** %s" % line)
     lines[3:3] = ["**Provenance:** %s" % _code_span(line)        # #3270

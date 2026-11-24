@@ -288,7 +288,7 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                    scanner_config=None, ignore_files=None, scanner_scope=None,
                    cleanup_failures=None, language_detection_skips=None,
                    withheld=(), image=None, apps=None, dependency_applicable=None,
-                   dependency_unaudited=None):
+                   dependency_unaudited=None, advisory_data=None):
     """Write the exact selected/produced scanner set for coverage gating.
 
     `withheld` (#3265) names applicable adapters the operator did not enable:
@@ -489,6 +489,10 @@ def write_manifest(path, selected, written, excluded_scope=(), run_id=None,
                "exclude_globs": [str(g) for g in exclude_globs or ()],
                "excluded_dirs": [_excluded_dir_row(d) for d in excluded_dirs or ()],
                "depth_bound": depth_bound}
+    if isinstance(advisory_data, dict):
+        # #3798: how old the image's advisory data was when this scan read it. Omitted
+        # when the caller did not read it, so every other manifest is unchanged.
+        payload["advisory_data"] = advisory_data
     if dependency_applicable is not None:
         ecosystems = DEPENDENCY_AUDIT_ECOSYSTEMS - {"unknown"}
         payload["dependency_audit"] = {

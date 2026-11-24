@@ -517,6 +517,15 @@ RUN useradd -m -u 1000 scanner \
 # (about 120 MiB per pull, #2106). The user must exist before this line.
 COPY --chown=scanner:scanner --from=nvd-data /opt/odc-data /opt/odc-data
 
+# #3798: record how old each advisory source baked in above is (NVD, Trivy, OSV,
+# RustSec, Ruby), in one file `run_tools` reads back out and the report shows. After
+# the last data layer, so it reruns whenever one of them changed, and as root: it reads
+# root's own copy of the Ruby database, and it reads the NVD database from a COPY under
+# /tmp so that /opt/odc-data is never opened here (#451). A source it cannot read is
+# recorded as null and the build goes on; the step prints what it recorded.
+COPY tools-image/advisory-data /opt/panopticon/advisory-data-build
+RUN python3 /opt/panopticon/advisory-data-build/record.py --out /opt/panopticon/advisory-data.json
+
 ENV CARGO_HOME=/home/scanner/.cargo
 USER scanner
 WORKDIR /src

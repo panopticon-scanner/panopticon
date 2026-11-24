@@ -112,6 +112,9 @@ def _git_root_row(review_root):
 def _checks(review_root, manifest):
     tools_flag = (manifest.get("flags") or {}).get("tools")
     checks = list(readiness_checks._docker_checks(tools_flag))
+    # #3798: how old the image's advisory data is, asked before the first dispatch.
+    checks.append(readiness_checks.advisory_data_row(
+        tools_flag, any(name == "tools-image" and ok is True for name, ok, _detail in checks)))
     if (manifest.get("flags") or {}).get("online"):
         proxy = readiness_checks.egress_proxy_row(True, tools_flag)
         checks.append(("egress-proxy", "warn" if proxy["level"] == "warn" else proxy["ok"],
@@ -132,6 +135,30 @@ def _checks(review_root, manifest):
         checks.append(("host-auth", False,
                        setup_preflight.HAZARD_MESSAGES[hazard_code]))
     return checks
+
+
+# How many warnings one status carries, and how long each may be. A warning is this
+# module's own sentence, so the bounds are a belt: nothing here is a target's text.
+_WARNINGS_MAX = 8
+_WARNING_CHARS = 600
+
+
+def warnings(review_root):
+    """The readiness warnings of this run, for every status the driver prints (#3798).
+
+    A `warn` row was only ever said on stderr and in `readiness.json`. A host agent
+    reads the status JSON, and the phase that warned is done long before the first
+    checkpoint is printed, so the rows are read back from the artifact and carried on
+    each status as `warnings`: the host shows them to the operator before it dispatches
+    anything. Empty when there are none, and the status then has no such key."""
+    body = runio._load_json(runio._pano(review_root, READINESS))
+    rows = body.get("checks") if isinstance(body, dict) else None
+    found = []
+    for row in rows if isinstance(rows, list) else []:
+        if (isinstance(row, dict) and row.get("level") == "warn"
+                and isinstance(row.get("name"), str) and isinstance(row.get("detail"), str)):
+            found.append(("[%s] %s" % (row["name"], row["detail"]))[:_WARNING_CHARS])
+    return found[:_WARNINGS_MAX]
 
 
 def _refusal(failed):

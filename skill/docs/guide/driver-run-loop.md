@@ -76,7 +76,10 @@ The host contract (5.2, plan 6):
   `--mode headless` to require a runner instead, which on such a host is an `error` naming the
   missing `runners/<host>.py`. Either way, or when you simply want to dispatch the agents yourself,
   the loop prints a `dispatch` status naming the pending entry ids and each entry's `prompt_file`,
-  leaves the guards armed, and exits 0. Cross-reference those ids against the request file the
+  leaves the guards armed, and exits 0. A status may also carry a `warnings` list (#3798: the
+  readiness phase's warn rows, such as advisory data older than 7 days): show each one to the
+  operator before you dispatch anything; a warning does not stop the run, so go on unless the
+  operator stops it. Cross-reference those ids against the request file the
   status's own `dispatch_request` field names — read the field, never a fixed path: a review's
   request is per-run (`.panopticon/runs/<tag>/dispatch-request.json`) and `--setup`'s is its own
   top-level `.panopticon/setup-dispatch-request.json`. On Claude Code, run those entries with the
@@ -866,6 +869,19 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   invocation, before any phase runs), and its pass is re-evaluated whenever the manifest's `tools`
   flag differs from the one the artifact was written under, so a `--no-tools` pass can never stand
   in for a tools-enabled run.
+  **Advisory data (#3798).** The scanners run offline against advisory data frozen in the image
+  when it was built (NVD, OSV, Trivy, RustSec, ruby-advisory-db), so a run can only report an
+  advisory that data already held. With tools enabled, readiness reads the dates the image build
+  recorded, with one short launch of the image (no network, read-only, nothing mounted, the
+  scanners' own privilege drop) that prints `/opt/panopticon/advisory-data.json`. The
+  `advisory-data` row is the dates when every source is current. It is a **warning** when a source
+  is older than 7 days or its date cannot be read (an image built before #3798 has no file, and a
+  launch that fails or times out reads the same): printed as `readiness: WARN [advisory-data] …`
+  before any agent is dispatched, recorded in `readiness.json`, and carried as `warnings` on every
+  status of the run, which the host shows to the operator before it dispatches. It never fails
+  readiness and moves neither the gate nor certification. To refresh: pull the published image
+  (rebuilt daily), or rebuild a local one with the command in the README. `driver readiness`, the
+  verb, launches nothing and has no such row.
   On `main`, the remedy names a MUTABLE tag on purpose — it has to be runnable from the line it is
   printed on, and DEVELOPMENT.md's "One residual to know about" accepts the unpinned tools image
   as a development-line cost. A supported release branch instead sets

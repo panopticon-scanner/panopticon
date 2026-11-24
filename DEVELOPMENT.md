@@ -412,6 +412,30 @@ gates CI (keys off `summary.gate` in the JSON). Tool layer: build the image once
 normal runs require Docker and the tools image at readiness, or `--no-tools` to
 skip the layer explicitly. `driver readiness` prints a read-only preflight.
 
+### How old the image's advisory data is
+
+Every advisory source a scan uses is frozen in the image at build time and read offline (#3798):
+dependency-check's NVD database, Trivy's database, osv-scanner's offline databases, the RustSec
+advisory database and ruby-advisory-db. The build records each one's date in
+`/opt/panopticon/advisory-data.json` (`tools-image/advisory-data/record.py`, after the last data
+layer): NVD's `nvd.api.last.modified`, Trivy's `UpdatedAt`, and a download time for the other
+three. `run_tools` reads the file with one short launch of the image and writes it to the tools
+manifest; the report shows it as `meta.coverage.advisory_data` and one line; and the readiness
+phase reads it the same way to warn, before any agent is dispatched, when a source is older than
+7 days (`advisory_data.STALE_AFTER_DAYS`) or has no readable date. A warning only: no gate and no
+certification reads it. The file is text from an image, so the reader (`scripts/advisory_data.py`)
+accepts only the recorder's exact timestamps and prints only dates it rebuilt.
+
+- The published image is rebuilt daily from the daily NVD sync, so it is at most a day old.
+- A local `docker build` is not: `ASSET_REFRESH` defaults to `local`, which keeps the Trivy, OSV,
+  RustSec and Ruby layers cached, and `NVD_DATA_REF` is a pinned digest. An `ARG` default cannot be
+  a date, so a local build refreshes only when it is told to:
+  `docker build --build-arg ASSET_REFRESH="$(date -u +%F)" --build-arg
+  NVD_DATA_REF=ghcr.io/panopticon-scanner/panopticon-tools-nvd:dc-<DEPENDENCY_CHECK_VERSION> -t
+  panopticon-tools .` The record step prints the dates in the build output, and a scan on a stale
+  image says so at its start.
+- An image built before #3798 has no file: every source reads `unknown` and the run warns.
+
 ### Stable tools-image pins
 
 The image reference is trusted branch policy, not target configuration.

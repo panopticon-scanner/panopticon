@@ -20,6 +20,7 @@ from dataclasses import dataclass, field
 import os
 import sys
 
+import scripts.advisory_data as advisory_data
 import scripts.app_trace as app_trace
 import scripts.groups_schema as groups_schema
 import scripts.inert as inert
@@ -373,6 +374,9 @@ def reconcile(plan, tools, resolved, run=None):
     network = manifest.get("network") or {}
     cleanup_failures = manifest.get("cleanup_failures") or {}
     language_detection_skips = manifest.get("language_detection_skips")
+    # #3798: recomputed from the recorded dates, never copied: the manifest is in the
+    # run folder, and a planted "current" beside an old date must not be believed.
+    advisory = advisory_data.from_manifest(manifest.get("advisory_data"))
     dependency_audit = (
         repair_mod.repair_dependency_audit(tools.manifest.get("dependency_audit"))
         if isinstance(tools.manifest, dict)
@@ -710,6 +714,9 @@ def reconcile(plan, tools, resolved, run=None):
         coverage["language_detection_skips"] = language_detection_skips
     if dependency_audit is not None:
         coverage["dependency_audit"] = dependency_audit
+    if advisory is not None:
+        # Disclosure only (#3798): how old the image's advisory data was at scan time.
+        coverage["advisory_data"] = advisory
     # #1757 (AGT-1355709320), owner ruling 2026-09-25: what the TARGET's own
     # `exclude_paths:` could not hide -- code-shaped files kept for the SEC
     # domain in a review group of their own. Conditional, unlike

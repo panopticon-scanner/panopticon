@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- **The report says how old its advisory data is, and a run warns before it starts when the data is
+  stale (#3798).** The scanners run offline against advisory data frozen in the tools image when it
+  was built, so a run can only report an advisory that data already held. Nothing said how old it
+  was: a run on a month-old image read exactly like a run on today's.
+  - **The image records each source's date** at build time, in `/opt/panopticon/advisory-data.json`:
+    NVD (`nvd.api.last.modified`), Trivy (`UpdatedAt`), and the download time of each OSV ecosystem
+    database, of the RustSec advisory database and of ruby-advisory-db.
+  - **The report carries them.** `meta.coverage.advisory_data`: per source the date, its age in days
+    at scan time, and `current`, `stale` or `unknown`. The terminal summary and the HTML page show
+    one line, for example `Advisory data: NVD 2026-11-23, OSV 2026-11-23, Trivy 2026-11-22, RustSec
+    2026-11-23, ruby-advisory-db 2026-11-23`. The OSV date is its oldest ecosystem's.
+  - **A run warns at its start**, before any agent is dispatched, when a source is older than 7 days
+    or its date cannot be read: `readiness: WARN [advisory-data] …` on stderr, a row in
+    `readiness.json`, and a new `warnings` list on every status the driver prints, which the host is
+    told to show before it dispatches. The same warning is in the report.
+  - **It is a warning only.** The gate, certification, the grade and health do not read it. A run
+    with no warning has no `warnings` key, and a report with no advisory block is unchanged.
+  - **A source with no readable date says `unknown`, never a date.** An image built before this
+    change has no file, so it reads `unknown` for every source and warns. So does a read that fails
+    or times out; it never fails the run.
+  - **One new container launch** at readiness and one in `run_tools`, each a few hundred
+    milliseconds: `docker run --rm --network none --read-only … <image> head …` with the scanners'
+    privilege drop and nothing mounted. `driver readiness`, the verb, still launches nothing.
+  - **Local images.** A local `docker build` keeps its cached data layers and the pinned NVD data.
+    The README and `DEVELOPMENT.md` give the command that refreshes one.
 - **The advisories Semgrep's pins hold open are assessed; none is exploitable in a scan (#3762).**
   Semgrep 1.185.0 pins `mcp==1.29.0`, `opentelemetry-api~=1.37.0` and `wcmatch~=8.3`, so the
   tools image carries eight published advisories that cannot be bumped away (#3619). Each was

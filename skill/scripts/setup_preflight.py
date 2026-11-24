@@ -48,9 +48,9 @@ _PROBE_TIMEOUT = 30
 DEFAULT_RUNNER = subprocess.run
 
 
-def _probe(runner, cmd):
+def _probe(runner, cmd, timeout=_PROBE_TIMEOUT):
     try:
-        return runner(cmd, capture_output=True, text=True, timeout=_PROBE_TIMEOUT)
+        return runner(cmd, capture_output=True, text=True, timeout=timeout)
     except (subprocess.TimeoutExpired, OSError):
         return None
 
