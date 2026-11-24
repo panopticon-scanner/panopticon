@@ -12,7 +12,8 @@
   - **The report carries them.** `meta.coverage.advisory_data`: per source the date, its age in days
     at scan time, and `current`, `stale` or `unknown`. The terminal summary and the HTML page show
     one line, for example `Advisory data: NVD 2026-11-23, OSV 2026-11-23, Trivy 2026-11-22, RustSec
-    2026-11-23, ruby-advisory-db 2026-11-23`. The OSV date is its oldest ecosystem's.
+    2026-11-23, ruby-advisory-db 2026-11-23`. The OSV date is its oldest ecosystem's, and OSV is
+    `unknown` when any ecosystem database the image is meant to carry has no readable date.
   - **A run warns at its start**, before any agent is dispatched, when a source is older than 7 days
     or its date cannot be read: `readiness: WARN [advisory-data] …` on stderr, a row in
     `readiness.json`, and a new `warnings` list on every status the driver prints, which the host is
