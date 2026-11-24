@@ -366,7 +366,8 @@ source frozen in the tools image (`nvd`, `osv`, `trivy`, `rustsec`, `ruby`), its
 `age_days` at scan time (`read_at`, when `run_tools` read the dates out of the image) and a `status`:
 `current`, `stale` (older than `stale_after_days`, 7) or `unknown` (no readable date, shown as
 `unknown`, never as a date). The `osv` row's date is its oldest ecosystem database, and the row is
-`unknown` when any of the six has no readable date; `ecosystems` holds each one's own. The terminal summary and the HTML page show one line
+`unknown` when any of the six has no readable date; `ecosystems` holds each one's own. The terminal
+summary and the HTML page show one line
 (`Advisory data: NVD 2026-11-23, OSV 2026-11-23, Trivy 2026-11-22, …`) and, when a source is stale or
 unknown, a warning line above it. It is disclosure only: the gate, certification, the grade and
 health do not read it. The block is absent on a `--no-tools` run and when the manifest carries none.
