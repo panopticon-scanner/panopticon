@@ -112,7 +112,9 @@ class PlanInputs:
                   file=sys.stderr)
         fan_out = group_runner.fan_out_coverage(plan) if plan else None
         resume = group_runner.resume_stats(plan, queue_obj, verdicts_dir, _verdicts=verdicts)
-        scout_requested, scout_profiles_seen = load_scout_requests(run_dir)
+        scout_files_unreadable: list[str] = []
+        scout_requested, scout_profiles_seen = load_scout_requests(
+            run_dir, unreadable=scout_files_unreadable)
         # 5.0 (matrix Sec5.1): auto-discover <run_dir>/coverage-<group>.json the
         # same way groups.json/scout-*.json are -- fed to audit_floor_cells in
         # reconcile along with the ingested paths.
@@ -123,6 +125,7 @@ class PlanInputs:
             plan_owed=plan_owed, plan_sha256=plan_sha256,
             snapshot_sha256=snapshot_sha256, discovery=discovery,
             coverage_files_skipped=coverage_files_skipped,
+            scout_files_unreadable=scout_files_unreadable,
             groups_meta=groups_meta if raw_groups is None else raw_groups)
         return cls(groups_meta=groups_meta, groups_valid=groups_valid, fan_out=fan_out,
                    scout_requested=sorted(scout_requested),
@@ -475,23 +478,43 @@ def load_test_inventory(run_dir):
     return out
 
 
-def load_scout_requests(run_dir):
+def load_scout_requests(run_dir, unreadable=None):
     """(tools requested, profiles seen) across <run_dir>/scout-*.json. #471: a
     scout can return tools:[] -- a silent decline of the tool layer -- so the
-    profile count is recorded separately and the decline is announced."""
+    profile count is recorded separately and the decline is announced.
+
+    #3780: every file whose request cannot be told is appended, by name, to
+    `unreadable` when the caller supplies one: the read failed (a fenced return still
+    reads), the content is not an object, or `tools` is there and is not a list of
+    strings. Such a file was warned about and dropped, and with no tools manifest the
+    scanners it asked for were then required by no one. `PlanInputs.load` publishes the
+    list as an integrity failure. What could be read still counts as requested."""
     requested: set[str] = set()
     profiles_seen = 0
-    for sp in safe_glob.under(run_dir, "scout-*.json"):
+    unusable: list[str] = []
+    for sp in sorted(safe_glob.under(run_dir, "scout-*.json")):
+        name = os.path.basename(sp)
         try:
             sd = artifacts_mod.read_json(sp, tolerant=True, announce=True)
         except (OSError, ValueError):  # tolerant by design: never abort a run
+            unusable.append(name)
             continue
         if not isinstance(sd, dict):
+            unusable.append(name)
+            print("synthesize: scout: %s is not an object; its tool request is unknown"
+                  % inert.inert_spelling(name), file=sys.stderr)
             continue
         profiles_seen += 1
         tools = sd.get("tools")
         if isinstance(tools, list):
             requested.update(t for t in tools if isinstance(t, str))
+        if tools is not None and not (isinstance(tools, list)
+                                      and all(isinstance(t, str) for t in tools)):
+            unusable.append(name)
+            print("synthesize: scout: %s: `tools` is not a list of names; its tool request "
+                  "is unknown" % inert.inert_spelling(name), file=sys.stderr)
+    if unreadable is not None:
+        unreadable.extend(unusable)
     if profiles_seen and not requested:
         print("synthesize: %d scout profile(s) requested NO tools (tools:[]) "
               "-- the tool layer ran on default triggers only, not scout "

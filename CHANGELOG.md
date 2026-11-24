@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **A scout request that cannot be read no longer drops its scanners silently (#3780).** With no
+  tools manifest the scouts' requests are the only required scanner set. A `scout-*.json` that
+  failed to parse was warned about and ignored, so the scanners it asked for were required by
+  no one: the run passed, certified, where the intact file gives INCONCLUSIVE. Reachable on a
+  driver run with no tools manifest whose scout file is damaged after the coverage phase, and
+  on any direct `synthesize` call.
+  - Such a file is now an integrity failure: `meta.integrity.scout_files_unreadable` lists it,
+    the run is NOT CERTIFIED, a PASS gate is INCONCLUSIVE, and the terminal and the HTML name
+    the files ("SCOUT FILES UNREADABLE — …"). With a manifest too.
+  - "Cannot be read" is: the read or parse fails, the content is not an object, or `tools` is
+    present and is not a list of names. `tools: []` and a missing `tools` are still a decline.
+  - What the other scout files asked for still counts.
+- **More than one capture for one scanner is that scanner's failure (#3780).** Ingest keyed
+  its record by the capture's name without the extension, so with `bandit.json` and
+  `bandit.sarif` both present the file read last decided: a clean capture overwrote the record
+  of a failed one.
+  - The runner writes one output per scanner, so a second capture is not this run's and which
+    one is the scan cannot be told. The scanner's record is `failed`, reason "more than one
+    capture for one adapter: bandit.json, bandit.sarif", in whatever order the files are read.
+  - **This changes results on direct ingestion:** two captures that both parse cleanly now read
+    `failed`. The findings of every capture that parsed are still reported.
+
 - **A tree with an ecosystem no auditor ran on is no longer certified (#3700).** A tree whose
   JavaScript lockfile osv-scanner audited, and whose `pyproject.toml` only pip-audit reads and
   only under `--online`, certified offline with PASS: the unaudited ecosystem was named in

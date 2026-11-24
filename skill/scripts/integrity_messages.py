@@ -9,7 +9,8 @@ HTML_DETAIL_CUT = "…"
 # #2990: how many finding ids `unknown_severity_findings`' sentence names
 # (and, #3245, how many group names `sec_less_groups`' does).
 UNKNOWN_SEVERITY_IDS_SHOWN = 10
-_NAMED_LISTS = {"unknown_severity_findings": "finding(s)", "sec_less_groups": "group(s)"}
+_NAMED_LISTS = {"unknown_severity_findings": "finding(s)", "sec_less_groups": "group(s)",
+                "scout_files_unreadable": "scout file(s)"}
 
 
 @dataclass(frozen=True)
@@ -119,6 +120,12 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
     "coverage_files_skipped": IntegrityKey(
         True, "COVERAGE FILES SKIPPED — %s (coverage evidence could not be used "
               "for the floor audit; run not certified)"),
+    # #3780: with no tools manifest the scouts' requests are the only required set, so a
+    # request that cannot be read is one nobody can hold the run to. With a manifest it
+    # is still a run artifact that is damaged (#1644: corruption is not absence).
+    "scout_files_unreadable": IntegrityKey(
+        True, "SCOUT FILES UNREADABLE — %s (the scanners they requested are unknown; "
+              "run not certified)"),
     "duplicate_out_files": IntegrityKey(
         True, "DUPLICATE out_file — %s (two reviewers share a write target; one "
               "overwrote the other; run not certified)"),

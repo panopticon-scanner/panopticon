@@ -320,7 +320,7 @@ def _discovery_disclosures(discovery):
 def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
                       invalid_verify_queue, plan_owed=False, plan_sha256=None,
                       snapshot_sha256=None, discovery=None, coverage_files_skipped=None,
-                      groups_meta=None):
+                      groups_meta=None, scout_files_unreadable=None):
     """`meta.integrity` as main() assembled it (WS-0 S3): planned-vs-ingested
     findings files, out_file collisions, mislabeled / cross-domain files, the
     unenforced ack (+ its #493 staleness check), the #493 R4 content-hash
@@ -492,7 +492,10 @@ def integrity_section(plan_lists, files, run_dir, plans_seen, invalid_plans,
                  # #2271: published on every report like every other key here,
                  # `None` where this run measured nothing.
                  "discovery_git_failure": discovery_git_failure,
-                 "discovery_files_truncated": discovery_files_truncated}
+                 "discovery_files_truncated": discovery_files_truncated,
+                 # #3780: scout files whose tool request could not be read. Last, so
+                 # the order every earlier key is published in does not move.
+                 "scout_files_unreadable": scout_files_unreadable or []}
     if ack:
         # Surface the Bash-coverage disclosure fields written by dispatch so
         # they appear in meta.integrity in the final report (#680).

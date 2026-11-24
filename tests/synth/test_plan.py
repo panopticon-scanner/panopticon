@@ -712,6 +712,46 @@ class TestTheGroupsShapeGate(unittest.TestCase):
             self.assertEqual(requested, {"semgrep", "gitleaks"})
             self.assertEqual(seen, 2)
 
+    def test_a_scout_file_that_cannot_be_used_is_named(self):
+        """#3780: a scout request that cannot be read was warned about and dropped, and
+        the scanners it asked for were then required by no one."""
+        good = json.dumps({"tools": ["semgrep"]})
+        cases = {
+            "scout-a-torn.json": good[:-1],                   # its last byte missing
+            "scout-b-array.json": "[]",
+            "scout-c-text.json": json.dumps("semgrep"),
+            "scout-d-tools-text.json": json.dumps({"tools": "semgrep"}),
+            "scout-e-tools-object.json": json.dumps({"tools": {"semgrep": True}}),
+            "scout-f-tools-mixed.json": json.dumps({"tools": ["gitleaks", 3]}),
+            "scout-g-empty.json": "",
+        }
+        fine = {
+            "scout-h-good.json": good,
+            "scout-i-declined.json": json.dumps({"tools": []}),
+            "scout-j-no-tools.json": json.dumps({"domains": ["COD"]}),
+            "scout-k-null-tools.json": json.dumps({"tools": None}),
+            "scout-l-fenced.json": "```json\n%s\n```\n" % json.dumps({"tools": ["bandit"]}),
+        }
+        with tempfile.TemporaryDirectory() as d:
+            for name, text in {**cases, **fine}.items():
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            unreadable: list = []
+            with contextlib.redirect_stderr(io.StringIO()):
+                requested, seen = plan_mod.load_scout_requests(d, unreadable=unreadable)
+        self.assertEqual(sorted(cases), unreadable)
+        # What could be read still counts, the mixed list's good entry included.
+        self.assertEqual({"semgrep", "bandit", "gitleaks"}, requested)
+        # A profile is a file that parsed to an object, as before.
+        self.assertEqual(len(fine) + 3, seen)
+
+    def test_the_list_is_optional_and_the_answer_is_the_same_without_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "scout-a.json"), "w", encoding="utf-8") as fh:
+                fh.write("{{{")
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual((set(), 0), plan_mod.load_scout_requests(d))
+
     def test_load_scout_requests_announces_a_silent_decline(self):
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "scout-a.json"), "w") as fh:

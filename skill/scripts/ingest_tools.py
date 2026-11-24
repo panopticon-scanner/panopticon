@@ -115,6 +115,19 @@ def list_tools_dir(tools_dir):
     return ToolsListing(tuple(sorted(names)))
 
 
+_MORE_THAN_ONE_CAPTURE = "more than one capture for one adapter: %s"
+_CAPTURES_NAMED = 4
+
+
+def _capture_names(names):
+    """An adapter's capture names for its failure reason: sorted, made inert, the
+    first few named and the rest counted. They are names from the tools directory."""
+    named = sorted(names)
+    more = len(named) - _CAPTURES_NAMED
+    return ", ".join(inert_text(name, limit=80, mode="path")
+                     for name in named[:_CAPTURES_NAMED]) + (" +%d more" % more if more > 0 else "")
+
+
 def _output_files(tools_dir, allowed_outputs=None, unbound_out=None, listing=None):
     """Return receipt-selected output paths; disclose rejected names boundedly.
 
@@ -1023,8 +1036,15 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
     cargo_advisory_cache = first_party_advisory.IngestCache()
     gl_excluded = 0   # dropped by an explicit exclude_glob (operator policy)
     suppressed: dict[str, int] = {}   # {reason: count} controlled body drops
-    for path in _output_files(tools_dir, allowed_outputs=allowed_outputs,
-                              unbound_out=unbound_out, listing=listing):
+    paths = _output_files(tools_dir, allowed_outputs=allowed_outputs,
+                          unbound_out=unbound_out, listing=listing)
+    # #3780: the captures each adapter has. More than one is settled after the loop.
+    captures: dict[str, list[str]] = {}
+    for path in paths:
+        captures.setdefault(os.path.splitext(os.path.basename(path))[0], []).append(
+            os.path.basename(path))
+    parsed_count: dict[str, int] = {}
+    for path in paths:
         tool = os.path.splitext(os.path.basename(path))[0]
         adapter = ADAPTERS.get(tool)
         if adapter is None:
@@ -1116,6 +1136,7 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
             - prior_budget_exhaustions
         )
         raw_count = len(parsed)
+        parsed_count[tool] = parsed_count.get(tool, 0) + raw_count
         scanned = _scanned_files(raw)
         # #1741: filter BEFORE capping. `_cap_findings` used to run first, so a
         # flood of findings planted under a path the filter would have dropped
@@ -1169,6 +1190,18 @@ def ingest_dir_detailed(tools_dir, group, exclude_globs=None, include_fixtures=F
             dispositions[tool]["truncated"] = truncated
         if reason:
             dispositions[tool]["reason"] = reason
+    # #3780: `dispositions` is keyed by the capture's stem, so with `bandit.json` and
+    # `bandit.sarif` both present the file read last decided the adapter's record, and
+    # a clean capture overwrote a failed one. The runner writes one output per adapter:
+    # a second capture is not this run's, and which one is the scan cannot be told. The
+    # adapter failed, whatever each file holds and whatever order they were listed in.
+    # The findings of every capture that parsed are already in `out`.
+    for tool, names in captures.items():
+        if len(names) > 1:
+            reason = _MORE_THAN_ONE_CAPTURE % _capture_names(names)
+            print("ingest: %s: %s" % (inert_text(tool), reason), file=sys.stderr)
+            dispositions[tool] = {"status": "failed", "findings": parsed_count.get(tool, 0),
+                                  "reason": reason}
     sup_total = sum(suppressed.values())
     if gl_excluded or sup_total:
         reasons = []

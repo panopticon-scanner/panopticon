@@ -136,6 +136,7 @@ class TestIntegrity(unittest.TestCase):
         # published last by `integrity_section` -- so they land here, ahead of
         # the two keys `reconcile` appends after it.
         "discovery_git_failure", "discovery_files_truncated",
+        "scout_files_unreadable",                 # #3780: last of `integrity_section`'s own
         "tools_manifest_invalid",
         "unbound_tool_outputs",
         # #3766: appended by reconcile beside the two above.
@@ -331,6 +332,7 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
         "content_snapshot_unreadable", "content_snapshot_missing",
         "content_snapshot_mismatched",
         "malformed_findings_files", "coverage_files_skipped", "unreadable_name_files", "empty_dispatch_plans",
+        "scout_files_unreadable",                                         # #3780
         "dispatch_plan_missing", "dispatch_plan_mismatched",
         "invalid_dispatch_plans", "invalid_verify_queue",
         "tools_manifest_invalid", "unbound_tool_outputs", "tools_dir_unlistable",
@@ -368,6 +370,7 @@ class TestTheSinkingSetIsOneTable(unittest.TestCase):
     TRUTHY: dict = {
         "unexpected_findings_files": ["u.json"],
         "coverage_files_skipped": ["coverage-Bad.json"],
+        "scout_files_unreadable": ["scout-Bad.json"],                    # #3780
         "unreadable_name_files": ["caf\\x09x.py"],
         "missing_planned_files": ["m.json"],
         "malformed_findings_files": [{"file": "b.json", "cell": None,

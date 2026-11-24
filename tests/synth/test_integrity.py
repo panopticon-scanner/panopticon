@@ -381,7 +381,9 @@ class IntegritySectionTest(unittest.TestCase):
             # #2271: discovery's own two degradation disclosures, threaded in
             # from the run's groups.json rather than measured here -- published
             # on every report like every other key, and non-gating.
-            "discovery_git_failure", "discovery_files_truncated"]
+            "discovery_git_failure", "discovery_files_truncated",
+            # #3780: the scout files whose tool request could not be read. Added last.
+            "scout_files_unreadable"]
     # #1644 lands `tools_manifest_invalid` on the section, but from reconcile
     # (which is the only caller that holds the tool axis), not from
     # integrity_section -- so the KEY ORDER pinned here is deliberately

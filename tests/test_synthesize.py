@@ -1921,6 +1921,149 @@ class TestManifestlessCertification(unittest.TestCase):
         self.assertEqual(2, rc)
 
 
+class TestAScoutRequestThatCannotBeRead(unittest.TestCase):
+    """#3780. With no tools manifest the scouts' requests are the only required set. A
+    scout file that could not be read was warned about and ignored, so the scanners it
+    asked for were required by no one: PASS, certified, where the intact file gives
+    INCONCLUSIVE. The read failure is an integrity failure now, with or without a
+    manifest: a run artifact that cannot be read is damage, not absence (#1644)."""
+
+    GOOD = json.dumps({"tools": ["bandit"]})
+    EMPTY_SARIF = json.dumps({"version": "2.1.0", "runs": [
+        {"tool": {"driver": {"name": "bandit", "rules": []}}, "results": []}]}).encode()
+
+    def _run(self, scouts, extra=(), manifest=None, captures=None):
+        with tempfile.TemporaryDirectory() as d:
+            for name, text in scouts.items():
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            args = ["--repo", "--target", "src", "--run-dir", d, "--fail-on", "high",
+                    "--out", os.path.join(d, "r.json")]
+            if captures is not None:
+                os.makedirs(os.path.join(d, "tools"))
+                for name, payload in captures.items():
+                    with open(os.path.join(d, "tools", name), "wb") as fh:
+                        fh.write(payload)
+                args += ["--tools-dir", os.path.join(d, "tools")]
+            if manifest is not None:
+                with open(os.path.join(d, "tools-manifest.json"), "w", encoding="utf-8") as fh:
+                    json.dump(manifest, fh)
+            fp = os.path.join(d, "findings-g1-COD.json")
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump({"findings": []}, fh)
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+                rc = syn.main([*args, *extra, fp])
+            with open(os.path.join(d, "r.json"), encoding="utf-8") as fh:
+                report = json.load(fh)
+            with open(os.path.join(d, "r.json.html"), encoding="utf-8") as fh:
+                page = fh.read()
+        return rc, report, out.getvalue(), err.getvalue(), page
+
+    def _sinking(self, report):
+        import scripts.integrity_messages as integrity_messages
+        return sorted(key for key, spec in integrity_messages.INTEGRITY_KEYS.items()
+                      if spec.sinks and report["meta"]["integrity"].get(key))
+
+    def test_the_intact_request_is_what_it_was(self):
+        rc, report, _out, _err, _page = self._run({"scout-COD.json": self.GOOD})
+        self.assertEqual((2, "INCONCLUSIVE", False), (
+            rc, report["summary"]["gate"], report["summary"]["coverage_certified"]))
+        self.assertEqual([], report["meta"]["integrity"]["scout_files_unreadable"])
+        self.assertEqual([], self._sinking(report))
+        self.assertEqual(["bandit"], report["meta"]["coverage"]["scout_requested"])
+
+    def test_a_torn_request_is_not_a_pass(self):
+        for label, text in (("its last byte missing", self.GOOD[:-1]),
+                            ("not an object", "[]"),
+                            ("tools of the wrong type", json.dumps({"tools": "bandit"})),
+                            ("an entry that is not text", json.dumps({"tools": [3]})),
+                            ("empty", "")):
+            with self.subTest(case=label):
+                rc, report, out, err, page = self._run({"scout-COD.json": text})
+                self.assertEqual((2, "INCONCLUSIVE", False), (
+                    rc, report["summary"]["gate"], report["summary"]["coverage_certified"]))
+                self.assertEqual(["scout-COD.json"],
+                                 report["meta"]["integrity"]["scout_files_unreadable"])
+                self.assertEqual(["scout_files_unreadable"], self._sinking(report))
+                self.assertFalse(report["meta"]["integrity_ok"]
+                                 if "integrity_ok" in report["meta"] else False)
+                for text_out in (out, page):
+                    self.assertIn("SCOUT FILES UNREADABLE", text_out)
+                    self.assertIn("scout-COD.json", text_out)
+                self.assertIn("scout-COD.json", err)
+
+    def test_a_decline_is_still_a_decline(self):
+        for text in (json.dumps({"tools": []}), json.dumps({"domains": ["COD"]}),
+                     json.dumps({"tools": None})):
+            with self.subTest(scout=text):
+                rc, report, out, _err, _page = self._run({"scout-COD.json": text})
+                self.assertEqual((0, "PASS", True), (
+                    rc, report["summary"]["gate"], report["summary"]["coverage_certified"]))
+                self.assertEqual([], report["meta"]["integrity"]["scout_files_unreadable"])
+                self.assertNotIn("SCOUT FILES UNREADABLE", out)
+
+    def test_a_fenced_request_still_reads(self):
+        rc, report, _out, _err, _page = self._run(
+            {"scout-COD.json": "```json\n%s\n```\n" % self.GOOD})
+        self.assertEqual(["bandit"], report["meta"]["coverage"]["scout_requested"])
+        self.assertEqual([], report["meta"]["integrity"]["scout_files_unreadable"])
+        self.assertEqual(2, rc)                   # bandit was requested and did not run
+
+    def test_one_torn_request_among_good_ones_keeps_the_others(self):
+        rc, report, _out, _err, _page = self._run({
+            "scout-COD.json": self.GOOD, "scout-SEC.json": self.GOOD[:-1],
+            "scout-ARC.json": json.dumps({"tools": ["gitleaks"]})})
+        self.assertEqual(["bandit", "gitleaks"], report["meta"]["coverage"]["scout_requested"])
+        self.assertEqual(["scout-SEC.json"],
+                         report["meta"]["integrity"]["scout_files_unreadable"])
+        self.assertEqual(2, rc)
+
+    def test_it_sinks_with_a_manifest_too(self):
+        """With a manifest the request is advisory; the file is still damage."""
+        bound = ("--run-id", "rid-1")
+        manifest = {"schema_version": 1, "run_id": "rid-1", "selected": ["bandit"],
+                    "produced": ["bandit"], "missing": [], "outputs": ["bandit.sarif"]}
+        captures = {"bandit.sarif": self.EMPTY_SARIF}
+        rc, report, _out, _err, _page = self._run(
+            {"scout-COD.json": self.GOOD}, bound, manifest, captures)
+        self.assertEqual((0, "PASS", True), (
+            rc, report["summary"]["gate"], report["summary"]["coverage_certified"]))
+        rc, report, out, _err, _page = self._run(
+            {"scout-COD.json": self.GOOD[:-1]}, bound, manifest, captures)
+        self.assertEqual((2, "INCONCLUSIVE", False), (
+            rc, report["summary"]["gate"], report["summary"]["coverage_certified"]))
+        self.assertEqual(["scout_files_unreadable"], self._sinking(report))
+        self.assertIn("SCOUT FILES UNREADABLE", out)
+
+    def test_a_failed_gate_stays_failed(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "scout-COD.json"), "w", encoding="utf-8") as fh:
+                fh.write(self.GOOD[:-1])
+            fp = os.path.join(d, "findings-g1-COD.json")
+            finding = _agentic(fid="AG-001", sev="CRITICAL")
+            with open(fp, "w", encoding="utf-8") as fh:
+                json.dump({"findings": [finding]}, fh)
+            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(
+                    io.StringIO()):
+                rc = syn.main(["--repo", "--target", "src", "--run-dir", d, "--fail-on", "high",
+                               "--gate-unverified", "--out", os.path.join(d, "r.json"), fp])
+            with open(os.path.join(d, "r.json"), encoding="utf-8") as fh:
+                report = json.load(fh)
+        self.assertEqual((1, "FAIL"), (rc, report["summary"]["gate"]))
+
+    def test_the_names_are_bounded_and_inert_where_they_are_printed(self):
+        scouts = {"scout-%03d.json" % n: "{" for n in range(60)}
+        scouts["scout-a\x1b[2Jb.json"] = "{"
+        _rc, report, out, _err, page = self._run(scouts)
+        self.assertEqual(61, len(report["meta"]["integrity"]["scout_files_unreadable"]))
+        line = next(line for line in out.splitlines() if "SCOUT FILES UNREADABLE" in line)
+        self.assertNotIn("\x1b", line)
+        self.assertIn("61 scout file(s)", line)
+        self.assertLess(line.count("scout-"), 20)
+        self.assertNotIn("\x1b", page)
+
+
 class TestUnusableScannerCertification(unittest.TestCase):
     """#1512 / Codex BR-02, end to end on real artifacts.
 
