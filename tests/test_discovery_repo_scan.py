@@ -4,15 +4,13 @@ import io
 import json
 import os
 import tempfile
-import types
 import unittest
 import unittest.mock
 
-from scripts import diff_map, discovery_scope
+from scripts import discovery_scope
 
-from tests._test_helpers import adopt_panopticon
 from tests.discovery_test_helpers import (
-    discovery, orchestrator, touch, run_scan, run_scan_with_err, grouped,
+    discovery, touch, run_scan, run_scan_with_err, grouped,
     init_repo, git_cmd, make_git_repo, run_script, run_scan_helper,
 )
 
@@ -62,26 +60,6 @@ class TestRepoScanDiscovery(unittest.TestCase):
 
     def _touch(self, root, rel, content=""):
         touch(root, rel, content)
-
-    def test_nondelta_scan_removes_stale_diff_hunks(self):
-        # #5.0-07: a whole-repo (non-delta) scan must drop a stale diff-hunks.json
-        # left by a prior -c/--pr run, or the driver's file-existence check would
-        # re-scope this run to the old diff and PASS vacuously.
-        with tempfile.TemporaryDirectory() as d:
-            self._touch(d, "src/app.py")
-            pano = os.path.join(d, ".panopticon")
-            os.makedirs(pano, exist_ok=True)
-            adopt_panopticon(d)   # #3273 P1: the stale hunk map of an earlier run of ours
-            hunks = os.path.join(pano, "diff-hunks.json")
-            with open(hunks, "w") as fh:
-                fh.write('{"base": "main", "hunks": {}}')
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf):
-                rc = orchestrator.main(["--repo", d, "--repo-scan",
-                                "--out", os.path.join(pano, "groups.json")])
-            self.assertEqual(rc, 0)
-            self.assertFalse(os.path.isfile(hunks),
-                             "stale diff-hunks.json survived a non-delta scan")
 
     def test_repo_scan_excludes_noise_dirs(self):
         with tempfile.TemporaryDirectory() as d:
@@ -227,13 +205,6 @@ class TestFixtureExclusion(unittest.TestCase):
             self.assertEqual(rc, 2)
             self.assertIn("--max-per-group must be >= 1", err)
 
-    def test_diff_context_cli_flag(self):
-        with tempfile.TemporaryDirectory() as d:
-            touch(d, "src/app.py")
-            rc, data, _err = run_scan_helper(d, "--diff-context", "10")
-            self.assertEqual(rc, 0)
-            self.assertIn("groups", data)
-
 
 class TestScannerConfigIsNotReviewed(unittest.TestCase):
     """#3642 (owner ruling 2026-11-14): a full-repo scan does not review the scanner's
@@ -347,18 +318,6 @@ class TestScannerConfigIsNotReviewed(unittest.TestCase):
             reviewed = set(grouped(out)) | set(out.get("ungrouped_files") or [])
             self.assertIn("panopticon.yml", reviewed)
             self.assertNotIn("scanner_config", out.get("excluded") or {})
-
-    def test_a_plain_delta_still_reviews_a_changed_root_config(self):
-        # Only --pr-worktree drops the names from a delta (#1681); a real change to
-        # the root config in a -c/--base review stays reviewable.
-        repo = make_git_repo(test_case=self, files={"src/app.py": "x = 1\n",
-                                                    "panopticon.yml": self.CONFIG})
-        with open(os.path.join(repo, "panopticon.yml"), "a", encoding="utf-8") as fh:
-            fh.write("# edited\n")
-        git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "cfg")
-        out = run_scan(repo, "--scope-changed", "--base", "HEAD~1")
-        reviewed = set(grouped(out)) | set(out.get("ungrouped_files") or [])
-        self.assertIn("panopticon.yml", reviewed)
 
 
 class TestGitAwareDiscovery(unittest.TestCase):
@@ -580,108 +539,6 @@ class TestDiscoveryResultCap(unittest.TestCase):
         self.assertGreaterEqual(discovery_scope.DISCOVERED_FILES_MAX, 200_000)
 
 
-class TestWorktreeDirty(unittest.TestCase):
-    """Direct coverage for _worktree_dirty's clean/dirty states (#1220)."""
-
-    def test_clean_worktree_is_not_dirty(self):
-        repo = make_git_repo(test_case=self, files={"a.py": "pass\n"})
-        self.assertFalse(discovery._worktree_dirty(repo))
-
-    def test_uncommitted_modification_is_dirty(self):
-        repo = make_git_repo(test_case=self, files={"a.py": "pass\n"})
-        with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
-            fh.write("changed\n")
-        self.assertTrue(discovery._worktree_dirty(repo))
-
-    def test_untracked_file_is_dirty(self):
-        repo = make_git_repo(test_case=self, files={"a.py": "pass\n"})
-        with open(os.path.join(repo, "b.py"), "w", encoding="utf-8") as fh:
-            fh.write("new\n")
-        self.assertTrue(discovery._worktree_dirty(repo))
-
-    def test_excluded_names_do_not_count_as_dirt(self):
-        # M4: the --pr-worktree caller passes the root config names, which the
-        # driver itself wrote into that tree (diff_map._sync_config).
-        repo = make_git_repo(test_case=self, files={"a.py": "pass\n"})
-        names = discovery.repo_config.CONFIG_NAMES
-        with open(os.path.join(repo, names[0]), "w", encoding="utf-8") as fh:
-            fh.write("version: 1\ngroups: {}\n")
-        self.assertTrue(discovery._worktree_dirty(repo))
-        self.assertFalse(discovery._worktree_dirty(repo, exclude=names))
-
-    def test_an_excluded_name_does_not_mask_other_dirt(self):
-        repo = make_git_repo(test_case=self, files={"a.py": "pass\n"})
-        names = discovery.repo_config.CONFIG_NAMES
-        with open(os.path.join(repo, names[0]), "w", encoding="utf-8") as fh:
-            fh.write("version: 1\ngroups: {}\n")
-        with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
-            fh.write("changed\n")
-        self.assertTrue(discovery._worktree_dirty(repo, exclude=names))
-
-    def test_control_characters_and_arrows_are_exact_excluded_paths(self):
-        repo = make_git_repo(test_case=self, files={"a.py": "pass\n"})
-        odd_name = "line\nbreak -> tab\tfile.py"
-        with open(os.path.join(repo, odd_name), "w", encoding="utf-8") as fh:
-            fh.write("new\n")
-        self.assertTrue(discovery._worktree_dirty(repo))
-        self.assertFalse(discovery._worktree_dirty(repo, exclude=(odd_name,)))
-        with open(os.path.join(repo, "other.py"), "w", encoding="utf-8") as fh:
-            fh.write("new\n")
-        self.assertTrue(discovery._worktree_dirty(repo, exclude=(odd_name,)))
-
-    def test_rename_to_excluded_name_still_counts_source(self):
-        repo = make_git_repo(test_case=self, files={"old.yml": "version: 1\n"})
-        git_cmd(repo, "mv", "old.yml", "panopticon.yml")
-        self.assertTrue(discovery._worktree_dirty(repo, exclude=("panopticon.yml",)))
-
-    def test_rename_from_excluded_name_still_counts_destination(self):
-        repo = make_git_repo(test_case=self, files={"panopticon.yml": "version: 1\n"})
-        git_cmd(repo, "mv", "panopticon.yml", "new.yml")
-        self.assertTrue(discovery._worktree_dirty(repo, exclude=("panopticon.yml",)))
-
-    def test_copy_record_checks_both_paths_and_consumes_pair(self):
-        # Git can report a copy when copy detection is configured. Both paths
-        # belong to one record; the next NUL is a separate status entry.
-        status = b"C  panopticon.yml\0source.py\0?? other.py\0"
-        with unittest.mock.patch.object(
-            discovery_scope, "_git", return_value=types.SimpleNamespace(stdout=status)
-        ) as git:
-            self.assertTrue(discovery._worktree_dirty("/unused", exclude=("panopticon.yml", "other.py")))
-            self.assertTrue(discovery._worktree_dirty("/unused", exclude=("panopticon.yml", "source.py")))
-            self.assertFalse(discovery._worktree_dirty("/unused", exclude=("panopticon.yml", "source.py", "other.py")))
-        self.assertEqual(git.call_count, 3)
-        git.assert_any_call("/unused", ["status", "--porcelain", "-z"], text=False)
-
-
-class TestChangedSymlinks(unittest.TestCase):
-    def test_untracked_symlink_leaves_are_omitted_with_a_diagnostic(self):
-        repo = make_git_repo(test_case=self, files={"target.py": "pass\n"})
-        with tempfile.TemporaryDirectory() as outside:
-            outside_target = os.path.join(outside, "outside.py")
-            with open(outside_target, "w", encoding="utf-8") as fh:
-                fh.write("pass\n")
-            os.symlink("target.py", os.path.join(repo, "inside.py"))
-            os.symlink(outside_target, os.path.join(repo, "outside.py"))
-            with open(os.path.join(repo, "regular.py"), "w", encoding="utf-8") as fh:
-                fh.write("pass\n")
-            err = io.StringIO()
-            with contextlib.redirect_stderr(err):
-                changed = discovery_scope.collect_changed_files(repo, "HEAD")
-            self.assertEqual(changed, ["regular.py"])
-            self.assertIn("inside.py", err.getvalue())
-            self.assertIn("outside.py", err.getvalue())
-            self.assertIn("symlink", err.getvalue())
-            self.assertEqual(diff_map.hunk_map(repo, "HEAD"), {"regular.py": [(1, 1)]})
-
-    def test_tracked_symlink_change_keeps_its_hunk(self):
-        repo = make_git_repo(test_case=self, files={"first.py": "pass\n", "second.py": "pass\n"})
-        os.symlink("first.py", os.path.join(repo, "link.py"))
-        git_cmd(repo, "add", "link.py")
-        git_cmd(repo, "commit", "-qm", "add link")
-        os.unlink(os.path.join(repo, "link.py"))
-        os.symlink("second.py", os.path.join(repo, "link.py"))
-        self.assertEqual(discovery_scope.collect_changed_files(repo, "HEAD"), ["link.py"])
-        self.assertEqual(diff_map.hunk_map(repo, "HEAD"), {"link.py": [(1, 1)]})
 
 
 class TestNoMatrixGroupNames(unittest.TestCase):

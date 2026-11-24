@@ -546,6 +546,15 @@ def _gate_mode_label(meta):
     return " (%s)" % _escape(mode) if mode else ""
 
 
+def _render_delta_review_note(report):
+    """#3736: the one thing said of a report an earlier build made by a delta review.
+    Fixed text (`render.DELTA_REVIEW_NOTE`); nothing from the report is drawn."""
+    if not render_mod.was_delta_review(report):
+        return ""
+    return ("<div class='not-certified' role='note'>Delta review: %s</div>"
+            % _escape(render_mod.DELTA_REVIEW_NOTE))
+
+
 def _render_header(report):
     meta = report.get("meta", {})
     summary = report.get("summary", {})
@@ -623,6 +632,10 @@ def _render_header(report):
         # #3672 (from #3648): a certified run's note, which only the JSON showed.
         parts.append("<div class='coverage-note'>Coverage note: %s</div>"
                      % _escape(render_mod.coverage_note_text(summary)))
+    # #3736: a report made by a delta review, before that was removed. Appended only
+    # when there is one: an empty part is an empty line on every other page.
+    if _render_delta_review_note(report):
+        parts.append(_render_delta_review_note(report))
     # #3667: the JSON report beside this page was split; say where its findings sit.
     split = render_mod.parts_line(report)
     if split:
@@ -853,9 +866,7 @@ def _render_suppressed_git_drivers(meta):
     worktree; the probe never checks anything out). A clean filter is what makes
     the index blob equal the worktree, so with it emptied git compares raw
     worktree bytes against a filtered index blob: paths under a suppressed
-    driver compare as modified, dirtiness for them is unknown, and a delta may
-    include them. On a delta-scoped run that also sinks certification -- the
-    caveat is in `meta.integrity` and the note says so.
+    driver compare as modified, and dirtiness for them is unknown.
 
     KEYS only, never values: a driver's value is a command line the target
     authored. The key carries a target-authored subsection, so it is escaped.
@@ -882,8 +893,7 @@ def _render_suppressed_git_drivers(meta):
     return ("<div class='coverage'>Target git drivers suppressed: %d (%s) "
             "&mdash; the reviewed tree configured these commands and this scan "
             "ran with them emptied: paths under a suppressed driver compare as "
-            "modified, so dirtiness for them is unknown and a delta may "
-            "include them</div>"
+            "modified, so dirtiness for them is unknown</div>"
             % (len(labels), ", ".join(_escape(label) for label in labels)))
 
 
@@ -1124,6 +1134,9 @@ def _render_compare_summary(label, report):
     host_caps, excluded_tools = _render_host_capabilities(meta), _render_excluded_tools(meta)
     carve_out = (tool_cleanup.html_block(meta, _escape) + _render_targeted_review(meta)
                  + _render_sec_carve_out(meta))
+    # #3736: on its own line when there is one, and no line at all when there is not.
+    delta_note = _render_delta_review_note(report)
+    delta_note = "\n" + delta_note if delta_note else ""
     return f"""
 <div class="compare-panel">
 <h3>{_escape(label)}</h3>
@@ -1134,7 +1147,7 @@ def _render_compare_summary(label, report):
 <span class="badge {_severity_class(summary.get('risk_level', 'INFO') or 'unknown')}">Risk: {_escape(summary.get('risk_level', '-') or 'unknown')}</span>
 <span class="badge {_gate_class(summary.get('gate', 'OFF'))}">Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>
 </div>
-<div class="health-basis">{_escape(health_basis.rendered_note(summary.get('health')))}</div>
+<div class="health-basis">{_escape(health_basis.rendered_note(summary.get('health')))}</div>{delta_note}
 <div class="stat-minis">{stat_cards}</div>
 {host_caps}
 {carve_out}

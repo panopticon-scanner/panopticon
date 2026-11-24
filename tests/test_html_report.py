@@ -1493,7 +1493,6 @@ class TestIntegrityFailureDetails(unittest.TestCase):
         "unbound_tool_outputs": ["semgrep.sarif"],
         "tools_dir_unlistable": "tools: Permission denied",
         "tools_run_unbound": True,
-        "delta_scope_suppressed_git_drivers": ["diff.external"],
     }
 
     def test_every_sinking_key_is_named_under_not_certified(self):
@@ -1961,6 +1960,9 @@ class TestSuppressedGitDriversLine(unittest.TestCase):
         self.assertIn("diff.external", out)
         # The line states the measured EFFECT, not only the fact (review I1).
         self.assertIn("compare as modified", out)
+        # #3736: and it ends there. It used to go on "and a delta may include them".
+        self.assertIn("compare as modified, so dirtiness for them is unknown</div>", out)
+        self.assertNotIn("a delta may", out)
 
     def test_the_count_and_the_names_agree_when_one_key_is_in_two_repos(self):
         # Review M1: the count was rows and the names were deduped KEYS, so the

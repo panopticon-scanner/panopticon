@@ -1,20 +1,18 @@
-"""Scope/delta orchestration tests: base resolution, changed-files parity,
---scope-changed, and --scope-files behavior."""
+"""Scope orchestration tests: fixture pruning, exclude paths, the SEC carve-out,
+and --scope-files confinement. (Delta review's half went in 5.5, #3736.)"""
 import ast
 import json
+import os
 import shutil
-import tempfile
-import types
 import unittest
 from unittest import mock
 
-from scripts import executable
 from scripts import discovery_catalog
 from scripts import discovery_scope
 from scripts import groups_schema
 from tests.discovery_test_helpers import (
-    orchestrator, FakeRun, repo_with_matrix, repo_with_exclude,
-    repo_with_exclude_and_sec_surface, git_cmd, git_output,
+    orchestrator, repo_with_matrix, repo_with_exclude,
+    repo_with_exclude_and_sec_surface, git_cmd,
 )
 
 
@@ -24,17 +22,12 @@ _SCOPE_OWNER_NAMES = {
     "FIXTURE_DIR_BASENAMES",
     "FIXTURE_PARENT_DIRS",
     "_git",
-    "_nul_separated_paths",
-    "_unreviewable_reason",
-    "collect_changed_files",
     "test_candidates",
     "related_tests",
     "_is_excluded_dir",
     "_is_fixture_dir",
-    "resolve_base",
     "_ancestor_dirs",
     "prune_fixture_files",
-    "resolve_base_or_die",
     "DISCOVERED_FILES_MAX",
     "_cap_discovered",
     "_is_confined_regular",
@@ -67,198 +60,13 @@ def test_scope_family_has_one_owner():
     assert _SCOPE_OWNER_NAMES <= _top_level_names(discovery_scope)
 
 
-class TestDeltaOrchestration(unittest.TestCase):
-    def test_resolve_base_precedence(self):
-        # explicit wins even if others resolve
-        self.assertEqual(
-            discovery_scope.resolve_base(".", explicit="v1.0", pr_base="main",
-                              runner=FakeRun({"v1.0^{commit}", "main^{commit}"})),
-            ("v1.0", "explicit"))
-        self.assertEqual(
-            discovery_scope.resolve_base(".", pr_base="release",
-                              runner=FakeRun({"release^{commit}"}))[1],
-            "pr-base")
-
-    def test_resolve_base_bad_explicit_fails_loud_no_fallthrough(self):
-        # explicit given but unresolvable -> (None,'unresolved'); NOT main.
-        self.assertEqual(
-            discovery_scope.resolve_base(".", explicit="nope",
-                              runner=FakeRun({"main^{commit}"})),
-            (None, "unresolved"))
-
-    def test_resolve_base_fallback_and_no_head1(self):
-        self.assertEqual(discovery_scope.resolve_base(".", runner=FakeRun({"main^{commit}"})),
-                         ("main", "fallback"))
-        self.assertEqual(discovery_scope.resolve_base(".", runner=FakeRun({"master^{commit}"})),
-                         ("master", "fallback"))
-        # nothing resolves (no main/master, no HEAD~1 tried) -> unresolved
-        self.assertEqual(discovery_scope.resolve_base(".", runner=FakeRun(set())),
-                         (None, "unresolved"))
+class TestFixturePruning(unittest.TestCase):
 
     def test_prune_fixture_files_standard_vs_redteam(self):
         paths = ["src/app.py", "tests/fixtures/vuln/main.rs"]
         self.assertEqual(discovery_scope.prune_fixture_files(paths, include_fixtures=False),
                          ["src/app.py"])
         self.assertEqual(discovery_scope.prune_fixture_files(paths, include_fixtures=True), paths)
-
-
-class TestResolveBaseOriginFallback(unittest.TestCase):
-    """#947 FIXME-3: a machine-derived pr_base prefers origin/<name> (fresh
-    remote) over a possibly-stale local branch; explicit --base never falls
-    through."""
-
-    def setUp(self):
-        # A REAL directory, not a synthetic path (#2006): base resolution now
-        # runs through `safe_git.probe`, which resolves a trusted git against
-        # the repo's own checkout boundary, and `executable.resolve` fails
-        # CLOSED on a root it cannot stat -- so a path that does not exist
-        # refuses every ref and these three tests would assert nothing.
-        self.repo = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, self.repo, ignore_errors=True)
-        # #2006 fix round 2, M4: stub the RESOLVER too, or `runner=` no longer
-        # isolates these from the host. Under an empty PATH the real resolver
-        # refused everything: two of the three failed and the third
-        # (explicit-never-falls-through) passed VACUOUSLY, for the wrong reason.
-        resolver = mock.patch.object(
-            executable, "resolve",
-            return_value=executable.ResolvedExecutable("/trusted/git", "/trusted/bin"))
-        resolver.start()
-        self.addCleanup(resolver.stop)
-
-    def _runner_resolving(self, *refs):
-        def run(argv, *args, **kwargs):
-            class R:
-                pass
-            r = R()
-            ref = argv[-1]
-            # #run7 COD-C2D: removesuffix strips the literal suffix; rstrip would
-            # strip the CHAR SET {^,{,c,o,m,i,t,}} and over-trim a ref that ends
-            # (pre-suffix) in one of those chars (e.g. "test" -> "tes").
-            r.returncode = 0 if ref.removesuffix("^{commit}") in refs else 1
-            r.stdout = "abc\n" if r.returncode == 0 else ""
-            return r
-        return run
-
-    def test_pr_base_prefers_origin_ref(self):
-        base, src = discovery_scope.resolve_base(self.repo, pr_base="main",
-                                      runner=self._runner_resolving("origin/main", "main"))
-        self.assertEqual((base, src), ("origin/main", "pr-base"))
-
-    def test_pr_base_falls_back_to_local_when_origin_absent(self):
-        base, src = discovery_scope.resolve_base(self.repo, pr_base="main",
-                                      runner=self._runner_resolving("main"))
-        self.assertEqual((base, src), ("main", "pr-base"))
-
-    def test_explicit_base_never_tries_origin(self):
-        base, src = discovery_scope.resolve_base(self.repo, explicit="release-2",
-                                      runner=self._runner_resolving("origin/release-2"))
-        self.assertEqual((base, src), (None, "unresolved"))
-
-
-class TestChangedFilesRenameParity(unittest.TestCase):
-    """#978: discovery's changed-file diff must use the same rename semantics
-    as diff_map.hunk_map (--find-renames), so the reviewed file set and the
-    on-diff hunk map can never diverge on a similarity-threshold edge."""
-
-    def test_diff_invocation_includes_find_renames(self):
-        calls = []
-
-        def fake_git(repo, args, timeout=30, text=True):
-            calls.append(list(args))
-            r = types.SimpleNamespace(stdout=b"" if not text else "")
-            if args and args[0] == "merge-base":
-                r.stdout = "abc123\n"
-            return r
-
-        # Patch the extracted owner: collect_changed_files resolves its `_git`
-        # global in discovery_scope, not in the discovery entry point.
-        with mock.patch.object(discovery_scope, "_git", side_effect=fake_git):
-            discovery_scope.collect_changed_files("/tmp/x", base="main")
-        diff_calls = [a for a in calls if "diff" in a]
-        self.assertTrue(diff_calls, "no git diff invocation captured")
-        for a in diff_calls:
-            self.assertIn("--find-renames", a)
-
-
-def test_repo_scan_scope_changed_restricts_and_emits_diff_hunks(tmp_path):
-    repo = repo_with_matrix(tmp_path)   # commits Auth + Checkout matrix + files
-    # create a new commit changing one checkout file
-    (repo / "src/checkout/pay.py").write_text("x=2\n")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
-    out = repo / ".panopticon" / "groups.json"
-    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            str(repo), "--out", str(out)], refuse_delta=False)
-    assert rc == 0
-    groups = json.loads(out.read_text())["groups"]
-    files = sorted(f for g in groups for f in g["files"])
-    assert files == ["src/checkout/pay.py"]                       # restricted to changed
-    hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
-    assert hunks["base"] and "src/checkout/pay.py" in hunks["hunks"]
-
-
-def test_default_hunks_follow_selected_repo_not_caller(tmp_path, monkeypatch):
-    repo = repo_with_matrix(tmp_path / "selected")
-    (repo / "src/checkout/pay.py").write_text("x=2\n")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
-            "commit", "-aqm", "c2")
-    caller = tmp_path / "caller"
-    caller_hunks = caller / ".panopticon" / "diff-hunks.json"
-    caller_hunks.parent.mkdir(parents=True)
-    caller_hunks.write_text("caller-owned\n")
-    monkeypatch.chdir(caller)
-
-    assert orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-changed",
-                              "--base", "HEAD~1"], refuse_delta=False) == 0
-    target_hunks = repo / ".panopticon" / "diff-hunks.json"
-    assert target_hunks.is_file()
-    assert caller_hunks.read_text() == "caller-owned\n"
-
-    assert orchestrator.main(["--repo", str(repo), "--repo-scan"]) == 0
-    assert not target_hunks.exists()
-    assert caller_hunks.read_text() == "caller-owned\n"
-
-
-def test_explicit_out_keeps_hunks_adjacent_in_run_directory(tmp_path, monkeypatch):
-    repo = repo_with_matrix(tmp_path / "selected")
-    (repo / "src/checkout/pay.py").write_text("x=2\n")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
-            "commit", "-aqm", "c2")
-    caller = tmp_path / "caller"
-    caller.mkdir()
-    monkeypatch.chdir(caller)
-    run_dir = repo / ".panopticon" / "runs" / "direct"
-    out = run_dir / "groups.json"
-
-    assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                              str(repo), "--out", str(out)], refuse_delta=False) == 0
-    assert (run_dir / "diff-hunks.json").is_file()
-    assert not (repo / ".panopticon" / "diff-hunks.json").exists()
-
-
-def test_repo_scan_scope_changed_bad_base_exits_2_no_artifact(tmp_path):
-    repo = repo_with_matrix(tmp_path)
-    out = repo / ".panopticon" / "groups.json"
-    assert orchestrator.main(["--repo-scan","--scope-changed","--base","nope", str(repo), "--out", str(out)], refuse_delta=False) == 2
-    assert not (repo/".panopticon"/"diff-hunks.json").exists()
-
-
-def test_repo_scan_scope_files_with_base_emits_diff_hunks(tmp_path):
-    repo = repo_with_matrix(tmp_path)
-    (repo / "src/checkout/pay.py").write_text("x=2\n")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
-    out = repo / ".panopticon" / "groups.json"
-    # --repo (not the positional target) precedes --scope-files here -- nargs="+"
-    # would otherwise greedily swallow a trailing positional target (same
-    # convention as the existing --files tests).
-    rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
-                            "src/checkout/pay.py", "--base", "HEAD~1",
-                            "--out", str(out)], refuse_delta=False)
-    assert rc == 0
-    groups = json.loads(out.read_text())["groups"]
-    files = sorted(f for g in groups for f in g["files"])
-    assert files == ["src/checkout/pay.py"]
-    hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
-    assert hunks["base"] and "src/checkout/pay.py" in hunks["hunks"]
 
 
 def test_repo_scan_scope_files_without_base_emits_no_diff_hunks(tmp_path):
@@ -290,23 +98,6 @@ def test_repo_scan_scope_files_applies_exclude_paths(tmp_path):
     assert files == ["src/checkout/pay.py"]            # vendor/README.md pruned
     assert doc["exclude_paths"] == ["vendor/**"]
     assert doc["excluded_count"] == 1                  # delta count, not whole-repo
-
-
-def test_repo_scan_scope_changed_applies_exclude_paths(tmp_path):
-    # Same parity guard on the --scope-changed path (rebuilds from git-diff
-    # output). A changed vendored file must not slip past exclude_paths.
-    repo = repo_with_exclude(tmp_path)
-    (repo / "src/checkout/pay.py").write_text("x=2\n")
-    (repo / "vendor/README.md").write_text("changed docs\n")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
-    out = repo / ".panopticon" / "groups.json"
-    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            str(repo), "--out", str(out)], refuse_delta=False)
-    assert rc == 0
-    doc = json.loads(out.read_text())
-    files = sorted(f for g in doc["groups"] for f in g["files"])
-    assert files == ["src/checkout/pay.py"]            # vendor/README.md pruned
-    assert doc["excluded_count"] == 1
 
 
 def test_repo_scan_scope_files_carves_the_sec_surface_out_of_the_exclusion(tmp_path):
@@ -416,24 +207,6 @@ def test_a_narrowing_scope_flag_does_not_review_an_out_of_scope_carved_file(tmp_
     assert doc["exclude_paths_sec_carve_out"]["files"] == ["src/helm/values.yaml"]
 
 
-def test_repo_scan_scope_changed_carves_the_sec_surface_out_of_the_exclusion(tmp_path):
-    # The same parity on --scope-changed, which rebuilds the set from git-diff
-    # output and re-derives the exclusion from the CHANGED set.
-    repo = repo_with_exclude_and_sec_surface(tmp_path)
-    (repo / "vendor/requirements.txt").write_text("flask==1.0\n")
-    (repo / "vendor/README.md").write_text("changed docs\n")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
-    out = repo / ".panopticon" / "groups.json"
-    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            str(repo), "--out", str(out)], refuse_delta=False)
-    assert rc == 0
-    doc = json.loads(out.read_text())
-    by_name = {g["name"]: g["files"] for g in doc["groups"]}
-    assert by_name[groups_schema.SEC_CARVE_OUT_SINK] == ["vendor/requirements.txt"]
-    assert doc["excluded_count"] == 1
-    assert doc["exclude_paths_sec_carve_out"]["count"] == 1
-
-
 def _repo_with_fixture_corpus(tmp_path, exclude_paths=True):
     # One scaffold for this file (#2272 review, finding 6): `_repo_tracking` below.
     yml = "groups:\n  Real:\n    match: ['src/**']\n    panels: [SEC]\n"
@@ -485,127 +258,6 @@ def test_redteam_without_exclude_paths_keeps_fixture_corpus(tmp_path):
     assert "exclude_paths" not in doc
 
 
-def test_repo_scan_scope_changed_pr_base_resolves_origin_only_base(tmp_path):
-    # Finding B (B1 regression lock): the gh-detected PR base must flow through
-    # the --pr-base channel so resolve_base applies its origin/<base> preference
-    # (#947). This repo has the base ONLY as refs/remotes/origin/main -- there is
-    # NO local `main` branch -- exactly the shape acquire_pr leaves (it fetches
-    # only the PR head). Under the OLD code path (the base threaded as an explicit
-    # --base main) resolve_base would treat "main" as explicit, fail to resolve
-    # it, and return 2 with no artifact. With --pr-base it resolves to origin/main.
-    repo = repo_with_matrix(tmp_path)   # commits Auth + Checkout matrix + files
-    base_sha = git_output(repo, "rev-parse", "HEAD").strip()
-    # Base lives ONLY as a remote-tracking ref; rename the local default branch
-    # away so no local `main` (or `master`) can satisfy an explicit resolve.
-    git_cmd(repo, "update-ref", "refs/remotes/origin/main", base_sha)
-    git_cmd(repo, "branch", "-m", "work")
-    # A committed change on top of the origin/main base so there IS a delta.
-    (repo / "src/checkout/pay.py").write_text("x=2\n")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-aqm", "c2")
-    # Sanity: no local `main` branch exists (only origin/main).
-    branches = git_output(repo, "branch", "--format=%(refname:short)").split()
-    assert "main" not in branches
-
-    out = repo / ".panopticon" / "groups.json"
-    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--pr-base", "main",
-                            str(repo), "--out", str(out)], refuse_delta=False)
-    assert rc == 0                                              # did NOT return 2
-    groups = json.loads(out.read_text())["groups"]
-    files = sorted(f for g in groups for f in g["files"])
-    assert files == ["src/checkout/pay.py"]                    # restricted to changed
-    hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
-    assert hunks["base"] == "origin/main"                      # origin-preference won
-    assert "src/checkout/pay.py" in hunks["hunks"]
-
-
-def test_repo_scan_scope_changed_explicit_base_ignores_pr_base(tmp_path):
-    # --base (explicit user override) still takes precedence over --pr-base and
-    # never falls through: a bad explicit base fails loudly even when a valid
-    # --pr-base is present (resolve_base's explicit-never-fallthrough contract).
-    repo = repo_with_matrix(tmp_path)
-    out = repo / ".panopticon" / "groups.json"
-    rc = orchestrator.main(["--repo-scan", "--scope-changed",
-                            "--base", "nope", "--pr-base", "main",
-                            str(repo), "--out", str(out)], refuse_delta=False)
-    assert rc == 2
-    assert not (repo/".panopticon"/"diff-hunks.json").exists()
-
-
-def test_repo_scan_pr_worktree_excludes_root_config_from_diff_hunks(tmp_path):
-    # #1681 fix round 1 item 3: a --pr worktree's root config was just
-    # overwritten with the OPERATOR's copy (diff_map._sync_config), so a
-    # changed root config there must not be attributed to the PR in
-    # diff-hunks.json. --pr-worktree (only ever passed by the driver's --pr
-    # path, phases/discovery.py) tells write_diff_hunks to exclude it.
-    repo = repo_with_matrix(tmp_path)
-    (repo / "panopticon.yml").write_text(
-        "version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
-            "commit", "-aqm", "pr ships its own config")
-    out = repo / ".panopticon" / "groups.json"
-    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            "--pr-worktree", str(repo), "--out", str(out)], refuse_delta=False)
-    assert rc == 0
-    hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
-    assert "panopticon.yml" not in hunks["hunks"]
-
-
-def test_repo_scan_plain_delta_still_lists_a_changed_root_config(tmp_path):
-    # The exclusion is --pr-worktree-only: a real change to the root config in
-    # a plain (non-PR) -c/--base delta review is legitimately reviewable and
-    # must still appear in the delta map.
-    repo = repo_with_matrix(tmp_path)
-    (repo / "panopticon.yml").write_text(
-        "version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
-            "commit", "-aqm", "a real config change")
-    out = repo / ".panopticon" / "groups.json"
-    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            str(repo), "--out", str(out)], refuse_delta=False)
-    assert rc == 0
-    hunks = json.loads((repo/".panopticon"/"diff-hunks.json").read_text())
-    assert "panopticon.yml" in hunks["hunks"]
-
-
-def _pr_worktree_after_sync(tmp_path):
-    """A --pr worktree as the driver hands it to discovery: the PR's own commit
-    on top of the base, and the OPERATOR's root config written in (never
-    committed there) by `diff_map._sync_config`."""
-    repo = repo_with_matrix(tmp_path)
-    (repo / "src" / "checkout" / "pay.py").write_text("x=2\n")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
-            "commit", "-aqm", "the PR's own change")
-    (repo / "panopticon.yml").write_text(
-        "version: 1\ngroups:\n  Auth:\n    match: ['src/auth/**']\n")
-    return repo
-
-
-def _hunks_for_pr_worktree(repo):
-    out = repo / ".panopticon" / "groups.json"
-    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            "--pr-worktree", str(repo), "--out", str(out)], refuse_delta=False)
-    assert rc == 0
-    return json.loads((repo / ".panopticon" / "diff-hunks.json").read_text())
-
-
-def test_repo_scan_pr_worktree_does_not_call_the_synced_config_uncommitted(tmp_path):
-    # M4: `_sync_config` writes the operator's config into the worktree before
-    # discovery ever runs, so `git status --porcelain` is never empty there and
-    # includes_uncommitted came back True on EVERY --pr run -- the driver's own
-    # sync published as the PR author's uncommitted work. The dirty check
-    # excludes the same names the hunk map and the reviewed set already do.
-    hunks = _hunks_for_pr_worktree(_pr_worktree_after_sync(tmp_path))
-    assert hunks["includes_uncommitted"] is False
-
-
-def test_repo_scan_pr_worktree_still_reports_real_uncommitted_work(tmp_path):
-    # The exclusion is the config names and nothing else: anything ELSE
-    # uncommitted in the worktree is still declared.
-    repo = _pr_worktree_after_sync(tmp_path)
-    (repo / "src" / "checkout" / "cart.py").write_text("x=3\n")
-    assert _hunks_for_pr_worktree(repo)["includes_uncommitted"] is True
-
-
 def _reviewed_files(out_path):
     """Every file discovery.py --repo-scan actually dispatched: grouped, plus
     the ungrouped leftovers a changed root config (unmatched by any committed
@@ -613,43 +265,6 @@ def _reviewed_files(out_path):
     data = json.loads(out_path.read_text())
     return {f for g in data["groups"] for f in g["files"]} | set(
         data.get("ungrouped_files") or [])
-
-
-def test_repo_scan_pr_worktree_excludes_root_config_from_the_reviewed_set(tmp_path):
-    # #1681 fix round 2 item 3: the delta map exclusion alone left the
-    # reviewed FILE SET still carrying the synced root config -- it was
-    # dispatched as PR surface with no hunks to justify it, diverging from
-    # diff-hunks.json exactly as the "reviewed file set and on-diff hunk map
-    # never diverge" invariant (this module's collect_changed_files
-    # docstring, and the --find-renames comment below it) says they must not.
-    # collect_changed_files now takes the SAME exclude the --pr-worktree flag
-    # already threads into write_diff_hunks.
-    repo = repo_with_matrix(tmp_path)
-    (repo / "panopticon.yml").write_text(
-        "version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
-            "commit", "-aqm", "pr ships its own config")
-    out = repo / ".panopticon" / "groups.json"
-    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            "--pr-worktree", str(repo), "--out", str(out)], refuse_delta=False)
-    assert rc == 0
-    assert "panopticon.yml" not in _reviewed_files(out)
-
-
-def test_repo_scan_plain_delta_still_reviews_a_changed_root_config(tmp_path):
-    # Positive control / non-PR parity: without --pr-worktree, a real changed
-    # root config is still part of the reviewed set, matching the plain-delta
-    # diff-hunks assertion above.
-    repo = repo_with_matrix(tmp_path)
-    (repo / "panopticon.yml").write_text(
-        "version: 1\ngroups:\n  Evil:\n    match: ['**']\n")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t",
-            "commit", "-aqm", "a real config change")
-    out = repo / ".panopticon" / "groups.json"
-    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            str(repo), "--out", str(out)], refuse_delta=False)
-    assert rc == 0
-    assert "panopticon.yml" in _reviewed_files(out)
 
 
 # --- #1740 fix round 2: one glob means one thing on both sides --------------
@@ -693,143 +308,6 @@ def test_the_parity_check_is_not_vacuous():
     # a tool side that answered "everything" or "nothing" could not pass above.
     assert [_discovery_excludes(p, _PARITY_GLOBS) for p in _PARITY_PATHS] \
         == [True, False, True]
-
-
-# --------------------------------------------------------------------------
-# #1739 (COD-C2D / SEC-G2B): git quotes paths, and a quoted spelling silently
-# left the reviewed set.
-# --------------------------------------------------------------------------
-
-import os                                                       # noqa: E402
-import subprocess                                               # noqa: E402
-
-import scripts.diff_map as diff_map                              # noqa: E402
-
-# Verified against real git in a temp repo: with the default core.quotepath a
-# path carrying a byte >= 0x80 is C-quoted, and a path carrying `"`, `\`, tab
-# or newline is C-quoted whatever quotepath says --
-#     $ git ls-files
-#     "back\\slash.py"
-#     "caf\303\251.py"
-#     "ta\tb.py"
-#     "we\"ird.py"
-# -- while `git ls-files -z` emits the raw bytes and never quotes.
-_QUOTED_LS_FILES = b'"src/caf\\303\\251.py"\n'
-_NUL_LS_FILES = "src/café.py\0".encode("utf-8")
-
-
-def _quoting_git(repo_root):
-    """A fake discovery_scope._git that quotes exactly as git does unless asked for -z."""
-    def fake_git(repo, args, timeout=30, text=True):
-        if args and args[0] == "merge-base":
-            return types.SimpleNamespace(stdout="deadbeef\n" if text else b"deadbeef\n")
-        payload = _NUL_LS_FILES if "-z" in args else _QUOTED_LS_FILES
-        if text:
-            payload = payload.decode("utf-8")
-        return types.SimpleNamespace(stdout=payload)
-    return fake_git
-
-
-def test_collect_changed_files_keeps_a_non_ascii_path(tmp_path):
-    # The whole defect in one test: git's own spelling of `src/café.py` used
-    # to reach os.path.isfile as the literal `"src/caf\303\251.py"`, which is
-    # false, so the file left the reviewed set with no warning at all. The
-    # fake quotes when the invocation lacks -z, so this fails on the old code.
-    repo = tmp_path / "r"
-    (repo / "src").mkdir(parents=True)
-    (repo / "src" / "café.py").write_text("x = 1\n", encoding="utf-8")
-    with mock.patch.object(discovery_scope, "_git", side_effect=_quoting_git(repo)):
-        got = discovery_scope.collect_changed_files(str(repo), base="main")
-    assert got == ["src/café.py"]
-
-
-def test_collect_changed_files_asks_git_not_to_quote(tmp_path):
-    # The flags are the fix: -z (git never quotes) read as BYTES, plus
-    # core.quotepath=false for belt and braces.
-    calls = []
-
-    def fake_git(repo, args, timeout=30, text=True):
-        calls.append((list(args), text))
-        if args and args[0] == "merge-base":
-            return types.SimpleNamespace(stdout="deadbeef\n")
-        return types.SimpleNamespace(stdout=b"")
-
-    with mock.patch.object(discovery_scope, "_git", side_effect=fake_git):
-        discovery_scope.collect_changed_files(str(tmp_path), base="main")
-    listings = [(a, t) for (a, t) in calls if a and a[0] != "merge-base"]
-    assert listings, "no file-listing invocation captured"
-    for args, text in listings:
-        assert "-z" in args, args
-        assert args[:2] == ["-c", "core.quotepath=false"], args
-        assert text is False, args
-
-
-def test_collect_changed_files_warns_instead_of_dropping_silently(tmp_path, capsys):
-    # Silence is the bug. A path git lists that is not a confined regular file
-    # is still dropped, but never invisibly.
-    repo = tmp_path / "r"
-    repo.mkdir()
-    (repo / "kept.py").write_text("x\n", encoding="utf-8")
-
-    def fake_git(repo_arg, args, timeout=30, text=True):
-        if args and args[0] == "merge-base":
-            return types.SimpleNamespace(stdout="deadbeef\n")
-        return types.SimpleNamespace(
-            stdout="kept.py\0vanished.py\0adir\0skipme.py\0".encode("utf-8"))
-
-    (repo / "adir").mkdir()
-    with mock.patch.object(discovery_scope, "_git", side_effect=fake_git):
-        got = discovery_scope.collect_changed_files(str(repo), base="main",
-                                                 exclude=("skipme.py",))
-    err = capsys.readouterr().err
-    assert got == ["kept.py"]
-    assert "vanished.py" in err
-    assert "adir" in err
-    # an EXCLUDED name is a deliberate drop, not a surprise: no warning for it
-    assert "skipme.py" not in err
-
-
-def _git_q(repo, *args):
-    subprocess.run(["git", "-C", str(repo), *args], check=True,
-                   capture_output=True, timeout=30)
-
-
-def test_reviewed_set_and_hunk_map_agree_on_quoted_names(tmp_path):
-    # #978's invariant, on exactly the names git quotes: the reviewed file set
-    # and the on-diff hunk map must name the same files. Committed non-ASCII,
-    # quote, backslash and tab names all CHANGED on a branch, plus an
-    # untracked one -- the two producers used to lose every one of them.
-    repo = tmp_path / "r"
-    repo.mkdir()
-    committed = ["café.py", 'we"ird.py', "back\\slash.py"]
-    try:
-        (repo / "ta\tb.py").write_text("t\n", encoding="utf-8")
-        committed.append("ta\tb.py")
-    except OSError:
-        pass                      # filesystem refuses a tab in a filename
-    for name in committed:
-        if not (repo / name).exists():
-            (repo / name).write_text("one\n", encoding="utf-8")
-    _git_q(repo, "init", "-q", "-b", "main")
-    _git_q(repo, "config", "user.email", "t@t")
-    _git_q(repo, "config", "user.name", "T")
-    _git_q(repo, "add", "-A")
-    _git_q(repo, "commit", "-qm", "init")
-    _git_q(repo, "checkout", "-q", "-b", "feat")
-    for name in committed:
-        with open(repo / name, "a", encoding="utf-8") as fh:
-            fh.write("two\n")
-    _git_q(repo, "commit", "-qam", "change them all")
-    (repo / "naïve.txt").write_text("untracked\n", encoding="utf-8")
-
-    changed = discovery_scope.collect_changed_files(str(repo), base="main")
-    hunks = diff_map.hunk_map(str(repo), "main")
-    expected = set(committed) | {"naïve.txt"}
-    assert set(changed) == expected, changed
-    assert set(hunks) == expected, sorted(hunks)
-    assert set(changed) == set(hunks)
-    for name in changed:
-        assert name == os.fsdecode(os.fsencode(name))
 
 
 # --------------------------------------------------------------------------
@@ -1051,7 +529,7 @@ def test_is_confined_regular_refuses_a_file_behind_an_escaping_dir_symlink(tmp_p
     assert discovery_scope._is_confined_regular(rel_repo, "src/checkout/pay.py")
 
 
-# --- #2272: the delta path asks the SAME policy --repo-scan asks -------------
+# --- #2272: every path a listing can hold meets the one policy ----------------
 
 # Every dot-path shape `dot_paths.allowed` distinguishes, plus the two non-dot
 # classes `_filter_reviewable` prunes (a TRACKED dependency tree, a fixture
@@ -1092,156 +570,46 @@ def _repo_tracking(tmp_path, paths, links=(), config=None):
     return repo
 
 
-def _rewrite_and_commit(repo, paths, links=()):
-    for p in paths:
-        (repo / p).write_text("x = 2\n")
-    for name, target in links:
-        os.remove(repo / name)          # RETARGET: the link's own blob changes, so
-        os.symlink(target, repo / name)  # git diff lists it (writing would follow it)
-    git_cmd(repo, "add", "-Af")
-    git_cmd(repo, "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-qm", "c2")
-
-
-def test_repo_scan_scope_changed_asks_the_dot_path_policy(tmp_path):
-    # #2272: the delta path built `scoped` straight off git-diff output and never
-    # asked `dot_paths.allowed`, so a CHANGED tracked `.hidden/`, `.venv/` or
-    # `node_modules/` file was reviewable surface under --scope-changed while
-    # --repo-scan pruned it. `.github/workflows/ci.yml` is the control: a dot-path
-    # the policy ALLOWS must still be reviewed.
-    tree = ["src/app.py", ".hidden/a.py", ".venv/lib/x.py", "node_modules/c.js",
-            ".github/workflows/ci.yml"]
-    repo = _repo_tracking(tmp_path, tree)
-    _rewrite_and_commit(repo, tree)
-    out = repo / ".panopticon" / "groups.json"
-    rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                            str(repo), "--out", str(out)], refuse_delta=False)
-    assert rc == 0
-    assert _reviewed_files(out) == {"src/app.py", ".github/workflows/ci.yml"}
-    # The changed set unions `ls-files --others`, and the run above left its own
-    # `groups.json` UNTRACKED under `.panopticon/`. Before #2272 a second delta
-    # run reviewed that artifact (tests/test_driver.py's --pr run stopped at a
-    # scout checkpoint for an "Ungrouped" cell holding nothing but run output);
-    # the run's own artifact directory is a pruned dot-dir on both paths.
-    assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                              str(repo), "--out", str(out)], refuse_delta=False) == 0
-    assert _reviewed_files(out) == {"src/app.py", ".github/workflows/ci.yml"}
-
-
-def test_scope_changed_and_repo_scan_agree_on_every_dot_path(tmp_path):
-    # The parity pin #2272 asks for: ONE tree, every dot-path shape, and an
-    # expected set taken from --repo-scan's OWN output rather than a second copy
-    # of the policy -- so this reddens on any future delta-path filter that sits
-    # beside `_filter_reviewable` instead of going through it. `src/untouched.py`
-    # never changes, so the intersection really narrows. `link.py` is a TRACKED
-    # symlink: --repo-scan has always dropped it (`_is_confined_regular` is the
-    # shared `isfile`) and the delta path used to REVIEW it, so it is pinned by
-    # name below, not just incidentally by the parity assertion. Delta runs FIRST:
-    # the artifacts these runs write are themselves untracked files under a pruned
-    # dot-dir, and running it first keeps that out of the changed set entirely.
+def test_a_whole_repo_scan_asks_the_dot_path_policy_of_every_shape(tmp_path):
+    # #2272 pinned this by parity with the delta path, which is gone (#3736), so the
+    # reviewed set is named here. `link.py` is a TRACKED symlink: the listing drops it
+    # (`_is_confined_regular` is the shared `isfile`).
     tree = ["src/app.py", "src/untouched.py", *_DOT_PATH_SHAPES]
     repo = _repo_tracking(tmp_path, tree, links=[("link.py", "src/app.py")])
-    _rewrite_and_commit(repo, [p for p in tree if p != "src/untouched.py"],
-                        links=[("link.py", "src/untouched.py")])
-    # `changed` is read from git, never from `collect_changed_files`, so the
-    # expected set owes nothing to the module under test. The two agree only while
-    # this tree keeps three properties -- no deletions, no renames, no untracked
-    # files -- because the module computes its set from `merge-base` with
-    # `--diff-filter=d --find-renames` and then unions `ls-files --others`. An
-    # editor who adds one of those three must widen THIS derivation, not the
-    # assertion below.
-    changed = {ln for ln in git_output(repo, "diff", "--name-only",
-                                      "HEAD~1").splitlines() if ln}
-    delta = repo / ".panopticon" / "delta.json"
-    whole = repo / ".panopticon" / "whole.json"
-    assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                              str(repo), "--out", str(delta)], refuse_delta=False) == 0
-    assert orchestrator.main(["--repo-scan", str(repo), "--out", str(whole)]) == 0
-    in_delta, in_whole = _reviewed_files(delta), _reviewed_files(whole)
-    assert in_delta == in_whole & changed
-    assert "src/untouched.py" in in_whole                  # the ∩ really narrows
-    assert "link.py" in changed                            # git really sees it change
-    assert "link.py" not in in_delta                       # #2272: dropped on BOTH
-    assert "link.py" not in in_whole                       # paths, by name
+    out = repo / ".panopticon" / "whole.json"
+    assert orchestrator.main(["--repo-scan", str(repo), "--out", str(out)]) == 0
+    assert _reviewed_files(out) == {
+        "src/app.py", "src/untouched.py", ".github/workflows/ci.yml", ".github/CODEOWNERS",
+        ".gitignore", ".env.local", "config/.env"}
 
 
-# --- #2376/#2377: the delta surface is capped and says whose numbers it carries
+# --- #2376/#2377: the block says whose numbers it carries ----------------------
 
 
-def test_scope_changed_publishes_the_changed_surface_not_the_listing(tmp_path):
-    # #2376: every scoped branch re-stamped the block from the SAME `info`, so a
-    # delta run published the whole-repo listing's counts (measured: reviewed 6,
-    # published `files_seen: 7`). `.hidden/a.py` is tracked and UNCHANGED, so the
-    # listing prunes a dot-path this run never saw: the delta's `pruned` must not
-    # inherit it, while the listing's own block still reports it.
+def test_a_narrowing_scope_publishes_the_listings_numbers(tmp_path):
+    # #2376: a NARROWING branch keeps the LISTING's numbers and `surface: "repo"`,
+    # because it narrows the already-pruned `allf` instead of rebuilding a surface --
+    # so `exclude_dir` still counts a `node_modules` file that was never inside the
+    # scope asked for. (The surface that was rebuilt, a delta's changed set, went
+    # with delta review in 5.5; `surface` has one value now.)
     tree = ["src/app.py", "node_modules/x.js", ".hidden/a.py"]
     repo = _repo_tracking(tmp_path, tree)
-    _rewrite_and_commit(repo, ["src/app.py", "node_modules/x.js"])
-    out = repo / ".panopticon" / "groups.json"
-    assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                              str(repo), "--out", str(out)], refuse_delta=False) == 0
-    block = json.loads(out.read_text())["discovery"]
-    assert block["surface"] == "changed"
-    assert block["files_seen"] == 1                   # the changed set, filtered
-    assert block["files_truncated"] == 0
-    assert block["pruned"]["exclude_dir"] == 1        # the changed node_modules file
-    assert block["pruned"]["dot_path"] == 0           # NOT the listing's .hidden/
-    # Delta first, on purpose: this whole-repo run's own `.panopticon/` artifact is
-    # an untracked pruned dot-path too, so the listing's count is >= 1, not == 1.
     whole = repo / ".panopticon" / "whole.json"
     assert orchestrator.main(["--repo-scan", str(repo), "--out", str(whole)]) == 0
     listing = json.loads(whole.read_text())["discovery"]
     assert listing["surface"] == "repo"
+    assert listing["files_seen"] == 1
+    assert listing["files_truncated"] == 0
+    assert listing["pruned"]["exclude_dir"] == 1
     assert listing["pruned"]["dot_path"] >= 1
-    # Ruling 4's other half: a NARROWING branch keeps the LISTING's numbers and
-    # `surface: "repo"`, because it narrows the already-pruned `allf` instead of
-    # rebuilding a surface -- so `exclude_dir` still counts a `node_modules` file that
-    # was never inside the scope asked for. Derive `surface` from `scoped is not None`
-    # and this reddens while the delta assertions above still pass.
-    narrowed = repo / ".panopticon" / "dir.json"
-    assert orchestrator.main(["--repo-scan", "--scope-dir", "src",
-                              str(repo), "--out", str(narrowed)]) == 0
-    scoped_block = json.loads(narrowed.read_text())["discovery"]
-    assert scoped_block["surface"] == "repo"
-    assert scoped_block["files_seen"] == listing["files_seen"]
-    assert scoped_block["pruned"]["exclude_dir"] == 1
-    assert scoped_block["pruned"]["dot_path"] >= 1
-
-
-def test_scope_changed_fixture_disclosure_describes_the_changed_set(tmp_path, capsys):
-    # #2410: `_repo_scan` handed ONE `pruned_fixtures` list to the whole-repo
-    # listing pass and to the changed-set pass, so a fixture root the LISTING
-    # pruned reached the artifact of a delta run that never considered it -- the
-    # last disclosure describing the other surface, after #2376 gave the rest of
-    # the block the changed set. `tests/fixtures/x.rb` is tracked and UNCHANGED
-    # here, so this run's own pass prunes no fixture root: the key is absent (the
-    # publish guard is `if pruned_fixtures:`) and stderr carries no line either.
-    tree = ["src/app.py", "tests/fixtures/x.rb"]
-    repo = _repo_tracking(tmp_path, tree)
-    _rewrite_and_commit(repo, ["src/app.py"])
-    out = repo / ".panopticon" / "groups.json"
-    assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                              str(repo), "--out", str(out)], refuse_delta=False) == 0
-    err = capsys.readouterr().err
-    assert _reviewed_files(out) == {"src/app.py"}
-    assert "excluded" not in json.loads(out.read_text())
-    assert "fixture exclusion" not in err
-
-
-def test_scope_changed_keeps_the_changed_sets_own_fixture_prune(tmp_path, capsys):
-    # The other half of #2410: starting the changed-set pass from an empty list
-    # must not lose the roots THAT pass prunes. `tests/fixtures/x.rb` is in the
-    # changed set here, so the delta run reviews only the real file and still
-    # names the root it dropped itself.
-    tree = ["src/app.py", "tests/fixtures/x.rb"]
-    repo = _repo_tracking(tmp_path, tree)
-    _rewrite_and_commit(repo, tree)
-    out = repo / ".panopticon" / "groups.json"
-    assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                              str(repo), "--out", str(out)], refuse_delta=False) == 0
-    assert _reviewed_files(out) == {"src/app.py"}
-    assert json.loads(out.read_text())["excluded"]["fixture_dirs"] == [
-        "tests/fixtures"]
-    assert "fixture exclusion" in capsys.readouterr().err
+    for flags in (["--scope-dir", "src"], ["--scope-files", "src/app.py"]):
+        narrowed = repo / ".panopticon" / "narrowed.json"
+        assert orchestrator.main(["--repo-scan", str(repo), "--out", str(narrowed), *flags]) == 0
+        scoped_block = json.loads(narrowed.read_text())["discovery"]
+        assert scoped_block["surface"] == "repo"
+        assert scoped_block["files_seen"] == listing["files_seen"]
+        assert scoped_block["pruned"]["exclude_dir"] == 1
+        assert scoped_block["pruned"]["dot_path"] >= 1
 
 
 def test_scope_dir_fixture_disclosure_keeps_the_listings_roots(tmp_path, capsys):
@@ -1260,40 +628,15 @@ def test_scope_dir_fixture_disclosure_keeps_the_listings_roots(tmp_path, capsys)
     assert "fixture exclusion" in capsys.readouterr().err
 
 
-def test_scope_changed_is_bounded_by_the_discovery_cap(tmp_path, capsys):
-    # #2376: `--repo-scan` wrapped the filter in `_cap_discovered` and the delta
-    # path did not, so a truncation of the reviewed delta was neither bounded nor
-    # disclosed.
-    tree = ["src/a.py", "src/b.py", "src/c.py"]
-    repo = _repo_tracking(tmp_path, tree)
-    _rewrite_and_commit(repo, tree)
-    out = repo / ".panopticon" / "groups.json"
-    with mock.patch.object(discovery_scope, "DISCOVERED_FILES_MAX", 2):
-        rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                                str(repo), "--out", str(out)], refuse_delta=False)
-    err = capsys.readouterr().err
-    assert rc == 0
-    assert len(_reviewed_files(out)) == 2
-    block = json.loads(out.read_text())["discovery"]
-    assert block["files_seen"] == 3
-    assert block["files_truncated"] == 1
-    assert "DISCOVERED_FILES_MAX" in err
-
-
 def test_the_pruned_disclosure_is_one_line_per_run(tmp_path, capsys):
     # #2377 asks for one line, not per-path lines: a listing that drops tens of
-    # thousands of `node_modules` paths would drown the terminal. It comes from
-    # the FINAL block, so a delta run prints the changed set's counts ONCE and
-    # never the listing's as a second line.
-    tree = ["src/app.py", "node_modules/x.js"]
-    repo = _repo_tracking(tmp_path, tree)
-    _rewrite_and_commit(repo, tree)
+    # thousands of `node_modules` paths would drown the terminal.
+    repo = _repo_tracking(tmp_path, ["src/app.py", "node_modules/x.js"])
     out = repo / ".panopticon" / "groups.json"
-    assert orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD~1",
-                              str(repo), "--out", str(out)], refuse_delta=False) == 0
+    assert orchestrator.main(["--repo-scan", str(repo), "--out", str(out)]) == 0
     err = capsys.readouterr().err
     assert err.count("discovery pruned") == 1
-    assert "changed surface" in err            # nit 6: the line names its surface
+    assert "repo surface" in err               # nit 6: the line names its surface
     clean = _repo_tracking(tmp_path / "clean", ["src/app.py"])
     assert orchestrator.main(["--repo-scan", str(clean), "--out",
                               str(clean / ".panopticon" / "g.json")]) == 0
@@ -1323,23 +666,3 @@ def test_repo_scan_refuses_an_out_that_escapes_the_artifact_directory(tmp_path, 
     assert not (elsewhere / "groups.json").exists()
 
 
-def test_repo_scan_scope_changed_without_a_changed_file_list_exits_2(tmp_path, capsys):
-    repo = repo_with_matrix(tmp_path)
-    out = repo / ".panopticon" / "groups.json"
-    with mock.patch.object(discovery_scope, "collect_changed_files", return_value=None):
-        rc = orchestrator.main(["--repo-scan", "--scope-changed", "--base", "HEAD",
-                                str(repo), "--out", str(out)], refuse_delta=False)
-    assert rc == 2
-    assert capsys.readouterr().err.endswith(
-        "could not determine changed files; is %s a git repo?\n" % repo)
-    assert not out.exists()
-
-
-def test_repo_scan_scope_files_with_a_bad_base_exits_2_no_artifact(tmp_path):
-    repo = repo_with_matrix(tmp_path)
-    out = repo / ".panopticon" / "groups.json"
-    rc = orchestrator.main(["--repo", str(repo), "--repo-scan", "--scope-files",
-                            "src/checkout/pay.py", "--base", "nope", "--out", str(out)], refuse_delta=False)
-    assert rc == 2
-    assert not out.exists()
-    assert not (repo / ".panopticon" / "diff-hunks.json").exists()

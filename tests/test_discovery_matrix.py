@@ -12,7 +12,6 @@ from tests.discovery_test_helpers import (
 
 import scripts.discovery as discovery
 import scripts.discovery_catalog as discovery_catalog
-import scripts.discovery_scope as discovery_scope
 import scripts.groups_schema as groups_schema
 import scripts.setup_config as setup_config
 import scripts.setup_preflight as setup_preflight
@@ -425,57 +424,7 @@ def test_repo_scan_scope_dir_no_tracked_files_errors(tmp_path, capsys):
     assert "no/such/dir" in err
 
 
-def test_write_diff_hunks_schema_version_and_atomic(tmp_path):
-    hunks_out = tmp_path / "diff-hunks.json"
-    discovery.write_diff_hunks(str(tmp_path), None, "none", str(hunks_out), 0, False)
-    assert hunks_out.exists()
-    data = json.loads(hunks_out.read_text(encoding="utf-8"))
-    assert data["schema_version"] == 1
-    assert data["files_changed"] == 0
 
-
-
-@pytest.mark.parametrize("available, selected, refs", [
-    ({"main": "main-base"}, "main-base", ["main"]),
-    ({"master": "master-base"}, "master-base", ["main", "master"]),
-    ({}, "parent-base", ["main", "master", "HEAD~1"]),
-])
-def test_collect_changed_files_default_branch_fallback(available, selected, refs):
-    from types import SimpleNamespace
-    from unittest.mock import patch
-
-    calls = []
-
-    def git(repo, argv, **kwargs):
-        assert repo == "/tmp/x"
-        calls.append((argv, kwargs))
-        if argv[:2] == ["merge-base", "HEAD"]:
-            ref = argv[2]
-            if ref not in available:
-                raise RuntimeError("missing ref: " + ref)
-            return SimpleNamespace(stdout=available[ref] + "\n")
-        if argv == ["rev-parse", "HEAD~1"]:
-            return SimpleNamespace(stdout="parent-base\n")
-        if argv == ["-c", "core.quotepath=false", "diff", "--name-only",
-                    "--diff-filter=d", "--find-renames", "-z", selected]:
-            assert kwargs == {"text": False}
-            return SimpleNamespace(stdout=b"file1.py\0")
-        if argv == ["-c", "core.quotepath=false", "ls-files", "--others",
-                    "--exclude-standard", "-z"]:
-            assert kwargs == {"text": False}
-            return SimpleNamespace(stdout=b"")
-        raise AssertionError("unexpected git argv: %r" % argv)
-
-    # No dot-path patch: `collect_changed_files` never asked that policy (the
-    # arm was vestigial), and #1784 moved it to `dot_paths.allowed` anyway.
-    with patch("scripts.discovery_scope._git", side_effect=git), \
-         patch("os.path.isfile", return_value=True):
-        assert discovery_scope.collect_changed_files("/tmp/x", base=None) == ["file1.py"]
-    actual_refs = [argv[2] for argv, _ in calls if argv[:2] == ["merge-base", "HEAD"]]
-    if "HEAD~1" in refs:
-        actual_refs.append(next(argv[1] for argv, _ in calls if argv[0] == "rev-parse"))
-    assert actual_refs == refs
-    assert calls[-2][0][-1] == selected
 
 
 def test_matrix_catalog_fails_loud_on_broken_yaml(tmp_path):

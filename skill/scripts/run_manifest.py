@@ -1,7 +1,7 @@
 """The 5.0 driver run-manifest: the written-once record of a run's parameters.
 
-Params live here (target, review_root, host, security_mode, base, flags, run_id,
-scope, pr);
+Params live here (target, review_root, host, security_mode, flags, run_id,
+scope);
 PROGRESS never does — the driver re-derives the phase cursor from artifact
 presence. The manifest is written once by the first `driver run`; a conflicting
 flag on re-invocation is refused.
@@ -117,7 +117,7 @@ def run_tag(manifest):
     return f"{host}-{mode}-{scope}-{stamp}-{rid}"
 
 # The flag keys whose drift across re-invocations must be refused (anti-drift).
-_FLAG_KEYS = ("fail_on", "severity", "gate_scope", "diff_context", "tools",
+_FLAG_KEYS = ("fail_on", "severity", "tools",
               "include_fixtures", "max_per_group", "allow_unenforced",
               "max_verify", "online", "allow_target_build")
 
@@ -144,12 +144,11 @@ def _target_provenance(target, runner=subprocess.run, suppressed=None,
     carries it, and one stderr line names the keys (never their values, which
     are command lines the target authored) and what emptying them COSTS: paths
     under a suppressed driver compare as modified, so dirtiness for them is
-    unknown and a delta may include them. `target_dirty` on such a target is
+    unknown. `target_dirty` on such a target is
     therefore an upper bound, not a fact about what anybody edited.
 
-    #1492: nothing in the run record established WHICH code a run saw. `base`
-    and `pr_base` are the delta-review base REF, not the scanned HEAD, and both
-    are null on a full-repo run -- so every cross-run comparison the calibration
+    #1492: nothing in the run record established WHICH code a run saw,
+    so every cross-run comparison the calibration
     apparatus rests on (the cap series, the same-cap overlap result, the per-cell
     yield curve) assumed tree-identity it could not verify. Comparing fzf's
     cap-15 and cap-48 runs required inferring it from the fact that their group
@@ -167,7 +166,7 @@ def _target_provenance(target, runner=subprocess.run, suppressed=None,
         # bytes. One line, printed whatever the probes concluded.
         print("run manifest: target Git drivers SUPPRESSED for this scan: %s "
               "-- paths under a suppressed driver compare as modified: "
-              "dirtiness for them is unknown and a delta may include them"
+              "dirtiness for them is unknown"
               % ", ".join(sorted({repr(key) for _repo, key in drivers})),
               file=sys.stderr, flush=True)
     return commit, dirty
@@ -412,9 +411,9 @@ def verified_setup_owned(review_root):
     return dict(sorted(verified.items()))
 
 
-def build_manifest(*, target, review_root, host, security_mode, base=None,
-                   flags=None, config=None, run_id=None, worktree=None,
-                   scope=None, pr=None, pr_base=None, created=None, model_strict=None):
+def build_manifest(*, target, review_root, host, security_mode,
+                   flags=None, config=None, run_id=None,
+                   scope=None, created=None, model_strict=None):
     # The WRITE path: this host came from CLI args, so a host the registry does
     # not know is a programming error and raising is both correct and the only
     # place it is reachable from (#1344).
@@ -423,9 +422,9 @@ def build_manifest(*, target, review_root, host, security_mode, base=None,
     _suppressed: list = []
     target_path = os.path.abspath(target)
     review_path = os.path.abspath(review_root)
-    # The receipt describes root-relative files in the scanned tree. A PR
-    # worktree (or any other distinct review_root) must never lend its receipt
-    # to the operator checkout named by target.
+    # The receipt describes root-relative files in the scanned tree. A review
+    # root distinct from the target must never lend its receipt to the checkout
+    # named by target.
     _owned = (verified_setup_owned(review_path)
               if os.path.realpath(target_path) == os.path.realpath(review_path)
               else {})
@@ -439,10 +438,8 @@ def build_manifest(*, target, review_root, host, security_mode, base=None,
         "created": created or _now_iso(),
         "target": os.path.abspath(target),
         "review_root": os.path.abspath(review_root),
-        "base": base,
         "security_mode": security_mode,
         "host": host,
-        "worktree": worktree,   # PR worktree to release at validate; None otherwise
         "flags": {k: flags.get(k) for k in _FLAG_KEYS},
         # #1681 Plan 2: what the TARGET's committed config asked for and what
         # the trust classes let through, recorded beside the flags they fed.
@@ -457,11 +454,6 @@ def build_manifest(*, target, review_root, host, security_mode, base=None,
         "config_disclosures": [str(s) for s in
                                (getattr(config, "disclosures", None) or [])],
         "scope": scope or {"mode": "repo", "target": None},
-        "pr": pr,
-        # DERIVED (like worktree): the gh-detected PR base, threaded to
-        # orchestrator's --pr-base for origin/<base> preference (#947). NOT an
-        # anti-drift key -- a PR's base is fixed by the PR, not a user knob.
-        "pr_base": pr_base,
         # #3582: whether this run's model fallbacks were off (model_resolver.strict_models),
         # and every entry that ran on a fallback rung (`record_model_substitution`), so a
         # calibration pair can be checked after the fact. Not anti-drift keys.
@@ -479,11 +471,9 @@ def build_manifest(*, target, review_root, host, security_mode, base=None,
         # had no opinion". The values are not here, and never leave the
         # target's own config.
         #
-        # Recorded, never enforced HERE -- but not inert: paths under a
+        # Recorded, never enforced -- but not inert: paths under a
         # suppressed driver compare as modified, so `target_dirty` above is an
-        # upper bound on such a target, and a DELTA-scoped run over that
-        # comparison cannot certify its coverage (the caveat is raised at
-        # synthesis, in `synth/tool_axis.reconcile`).
+        # upper bound on such a target.
         "git_drivers_suppressed": [{"repo": repo, "key": key}
                                    for repo, key in _suppressed],
     }
@@ -544,8 +534,8 @@ def load_manifest(review_root):
     return data
 
 
-def conflicting_flags(manifest, *, host=None, security_mode=None, base=None,
-                      flags=None, scope=None, pr=None):
+def conflicting_flags(manifest, *, host=None, security_mode=None,
+                      flags=None, scope=None):
     """Human-readable conflicts between an existing manifest and re-invocation
     params. Empty list = no drift. A None incoming value never conflicts (a bare
     `driver run` re-invocation passes nothing and always matches)."""
@@ -558,9 +548,7 @@ def conflicting_flags(manifest, *, host=None, security_mode=None, base=None,
 
     check("host", manifest.get("host"), host)
     check("security_mode", manifest.get("security_mode"), security_mode)
-    check("base", manifest.get("base"), base)
     check("scope", manifest.get("scope"), scope)
-    check("pr", manifest.get("pr"), pr)
     existing_flags = manifest.get("flags") or {}
     incoming_flags = flags or {}
     for k in _FLAG_KEYS:

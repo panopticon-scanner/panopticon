@@ -1,11 +1,12 @@
 """Which argv shapes `safe_git.probe` will run (#3256).
 
-Defense in depth: every production caller already passes one of these, read-only, and a write has
-its own door, `safe_git.mutate`. Kept beside `safe_git` rather than in it, which is at its ceiling.
+Defense in depth: every production caller already passes one of these, read-only, and nothing
+here writes to a target repository (the write door went with delta review, #3736). Kept beside
+`safe_git` rather than in it, which is at its ceiling.
 """
 
 # #3256: what `probe` will run, as defense in depth. Every production caller already passes one of
-# these, read-only; a write has its own door, `mutate`. Each value says which argv shapes of that
+# these, read-only; there is no write door. Each value says which argv shapes of that
 # subcommand are reads: None for every shape, else a predicate over the tokens after it.
 PROBE_SHAPES = {
     "rev-parse": None, "ls-files": None, "status": None, "check-ignore": None,
@@ -23,10 +24,10 @@ def refusal(args, index):
     and so is `--output`, the one option that lets a read-only diff or log write a file."""
     name = None if index is None else args[index]
     if name not in PROBE_SHAPES:
-        return "safe Git probe: %r is not a read-only subcommand; a write goes through mutate" % (
+        return "safe Git probe: %r is not a read-only subcommand; panopticon makes no Git write" % (
             name,)
     rest = list(args[index + 1:])
     shape = PROBE_SHAPES[name]
     if (shape is not None and not shape(rest)) or any(t.startswith("--output") for t in rest):
-        return "safe Git probe: this %s is not a read; a write goes through mutate" % name
+        return "safe Git probe: this %s is not a read; panopticon makes no Git write" % name
     return None

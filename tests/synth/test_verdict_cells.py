@@ -1505,7 +1505,7 @@ class TestAMergeGroupIsCountedOnceAtItsHeaviestFinding(_Lines):
         self.assertEqual(25, silent["summary"]["health"]["weighted_defect"])    # once, the heavier
 
     def test_a_range_that_ends_before_it_starts_is_one_line(self):
-        """`line_end: 1` on a claim at line 52. The delta classifier read the end line and
+        """`line_end: 1` on a claim at line 52. One reader took the end line and
         the health weight did not; the loader now leaves no such range."""
         path = os.path.join(self.run_dir, "findings-g1-SEC.json")
         with open(path, "w", encoding="utf-8") as fh:
@@ -1667,11 +1667,10 @@ class TestAMergeGroupIsCountedOnceAtItsHeaviestFinding(_Lines):
         statuses = ("advisor_confirmed", "tool_confirmed", evidence_mod.BACKUP_SCOPE_LIMITED,
                     "tool_reported", "unverified", "needs_more_info", "rejected")
         for gate_unverified in (False, True):
-            run = types.SimpleNamespace(gate_unverified=gate_unverified, gate_scope="all")
+            run = types.SimpleNamespace(gate_unverified=gate_unverified)
             for status in statuses:
                 finding = {"evidence": {"status": status}}
-                parts = verdicts_mod._partition_gate(
-                    [finding], types.SimpleNamespace(active=False), run)
+                parts = verdicts_mod._partition_gate([finding], run)
                 self.assertEqual(bool(parts.gate_eligible),
                                  verdicts_mod.counts_on_its_own(status, run), status)
         self.assertEqual(

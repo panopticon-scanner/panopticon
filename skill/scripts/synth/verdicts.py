@@ -1,5 +1,5 @@
 """The verify round: emit its queue, then resolve findings against the advisor
-verdicts and the delta context."""
+verdicts."""
 import dataclasses
 from typing import Any
 from dataclasses import dataclass, field
@@ -15,7 +15,6 @@ import scripts.ocrdb as ocrdb
 import scripts.score_gate as score_gate
 from . import codes as codes_mod
 from . import corroborate as corroborate_mod
-from . import delta as delta_mod
 from . import findings as findings_mod
 from . import grading as grading_mod
 from . import plan as plan_mod
@@ -60,12 +59,8 @@ class Resolved:
     `findings` is the deduped list (integration findings split off into
     `integration_findings`); `active`/`rejected` partition it by evidence
     status; `gate_eligible` is the subset grades and the gate are computed
-    from; the on-diff/pre-existing lists are empty outside delta mode.
-    `verdict_stats`, `verify_matrix`, `tool_axis`, `ocrdb_coverage`,
-    `delta_meta` and `delta_artifact` are the meta.coverage sections this stage
-    owns -- the last two are siblings, not halves of one block: `delta_meta` is
-    the ACTIVE delta and null outside it, `delta_artifact` is what attempting
-    that read cost and null only when no `--diff-hunks` path was given (#2169);
+    from. `verdict_stats`, `verify_matrix`, `tool_axis` and `ocrdb_coverage`
+    are the meta.coverage sections this stage owns;
     `tool_names` is the adapter set inferred from the findings (the fallback when
     the tool
     layer reported none); `unanswered_gate` the gate-aware unanswered count
@@ -74,8 +69,6 @@ class Resolved:
     active: list
     rejected: list
     gate_eligible: list
-    on_diff_active: list
-    pre_existing_active: list
     integration_findings: list
     ocrdb_bundle: dict | None
     ocrdb_coverage: dict | None
@@ -92,21 +85,17 @@ class Resolved:
     tool_advisor_queue_ids: tuple
     tool_advisor_pending_ids: tuple
     tool_names: set
-    delta_mode: bool
-    delta_meta: dict | None
-    delta_artifact: dict | None
     doc_policy: dict | None
     verdict_unloadable: list
     unanswered_gate: int
-    # #1701: the source-scope drops this run's GATE counts,
-    # after the same delta / `gate_scope` filter `gate_eligible` above takes.
+    # #1701: the source-scope drops this run's GATE counts.
     # They are NOT in `findings`/`active`/`rejected` -- the report body never
     # holds them -- so they are carried separately rather than partitioned out
     # of one of those lists. `[]` outside redteam; #3269's two reasons never enter.
     gated_suppressed: list = field(default_factory=list)
     # #1578 (owner ruling 2026-09-22, policy C): the other half of the same
-    # partition -- the drops that cleared this run's `--severity` floor and its
-    # delta / `gate_scope` filter and were still NOT counted: policy C declined
+    # partition -- the drops that cleared this run's `--severity` floor
+    # and were still NOT counted: policy C declined
     # them, or #3269 marks them disclosure-only. Carried so the report publishes the
     # number: a narrowed gate that discloses nothing is the silence #1578 is
     # about, with a smaller blast radius.
@@ -769,8 +758,6 @@ class _Partitions:
     active: list
     rejected: list
     gate_eligible: list
-    on_diff_active: list
-    pre_existing_active: list
 
 
 def context_rule(finding, run):
@@ -806,22 +793,13 @@ def counts_on_its_own(status, run, finding=None):
         run.gate_unverified or status in evidence_mod.GATE_ELIGIBLE_DEFAULT)
 
 
-def _partition_gate(findings, delta, run):
-    """Apply the run's delta scope and evidence policy to active findings."""
+def _partition_gate(findings, run):
+    """Apply the run's evidence policy to active findings."""
     rejected = [f for f in findings if f["evidence"]["status"] == "rejected"]
     active = [f for f in findings if f["evidence"]["status"] != "rejected"]
-    delta_mode = delta.active
-    if delta_mode:
-        delta_mod.classify_findings(active, delta.diff_hunks.get("hunks") or {}, delta.diff_context)
-    on_diff_active = [f for f in active if (f.get("delta") or {}).get("on_diff")]
-    pre_existing_active = [f for f in active
-                           if delta_mode and not (f.get("delta") or {}).get("on_diff")]
-    gate_source = active
-    if delta_mode and run.gate_scope == "on-diff":
-        gate_source = on_diff_active
-    gate_eligible = [f for f in gate_source
+    gate_eligible = [f for f in active
                      if counts_on_its_own(f["evidence"]["status"], run, f)]
-    return _Partitions(active, rejected, gate_eligible, on_diff_active, pre_existing_active)
+    return _Partitions(active, rejected, gate_eligible)
 
 
 def _mark_context_rule(active, run):
@@ -843,17 +821,10 @@ def _mark_context_rule(active, run):
     return counts
 
 
-def _scope_suppressed(gated_suppressed, delta, run):
-    """Apply the same delta scope, then the owner-ruled suppressed gate policy."""
-    delta_mode = delta.active
-    # #1701 fix round 1 (F1): the gate-counted vendored drops take the SAME
-    # delta filter the real population just took. They carry a `location.file`,
-    # so `classify_findings` can answer for them, and under `--changes
-    # --gate-scope on-diff` a PRE-EXISTING vendored finding is scoped out
-    # exactly as its un-suppressed twin is -- the alternative was a finding that
-    # gates only because of the directory it sits in, which inverts #1578.
-    #
-    # The EVIDENCE filter above is deliberately NOT applied, and this is the one
+def _scope_suppressed(gated_suppressed):
+    """Apply the owner-ruled suppressed gate policy."""
+    # The EVIDENCE filter `_partition_gate` applies is deliberately NOT applied
+    # here, and this is the one
     # place the two populations still differ. A suppressed finding is withheld
     # from `findings[]`, so it is never queued for the verify round and can
     # never reach `tool_confirmed`; under the default `confirmed_only` policy
@@ -871,67 +842,12 @@ def _scope_suppressed(gated_suppressed, delta, run):
     # `vendor/` still gates. Both halves stay disclosed:
     # `meta.coverage.tools_suppressed_gated` counts what gated,
     # `tools_suppressed_not_gated` what this rule declined to count.
-    #
-    # Applied AFTER the delta filter, so the two published tallies partition
-    # exactly the set that survived the run's own scoping.
     gated = list(gated_suppressed or [])
-    if delta_mode:
-        delta_mod.classify_findings(gated, delta.diff_hunks.get("hunks") or {},
-                                    delta.diff_context)
-        if run.gate_scope == "on-diff":
-            gated = [f for f in gated if (f.get("delta") or {}).get("on_diff")]
     suppressed_not_gated = [f for f in gated
                             if not ingest_tools.gates_when_suppressed(f)]
     gated = [f for f in gated if ingest_tools.gates_when_suppressed(f)]
 
     return gated, suppressed_not_gated
-
-
-def _delta_meta(delta, partitions):
-    """Describe the actual hunk map and the resulting active populations."""
-    delta_mode = delta.active
-    # #1783 (ARC-2340795244): what the artifact was, not just what it claimed.
-    # `files_changed` is the ARTIFACT's own number; `hunks_files` /
-    # `hunks_ranges` are the map this run actually classified against, and an
-    # ACTIVE delta with `hunks_files: 0` matched no finding at all -- every one
-    # classified off-diff, so under `--gate-scope on-diff` there was nothing
-    # left for `--fail-on` to fail on. `ranges_dropped` / `payload_malformed`
-    # are the loader's tolerances, and are null when this context was not built
-    # from a file read (a direct caller: unmeasured, not the same as zero).
-    # #2169: `paths_dropped` is beside `ranges_dropped` rather than inside it --
-    # a path whose value was not a list leaves the map, so every finding in that
-    # file classifies off-diff, which is not what one dropped range costs.
-    # #2381 adds the third counter beside them, and it is not a loss: a path the
-    # map NAMES with no range keeps its file and classifies every finding in it
-    # ON-diff (`diff_map.classify`'s changed-file fail-open), which is the one
-    # fail-open shape here and the one the two loss counters both read as zero.
-    # #2386 publishes the SUBSET of that third counter a broken artifact
-    # produced -- the paths whose list arrived non-empty and was emptied because
-    # every range in it was malformed -- so a consumer of the report, and not
-    # just a reader of the stderr line, can tell the two sub-populations apart.
-    hunks_load = delta.report if delta_mode else None
-    hunks_files, hunks_ranges = (delta_mod.count_hunks(delta.diff_hunks.get("hunks"))
-                                 if delta_mode else (0, 0))
-    return ({"base": delta.diff_hunks.get("base"),
-                   "base_source": delta.diff_hunks.get("base_source"),
-                   "base_commit": delta.diff_hunks.get("base_commit"),
-                   "delta_start": delta.diff_hunks.get("delta_start"),
-                   "delta_end": delta.diff_hunks.get("delta_end"),
-                   "includes_uncommitted": delta.diff_hunks.get("includes_uncommitted"),
-                   "files_changed": delta.diff_hunks.get("files_changed"),
-                   "diff_context": delta.diff_context,
-                   "hunks_files": hunks_files,
-                   "hunks_ranges": hunks_ranges,
-                   "ranges_dropped": hunks_load.ranges_dropped if hunks_load else None,
-                   "paths_dropped": hunks_load.paths_dropped if hunks_load else None,
-                   "paths_without_ranges": (hunks_load.paths_without_ranges
-                                            if hunks_load else None),
-                   "paths_emptied_by_drops": (hunks_load.paths_emptied_by_drops
-                                              if hunks_load else None),
-                   "payload_malformed": hunks_load.payload_malformed if hunks_load else None,
-                   "on_diff_total": len(partitions.on_diff_active),
-                   "pre_existing_total": len(partitions.pre_existing_active)}
-                  if delta_mode else None)
 
 
 def _unknown_severity_ids(findings):
@@ -962,7 +878,7 @@ def _judged_hits_only(fs, queue):
     return dataclasses.replace(fs, verdicts=verdicts) if changed else fs
 
 
-def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
+def resolve_findings(fs, run, gated_suppressed=(), groups_meta=None):
     """The verdict-matching cluster (WS-0 S2): dedupe, queue, bind advisor
     verdicts, derive every finding's evidence object and fingerprint, then
     partition for the gate under the two-axis severity x evidence model.
@@ -1034,15 +950,13 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     severity_cap_mod.apply(findings, run, groups_meta)
     tool_axis = _tool_axis(findings, _tool_reconciliation(ingested_tools, findings,
                                                           absorbed_into))
-    partitions = _partition_gate(findings, delta, run)
+    partitions = _partition_gate(findings, run)
     context_not_gated = _mark_context_rule(partitions.active, run)
-    gated, suppressed_not_gated = _scope_suppressed(gated_suppressed, delta, run)
+    gated, suppressed_not_gated = _scope_suppressed(gated_suppressed)
     tool_names = {evidence_mod.tool_name(f) for f in findings
                   if evidence_mod.is_tool_sourced(f)}
     return Resolved(findings=findings, active=partitions.active, rejected=partitions.rejected,
                     gate_eligible=partitions.gate_eligible,
-                    on_diff_active=partitions.on_diff_active,
-                    pre_existing_active=partitions.pre_existing_active,
                     integration_findings=integration_findings,
                     ocrdb_bundle=ocrdb_bundle, ocrdb_coverage=ocrdb_coverage,
                     verdict_stats=verdict_stats, verify_matrix=verify_matrix_cov,
@@ -1051,10 +965,6 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
                     tool_advisor_queue_ids=tool_advisor_queue_ids,
                     tool_advisor_pending_ids=tool_advisor_pending_ids,
                     tool_names=tool_names,
-                    delta_mode=delta.active, delta_meta=_delta_meta(delta, partitions),
-                    # #2169: emitted for an INACTIVE context too, whenever a file
-                    # was read -- the one carrier a rejected payload has.
-                    delta_artifact=delta_mod.artifact_facts(delta),
                     doc_policy=fs.doc_policy, verdict_unloadable=fs.verdict_unloadable or [],
                     # Measured only when --verdicts-dir was passed at all.
                     unanswered_gate=matches.unanswered if fs.verdicts_supplied else 0,

@@ -17,7 +17,6 @@ import scripts.synthesize as syn
 import scripts.ingest_tools as ingest_tools
 import scripts.synth.findings as findings_mod
 import scripts.synth.coverage_io as coverage_io
-import scripts.synth.delta as delta_mod
 import scripts.synth.render as render_mod
 import scripts.html_report as html_report
 import scripts.synth.plan as plan_mod
@@ -1307,7 +1306,7 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                                  "summary": "remote code execution"}]}]}]}
 
     def _run(self, security, rel="app/vendor/patched_auth.py", severity="all",
-             delta=False, groups_json=None, tools_exclude=None,
+             groups_json=None, tools_exclude=None,
              tool="bandit", cwe="CWE-259", critical=False, twin=False,
              level="error"):
         """One synthesis over a single tool finding at `rel`.
@@ -1342,13 +1341,6 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                 # this output to it. Without them no call certifies tool coverage.
                 json.dump({"schema_version": 1, "run_id": "rid-1", "selected": [adapter],
                            "produced": [adapter], "missing": [], "outputs": [name]}, fh)
-            hunks = None
-            if delta:
-                # A real diff that touches ANOTHER file: the finding below is
-                # pre-existing, which is what `--gate-scope on-diff` scopes out.
-                hunks = os.path.join(d, "diff-hunks.json")
-                with open(hunks, "w", encoding="utf-8") as fh:
-                    json.dump({"base": "main", "hunks": {"app/other.py": [[1, 3]]}}, fh)
             if groups_json is not None:
                 # Written to BOTH places a target-reading mutation would look:
                 # the run dir (beside the other run artifacts) and the flat
@@ -1361,7 +1353,6 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                         json.dump(groups_json, fh)
             args = _cli_args(tools_dir=tools, security=security, fail_on="high",
                              target=d, run_dir=d, severity=severity, run_id="rid-1",
-                             diff_hunks=hunks, gate_scope="on-diff",
                              tools_exclude=tools_exclude)
             err = io.StringIO()
             with _chdir(d), contextlib.redirect_stderr(err):
@@ -1374,14 +1365,12 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
                     args, groups_json or {}, self.TS) if groups_json is not None \
                     else report_mod.RunConfig(target=d, fail_on="high",
                                               timestamp=self.TS,
-                                              security_mode=security,
-                                              gate_scope="on-diff")
+                                              security_mode=security)
                 report = report_mod.build_report(report_mod.ReportInputs(
                     run=run,
                     findings=findings_mod.FindingSet(
                         findings=prepared[0], doc_policy=prepared[1],
                         catalog=prepared[2]),
-                    delta=delta_mod.DeltaContext.from_args(args),
                     plan=plan_mod.PlanInputs(groups_meta=[
                         {"name": "g", "files": [rel]}]),
                     tools=axis))
@@ -1452,25 +1441,6 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
 
     LIB = "app/lib/patched_auth.py"
 
-    def test_a_pre_existing_vendored_high_is_scoped_out_like_its_twin(self):
-        # `--gate-scope on-diff` over a diff that touches another file: the
-        # finding is pre-existing either way. Before this fix the vendored arm
-        # FAILed while its twin PASSed -- a finding that gates only because of
-        # the directory it is in, which inverts #1578.
-        self.assertEqual(self._gate(rel=self.LIB, delta=True), "PASS")
-        self.assertEqual(self._gate(delta=True), "PASS")
-        # ... and because the gate did NOT count it, the drop is back in the
-        # `suppressed` tally rather than in the gated one. The two always sum
-        # to the ingest's own count, which is what stderr and security_gate say.
-        cov = self._run("redteam", delta=True)[1]["meta"]["coverage"]
-        self.assertEqual(cov["tools_suppressed"], {"vendor": 1})
-        # Fix round 1, ruling 2: NEITHER gate tally may claim it. The delta
-        # filter runs before #1578's policy, so this drop never reached the
-        # policy at all -- counting it as "declined by the rule" would say the
-        # gate saw something it never did.
-        self.assertEqual(cov["tools_suppressed_gated"], {})
-        self.assertEqual(cov["tools_suppressed_not_gated"], {})
-
     def test_a_vendored_finding_below_the_severity_floor_does_not_count(self):
         # `--severity critical` removes the HIGH from the run entirely; the
         # vendored twin must not survive the floor behind a directory name.
@@ -1478,8 +1448,8 @@ class TestRedteamGatesVendoredToolFindings(unittest.TestCase):
         self.assertEqual(self._gate(severity="critical"), "PASS")
         cov = self._run("redteam", severity="critical")[1]["meta"]["coverage"]
         self.assertEqual(cov["tools_suppressed"], {"vendor": 1})
-        # Same rule as the delta case: the operator's floor removed it upstream
-        # of the policy, so neither gate tally may claim it (fix round 1).
+        # The operator's floor removed it upstream of the policy, so neither
+        # gate tally may claim it (fix round 1).
         self.assertEqual(cov["tools_suppressed_gated"], {})
         self.assertEqual(cov["tools_suppressed_not_gated"], {})
 
@@ -1782,48 +1752,30 @@ class TestSuppressedGitDriversReachTheCoverageBlock(unittest.TestCase):
     def test_a_clean_target_publishes_an_empty_list(self):
         self.assertEqual(self._coverage(None)["git_drivers_suppressed"], [])
 
-    def _integrity(self, rows, **run_kw):
-        report = report_mod.build_report(report_mod.ReportInputs(
+    def _report(self, rows, **run_kw):
+        return report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(target="src", fail_on="high",
                                      timestamp="2026-01-01T00:00:00Z", **run_kw),
             findings=findings_mod.FindingSet(findings=[]),
             plan=plan_mod.PlanInputs(git_drivers_suppressed=rows)))
-        return report["meta"]["integrity"]
 
-    def test_a_changes_review_arms_the_delta_scope_caveat(self):
-        # #2013 fix round 1 (review I1): the suppressed comparison chose this
-        # run's reviewed file set, so the caveat is named in meta.integrity.
-        self.assertEqual(
-            self._integrity([{"repo": ".", "key": "filter.lfs.clean"}],
-                            review_type="changes")
-            ["delta_scope_suppressed_git_drivers"], ["filter.lfs.clean"])
+    def test_a_suppressed_driver_is_disclosed_and_sinks_nothing(self):
+        """#3736: the delta-scope caveat went with delta review. On a whole-repository
+        run a suppressed driver costs `target_dirty` and nothing the findings depend
+        on, so it is disclosed in the coverage block and moves no certification.
 
-    def test_a_hunk_scoped_review_arms_it_too(self):
-        # The other limb: a diff-hunks map with a base (--pr / --scope-changed)
-        # is delta-scoped whatever the review_type label says.
-        report = report_mod.build_report(report_mod.ReportInputs(
-            run=report_mod.RunConfig(target="src", fail_on="high",
-                                     timestamp="2026-01-01T00:00:00Z"),
-            findings=findings_mod.FindingSet(findings=[]),
-            delta=delta_mod.DeltaContext(diff_hunks={"base": "main", "hunks": {}}),
-            plan=plan_mod.PlanInputs(
-                git_drivers_suppressed=[{"repo": ".", "key": "diff.external"}])))
-        self.assertEqual(report["meta"]["integrity"]
-                         ["delta_scope_suppressed_git_drivers"], ["diff.external"])
-        self.assertIs(report["summary"]["coverage_certified"], False)
-        # The caveat rides `integrity_ok`, which is what moves the gate.
-        self.assertEqual(report["summary"]["gate"], "INCONCLUSIVE")
-
-    def test_a_full_repo_review_leaves_it_unarmed(self):
-        self.assertIsNone(
-            self._integrity([{"repo": ".", "key": "filter.lfs.clean"}])
-            ["delta_scope_suppressed_git_drivers"])
-
-    def test_a_clean_delta_review_leaves_it_unarmed(self):
-        # Always present, never fabricated: a delta run with nothing suppressed
-        # reads the same as one that could not look.
-        self.assertIsNone(self._integrity([], review_type="changes")
-                          ["delta_scope_suppressed_git_drivers"])
+        A report typed `changes` (an inventory whose mode is `files`; no driver run
+        writes one) armed the removed caveat too: with a suppressed driver it read NOT
+        CERTIFIED, with no diff involved. It certifies now."""
+        rows = [{"repo": ".", "key": "filter.lfs.clean"}]
+        for review_type in ("repo", "changes", "file"):
+            with self.subTest(review_type=review_type):
+                report = self._report(rows, review_type=review_type)
+                self.assertNotIn("delta_scope_suppressed_git_drivers",
+                                 report["meta"]["integrity"])
+                self.assertEqual(rows, report["meta"]["coverage"]["git_drivers_suppressed"])
+                self.assertIs(report["summary"]["coverage_certified"], True)
+                self.assertEqual("PASS", report["summary"]["gate"])
 
     def test_a_malformed_row_is_dropped_at_the_boundary(self):
         rows = self._coverage([{"repo": ".", "key": "filter.lfs.clean"},

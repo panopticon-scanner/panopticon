@@ -17,7 +17,6 @@ import scripts.coverage_model as coverage_model
 from scripts import native_unparsed
 import scripts.hosts as hosts_mod
 import scripts.synth.coverage_io as coverage_io
-import scripts.synth.delta as delta_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.grading as grading_mod
 import scripts.synth.render as render_mod
@@ -433,191 +432,7 @@ class TestCertify(unittest.TestCase):
         self.assertEqual(r["gate"], "FAIL")
         self.assertFalse(r["coverage_certified"])
 
-class TestADeltaScopedRunCannotCertifyOverSuppressedGitDrivers(unittest.TestCase):
-    """#2013 fix round 1 (review I1): suppression is certification-grade on a
-    delta-scoped run and disclosure-only on a full-repo one.
 
-    Emptying the target's clean filter makes git compare raw worktree bytes
-    against a filtered index blob, so paths nobody touched read as modified --
-    measured, on the canonical git-lfs shape. On a full-repo scan that costs
-    provenance (`target_dirty`) and nothing else. On a delta-scoped run the
-    inflated comparison CHOOSES the reviewed file set and the gate's scope, so
-    the run cannot claim certified coverage.
-
-    The caveat rides `meta.integrity` and therefore `integrity_ok`, which is
-    what moves the gate -- the same two-channel shape `tools_manifest_invalid`
-    uses (`integrity_ok` moves the gate, the named reason writes the note).
-    """
-
-    def test_the_named_reason_writes_the_note_and_sinks_certification(self):
-        r = grading_mod.certify("A", [], "high", set(), [], integrity_ok=True,
-                                delta_scope_suppressed_git_drivers=["filter.lfs.clean"])
-        self.assertFalse(r["coverage_certified"])
-        self.assertIn("delta scope inflated by suppressed git drivers",
-                      r["coverage_note"])
-        self.assertIn("filter.lfs.clean", r["coverage_note"])
-
-    def test_the_same_reason_through_integrity_ok_is_inconclusive(self):
-        # How reconcile actually calls it: the caveat is in the integrity dict,
-        # so integrity_ok is already false by the time certify runs.
-        r = grading_mod.certify("A", [], "high", set(), [], integrity_ok=False,
-                                delta_scope_suppressed_git_drivers=["filter.lfs.clean"])
-        self.assertEqual(r["gate"], "INCONCLUSIVE")
-        self.assertFalse(r["coverage_certified"])
-        self.assertIn("delta scope inflated by suppressed git drivers",
-                      r["coverage_note"])
-
-    def test_a_full_repo_run_passes_the_reason_as_none_and_certifies(self):
-        r = grading_mod.certify("A", [], "high", set(), [], integrity_ok=True,
-                                delta_scope_suppressed_git_drivers=None)
-        self.assertTrue(r["coverage_certified"])
-        self.assertIsNone(r["coverage_note"])
-
-    def test_it_composes_with_another_caveat_rather_than_replacing_it(self):
-        r = grading_mod.certify("A", [], "high", set(), [], integrity_ok=False,
-                                tools_manifest_invalid="unreadable: x",
-                                delta_scope_suppressed_git_drivers=["diff.external"])
-        self.assertIn("tools manifest unreadable", r["coverage_note"])
-        self.assertIn("delta scope inflated by suppressed git drivers",
-                      r["coverage_note"])
-
-
-class TestAZeroHunkDeltaGateCannotReadPass(unittest.TestCase):
-    """#2178 (owner ruling 2026-09-27): `delta_zero_hunks` is the REASON an
-    active delta review's diff-hunks map carried no ranges while active findings
-    existed under on-diff scoping. Same shape as every other gap in this
-    function -- it joins `gate_relevant_gap`, so a PASS becomes INCONCLUSIVE and
-    a FAIL or an OFF is untouched -- and it is the channel that NAMES the cause
-    in `coverage_note`. `delta.zero_hunk_gate_gap` is the one place that decides
-    whether there is a gap at all; certify only consumes the answer.
-    """
-
-    REASON = ("zero-hunk delta gate — the diff-hunks map resolved a base and "
-              "carries no diff ranges")
-
-    def _crit(self):
-        return [{"severity": "CRITICAL", "evidence": {"status": "advisor_confirmed"}}]
-
-    def test_none_is_the_no_gap_value_and_certifies(self):
-        r = grading_mod.certify("A", [], "high", set(), [], delta_zero_hunks=None)
-        self.assertEqual(r["gate"], "PASS")
-        self.assertTrue(r["coverage_certified"])
-        self.assertIsNone(r["coverage_note"])
-
-    def test_the_reason_turns_a_pass_into_inconclusive_and_writes_the_note(self):
-        r = grading_mod.certify("A", [], "high", set(), [],
-                                delta_zero_hunks=self.REASON)
-        self.assertEqual(r["gate"], "INCONCLUSIVE")
-        self.assertFalse(r["coverage_certified"])
-        self.assertIn(self.REASON, r["coverage_note"])
-
-    def test_a_confirmed_fail_still_fails(self):
-        # A zero-range map can still yield a non-empty on-diff set through
-        # `diff_map.classify`'s fail-open arms, so FAIL is reachable here -- and
-        # a real FAIL is never softened into INCONCLUSIVE.
-        r = grading_mod.certify("F", self._crit(), "high", set(), [],
-                                delta_zero_hunks=self.REASON)
-        self.assertEqual(r["gate"], "FAIL")
-        self.assertFalse(r["coverage_certified"])
-        self.assertIn(self.REASON, r["coverage_note"])
-
-    def test_off_is_preserved(self):
-        # #2222 round 1 (review finding 6): `certify` composes `coverage_note`
-        # for every gate word, OFF included, and with no `--fail-on` the gate
-        # applies no severity floor at all -- so the clause the operator reads
-        # has to be true without a threshold. Pinned on the REAL note string, and
-        # fed the population an OFF run actually has (the evidence policy alone).
-        real = delta_mod.zero_hunk_gate_gap(
-            delta_mod.DeltaContext(diff_hunks={"base": "main", "hunks": {}},
-                                   report=delta_mod.HunksLoad(ranges=0)),
-            len(delta_mod.zero_hunk_population(self._crit(), None, False)),
-            "on-diff")
-        r = grading_mod.certify("A", [], None, set(), [], delta_zero_hunks=real)
-        self.assertEqual(r["gate"], "OFF")
-        self.assertFalse(r["coverage_certified"])
-        self.assertIn(self.REASON, r["coverage_note"])
-        self.assertIn("1 gate-eligible finding(s) (the active set after the "
-                      "gate's evidence policy and any --fail-on floor, before "
-                      "delta scoping)", r["coverage_note"])
-
-    def test_it_composes_with_the_manifest_note_and_follows_it(self):
-        # Precedence: the manifest note names a BROKEN FILE the operator has to
-        # fix before any coverage number means anything, so it stays first.
-        r = grading_mod.certify("A", [], "high", set(), [], integrity_ok=False,
-                                tools_manifest_invalid="unreadable: x",
-                                delta_zero_hunks=self.REASON)
-        note = r["coverage_note"]
-        self.assertIn("tools manifest unreadable", note)
-        self.assertIn(self.REASON, note)
-        self.assertLess(note.index("tools manifest unreadable"),
-                        note.index(self.REASON))
-
-    def test_it_precedes_the_other_composed_caveats(self):
-        # An empty gate scope invalidates the gate wholesale; a missing online
-        # scanner or a partial capture qualifies it. The bigger fact reads first.
-        r = grading_mod.certify("A", [], "high", set(), [],
-                                tools_network_excluded=["osv-scanner"],
-                                delta_zero_hunks=self.REASON)
-        note = r["coverage_note"]
-        self.assertLess(note.index(self.REASON), note.index("safe network unavailable"))
-
-    def test_it_silences_the_gate_certified_note(self):
-        # `gate certified; grade provisional` is false once the gate is not
-        # certified, and this gap is a gate-relevant one.
-        r = grading_mod.certify("B", [], "high", {"test"}, [],
-                                delta_zero_hunks=self.REASON)
-        self.assertEqual(r["gate"], "INCONCLUSIVE")
-        self.assertNotIn("gate certified", r["coverage_note"])
-
-
-class TestABrokenArtifactDeltaGateCannotReadPass(unittest.TestCase):
-    """#2405 (owner ruling 2026-10-01): the SAME `delta_zero_hunks` channel also
-    carries `delta.broken_artifact_gate_gap`'s reason, because the posture is the
-    same one -- a PASS the gate cannot stand behind reads INCONCLUSIVE, a FAIL
-    and an OFF are untouched, and the reason is what names the cause in
-    `coverage_note`. `delta.delta_gate_gap` picks which of the two rules spoke,
-    so `certify` consumes one reason either way and takes no second argument."""
-
-    def _reason(self):
-        # The REAL string, from the rule that owns the decision: a pinned literal
-        # here would let the two drift and this class assert nothing.
-        return delta_mod.broken_artifact_gate_gap(
-            delta_mod.DeltaContext(
-                diff_hunks={"base": "main",
-                            "hunks": {"a.py": [(10, 12)], "c.py": []}},
-                report=delta_mod.HunksLoad(files=2, ranges=1, ranges_dropped=1,
-                                           paths_without_ranges=1,
-                                           paths_emptied_by_drops=1)),
-            1, "on-diff")
-
-    def _crit(self):
-        return [{"severity": "CRITICAL", "evidence": {"status": "advisor_confirmed"}}]
-
-    def test_the_reason_turns_a_pass_into_inconclusive_and_writes_the_note(self):
-        reason = self._reason()
-        r = grading_mod.certify("A", [], "high", set(), [],
-                                delta_zero_hunks=reason)
-        self.assertEqual(r["gate"], "INCONCLUSIVE")
-        self.assertFalse(r["coverage_certified"])
-        self.assertIn("broken-artifact delta gate", r["coverage_note"])
-        self.assertIn(reason, r["coverage_note"])
-
-    def test_a_confirmed_fail_still_fails(self):
-        # A damaged map can still leave a non-empty on-diff set -- the
-        # changed-file fail-open is how its rangeless path admits findings at all
-        # -- so FAIL is reachable here, and a real FAIL is never softened.
-        r = grading_mod.certify("F", self._crit(), "high", set(), [],
-                                delta_zero_hunks=self._reason())
-        self.assertEqual(r["gate"], "FAIL")
-        self.assertFalse(r["coverage_certified"])
-        self.assertIn("broken-artifact delta gate", r["coverage_note"])
-
-    def test_off_is_preserved(self):
-        r = grading_mod.certify("A", [], None, set(), [],
-                                delta_zero_hunks=self._reason())
-        self.assertEqual(r["gate"], "OFF")
-        self.assertFalse(r["coverage_certified"])
-        self.assertIn("broken-artifact delta gate", r["coverage_note"])
 
 
 class TestHealthScore(unittest.TestCase):
@@ -1061,13 +876,12 @@ find = {"severity": "HIGH", "panel": "code", "title": "t", "_group": "App",
         "location": {"file": "app.py"}}
 resolved = types.SimpleNamespace(
     gate_eligible=[find], active=[find], rejected=[], findings=[find],
-    verdict_unloadable=[], unanswered_gate=0, on_diff_active=[],
-    pre_existing_active=[], delta_mode=False)
+    verdict_unloadable=[], unanswered_gate=0)
 reconciled = types.SimpleNamespace(
     groups_meta=[{"name": "App", "files": ["app.py"], "parent": "App"}],
     panels_incomplete=[], tools_absent=[], tools_network_excluded=[], integrity_ok=True,
     cell_audit={"missing_floor": []}, tools_manifest_invalid=None,
-    gated_suppressed=[], delta_scope_suppressed_git_drivers=None, coverage={})
+    gated_suppressed=[], coverage={})
 run = types.SimpleNamespace(target=sys.argv[1], root=None, fail_on=None, gate_unverified=False)
 
 graded = grading_mod.grade_report(run, resolved, reconciled)
@@ -1178,16 +992,14 @@ class TestNoReviewCellAnsweredReadsUnknown(unittest.TestCase):
                   "location": {"file": "app.py"}} for i, sev in enumerate(severities)]
         resolved = types.SimpleNamespace(
             gate_eligible=found, active=found, rejected=[], findings=found,
-            verdict_unloadable=[], unanswered_gate=0, on_diff_active=[],
-            pre_existing_active=[], delta_mode=False)
+            verdict_unloadable=[], unanswered_gate=0)
         audit = {"missing_floor": [] if reviewed else [["App", "SEC"]],
                  "planned_pairs": [["App", "SEC"]], "reviewed": [list(p) for p in reviewed]}
         reconciled = types.SimpleNamespace(
             groups_meta=[{"name": "App", "files": ["app.py"], "parent": "App"}],
             panels_incomplete=[] if reviewed else ["security"], tools_absent=[],
             tools_network_excluded=[], integrity_ok=True, cell_audit=audit,
-            tools_manifest_invalid=None, gated_suppressed=[],
-            delta_scope_suppressed_git_drivers=None, coverage={})
+            tools_manifest_invalid=None, gated_suppressed=[], coverage={})
         with tempfile.TemporaryDirectory() as d:
             with open(os.path.join(d, "app.py"), "w", encoding="utf-8") as fh:
                 fh.write("x = 1\n")

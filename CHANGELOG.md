@@ -2,6 +2,60 @@
 
 ## Unreleased
 
+- **Delta review's code is deleted (#3736).** Delta review was a review of a diff: `--pr`,
+  `--changes` (`-c`), `--base` and the on-diff gate scope. 5.4 withdrew it (#3735) and left its
+  code in the tree behind a refusal. The code is now gone: `diff_map.py`, `synth/delta.py`, the
+  PR worktree, the hunk map, the on-diff and off-diff classifier and the gate's diff scope.
+  **A whole-repository run is unchanged**: its report is the same byte for byte, minus the
+  removed fields below.
+  - **The flags are still refused, by name.** `--pr`, `--changes` (`-c`), `--base`,
+    `--gate-scope` and `--diff-context` on `driver run`, `loop`, `readiness` and `persist`, and
+    the delta flags of `discovery.py` and `synthesize.py`, stop with exit 2 before anything is
+    launched or written: "delta review was withdrawn in 5.4 (#3735) and removed in 5.5 (#3736):
+    --pr is refused. Run a whole-repository review, or scope one with -f, -d, -g or --files."
+    Never "unrecognized arguments".
+    - Three spellings that used to get argparse's own error now get this message: a value the
+      flag never took (`--gate-scope changed`, `--pr abc`), a flag typed with no value at all
+      (`driver run . --pr`, `synthesize.py --diff-hunks`), and a delta flag typed beside a
+      scope flag (`-c -d src`, `synthesize.py --repo --changes`).
+    - A run folder that was started as a delta review is still not resumed (`--reset` discards
+      it). The discovery phase now refuses such a manifest itself as well.
+  - **Report JSON: the delta fields are removed from the schema.** `findings[].delta`,
+    `summary.delta`, `meta.coverage.delta`, `meta.coverage.delta_artifact` and
+    `meta.integrity.delta_scope_suppressed_git_drivers`. No report written by 5.5 carries them.
+    - **An old report that carries them still renders.** The terminal summary and the HTML page
+      (its compare panels too) each show one fixed line: "Delta review: this report was made by
+      a delta review, which was withdrawn in 5.4 and removed in 5.5. It reviewed a diff, and by
+      default its gate judged only findings on changed lines. It is not a whole-repository
+      result." Nothing else is drawn from those fields: the "On-diff" and "Pre-existing"
+      sections are gone.
+    - `meta.review_type: "pr"` stays valid in the schema for such a report. 5.5 writes it in
+      none.
+  - **Config: `gate_scope` and `diff_context` are retired keys.** A committed `panopticon.yml`
+    that still has one is not broken by it. The key is valid, is ignored whatever its value, and
+    is disclosed: "ignored since 5.5: delta review was removed (#3736), and every audit is
+    whole-repository". (`gate_scope: all` used to be honoured as a tightening; `diff_context`
+    used to be refused as operator-only.)
+  - **A hand-made `mode: "files"` inventory with a suppressed Git driver certifies now.** A
+    `synthesize.py` run whose `groups.json` says `mode: "files"`, and that was passed
+    `--git-drivers-suppressed`, is typed `changes`, the type a delta run had. The delta rule
+    applied to it with no diff involved: NOT CERTIFIED, gate INCONCLUSIVE. With no diff an
+    emptied driver cannot inflate what was reviewed, so the suppression is disclosed
+    (`meta.coverage.git_drivers_suppressed`) and the run certifies. No driver run reaches this:
+    discovery writes `mode: "repo"` for every scope, `--files` included.
+  - **Run manifest.** `base`, `pr`, `pr_base`, `worktree`, `flags.gate_scope` and
+    `flags.diff_context` are no longer written. A manifest from before that holds them and was
+    not a delta run still resumes.
+  - **Panopticon makes no Git write to a target repository.** The write door of the Git probe
+    (`safe_git.mutate`, for `git worktree add` and `update-ref -d`) and the one fetch that kept
+    the operator's environment served only `--pr`, and are removed. A write shape is refused by
+    name.
+  - **Wording.** The suppressed-driver disclosure (HTML page, run-start stderr) ended "and a
+    delta may include them"; it now ends at "dirtiness for them is unknown". `groups.json`'s
+    `discovery.surface` is always `repo`.
+  - **Not changed.** `summary.health.basis.review_type` still reads `delta` for a report typed
+    `changes` (the hand-made inventory above), as it did. The CI security gate's own
+    "pre-existing" baseline (`security_gate.py`) is a different thing and is untouched.
 - **A scout request that cannot be read no longer drops its scanners silently (#3780).** With no
   tools manifest the scouts' requests are the only required scanner set. A `scout-*.json` that
   failed to parse was warned about and ignored, so the scanners it asked for were required by

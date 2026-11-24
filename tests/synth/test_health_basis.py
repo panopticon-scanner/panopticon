@@ -78,7 +78,7 @@ def test_basis_uses_the_layout_and_cell_counts_the_report_already_carries():
 
 @pytest.mark.parametrize(
     ("raw", "published"),
-    [("repo", "full"), ("changes", "delta"), ("pr", "delta"),
+    [("repo", "full"), ("changes", "delta"),
      ("file", "file-scoped"), ("directory", "file-scoped"),
      ("group", "file-scoped")],
 )
@@ -338,7 +338,7 @@ def test_the_note_names_where_a_custom_cap_came_from():
     assert health_basis.custom_profile_reason(by_flag).endswith("in the same code.")
 
 
-@pytest.mark.parametrize("review_type", ["changes", "pr", "file", "directory", "group"])
+@pytest.mark.parametrize("review_type", ["changes", "file", "directory", "group"])
 def test_delta_and_file_scoped_reviews_keep_their_letter_at_a_custom_cap(review_type):
     with _target_with_files(GROUPS) as root:
         summary = _graded(root, cap=15, review_type=review_type)

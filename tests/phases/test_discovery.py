@@ -117,31 +117,6 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.assertNotIn("--scope-dir", cmd)
         self.assertNotIn("--scope-group", cmd)
 
-    def test_discovery_threads_changed_scope_with_base_and_diff_context(self):
-        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
-        manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
-                        base="main", flags={"diff_context": 5})
-
-        def fake_run(cmd, **kw):
-            out = cmd[cmd.index("--out") + 1]
-            with open(out, "w") as fh:
-                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
-            return mock.Mock(returncode=0, stdout="", stderr="")
-
-        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
-            result = discovery.discovery_execute(self.root, manifest)
-        self.assertEqual(result.kind, "advanced")
-        cmd = run.call_args.args[0]
-        self.assertIn("--scope-changed", cmd)
-        self.assertIn("--base", cmd)
-        self.assertEqual(cmd[cmd.index("--base") + 1], "main")
-        self.assertIn("--diff-context", cmd)
-        self.assertEqual(cmd[cmd.index("--diff-context") + 1], "5")
-        self.assertNotIn("--scope-file", cmd)
-        self.assertNotIn("--scope-dir", cmd)
-        self.assertNotIn("--scope-group", cmd)
-        self.assertNotIn("--scope-files", cmd)
-
     def test_discovery_threads_files_scope_with_target_list(self):
         self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
         manifest = dict(self.manifest,
@@ -162,87 +137,6 @@ class TestDiscoveryPhase(unittest.TestCase):
         self.assertEqual(cmd[i + 1:i + 3], ["a.py", "b.py"])
         self.assertNotIn("--base", cmd)
         self.assertNotIn("--diff-context", cmd)
-
-    def test_discovery_threads_pr_base_when_present(self):
-        # Finding B: a --pr manifest carries the gh-detected base in `pr_base`
-        # (not `base`) so discovery.py resolves it with origin/<base> preference.
-        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
-        manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
-                        base=None, pr_base="main")
-
-        def fake_run(cmd, **kw):
-            out = cmd[cmd.index("--out") + 1]
-            with open(out, "w") as fh:
-                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
-            return mock.Mock(returncode=0, stdout="", stderr="")
-
-        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
-            result = discovery.discovery_execute(self.root, manifest)
-        self.assertEqual(result.kind, "advanced")
-        cmd = run.call_args.args[0]
-        self.assertIn("--scope-changed", cmd)
-        self.assertIn("--pr-base", cmd)
-        self.assertEqual(cmd[cmd.index("--pr-base") + 1], "main")
-        self.assertNotIn("--base", cmd)   # base is None -> not threaded
-
-    def test_discovery_omits_pr_base_when_absent(self):
-        # A -c/--files manifest (no PR) carries no pr_base -> discovery.py gets
-        # no --pr-base and its byte-identical behavior is preserved.
-        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
-        manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
-                        base="main")
-
-        def fake_run(cmd, **kw):
-            out = cmd[cmd.index("--out") + 1]
-            with open(out, "w") as fh:
-                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
-            return mock.Mock(returncode=0, stdout="", stderr="")
-
-        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
-            discovery.discovery_execute(self.root, manifest)
-        cmd = run.call_args.args[0]
-        self.assertNotIn("--pr-base", cmd)
-        self.assertIn("--base", cmd)
-
-    def test_discovery_threads_pr_worktree_when_the_manifest_has_a_pr(self):
-        # #1681: under --pr the review root IS the throwaway worktree, and
-        # `diff_map._sync_config` has already overwritten its root config with
-        # the operator's copy. `--pr-worktree` is what tells discovery.py to
-        # keep that sync out of diff-hunks.json rather than attribute it to the
-        # PR -- nothing pinned the flag's emission, so a dropped `if` would
-        # have published the operator's own config edit as a reviewable hunk.
-        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
-        manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
-                        base=None, pr_base="main", pr=7)
-
-        def fake_run(cmd, **kw):
-            out = cmd[cmd.index("--out") + 1]
-            with open(out, "w") as fh:
-                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
-            return mock.Mock(returncode=0, stdout="", stderr="")
-
-        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
-            result = discovery.discovery_execute(self.root, manifest)
-        self.assertEqual(result.kind, "advanced")
-        self.assertIn("--pr-worktree", run.call_args.args[0])
-
-    def test_discovery_omits_pr_worktree_without_a_pr(self):
-        # The other half: a plain -c/--base run in the operator's OWN checkout
-        # carries no `pr`, and excluding the config names there would hide a
-        # real reviewable change to them.
-        self._write_config("groups:\n  Auth:\n    match: ['src/auth/**']\n")
-        manifest = dict(self.manifest, scope={"mode": "changed", "target": None},
-                        base="main")
-
-        def fake_run(cmd, **kw):
-            out = cmd[cmd.index("--out") + 1]
-            with open(out, "w") as fh:
-                json.dump({"groups": [{"name": "Auth", "files": ["src/auth/a.py"]}]}, fh)
-            return mock.Mock(returncode=0, stdout="", stderr="")
-
-        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run) as run:
-            discovery.discovery_execute(self.root, manifest)
-        self.assertNotIn("--pr-worktree", run.call_args.args[0])
 
 
 class TestGroupsArtifactShape(unittest.TestCase):
@@ -284,12 +178,12 @@ class TestGroupsArtifactShape(unittest.TestCase):
         self.assertFalse(discovery.discovery_done(self.root, self.MANIFEST))
 
     def test_no_groups_IS_done_when_the_scope_selected_nothing(self):
-        # A `-c` run whose delta matches no file is a real, deliberate empty
-        # scope: discovery.py builds it from `git diff`, and zero groups is the
+        # A `--files` run whose every named file a committed `exclude_paths:`
+        # prunes is a real, deliberate empty scope, and zero groups is the
         # honest answer rather than a corrupt artifact.
         doc = dict(self.REAL, groups=[])
         self._write(doc)
-        manifest = dict(self.MANIFEST, scope={"mode": "changed", "target": None})
+        manifest = dict(self.MANIFEST, scope={"mode": "files", "target": ["a.py"]})
         self.assertEqual(discovery.groups_artifact_errors(doc, manifest), [])
         self.assertTrue(discovery.discovery_done(self.root, manifest))
 
@@ -302,8 +196,11 @@ class TestGroupsArtifactShape(unittest.TestCase):
         doc = dict(self.REAL, groups=[{"name": "A", "files": []}])
         self._write(doc)
         self.assertFalse(discovery.discovery_done(self.root, self.MANIFEST))
-        manifest = dict(self.MANIFEST, scope={"mode": "changed", "target": None})
+        manifest = dict(self.MANIFEST, scope={"mode": "files", "target": ["a.py"]})
         self.assertEqual(discovery.groups_artifact_errors(doc, manifest), [])
+        # #3736: `changed` was the delta review's scope and may select nothing no more.
+        manifest = dict(self.MANIFEST, scope={"mode": "changed", "target": None})
+        self.assertNotEqual(discovery.groups_artifact_errors(doc, manifest), [])
 
     def test_one_empty_group_beside_a_real_one_is_fine(self):
         # Discovery legitimately emits an empty leaf beside real ones; the rule
@@ -418,137 +315,3 @@ class TestMalformedProducerOutput(unittest.TestCase):
         self.assertEqual(result.kind, "advanced")
         self.assertTrue(discovery.discovery_done(self.root, self.manifest))
 
-
-class TestTheDiffHunksGenerationStamp(unittest.TestCase):
-    """#2107: the delta half of discovery's output, bound to the groups half.
-
-    One child writes `diff-hunks.json` and then `groups.json`, as two
-    INDEPENDENT atomic writes, and only the groups half carried the run
-    binding. The #2107 probe traced all eight driver paths and could not
-    assemble old-groups + new-hunks -- the pre-child clear, the
-    hunks-before-groups write order and the per-run folder each stop it -- but
-    the invariant was STRUCTURAL and undeclared: one reordering of
-    `discovery.main`, or one "we can reuse the old groups.json" optimisation,
-    silently turns it into the mixed pair the probe reached by hand, where the
-    review's cells and the gate's scope come from different generations.
-
-    So the sibling gets the SAME stamp, from the same party for the same
-    reason, and `phases/synthesize.py` requires it. Stamped here and not in
-    `discovery.write_diff_hunks` because the child is a repo profiler with no
-    notion of a run -- it also serves `panopticon discovery` by hand.
-    """
-
-    def setUp(self):
-        self._t = tempfile.TemporaryDirectory()
-        self.root = os.path.realpath(self._t.name)
-        os.makedirs(os.path.join(self.root, ".panopticon"))
-        self.addCleanup(self._t.cleanup)
-        with open(os.path.join(self.root, "panopticon.yml"), "w") as fh:
-            fh.write("version: 1\n")
-            fh.write("groups:\n  Auth:\n    match: ['src/auth/**']\n")
-        self.manifest = {"run_id": "R", "security_mode": "standard",
-                         "scope": {"mode": "changed", "target": None},
-                         "base": "main"}
-
-    @property
-    def _hunks_path(self):
-        return runio._pano(self.root, "diff-hunks.json")
-
-    def _hunks(self):
-        return runio._load_json(self._hunks_path)
-
-    def _child(self, groups=True, hunks=None, rc=0):
-        """A child that writes the halves it is told to, in the real order:
-        `diff-hunks.json` first (`discovery.py:1852-1862`), `groups.json`
-        second (`discovery.py:1911-1923`)."""
-        def fake_run(cmd, **kw):
-            if hunks is not None:
-                with open(self._hunks_path, "w") as fh:
-                    json.dump(hunks, fh)
-            if groups:
-                with open(cmd[cmd.index("--out") + 1], "w") as fh:
-                    json.dump({"groups": [{"name": "Auth",
-                                           "files": ["src/auth/a.py"]}]}, fh)
-            return mock.Mock(returncode=rc, stdout="", stderr="boom")
-        return fake_run
-
-    PAYLOAD = {"schema_version": 1, "base": "main", "hunks": {"a.py": [[1, 5]]}}
-
-    def test_a_successful_child_leaves_both_halves_stamped_for_this_run(self):
-        with mock.patch("scripts.phases.child._run_child",
-                        side_effect=self._child(hunks=dict(self.PAYLOAD))):
-            result = discovery.discovery_execute(self.root, self.manifest)
-        self.assertEqual(result.kind, "advanced")
-        self.assertEqual(self._hunks()["run_id"], "R")
-        self.assertEqual(runio._load_json(runio._pano(self.root,
-                                                      "groups.json"))["run_id"], "R")
-        # The stamp is ADDED, not a rewrite: every field the child wrote has to
-        # survive, or the gate scopes against a different diff than was measured.
-        self.assertEqual(self._hunks()["hunks"], {"a.py": [[1, 5]]})
-        self.assertEqual(self._hunks()["base"], "main")
-        self.assertEqual(self._hunks()["schema_version"], 1)
-
-    def test_a_stale_generations_stamp_is_replaced_not_kept(self):
-        # The child rewrites the artifact from one tree state, so whatever
-        # stamp a previous run left is gone with the bytes it was written on.
-        with open(self._hunks_path, "w") as fh:
-            json.dump(dict(self.PAYLOAD, run_id="PREVIOUS"), fh)
-        with mock.patch("scripts.phases.child._run_child",
-                        side_effect=self._child(hunks=dict(self.PAYLOAD))):
-            discovery.discovery_execute(self.root, self.manifest)
-        self.assertEqual(self._hunks()["run_id"], "R")
-
-    def test_an_orphan_hunks_file_with_no_groups_still_raises(self):
-        """Probe state Q1-B: `os.replace` dies on the groups write after the
-        hunks write committed. The pre-child clear ate the previous
-        `groups.json`, so the surviving half-pair is missing the half that IS
-        checked, and the phase is terminal -- `synthesize` is the last phase in
-        `driver.PHASES` and is never reached with the orphan. Unchanged by this
-        issue, and pinned here because the stamp must not become a second,
-        softer answer to "did discovery happen"."""
-        with mock.patch("scripts.phases.child._run_child",
-                        side_effect=self._child(groups=False,
-                                                hunks=dict(self.PAYLOAD))):
-            with self.assertRaises(runio.DriverError) as cm:
-                discovery.discovery_execute(self.root, self.manifest)
-        self.assertIn("produced no groups.json", str(cm.exception))
-        self.assertFalse(discovery.discovery_done(self.root, self.manifest))
-        # The orphan survives on disk, UNSTAMPED: it was never bound to a
-        # generation, which is exactly what makes `phases/synthesize.py` refuse
-        # it if a later resume were ever to reach that phase with it.
-        self.assertTrue(os.path.isfile(self._hunks_path))
-        self.assertNotIn("run_id", self._hunks())
-
-    def test_a_non_object_artifact_is_left_for_the_loader_to_reject(self):
-        # Rewriting it would replace the operator's broken bytes with
-        # different broken bytes, and `synth/delta.py` already rejects a
-        # non-object payload on its own terms (`not an object`).
-        with mock.patch("scripts.phases.child._run_child",
-                        side_effect=self._child(hunks=["not", "an", "object"])):
-            discovery.discovery_execute(self.root, self.manifest)
-        self.assertEqual(self._hunks(), ["not", "an", "object"])
-
-    def test_an_unreadable_artifact_is_left_alone_too(self):
-        def writes_garbage(cmd, **kw):
-            with open(self._hunks_path, "w") as fh:
-                fh.write("{not json")
-            with open(cmd[cmd.index("--out") + 1], "w") as fh:
-                json.dump({"groups": [{"name": "Auth",
-                                       "files": ["src/auth/a.py"]}]}, fh)
-            return mock.Mock(returncode=0, stdout="", stderr="")
-        with mock.patch("scripts.phases.child._run_child", side_effect=writes_garbage):
-            result = discovery.discovery_execute(self.root, self.manifest)
-        self.assertEqual(result.kind, "advanced")
-        with open(self._hunks_path, encoding="utf-8") as fh:
-            self.assertEqual(fh.read(), "{not json")
-
-    def test_a_non_delta_run_has_nothing_to_stamp_and_creates_nothing(self):
-        # `discovery.py`'s non-delta branch REMOVES a stale hunks file
-        # (#5.0-07), so there is no artifact here -- and the stamp must not
-        # conjure one, which would hand synthesize an empty delta to scope by.
-        manifest = {"run_id": "R", "security_mode": "standard",
-                    "scope": {"mode": "repo"}}
-        with mock.patch("scripts.phases.child._run_child", side_effect=self._child()):
-            result = discovery.discovery_execute(self.root, manifest)
-        self.assertEqual(result.kind, "advanced")
-        self.assertFalse(os.path.exists(self._hunks_path))

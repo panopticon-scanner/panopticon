@@ -550,12 +550,12 @@ class TestSkillMd(unittest.TestCase):
     def test_discovery_is_documented_as_completing_only_on_a_valid_artifact(self):
         # #1643: the phase that "succeeds emptily" is the one an operator will
         # never think to check, so the guide has to say what completion
-        # REQUIRES, that an empty delta scope is still a legitimate answer, and
+        # REQUIRES, that an empty `--files` scope is still a legitimate answer, and
         # what a second malformed round does.
         loop = _section(self.text, "## Driver run-loop", "## Driver setup")
         disco = _section(loop, "`discovery`**", "`coverage`**")
         for token in ["well-formed groups artifact", "`run_id`",
-                      "at least one group", "empty delta",
+                      "at least one group",
                       # F6: `--files` selects a set too, so it may select none.
                       "`--files` whose list pruned to nothing",
                       "discovery produced no usable groups"]:
@@ -682,10 +682,12 @@ class TestSkillMd(unittest.TestCase):
         self.assertIn("`stderr`", loop)
         self.assertIn("200", loop)
         # I6 (fix round 3): `driver persist` grew `--pr`/`--base` because a PR
-        # run's review root is the worktree; a session host that does not pass
-        # them gets "no entry in the current dispatch request" and no clue why.
-        # (#3735: withdrawn in 5.4, and the guide says both verbs refuse them.)
-        self.assertIn("`--pr` and `--base` are refused on both", " ".join(loop.split()))
+        # run's review root was the worktree. #3736: the worktree is gone, and the
+        # guide says the flags are refused on `persist` as on `run` and `loop`.
+        self.assertIn("are still parsed on `run`, `loop`, `readiness` and `persist`, so that each "
+                      "is refused by name", " ".join(loop.split()))
+        for gone in ("PR worktree, not your checkout", "git worktree add", "diff_map."):
+            self.assertNotIn(gone, loop)
         # I8: same for the guide -- the documented default names the condition.
         self.assertIn("default: headless when the host has a headless runner, "
                       "otherwise session", loop)

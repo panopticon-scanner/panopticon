@@ -874,16 +874,13 @@ class TestTheSessionGuardsMark(LoopCase):
         self.assertEqual([], guards.armed_entries)
 
     def test_an_assessed_root_under_another_spelling_is_not_marked(self):
-        # #3538 B1: under --pr the session root is the operator's checkout,
-        # which the contact already checked as `args.target`.
+        # #3538 B1: a session root that is the review root, which the contact
+        # already checked, reached here through a link.
         s = self._planted()
         link = os.path.join(self._session_root(None), "link")
         os.symlink(s, link)
-        pr = mock.Mock(target=s, pr="7")
-        self.assertEqual((s, "/wt/7"), first_contact.contact_roots(pr, "/wt/7"))
-        self.assertEqual(("/wt/7",), first_contact.contact_roots(mock.Mock(pr=None), "/wt/7"))
         before = sorted(os.walk(s))
-        first_contact.mark_session_root(link, first_contact.contact_roots(pr, "/wt/7"))
+        first_contact.mark_session_root(link, (s,))
         self.assertEqual(before, sorted(os.walk(s)))
         with self.assertRaises(first_contact.FirstContactHalt) as halt:
             first_contact.mark_session_root(link, ("/wt/7",))

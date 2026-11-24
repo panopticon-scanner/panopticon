@@ -4,15 +4,14 @@ The 5.0 driver (`skill/scripts/driver.py`) runs every mode from Modes above — 
 committed-matrix review and `-f`/`-d`/`-g`/`--files` scope — as one resumable state machine;
 the host drives it through its status protocol.
 
-**Delta review is withdrawn in 5.4 (#3735).** `--pr`, `--changes` (`-c`), `--base` and
-`--gate-scope` are refused at the command line on `run`, `loop`, `readiness` and `persist`, with
-`--diff-context`, before a root is resolved or a file written (exit 2, one message). A run folder
-that was started as a delta review is refused on resume with the same reason; `--reset` discards it.
-`discovery.py` and `synthesize.py`, run by hand, refuse their delta flags too, and the driver hands
-`synthesize.py` a hunk map only for a run whose manifest says it is a delta run, which no command
-line can now write. Everything this page still says about `-c`, `--pr`, `--base`, `diff-hunks.json`
-and the on-diff gate describes code that is in the tree and unreachable; it is deleted in 5.5
-(#3736).
+**Delta review was withdrawn in 5.4 (#3735) and its code removed in 5.5 (#3736).** `--pr`,
+`--changes` (`-c`), `--base`, `--gate-scope` and `--diff-context` are still parsed on `run`, `loop`,
+`readiness` and `persist`, so that each is refused by name, whatever value it is given, before a
+root is resolved or a file written (exit 2, one message). A run folder that was started as a delta
+review is refused on resume with the same reason; `--reset` discards it. `discovery.py` and
+`synthesize.py`, run by hand, refuse their delta flags the same way. Nothing reads or writes
+`diff-hunks.json`, no PR worktree is created, and panopticon makes no Git write to a target
+repository.
 
 **Installed-flow substitution (#495):** `skill/` in every command below means THIS SKILL'S INSTALL
 DIRECTORY — literally `skill/` inside the panopticon repo, or the absolute path you installed it to
@@ -110,20 +109,7 @@ The host contract (5.2, plan 6):
   `python3 skill/scripts/driver.py persist <id> --file <reply.txt>`), then re-run
   `driver loop --mode session <target>` with the same flags. Under `--setup`, BOTH commands need
   `--setup` too, so they resolve setup's namespace rather than the review's — the printed status's
-  `persist` and `then` hints already carry it. (Withdrawn in 5.4, #3735: `--pr` and `--base` are
-  refused on both.) On a `--pr` or `--base` run, the same
-  `--pr`/`--base` went to **both** as well: a PR run's review root is the PR worktree, not your checkout,
-  and `driver persist` has to resolve the same one the loop did or it reads a different tree's
-  dispatch request and refuses the entry as unknown. That worktree sits at a **deterministic** path
-  under the system temp dir (so a `--pr` run resumes in the same tree), which means anyone with
-  write access to that directory can derive it — so acquisition refuses a leaf it did not create:
-  anything already at the path must be an empty directory you own that no other account can write
-  into, in a temp dir that is sticky or private, and the leaf is created here, by the run, in the
-  statement before `git worktree add` (`diff_map._claim_worktree_leaf`, #1841). Ownership and
-  group/other **write** are what is checked, not every mode bit: the tools image runs as `scanner`
-  and mounts the review root read-only, so another uid has to be able to traverse it. The same
-  ownership check runs on the reuse branch a resume takes (not the emptiness rule — git populated
-  it), and the refusal names the path plus whether to delete it or `git worktree remove --force` it.
+  `persist` and `then` hints already carry it.
   The loop **refuses to advance** until the
   entries' out files exist on disk and pass the phase's own done predicate — a re-entry with nothing
   done re-emits the same set; there is no way to advance on a claim.
@@ -173,9 +159,8 @@ The host contract (5.2, plan 6):
   `--reset` is reported, never acted on), `gate` (the threshold the run would use, `critical` when
   no `--fail-on` is given or committed; `WARN` only for `--fail-on off`, because the run would end
   `gate: OFF`), `groups` (discovery run into a temp directory: committed
-  leaves and their chunks, plus what it derives, such as `Commons`, `Docs` and `Tests`; not counted
-  for `-c`, `--base` or `--pr`, which depend on a diff), `shells` (the registered enforcement shells
-  compared byte for byte with a fresh render into a temp directory), `enforcement`
+  leaves and their chunks, plus what it derives, such as `Commons`, `Docs` and `Tests`), `shells`
+  (the registered enforcement shells compared byte for byte with a fresh render into a temp directory), `enforcement`
   (`tool_policy_enforced` from the registered shells with no launch; whether the loop will stop for
   `--allow-unenforced` is never answered, because `artifact_write_guard` is measured by one launch on
   the first run), `tool-findings` (how many tool findings will each get an advisor: unknown until the
@@ -326,9 +311,9 @@ never reaches a grant: it is a first-contact halt (H4, #3271). `driver run` and 
 the tree before any phase writes, and a regular file whose link count exceeds its in-tree name count
 stops the run with one line naming it. `driver setup`, whose scan holds the one directory grant over
 the whole tree, walks on every invocation; `driver run` walks once per run. `driver loop` and
-`driver loop --setup` make the `.panopticon/` half (H1-H3, on the operator's checkout too under
-`--pr`) before they read a manifest or a crash record or delete anything one names. Standalone tool
-entries do not run the whole first contact; driver run/setup/loop do. `run_tools.py` run
+`driver loop --setup` make the `.panopticon/` half (H1-H3) before they read a manifest or a crash
+record or delete anything one names. Standalone tool entries do not run the whole first contact;
+driver run/setup/loop do. `run_tools.py` run
 directly (as CI runs it) keeps only a read-only check that `.panopticon` is a real in-tree
 directory, and writes no mark and no key. `discovery.py` and `synthesize.py` run directly make
 first contact's `.panopticon/` half (#3273, ruling R1): H1-H3 and the mark, read-only, on every
@@ -336,7 +321,7 @@ tree one of their artifact paths lies in (as spelled and as resolved), and for `
 its cwd, before they read or write any of them. A non-empty `.panopticon/` that is not this
 machine's halts. One that was absent or empty is marked ours, through the driver's own writer and
 creating the stamp key on a new machine, only when that invocation writes into it
-(`discovery.py --out` inside it or its delta-mode `diff-hunks.json`; `synthesize.py`'s report or
+(`discovery.py --out` inside it; `synthesize.py`'s report or
 pass 1's verify queue). So a hand-run `discovery.py` → `synthesize.py` pair, and synthesize's two
 passes, trust what the earlier step wrote, while findings collected by hand into an unmarked
 `.panopticon/` halt. In-tree pairs (a `cp -al`
@@ -402,8 +387,7 @@ verdict in it) and a tool verdict may declare `schema_version`. One rule,
   This window stays open through 5.x and has no date. Closing it is a separate ruling (#3482),
   after the prompts and the Codex schemas emit the version and a forge-kit run shows every host
   does.
-- **Exactly the int `1`** is supported. `true`, `1.0` and `"1"` are not versions, the same rule as
-  the diff-hunks loader (#2382).
+- **Exactly the int `1`** is supported. `true`, `1.0` and `"1"` are not versions.
 - **Anything else is refused, fail-closed,** with the fixed reason `unsupported schema_version`,
   never the value.
   - At receipt, `write_reply` refuses before the schema check (whose message would echo the
@@ -895,17 +879,12 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   bytes that arrived came out of this repository's build. That step is `continue-on-error: true`, so
   a missing attestation reads as unknown, not as tampered.
 - **`discovery`** — `discovery.py --repo-scan` writes `.panopticon/runs/<tag>/groups.json` against
-  the committed `panopticon.yml`; delta scopes (`-c`/`--pr`/`--base`, withdrawn in 5.4) additionally wrote
-  `.panopticon/runs/<tag>/diff-hunks.json`. **Both halves carry this run's `run_id`** (#2107): the child
-  writes the hunk map first and the inventory second, as two independent atomic writes, so the
-  driver stamps the sibling with the same stamp it puts on `groups.json` — the surface the review
-  covers and the diff the gate scopes to are then one generation by construction, not by the
-  write order's good manners. **Discovery completes only on a well-formed groups artifact**
+  the committed `panopticon.yml`. **Discovery completes only on a well-formed groups artifact**
   (#1643): the driver stamps the artifact with this run's `run_id` and then requires it — a `groups`
   LIST whose every record carries a non-empty `name` and a `files` list of strings, and at least one
   group carrying at least one file (an empty leaf beside real ones is normal; an artifact whose
   every record is empty is the same empty success as no record at all) unless the scope legitimately
-  selected nothing (`-c`/`--pr` over an empty delta, or `--files` whose list pruned to nothing) —
+  selected nothing (`--files` whose list pruned to nothing) —
   because the predicate used to be "it parses", and `{}` parses, so a corrupt or truncated child
   output completed the phase, coverage derived zero groups and every later `all(...)` over that
   empty collection was true by definition; one malformed round is re-run, and a second identical one
@@ -1140,8 +1119,8 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   manual-security-review instruction and its findings envelope must echo the exact
   `targeted_review` path list.
   `meta.coverage.targeted_review` names each target, its language, where it was dispatched, and
-  which valid completed SEC cell covered it. A native gap outside the reviewed universe -- an
-  untouched file in a delta run or a pruned fixture-corpus file -- is warning-only, consumes none
+  which valid completed SEC cell covered it. A native gap outside the reviewed universe -- a
+  pruned fixture-corpus file, for one -- is warning-only, consumes none
   of the cap, and appears in the separately capped `targeted_review.out_of_scope` list. No SEC cell,
   a failed or malformed cell, or an incorrect attestation leaves an in-universe file uncovered and
   withholds certification. A missing or rejected groups inventory makes membership unknown and
@@ -1390,70 +1369,9 @@ Phases run in order — `readiness` → `discovery` → `coverage` → `tools` �
   per-group states land in `meta.coverage.test_inventory` and next to the coverage line in
   `report.json.html`, and the fix is the target's `panopticon.yml`, not its test suite.
 - **`synthesize`** — runs `skill/scripts/synthesize.py --verdicts-dir .panopticon/runs/<tag>/verdicts`
-  (`--tools-dir .panopticon/runs/<tag>/tools` added when `tools` produced output; `--diff-hunks
-  .panopticon/runs/<tag>/diff-hunks.json` added only for a delta run's manifest, which 5.4 cannot
-  write (#3735: a hunk map left in the run folder is handed to no child), always beside
-  `--diff-hunks-run-id <this run's run_id>`) → `.panopticon/<tag>-report.json`, with
-  `.panopticon/report.json` a symlink to the latest. A foreign or absent
-  stamp is REFUSED (#2107): the pair is handed over WITH the expectation, so the child's loader
-  rejects the payload, one stderr line says so, the report publishes
-  `delta_artifact.payload_malformed: generation-mismatch`, and the gate degrades to whole-repo
-  scope rather than scoping this run to another generation's diff. Only a manifest whose `run_id`
-  is not a non-empty string withholds the path — there is no expectation to thread, and a
-  non-string argv token cannot launch the child at all. **A hand-run `synthesize.py` is bound
-  too**: the loader's expectation defaults to the stamp on the `groups.json` it read, so an
-  operator who inherits `--groups` by auto-discovery and supplies `--diff-hunks` himself — the
-  one mixing shape no driver path can reach — gets the check without passing the flag. Passing
-  `--diff-hunks-run-id` overrides it, and an inventory carrying no stamp expects nothing, which
-  is what keeps a hand-written artifact reading as it always did. A
-  diff-hunks artifact it cannot read, one whose `hunks` is not an object, and everything it
-  drops or repairs (#2382) are named on stderr, and every drop is counted in `meta.coverage.delta` when the payload
-  resolved a `base` (#1783). The two losses are counted apart, because they do not cost the
-  same (#2169): `ranges_dropped` is a range that was not a two-integer pair, which leaves the
-  file in the map and merely narrower, while `paths_dropped` is a path whose value was not a
-  list of ranges at all, so that file leaves the map entirely and every finding in it
-  classifies off-diff. The third counter is not a loss at all (#2381):
-  `paths_without_ranges` is a path the map NAMES whose list of ranges is empty, so that file
-  stays in the map and every finding in it classifies ON-diff — `diff_map.classify`'s
-  changed-file fail-open — and a `--gate-scope on-diff` gate judges them on the artifact's
-  word rather than on a measured range. A deletion-only, binary, mode-only or same-content
-  rename change legitimately carries such a key and a truncated map is indistinguishable from
-  it, so the shape is counted in both blocks and named on stderr rather than reclassified; the
-  whole-map disclosures below cannot see it, because one real range anywhere leaves
-  `hunks_ranges` non-zero. `paths_emptied_by_drops` splits that count (#2386): the subset whose
-  list arrived non-empty and was emptied because every range in it was malformed — a broken
-  artifact rather than a change shape, which the merged count could not tell apart — and the
-  stderr line now names the rangeless paths themselves (the first ten, escaped). Since #2405 that
-  split is a GATE input: on an active delta under `--gate-scope on-diff`, a non-zero
-  `paths_emptied_by_drops`, a non-zero `ranges_dropped`, a non-zero `paths_dropped` (#2517, owner
-  ruling 2026-10-02, the fourth counter) or a set `payload_malformed` turns a run
-  carrying gate-eligible findings from PASS to `gate: INCONCLUSIVE`, because the map that chose
-  the gate's scope is provably damaged — the `zero_hunk_gate_gap` posture over a map that still
-  carries ranges, which in practice means the three drop arms: the older rule wins when both hold,
-  and the one `payload_malformed` value an active delta can carry empties the map, so #2178
-  answers there. The two drop directions are opposite and both count: an emptied path still admits
-  every finding in its file to the gate, while a dropped path leaves the map, so every finding in
-  it classifies off-diff and leaves the gate's source set — the fail-open loss, which is why a
-  `paths_dropped` run could report a PASS over findings its own artifact had hidden. The blind
-  spot is deliberate: a truncated map whose paths arrived `[]` cannot be
-  told from a deletion-only, binary, mode-only or same-content rename change, so the rest of
-  `paths_without_ranges` stays disclosed and is never gated on. An ACTIVE delta
-  whose map is empty (`hunks_files: 0`) matches no
-  finding at all, so every one classifies off-diff and a `--gate-scope on-diff` gate has nothing
-  left to fail on — and with nothing rejected, an empty change and a broken artifact look
-  identical, so only regenerating the artifact tells them apart; with gate-eligible findings
-  (active, admitted by the evidence policy and by `--fail-on`, `critical` unless set) that run now reads
-  `gate: INCONCLUSIVE` rather than PASS (#2178, narrowed by #2222). A payload rejected outright
-  (unreadable, not an object, a bad `schema_version`, or a `generation-mismatch` — a `run_id` that
-  is not the one this run's `groups.json` carries, #2107) carries no `base`, so the review stays a
-  non-delta one and `meta.coverage.delta` is null — the same null a run that was never passed
-  `--diff-hunks` writes. The sibling `meta.coverage.delta_artifact` is what tells those two apart
-  (#2169): an object whenever a `--diff-hunks` path was GIVEN and a read attempted — a path that
-  does not exist included — active delta or not, carrying the `payload_malformed` reason, every
-  counter and the `keys_repaired` list (#2382), and null when no path was given, so the block's
-  presence alone is the fact.
-  `meta.coverage.delta` itself is unchanged; its sibling's schema node in
-  `skill/reference/report-schema.json` is where that contract is stated.
+  (`--tools-dir .panopticon/runs/<tag>/tools` added when `tools` produced output) →
+  `.panopticon/<tag>-report.json`, with `.panopticon/report.json` a symlink to the latest. A
+  committed `gate_scope:` and a `diff-hunks.json` left in the run folder reach no child (#3736).
   `synthesize` also emits a sibling `<report-stem>-x0x.json`, where `<report-stem>` is the report
   filename without `.json` (`<tag>-report` under the driver). The `report.json` compat relink does
   not cover it — the run's `<DOM>-X0X` / `ZZZ-X0X` catalog-gap

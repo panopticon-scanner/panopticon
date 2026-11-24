@@ -702,12 +702,6 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
             driver.build_parser().parse_args(
                 ["run", "x", "-g", "Auth", "-f", "src/app.py"])
 
-    def test_scope_changed_flag_parses(self):
-        args = driver.build_parser().parse_args(["run", "x", "-c"])
-        self.assertTrue(args.scope_changed)
-        self.assertEqual(driver._scope_from_args(args),
-                         {"mode": "changed", "target": None})
-
     def test_scope_files_flag_parses(self):
         args = driver.build_parser().parse_args(
             ["run", "x", "--files", "a.py", "b.py"])
@@ -715,9 +709,17 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertEqual(driver._scope_from_args(args),
                          {"mode": "files", "target": ["a.py", "b.py"]})
 
-    def test_scope_changed_is_mutually_exclusive_with_group(self):
-        with self.assertRaises(SystemExit):
-            driver.build_parser().parse_args(["run", "x", "-g", "Auth", "-c"])
+    def test_scope_changed_beside_a_group_is_refused_as_the_delta_flag(self):
+        # #3736: `-c` is outside the scope group now, so that typing it beside `-g` is
+        # answered with the withdrawal and not with "not allowed with argument".
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(err):
+            driver.parse_cli(["run", "x", "-g", "Auth", "-c"])
+        self.assertIn("removed in 5.5 (#3736): --changes (-c) is refused", err.getvalue())
+        self.assertNotIn("not allowed with", err.getvalue())
+        # The scopes that are left still exclude each other.
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            driver.build_parser().parse_args(["run", "x", "-g", "Auth", "-d", "src"])
 
     def test_scope_recorded_on_manifest(self):
         d = self._repo()
@@ -897,39 +899,6 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
             driver.main(["run", d])
         self.assertNotIn(host_disclosure.GENERIC_FALLBACK_NOTICE, err.getvalue())
 
-    def test_pr_acquires_worktree_and_records_manifest(self):
-        # C1 flip: driver --pr now acquires the deterministic PR worktree via
-        # resolve_review_root, rather than refusing. Finding B: with NO explicit
-        # --base, manifest["base"] stays None (anti-drift key -- a bare resume
-        # passes base=None -> no false drift) and the gh-detected PR base lands
-        # in manifest["pr_base"], the origin-preference channel.
-        # #2272: --no-tools for the same reason test_reset_restarts_from_scratch
-        # carries it (#1515). Before #2272 the delta path put the run's own
-        # untracked `.panopticon/` artifacts on the review surface, so this run
-        # stopped at a spurious scout checkpoint; with them dropped the changed
-        # set is empty and the run advances into tools_execute, whose child
-        # run_tools.py probes docker outside conftest's in-process refusal.
-        d = self._repo()
-        args = driver.build_parser().parse_args(["run", d, "--pr", "7", "--no-tools"])
-        with mock.patch(
-                "scripts.phases.runio.resolve_review_root",
-                return_value=(d, d, "main")) as resolve:
-            status = driver.run(args)
-        resolve.assert_called_once()
-        _call_args, call_kwargs = resolve.call_args
-        self.assertEqual(call_kwargs.get("pr"), 7)
-        # #3735: this is `driver.run` called below the command line, which refuses
-        # `--pr`. The delta code is still there and records its manifest as it did;
-        # the run then stops at its first child, which refuses the delta flags too.
-        self.assertEqual("error", status["status"])
-        self.assertIn("delta review is withdrawn in 5.4 (#3735)", status["message"])
-        manifest = run_manifest.load_manifest(d)
-        self.assertEqual(manifest["pr"], 7)
-        self.assertEqual(manifest["worktree"], d)
-        self.assertIsNone(manifest["base"])          # explicit-only; none given
-        self.assertEqual(manifest["pr_base"], "main")  # gh base -> pr_base channel
-        self.assertEqual(manifest["scope"], {"mode": "changed", "target": None})
-
     def test_the_exhausted_cell_list_in_the_message_is_bounded(self):
         # Fix round 1, N2: the COUNT is exact and always has been; the named
         # list was joined uncapped, so a run that lost 100 cells put 100
@@ -940,7 +909,6 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                     "message": "all phases complete"}
         cells = ["g%02d/SEC" % i for i in range(12)]
         with mock.patch("scripts.phases.engine.run_engine", return_value=complete), \
-                mock.patch("scripts.phases.validate._finalize_worktree"), \
                 mock.patch("scripts.phases.review.exhausted_cells", return_value=cells):
             status = driver.run(self._args(d))
         self.assertEqual(status["cells_exhausted"], 12)          # exact
@@ -950,30 +918,6 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         self.assertNotIn(cells[10], status["message"])
         self.assertNotIn(cells[11], status["message"])
         self.assertIn("2 more", status["message"])
-
-    def test_run_finalizes_worktree_only_on_complete(self):
-        # Ruling A wiring: run() surfaces+releases the worktree via
-        # _finalize_worktree ONLY when the engine returns status=="complete" --
-        # never on a mid-run checkpoint (which must leave the worktree in place so
-        # the resume can re-enter it).
-        d = self._repo()
-        complete = {"status": "complete", "phase": None, "checkpoint": None,
-                    "group": None, "dispatch_request": None, "advanced": [],
-                    "message": "all phases complete"}
-        checkpoint = dict(complete, status="checkpoint", checkpoint="scout")
-
-        with mock.patch("scripts.phases.engine.run_engine", return_value=complete), \
-                mock.patch("scripts.phases.validate._finalize_worktree") as fin:
-            status = driver.run(self._args(d))
-        self.assertEqual(status["status"], "complete")
-        fin.assert_called_once()
-
-        d2 = self._repo()
-        with mock.patch("scripts.phases.engine.run_engine", return_value=checkpoint), \
-                mock.patch("scripts.phases.validate._finalize_worktree") as fin2:
-            status2 = driver.run(self._args(d2))
-        self.assertEqual(status2["status"], "checkpoint")
-        fin2.assert_not_called()
 
     def test_fresh_manifest_clears_stale_artifacts(self):
         # I1: a stale report.json with no manifest must be cleared on the first

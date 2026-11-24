@@ -3,8 +3,8 @@
 preflight and the write. The work lives in the `skill/scripts/synth/` package, one stage per module —
 `findings` (load + normalize + the doc-severity policy + tool-finding
 aggregation; `FindingSet`), `corroborate` (dedupe, cross-panel corroboration, the `prepare_*`
-pipeline both passes share), `codes` (OCRDb code validation, verdict-quality scoring), `delta` (diff
-hunks + on/off-diff classification; `DeltaContext`), `grading` (grades, gate, certification, health
+pipeline both passes share), `codes` (OCRDb code validation, verdict-quality scoring),
+`grading` (grades, gate, certification, health
 score), `plan` (dispatch plans, tool policy mode, floor-cell audit, out-of-scope lanes,
 coverage/scout/queue readers; `PlanInputs`, `ToolAxis`), `integrity` (findings-file
 reconcile/mislabel/cross-domain checks, the unenforced ack, the `meta.integrity` section), `cost`

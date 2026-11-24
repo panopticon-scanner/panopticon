@@ -275,12 +275,6 @@ class Reconciled:
     # above and for the same reason: `meta.coverage` is what the report SAYS,
     # and this is a population certification consumes but never publishes.
     gated_suppressed: list = field(default_factory=list)
-    # #2013 fix round 1 (review I1): the suppressed driver keys that scoped a
-    # DELTA run, or None. Carried beside `integrity` (which also publishes it)
-    # the way `tools_manifest_invalid` is: certification takes it as an input to
-    # NAME the caveat, and must not have to read a section. The gate itself
-    # moves through `integrity_ok`, because the same fact is in that dict.
-    delta_scope_suppressed_git_drivers: list | None = None
     # #3548: the per-group coverage records, as `coverage_io.load_coverage_files` read them.
     # `health_basis` reads what a committed `panels:` / `exclude:` changed off them.
     coverages: list = field(default_factory=list)
@@ -351,12 +345,10 @@ def _unusable(dispositions):
 def reconcile(plan, tools, resolved, run=None):
     """The plan-reconciliation cluster (WS-0 S2): meta.coverage and
     meta.integrity from the dispatch plan, the tool layer and the resolved
-    findings (verdict stats, tool axis, ocrdb coverage, delta counts).
+    findings (verdict stats, tool axis, ocrdb coverage).
 
-    `run` is the RunConfig, needed only for the #2013 delta-scope caveat below:
-    whether this run was SCOPED by a diff. Optional so a caller that predates
-    it still reconciles (the caveat then never arms, which is the full-repo
-    answer)."""
+    `run` is the RunConfig. Optional so a caller that predates it still
+    reconciles."""
     planned = (plan.fan_out or {}).get("planned") or {} if isinstance(plan.fan_out, dict) else {}
     executed = (plan.fan_out or {}).get("executed") or {} if isinstance(plan.fan_out, dict) else {}
     panels_incomplete = {p for p, n in planned.items() if executed.get(p, 0) < n}
@@ -472,8 +464,8 @@ def reconcile(plan, tools, resolved, run=None):
         "tools": tool_divergence,
     }
     # #1701 fix round 1 (F1/F2): the gate-counted set comes off `resolved`, not
-    # off the ToolAxis -- `resolve_findings` applies the delta / `gate_scope`
-    # filter to it, so the ToolAxis holds CANDIDATES and this holds what the
+    # off the ToolAxis -- `resolve_findings` applies the suppressed gate policy
+    # to it, so the ToolAxis holds CANDIDATES and this holds what the
     # gate actually counts. Counting it here is what keeps the two published
     # tallies consistent with each other and with the gate.
     gated = list(resolved.gated_suppressed or [])
@@ -483,8 +475,8 @@ def reconcile(plan, tools, resolved, run=None):
     # SAW and declined -- neither CRITICAL nor secret-class. A subset of
     # `tools_suppressed` below, not a third number beside it: that key still
     # counts everything the gate did not take, and this one says how much of it
-    # the narrowed rule is responsible for (the rest was the severity floor or
-    # the delta filter). Repaired like its two siblings, and for the same
+    # the narrowed rule is responsible for (the rest was the severity floor).
+    # Repaired like its two siblings, and for the same
     # reason -- the tally is keyed by a segment of a scanner-reported path.
     not_gated_counts = repair_mod.repair_tools_suppressed(
         ingest_tools.suppressed_counts(resolved.suppressed_not_gated or []))
@@ -529,27 +521,12 @@ def reconcile(plan, tools, resolved, run=None):
     # #3766 (owner ruling): always present; true only for a tools directory that is
     # there on a call with no run id.
     integrity["tools_run_unbound"] = bool(tools.run_unbound)
-    # #2013 fix round 1 (review I1): suppressing the target's clean filter makes
-    # git compare RAW worktree bytes against a FILTERED index blob, so paths
-    # nobody touched read as modified. On a full-repo scan that costs
-    # `target_dirty` and nothing the findings depend on, and the coverage
-    # disclosure is proportionate. On a DELTA-scoped run the inflated comparison
-    # chose `collect_changed_files`, `diff-hunks.json` and the on-diff gate
-    # scope, so the run cannot claim certified coverage -- recorded here, in the
-    # same dict and therefore in the same `integrity_ok` the other
-    # "this artifact cannot be trusted" reasons move the gate through.
-    #
-    # `gate_scope == "on-diff"` is NOT the discriminator: it is the DEFAULT and
-    # is inert without a delta map (`verdicts.resolve_findings` only scopes when
-    # `delta_mode` is true), so keying on it would sink every ordinary run.
-    delta_scoped = bool(getattr(resolved, "delta_mode", False)
-                        or (run is not None and getattr(run, "review_type", None)
-                            == "changes"))
+    # #2013: suppressing the target's clean filter makes git compare RAW worktree
+    # bytes against a FILTERED index blob, so paths nobody touched read as
+    # modified. On a whole-repository scan that costs `target_dirty` and nothing
+    # the findings depend on; `meta.coverage.git_drivers_suppressed` discloses it.
     suppressed_drivers = repair_mod.repair_git_drivers_suppressed(
         plan.git_drivers_suppressed)
-    delta_scope_suppressed = (sorted({row["key"] for row in suppressed_drivers})
-                              if delta_scoped and suppressed_drivers else None)
-    integrity["delta_scope_suppressed_git_drivers"] = delta_scope_suppressed
     # #2990: reported, never gating -- the CRITICAL reading already gates.
     integrity["unknown_severity_findings"] = list(
         getattr(resolved, "unknown_severity_ids", None) or [])
@@ -716,13 +693,6 @@ def reconcile(plan, tools, resolved, run=None):
         # half is repository-authored.
         "git_drivers_suppressed": suppressed_drivers,
         "resume": plan.resume,
-        "delta": resolved.delta_meta,
-        # #2169: the SIBLING of `delta` -- what reading `diff-hunks.json` cost,
-        # emitted whenever a file was read and null only when none was. `delta`
-        # above is null for a rejected payload too (no `base`, so not a delta
-        # review), which made a broken artifact indistinguishable from a run
-        # that was never given one. Both keys, one loader record.
-        "delta_artifact": resolved.delta_artifact,
     }
     if targeted_review is not None and (
             targeted_review["native_unparsed"]
@@ -768,7 +738,6 @@ def reconcile(plan, tools, resolved, run=None):
         if named:
             coverage["target_build_not_run"] = named
     return Reconciled(coverage=coverage, integrity=integrity, integrity_ok=integrity_ok,
-                      delta_scope_suppressed_git_drivers=delta_scope_suppressed,
                       panels_incomplete=panels_incomplete, tools_absent=tools_absent,
                       cell_audit=cell_audit, groups_meta=plan.groups_meta,
                       tools_sanitized=sanitized, tools_network=network,

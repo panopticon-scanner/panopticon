@@ -582,8 +582,7 @@ def ingest_tool_findings(args, allowed_outputs=None, unbound_out=None, listing=N
     applied HERE, the same place and with the same arithmetic
     `FindingSet.prepare` applies it to the kept findings, because a run told to
     look only at CRITICAL must not have a HIGH gate it from behind a suppression
-    rule. The delta / `gate_scope` filter is applied where the real population
-    gets it, in `verdicts.resolve_findings`. The `{segment: count}` returned
+    rule. The `{segment: count}` returned
     here stays the FULL ingest tally either way; `reconcile` splits it into what
     the gate counted and what stayed suppressed from it, so the two published
     numbers still sum to what stderr and `security_gate` print.

@@ -39,7 +39,7 @@ class IntegrityKey:
 # hand-written `or` chain, and `render.render_summary` named four -- one of
 # which deliberately does not gate. So ten of the fourteen sinking keys had no
 # line of their own on the TERMINAL SUMMARY `render_summary` prints -- nine of
-# them named nowhere on it, the tenth (`delta_scope_suppressed_git_drivers`)
+# them named nowhere on it, the tenth (a delta-review key, removed with it in 5.5)
 # only inside `coverage_note` -- and it said the bare word "incomplete" instead.
 # That is the exact hole #1644 closed for `tools_manifest_invalid` alone. The
 # reasons went to stderr; the summary an operator reads did not have them.
@@ -215,12 +215,6 @@ INTEGRITY_KEYS: dict[str, IntegrityKey] = {
         True, "NO RUN ID — nothing binds the tools directory's output to this call, "
               "so tool coverage is not certified (a certified result comes from a "
               "driver run, which passes --run-id)"),
-    # #2013 fix round 1: a delta whose scope was chosen by a suppressed
-    # comparison -- raw worktree bytes against a filtered index blob.
-    "delta_scope_suppressed_git_drivers": IntegrityKey(
-        True, "DELTA SCOPE INFLATED — %s (git driver(s) this scan emptied, so "
-              "the diff that chose the reviewed files and the gate's scope "
-              "compared raw bytes against a filtered blob; run not certified)"),
 }
 
 

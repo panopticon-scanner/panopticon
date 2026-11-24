@@ -340,7 +340,7 @@ def test_unknown_and_content_reading_spellings_preflight(tmp_path, args):
     [],
 ])
 def test_probe_refuses_what_is_not_a_read_before_any_launch(tmp_path, args):
-    # #3256: defense in depth. A write has its own door, `mutate`.
+    # #3256: defense in depth. There is no write door (#3736).
     runner = mock.Mock()
     with pytest.raises(safe_git.RepositoryRefused, match="safe Git probe"):
         safe_git.probe(str(tmp_path), args, runner=runner)
@@ -546,235 +546,40 @@ def test_a_failed_root_preflight_names_the_command_the_caller_asked_for(tmp_path
     assert "diff" in proc.args and "config" not in proc.args
 
 
-# --- #2012: `mutate`, the one entry point allowed to write -------------------
-
-@pytest.mark.parametrize("args", [
-    ["worktree", "add", "--detach", "/tmp/wt", "deadbeef"],
-    ["worktree", "remove", "--force", "/tmp/wt"],
-    ["update-ref", "-d", "refs/panopticon/pr-7-abc"],
-])
-def test_mutate_runs_the_three_shapes_the_pr_lifecycle_needs(tmp_path, args):
-    runner = mock.Mock(side_effect=[_config(), _ok(), _ok()])
-    proc = safe_git.mutate(str(tmp_path), args, runner=runner)
-    assert proc.returncode == 0
-    assert runner.call_args.args[0][-len(args):] == args
-
-
-def test_a_mutating_call_preflights_even_if_its_subcommand_is_allowlisted(tmp_path):
-    """`_NO_CONFIGURED_COMMAND` answers "can this subcommand run a
-    repository-configured command?"; a WRITE does not get to ask. Pinned by
-    adding the entry a future classifier might, and requiring the preflight
-    anyway -- two saved launches are not worth the guarantee."""
-    runner = mock.Mock(side_effect=[_config(), _ok(), _ok()])
-    with mock.patch.dict(safe_git._NO_CONFIGURED_COMMAND, {"update-ref": ()}):
-        safe_git.mutate(str(tmp_path), ["update-ref", "-d", "refs/x"], runner=runner)
-    assert runner.call_count == 3          # config, index, then the command
-    # The same argv through `probe` is refused outright since #3256: a write is not a probe.
-    fast = mock.Mock(side_effect=[_ok()])
-    with mock.patch.dict(safe_git._NO_CONFIGURED_COMMAND, {"update-ref": ()}):
-        with pytest.raises(safe_git.RepositoryRefused):
-            safe_git.probe(str(tmp_path), ["update-ref", "-d", "refs/x"], runner=fast)
-    assert fast.call_count == 0
-
-
-def test_mutate_carries_the_hooks_pin_and_the_emptied_drivers(tmp_path):
-    """The whole point of #2012, at the argv level.
-
-    `worktree add` is a CHECKOUT, so the target's `filter.*.smudge` runs on its
-    content and its `post-checkout` hook runs from whatever `core.hooksPath` the
-    repository asked for. Both are closed by tokens in the GLOBAL position of
-    this launch; the target's command line never appears in the argv at all.
-    """
-    runner = mock.Mock(side_effect=[
-        _config("filter.evil.smudge\nsh ./evil.sh-must-not-appear",
-                "filter.evil.required\ntrue",
-                "core.hooksPath\n.githooks"),          # root config
-        _ok(),                                         # root index
-        _config("filter.evil.smudge\n", "filter.evil.required\n",
-                "core.hooksPath\n.githooks"),          # confirmation
-        _ok(),                                         # the worktree add
-    ])
-    suppressed = []
-    resolved = executable.ResolvedExecutable("/trusted/git", "/trusted/bin")
-    with mock.patch.object(executable, "resolve", return_value=resolved):
-        proc = safe_git.mutate(str(tmp_path),
-                               ["worktree", "add", "--detach", "/tmp/wt", "deadbeef"],
-                               runner=runner, timeout=180, suppressed=suppressed)
-    assert proc.returncode == 0
-    # Sorted, as every disclosure from this module is.
-    assert suppressed == [(".", "filter.evil.required"), (".", "filter.evil.smudge")]
-    argv, options = runner.call_args.args[0], runner.call_args.kwargs
-    assert argv[:3] == ["/trusted/git", "-C", str(tmp_path)]
-    assert argv[-5:] == ["worktree", "add", "--detach", "/tmp/wt", "deadbeef"]
-    assert "core.fsmonitor=false" in argv
-    # The pin wins over the target's `core.hooksPath = .githooks`, which points
-    # INTO the tree being checked out.
-    assert "core.hooksPath=" + safe_git._no_hooks_path() in argv
-    for key in ("filter.evil.smudge=", "filter.evil.required="):
-        assert argv[argv.index(key) - 1] == "-c"
-    assert "evil.sh-must-not-appear" not in " ".join(argv)
-    assert options["env"] == {"PATH": "/trusted/bin", "LC_ALL": "C",
-                              "GIT_CONFIG_NOSYSTEM": "1",
-                              "GIT_CONFIG_SYSTEM": os.devnull,
-                              "GIT_CONFIG_GLOBAL": os.devnull}
-    assert 0 < options["timeout"] <= 180        # the caller's shared deadline
-
-
-def test_the_public_hooks_path_is_the_one_every_launch_pins(tmp_path):
-    # `diff_map`'s fetch keeps the operator's environment and pins this same
-    # directory by hand; a second, unproved empty directory would be a second
-    # thing to keep empty.
-    assert safe_git.no_hooks_path() == safe_git._no_hooks_path()
-    assert os.listdir(safe_git.no_hooks_path()) == []
-
-
-# #2041: the keys a FETCH executes, or can be made to execute, from the
-# checkout's own config -- the one call that keeps the operator's environment.
-# `credential.<url>.helper` carries a URL, whose dots make it a multi-part
-# subsection; `protocol.allow`/`protocol.ext.allow` are what unlock an `ext::`
-# helper a repo-local `remote.<name>.url` can name -- and only those two:
-# `protocol.file.allow` is the documented local-submodule setting and runs
-# nothing.
+# --- #2041: transport settings are not commands the probe empties --------------
+#
+# The probe is read-only and fetches nothing. The keys a FETCH would execute from
+# a checkout's own config were refused for the `--pr` acquisition, which went with
+# delta review (#3736). What still holds, and what this pins: the probe's own
+# suppression never reaches them.
 TRANSPORT_KEYS = ("core.sshcommand", "core.gitproxy", "core.askpass",
                   "remote.origin.uploadpack",
                   "remote.origin.vcs", "credential.helper",
                   "credential.https://example.com.helper", "protocol.allow",
                   "protocol.ext.allow")
-# `core.askPass` names a program git EXECUTES for a credential prompt, and it
-# is repo-local settable (measured on a 401 http remote with the fetch's own two
-# pins: the script ran).
-#
-# Neighbours in the same sections that run nothing: a URL, a refspec, a key
-# whose variable merely starts the same way, a username, a number -- and a key
-# for a remote THIS fetch never names (#2041 M3: the fetch argv names `origin`
-# and nothing else, so `remote.upstream.*` is the operator's business).
-NOT_TRANSPORT_KEYS = ("remote.origin.url", "remote.origin.fetch", "core.sshcommandx",
-                      "credential.username", "protocol.version",
-                      "protocol.file.allow", "protocol.https.allow",
-                      "remote.upstream.uploadpack", "remote.upstream.vcs")
-REMOTE = "origin"                      # the remote `diff_map`'s fetch names
 
 
-def test_every_transport_command_key_is_refused_and_its_neighbours_are_not():
-    for key in TRANSPORT_KEYS:
-        assert safe_git._is_transport_command_setting(key, REMOTE), key
-        assert safe_git.transport_command_keys({key: "cmd"}, REMOTE) == [key], key
-    for key in NOT_TRANSPORT_KEYS:
-        assert not safe_git._is_transport_command_setting(key, REMOTE), key
-        assert safe_git.transport_command_keys({key: "value"}, REMOTE) == [], key
-
-
-def test_transport_command_keys_are_sorted_and_only_the_set_values_count():
-    """Sorted, like every other list this module hands out, so the refusal
-    message is stable; a key set and then EMPTIED (`git config core.sshCommand
-    ""`) executes nothing and is not refused (#2041)."""
-    settings = {"remote.origin.uploadpack": "up.sh", "core.sshcommand": "ssh.sh",
-                "core.gitproxy": "", "remote.origin.url": "git@example.invalid:x"}
-    assert safe_git.transport_command_keys(settings, REMOTE) == [
-        "core.sshcommand", "remote.origin.uploadpack"]
-    assert safe_git.transport_command_keys({"core.sshcommand": ""}, REMOTE) == []
-
-
-def test_a_protocol_allow_of_never_is_hardening_and_does_not_refuse():
-    """#2041 M3: `protocol.*` is a PERMISSION, not a command line, and `never`
-    is the value that LOCKS `ext::` down -- refusing on it would refuse the
-    operator who closed the hole. `always` and `user` both let git proceed, and
-    a value git will die on (its parse is case-sensitive) is a configuration
-    error rather than a lock, so it stays refused."""
-    for key in ("protocol.allow", "protocol.ext.allow"):
-        assert safe_git.transport_command_keys({key: "never"}, REMOTE) == [], key
-        for value in ("always", "user", "Never"):
-            assert safe_git.transport_command_keys({key: value}, REMOTE) == [key], (
-                key, value)
-    # Not a protocol key: `never` is just a command line git would run.
-    assert safe_git.transport_command_keys({"core.sshcommand": "never"}, REMOTE) == [
-        "core.sshcommand"]
-
-
-def test_a_transport_key_normalizes_the_way_git_compares_it():
-    """Section and variable case-insensitively, the SUBSECTION case-sensitively
-    -- `_canonical_key`'s semantics, because that is what git does. The key is
-    reported exactly as the config read printed it."""
-    assert safe_git._is_transport_command_setting("Core.sshCommand", REMOTE)
-    assert safe_git._is_transport_command_setting("REMOTE.origin.UPLOADPACK", REMOTE)
-    # `[remote "Origin"]` is a DIFFERENT remote to git, and the fetch names
-    # `origin`, so it is not a key this fetch would execute.
-    assert not safe_git._is_transport_command_setting("remote.Origin.uploadpack", REMOTE)
-    assert safe_git._is_transport_command_setting("remote.Origin.uploadpack", "Origin")
-    assert safe_git.transport_command_keys({"remote.origin.uploadpack": "up.sh"},
-                                          REMOTE) == ["remote.origin.uploadpack"]
-
-
-def test_a_transport_key_is_refused_never_emptied():
-    """These are NOT suppressible (#2041 owner ruling: refuse with a remedy).
-
-    The probe empties `filter.*`/`diff.*` commands on every launch, but the
-    fetch runs with the operator's environment and `core.sshCommand` is
-    legitimately how a private repository is reached -- emptying it would break
-    the case the fetch exemption exists for, so the refusal is the answer and
-    the remedy is the operator's own global config.
-    """
+def test_a_transport_key_is_never_emptied():
+    """The probe empties `filter.*`/`diff.*` commands on every launch. A transport
+    key is not one of them: `core.sshCommand` is legitimately how a private
+    repository is reached, and nothing here runs a command that reads it."""
     for key in TRANSPORT_KEYS:
         assert not safe_git._is_command_setting(key), key
     assert safe_git._driver_keys({key: "cmd" for key in TRANSPORT_KEYS}) == []
 
 
-def _scoped(*records):
-    """`config --null --list --show-scope` output: (scope, key, value) triples."""
-    return "".join("%s\0%s\n%s\0" % triple for triple in records)
-
-
-def test_repository_settings_keeps_only_the_repositorys_own_scopes():
-    """#2041 C1: `local` (its `.git/config` and every file that includes into
-    it) and `worktree` (`$GIT_DIR/config.worktree`) are the repository's; the
-    operator's `global`/`system` -- the remedy the refusal points at -- and this
-    probe's own `command` pins are not."""
-    stdout = _scoped(
-        ("local", "core.sshcommand", "/repo/ssh.sh"),
-        ("worktree", "remote.origin.uploadpack", "/repo/up.sh"),
-        ("global", "core.sshcommand", "/home/me/ssh.sh"),
-        ("system", "credential.helper", "osxkeychain"),
-        ("command", "core.hookspath", "/tmp/none"),
-        ("unknown", "credential.helper", "osxkeychain"))
-    assert safe_git.repository_settings(stdout) == {
-        "core.sshcommand": "/repo/ssh.sh",
-        "remote.origin.uploadpack": "/repo/up.sh"}
-
-
-def test_repository_settings_survives_newline_values_and_a_ragged_tail():
-    """The pairing is positional over NUL-terminated records, so a value
-    containing a NEWLINE cannot shift it (that is why `--null` is passed), and
-    a later scope wins for the same key, as git's own precedence does."""
-    stdout = _scoped(("local", "core.sshcommand", "ssh\nsecond line"),
-                     ("worktree", "core.sshcommand", "wins"))
-    assert safe_git.repository_settings(stdout) == {"core.sshcommand": "wins"}
-    # A valueless key (`[extensions]\n\tworktreeConfig`) prints with no value and
-    # reads as empty, which `transport_command_keys` treats as "runs nothing".
-    assert safe_git.repository_settings("local\0core.sshcommand\0") == {
-        "core.sshcommand": ""}
-    # A record with no partner is dropped rather than guessed at. A scope whose
-    # key arrived but whose trailing NUL did not is indistinguishable from a
-    # valueless key, and reads as one -- empty, so it refuses nothing, and a
-    # read truncated that way failed its rc in `_safe` first.
-    assert safe_git.repository_settings(
-        _scoped(("local", "core.gitproxy", "proxy.sh")) + "local") == {
-            "core.gitproxy": "proxy.sh"}
-
-
-def test_repository_settings_fails_closed_on_a_listing_that_is_not_scope_labelled():
-    """#2041 review 2: the caller's refusal keys off this parse, so a listing
-    that is empty or carries a label git never prints must RAISE, not read as
-    "nothing set" -- that is the one fail-open a changed `--show-scope` output
-    shape could introduce. Every label git does print is accepted."""
-    with pytest.raises(ValueError, match="empty"):
-        safe_git.repository_settings("")
-    with pytest.raises(ValueError, match="not scope-labelled"):
-        safe_git.repository_settings("core.sshcommand\n/x\0local\0")
-    with pytest.raises(ValueError, match="not scope-labelled"):
-        safe_git.repository_settings(_scoped(("local", "a.b", "1"), ("garbage", "c.d", "2")))
-    every_label = _scoped(*[(label, "x.%s" % label, "v") for label in
-                            ("system", "global", "local", "worktree", "command", "unknown")])
-    assert safe_git.repository_settings(every_label) == {"x.local": "v", "x.worktree": "v"}
+def test_there_is_no_write_door():
+    """#3736: `mutate` served the `--pr` worktree lifecycle. With it gone, nothing in
+    this module writes to a target repository, and a write shape is refused by name."""
+    for gone in ("mutate", "no_hooks_path", "transport_command_keys", "repository_settings"):
+        assert not hasattr(safe_git, gone), gone
+    runner = mock.Mock()
+    for args in (["worktree", "add", "--detach", "/tmp/x", "HEAD"],
+                 ["worktree", "remove", "--force", "/tmp/x"], ["update-ref", "-d", "refs/x"],
+                 ["fetch", "origin"], ["checkout", "main"]):
+        with pytest.raises(safe_git.RepositoryRefused, match="panopticon makes no Git write"):
+            safe_git.probe("/tmp", args, runner=runner)
+    runner.assert_not_called()
 
 
 # --- #2962: a path holding a byte UTF-8 cannot carry --------------------------

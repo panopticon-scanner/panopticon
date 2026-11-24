@@ -40,7 +40,7 @@ from scripts import native_language
 # none, and Codex's generation schemas leave no room for one), and old run folders
 # are versionless too. That window stays open through 5.x and closes only by
 # ruling (#3482). A PRESENT version must be exactly this int, by type as well as
-# by value (`synth/delta.py`'s #2382 rule): `True` and `1.0` compare equal to it
+# by value (#2382): `True` and `1.0` compare equal to it
 # and are not versions. The reason is fixed text and never echoes the value.
 SCHEMA_VERSION = 1
 UNSUPPORTED_SCHEMA_VERSION = "unsupported schema_version"

@@ -262,9 +262,9 @@ def run_probes(host, review_root, session_root=None, registration_dir=None,
     branch's Criticals. One `target` argument used to answer all three:
 
       * `review_root`  -- the REVIEWED tree. What the shadow-shell scan reads:
-        the PR worktree under `--pr`, the git toplevel from a subdirectory.
-        Never `args.target`, which under `--pr` is the operator's own checkout
-        -- the one tree guaranteed clean (C1).
+        the git toplevel, from a subdirectory too. Never `args.target` (C1:
+        under `--pr`, removed in 5.5, that was the operator's own checkout --
+        the one tree guaranteed clean).
       * `session_root` -- where the HOST SESSION runs. What the write-guard
         probe and the transcript probe read. On every external-target run this
         is a DIFFERENT directory from the reviewed tree, which is the whole

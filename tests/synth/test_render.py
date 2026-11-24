@@ -12,6 +12,7 @@ from unittest import mock
 import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
 import scripts.synth.render as render_mod
+import scripts.tools.base as tool_base
 from scripts import host_disclosure, hosts
 
 # Sentinel distinguishing "meta.host_capabilities key omitted entirely" from
@@ -135,63 +136,132 @@ class TestHealthScoreTextRendering(unittest.TestCase):
             # Held back with no score still says so (seat review of #3796).
             self.assertEqual("n/a (provisional)", render_mod.health_score_text(summary, True))
 
-class TestRenderDelta(unittest.TestCase):
-    """#449 Task 9: render_summary surfaces summary.delta -- on-diff counts,
-    all-severity pre-existing counts, and a loud (advisory, non-gating)
-    warning when pre-existing CRITICAL+HIGH > 0."""
+class TestAReportMadeByADeltaReviewStillRenders(unittest.TestCase):
+    """#3736: delta review was withdrawn in 5.4 and its code removed in 5.5. A report
+    one of those runs wrote can still be opened, compared and re-rendered. Nothing of
+    the delta is drawn; one fixed line says what kind of report it is, so a gate that
+    judged a diff does not pass for a whole-repository result."""
 
-    def _report(self, pre):
-        return {
-            "meta": {"target": "t"},
-            "summary": {
-                "overall_grade": "B",
-                "risk_level": "MEDIUM",
-                "gate": "PASS",
-                "stats": {},
-                "evidence_stats": {},
-                "delta": {"on_diff": {"high": 1}, "pre_existing": pre},
-            },
+    NOTE = render_mod.DELTA_REVIEW_NOTE
+    MARK = "<script>x</script>\x1b[2J"
+
+    def _report(self, summary_delta="absent", coverage_delta="absent", finding_delta=True):
+        """A report in the 5.4 shape. `"absent"` leaves the key out, as 5.5 writes it."""
+        report = {
+            "meta": {"target": "t", "coverage": {}},
+            "summary": {"overall_grade": "B", "risk_level": "MEDIUM", "gate": "PASS",
+                        "stats": {}, "evidence_stats": {}},
             "groups": [],
-            "findings": [],
+            "findings": [{"id": "COD-001", "title": "a finding", "severity": "MEDIUM",
+                          "confidence": "POSSIBLE", "panel": "code", "category": "structure",
+                          "location": {"file": "a.py", "line_start": 3},
+                          "evidence": {"status": "advisor_confirmed"}}],
         }
+        if summary_delta != "absent":
+            report["summary"]["delta"] = summary_delta
+        if coverage_delta != "absent":
+            report["meta"]["coverage"]["delta"] = coverage_delta
+            report["meta"]["coverage"]["delta_artifact"] = {"path": self.MARK,
+                                                            "payload_malformed": self.MARK}
+        if finding_delta:
+            report["findings"][0]["delta"] = {"on_diff": False, "hunk": self.MARK}
+        return report
 
-    def test_warns_on_pre_existing_high(self):
-        out = render_mod.render_summary(self._report({"critical": 0, "high": 2, "medium": 5, "low": 3}))
-        self.assertIn("pre-existing", out.lower())
-        self.assertEqual([line for line in out.splitlines() if line.startswith("**Pre-existing")],
-                         ["**Pre-existing (files you touched, not gating):** HIGH 2, MEDIUM 5, LOW 3"])
-        self.assertIn("⚠", out)  # loud warning glyph
+    COUNTS = {"on_diff": {"high": 1}, "pre_existing": {"critical": 2, "high": 5}}
+    BLOCK = {"base": MARK, "base_source": "explicit", "files_changed": 3, "hunks_files": 3,
+             "hunks_ranges": 7, "on_diff_total": 1, "pre_existing_total": 7}
 
-    def test_no_warning_without_high(self):
-        out = render_mod.render_summary(self._report({"critical": 0, "high": 0, "medium": 4, "low": 1}))
-        self.assertNotIn("⚠", out)
-        self.assertEqual([line for line in out.splitlines() if line.startswith("**Pre-existing")],
-                         ["**Pre-existing (files you touched, not gating):** MEDIUM 4, LOW 1"])
+    def _delta_reports(self):
+        return {"both": self._report(self.COUNTS, self.BLOCK),
+                "the summary's counts only": self._report(self.COUNTS, None),
+                "the coverage block only": self._report(None, self.BLOCK)}
 
-    def test_counts_are_bound_to_the_pre_existing_severity(self):
-        report = self._report({"high": 5, "medium": 2, "low": 4})
-        report["meta"]["target"] = "unrelated digits 2 5 4"
-        lines = render_mod.render_summary(report).splitlines()
-        self.assertEqual([line for line in lines if line.startswith("**Pre-existing")],
-                         ["**Pre-existing (files you touched, not gating):** HIGH 5, MEDIUM 2, LOW 4"])
-        self.assertNotIn("**Pre-existing (files you touched, not gating):** HIGH 2, MEDIUM 5, LOW 3", lines)
+    def test_the_terminal_summary_says_it_in_one_fixed_line(self):
+        for label, report in self._delta_reports().items():
+            with self.subTest(report=label):
+                lines = render_mod.render_summary(report).splitlines()
+                self.assertEqual(["**Delta review:** " + self.NOTE],
+                                 [line for line in lines if "elta review" in line])
+                self.assertLess(lines.index("**Delta review:** " + self.NOTE),
+                                lines.index("## Groups"))
 
-    def test_delta_lines_placed_between_evidence_and_groups(self):
-        r = self._report({"critical": 1, "high": 0, "medium": 0, "low": 0})
-        out = render_mod.render_summary(r)
-        lines = out.split("\n")
-        ev_idx = next(i for i, ln in enumerate(lines) if ln.startswith("**Evidence:**"))
-        groups_idx = next(i for i, ln in enumerate(lines) if ln == "## Groups")
-        ondiff_idx = next(i for i, ln in enumerate(lines) if ln.startswith("**On-diff:**"))
-        pre_idx = next(i for i, ln in enumerate(lines) if ln.startswith("**Pre-existing"))
-        self.assertTrue(ev_idx < ondiff_idx < pre_idx < groups_idx)
+    def test_the_html_page_says_it_in_one_fixed_line(self):
+        import html
+        import scripts.html_report as html_report
+        for label, report in self._delta_reports().items():
+            with self.subTest(report=label):
+                page = html_report.render(report)
+                line = "<div class='not-certified' role='note'>Delta review: %s</div>" % (
+                    html.escape(self.NOTE))
+                self.assertEqual(1, page.count(line))
+                self.assertLess(page.index(line), page.index("a finding"))
 
-    def test_no_delta_block_when_not_delta_mode(self):
-        r = self._report({"critical": 0, "high": 0, "medium": 0, "low": 0})
-        r["summary"]["delta"] = None
-        out = render_mod.render_summary(r)
-        self.assertNotIn("On-diff", out)
-        self.assertNotIn("Pre-existing", out)
+    def test_each_side_of_a_comparison_says_it_for_itself(self):
+        import html
+        import scripts.html_report as html_report
+        old, new = self._delta_reports()["both"], self._report()
+        line = "Delta review: %s" % html.escape(self.NOTE)
+        for left, right, expected in ((old, old, 2), (new, old, 1), (old, new, 1), (new, new, 0)):
+            self.assertEqual(expected, html_report.render(left, compare_report=right).count(line))
+
+    def test_nothing_else_of_the_delta_is_drawn_and_nothing_from_the_report_is_copied(self):
+        import scripts.html_report as html_report
+        for label, report in self._delta_reports().items():
+            with self.subTest(report=label):
+                for text in (render_mod.render_summary(report), html_report.render(report)):
+                    for gone in ("On-diff", "Pre-existing", "pre-existing", "files you touched",
+                                 "hunk", "<script>x</script>", "\x1b"):
+                        self.assertNotIn(gone, text)
+
+    def test_the_note_is_fixed_text(self):
+        self.assertEqual(self.NOTE, render_mod.DELTA_REVIEW_NOTE)
+        for needle in ("delta review", "withdrawn in 5.4", "removed in 5.5", "changed lines",
+                       "not a whole-repository result"):
+            self.assertIn(needle, self.NOTE)
+        self.assertNotIn("%", self.NOTE)
+        self.assertEqual(self.NOTE, tool_base.inert_text(self.NOTE))
+
+    def test_a_whole_repository_report_has_no_such_line(self):
+        """From 5.5 (the keys are absent) and from before (both keys null)."""
+        import scripts.html_report as html_report
+        for label, report in (("5.5", self._report(finding_delta=False)),
+                              ("5.4, whole repository", self._report(None, None, False)),
+                              ("empty objects", self._report({}, {}, False))):
+            with self.subTest(report=label):
+                self.assertFalse(render_mod.was_delta_review(report))
+                self.assertNotIn("elta review", render_mod.render_summary(report))
+                self.assertNotIn("Delta review", html_report.render(report))
+
+    def test_the_line_is_all_that_a_delta_report_adds_to_either_surface(self):
+        """Byte for byte: a page, a compare page and a summary of a delta report are those
+        of the same report without its delta fields, plus the one line. So a report that
+        is not one gets nothing, not even an empty line (the #3736 comparison of every
+        report on main and on the branch found one, on every page)."""
+        import html
+        import scripts.html_report as html_report
+        plain = self._report(finding_delta=False)
+        line = "<div class='not-certified' role='note'>Delta review: %s</div>" % html.escape(self.NOTE)
+        for label, report in self._delta_reports().items():
+            with self.subTest(report=label):
+                page = html_report.render(report)
+                self.assertEqual(html_report.render(plain), page.replace(line + "\n", "", 1))
+                both = html_report.render(report, compare_report=report)
+                self.assertEqual(2, both.count(line))         # one in each panel
+                self.assertEqual(html_report.render(plain, compare_report=plain),
+                                 both.replace("\n" + line, ""))
+                self.assertEqual(
+                    render_mod.render_summary(plain),
+                    render_mod.render_summary(report).replace(
+                        "**Delta review:** " + self.NOTE + "\n", "", 1))
+
+    def test_what_is_not_a_report_is_not_a_delta_report(self):
+        for value in (None, [], "report", {"meta": None, "summary": None},
+                      {"meta": {"coverage": [1]}, "summary": "x"},
+                      {"meta": {"coverage": {"delta": None}}, "summary": {"delta": None}}):
+            self.assertFalse(render_mod.was_delta_review(value), value)
+        self.assertTrue(render_mod.was_delta_review({"summary": {"delta": {"on_diff": {}}}}))
+        self.assertTrue(render_mod.was_delta_review({"meta": {"coverage": {"delta": {"base": "x"}}}}))
+
 
 class TestHostCapabilitiesSurface(unittest.TestCase):
     """F3b Task 5, spec 5.1 surface 3: a person reading the report body must

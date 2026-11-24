@@ -243,11 +243,6 @@ def _strain_atomic_writer(_root, out):
     return strain_report.write_report({"z": 1}, out)
 
 
-def _diff_hunks_atomic_writer(root, out):
-    discovery.write_diff_hunks(root, None, "none", out, 0, False)
-    return out
-
-
 def _discovery_result_atomic_writer(_root, out):
     discovery._write_result({"groups": {}}, SimpleNamespace(out=out))
     return out
@@ -267,7 +262,6 @@ _ATOMIC_WRITERS = (
     ("setup-flow", _setup_flow_atomic_writer, False, str, 0o644),
     ("setup-manifest", _setup_manifest_atomic_writer, False, str, 0o644),
     ("strain", _strain_atomic_writer, False, str, 0o644),
-    ("diff-hunks", _diff_hunks_atomic_writer, False, str, 0o644),
     ("discovery-result", _discovery_result_atomic_writer, False, str, 0o644),
     ("tool-capture", _tool_capture_atomic_writer, True, bytes, 0o600),
     ("run-manifest", _run_manifest_atomic_writer, False, str, 0o644),
@@ -330,13 +324,9 @@ def test_strain_operator_output_outside_panopticon_remains_writable(tmp_path):
         assert json.load(stream) == {"z": 1}
 
 
-@pytest.mark.parametrize("invoke", (_diff_hunks_atomic_writer,
-                                    _discovery_result_atomic_writer),
-                         ids=("diff-hunks", "discovery-result"))
-def test_discovery_operator_outputs_outside_panopticon_remain_writable(tmp_path,
-                                                                       invoke):
+def test_discovery_operator_outputs_outside_panopticon_remain_writable(tmp_path):
     out = str(tmp_path / "operator.json")
-    invoke(str(tmp_path), out)
+    _discovery_result_atomic_writer(str(tmp_path), out)
     with open(out, encoding="utf-8") as stream:
         assert json.load(stream)["schema_version"] == 1
 

@@ -24,12 +24,12 @@ import io
 import os
 import shlex
 import subprocess
+import tempfile
 import time
 import unittest
 from unittest import mock
 
 from tests._test_helpers import SKILL_ROOT
-import scripts.diff_map as diff_map
 import scripts.discovery as discovery
 import scripts.discovery_scope as discovery_scope
 import scripts.phases.runio as runio
@@ -101,33 +101,10 @@ class DiscoveryIsConfined(unittest.TestCase):
                        capture_output=True, timeout=30)
         return repo
 
-    def test_worktree_dirty_never_runs_the_targets_fsmonitor(self):
+    def test_the_listing_never_runs_the_targets_fsmonitor(self):
         repo = self._repo()
         marker = plant_fsmonitor_command(repo)
-        self.assertIs(discovery._worktree_dirty(repo), False)
-        self.assertFalse(os.path.exists(marker))
-
-    def test_worktree_dirty_still_answers_with_the_filter_suppressed(self):
-        # #2013 inverts #2006's refusal: the dirtiness answer is the one thing
-        # `_worktree_dirty` exists to produce, and a git-lfs target must still
-        # get one. The filter is emptied, so it never runs -- the invariant the
-        # refusal was protecting is unchanged.
-        repo = self._repo()
-        marker = plant_clean_filter(repo)
-        self.assertIs(discovery._worktree_dirty(repo), True)   # a.py was rewritten
-        self.assertFalse(os.path.exists(marker))
-
-    def test_changed_files_and_listing_never_run_the_targets_fsmonitor(self):
-        repo = self._repo()
-        marker = plant_fsmonitor_command(repo)
-        self.assertEqual(discovery_scope.collect_changed_files(repo, base="main"), [])
         self.assertIn("a.py", discovery._git_listed_files(repo))
-        self.assertFalse(os.path.exists(marker))
-
-    def test_resolve_base_never_runs_the_targets_fsmonitor(self):
-        repo = self._repo()
-        marker = plant_fsmonitor_command(repo)
-        self.assertEqual(discovery_scope.resolve_base(repo), ("main", "fallback"))
         self.assertFalse(os.path.exists(marker))
 
     def test_no_discovery_git_call_can_be_the_targets_own_git(self):
@@ -138,9 +115,8 @@ class DiscoveryIsConfined(unittest.TestCase):
         # HALTS before it can run (it used to be skipped for a trusted git).
         with mock.patch.dict(os.environ,
                              {"PATH": os.path.join(repo, "bin") + os.pathsep + os.environ["PATH"]}):
-            for call in (lambda: discovery._worktree_dirty(repo, exclude=("bin",)),
-                         lambda: discovery_scope.resolve_base(repo),
-                         lambda: discovery._git_listed_files(repo)):
+            for call in (lambda: discovery._git_listed_files(repo),
+                         lambda: discovery_scope._git(repo, ["status", "--porcelain", "-z"])):
                 with self.assertRaisesRegex(ValueError, HALTS):
                     call()
         self.assertFalse(os.path.exists(marker))
@@ -233,45 +209,22 @@ class NoRawTargetGitArgvRemains(unittest.TestCase):
     #1989 rewrote `_worktree_dirty` in the same batch as #1985 and left it on
     the raw path, so the rule has to be checkable by a test rather than
     remembered. `MODULES` is exactly what it claims: this guard covers those
-    five files and nothing else, so a sixth module that starts running git
+    four files and nothing else, so a fifth module that starts running git
     against the target is NOT protected until it is named here.
     """
 
-    MODULES = ("discovery.py", "run_manifest.py", "diff_map.py", "setup_flow.py",
+    MODULES = ("discovery.py", "run_manifest.py", "setup_flow.py",
                os.path.join("phases", "runio.py"))
 
-    # Functions that genuinely cannot use the probe. Small and explicit (never
-    # a pattern): each entry is a decision, and a decision that stops being
-    # true fails below as a stale entry.
-    EXEMPT = {
-        ("diff_map.py", "acquire_pr"):
-            "THE FETCH ONLY (#2012). A private repository's PR head is "
-            "fetchable only through the operator's credential helper, which "
-            "lives in the HOME and gitconfig the probe's fresh allowlisted "
-            "environment strips, so that one call keeps the operator's "
-            "environment -- with `core.fsmonitor=false` and the probe's own "
-            "pinned empty `core.hooksPath` carried by hand, because a fetch is "
-            "a ref transaction and `reference-transaction` fires from the "
-            "target's hooks directory on it. Every other step moved: "
-            "`worktree list` and `rev-parse` to `safe_git.probe`, "
-            "`worktree add --detach` and `update-ref -d` to `safe_git.mutate`. "
-            "`test_the_only_bare_git_argv_left_in_acquire_pr_is_the_fetch` "
-            "holds this exemption to its own words, and "
-            "`test_the_fetch_does_not_recurse_into_submodules` holds the flag "
-            "that keeps a SUBMODULE's own config out of it. #2041: the fetch "
-            "REFUSES, with a remedy, when this checkout's own config -- its "
-            "`.git/config`, a file it includes, or its worktree config -- sets a "
-            "transport command key (`core.sshCommand`, `core.askPass`, "
-            "`remote.origin.uploadpack` and their class) that a fetch of the one "
-            "remote it names would execute -- and refuses outright on a config "
-            "listing that lacks git's scope-labelled shape -- so what this "
-            "exemption keeps is the operator's ENVIRONMENT and not a command the "
-            "repository configured",
-    }
+    # Functions that genuinely cannot use the probe. Empty since #3736: the one entry was
+    # the `--pr` acquisition's fetch, which kept the operator's environment for its
+    # credential helper, and it went with delta review. Any entry is a decision, and a
+    # decision that stops being true fails below as a stale entry.
+    EXEMPT: dict = {}
 
-    def _bare_git_argv(self, name):
+    def _bare_git_argv(self, name, root=None):
         """Every `["git", ...]` literal in one module, with its function."""
-        path = os.path.join(SKILL_ROOT, "scripts", name)
+        path = os.path.join(root or os.path.join(SKILL_ROOT, "scripts"), name)
         with open(path, encoding="utf-8") as fh:
             tree = ast.parse(fh.read(), path)
         found = []
@@ -309,95 +262,26 @@ class NoRawTargetGitArgvRemains(unittest.TestCase):
 
     def test_the_guard_can_actually_see_an_offender(self):
         # Vacuity guard: an empty offender list is also what a guard that reads
-        # nothing produces. `acquire_pr` is the known offender, so the finder
-        # must report it even though the policy above exempts it.
-        found = self._bare_git_argv("diff_map.py")
-        self.assertTrue([f for f, _l, _s in found if f == "acquire_pr"], found)
+        # nothing produces, and since #3736 no module here builds a git argv by
+        # hand. So the finder is shown one that does.
+        with tempfile.TemporaryDirectory() as root:
+            with open(os.path.join(root, "offender.py"), "w", encoding="utf-8") as fh:
+                fh.write("def acquire(repo, runner):\n"
+                         "    return runner(['git', '-C', repo, 'fetch', 'origin'])\n"
+                         "def fine(repo):\n    return ['ls', repo]\n")
+            found = self._bare_git_argv("offender.py", root)
+        self.assertEqual([("acquire", 2)], [(function, line) for function, line, _s in found])
 
-    def test_the_only_bare_git_argv_left_in_acquire_pr_is_the_fetch(self):
-        # #2012: the exemption above says "the fetch only", and an exemption
-        # scoped in prose is an exemption nothing checks. A second hand-built
-        # git argv in this function -- the shape the issue was about -- fails
-        # here even though the function name is still exempt above.
-        found = [(lineno, source) for function, lineno, source
-                 in self._bare_git_argv("diff_map.py") if function == "acquire_pr"]
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("'fetch'", found[0][1])
-        # And the two pins that survive the operator's environment are on it.
-        self.assertIn("core.fsmonitor=false", found[0][1])
-        self.assertIn("core.hooksPath", found[0][1])
-
-    def test_the_fetch_does_not_recurse_into_submodules(self):
-        # #2041 I2: `fetch.recurseSubmodules` DEFAULTS to on-demand, so a fetch
-        # that moves a populated submodule's gitlink fetches inside the
-        # submodule -- reading `.git/modules/<name>/config`, a file under the
-        # same `.git` the threat model treats as attacker-written and one that
-        # NO read of the superproject's config can see. Measured on git 2.50.1
-        # with this function's own refspec shape: the submodule's
-        # `core.sshCommand` ran; with the flag below it did not. Read from the
-        # AST, like its neighbour, so the flag cannot be dropped silently.
-        found = [(lineno, source) for function, lineno, source
-                 in self._bare_git_argv("diff_map.py") if function == "acquire_pr"]
-        self.assertEqual(len(found), 1, found)
-        self.assertIn("--no-recurse-submodules", found[0][1])
-
-
-
-class DeltaMapIsConfined(unittest.TestCase):
-    """`diff_map._run_git` is the delta map's only git invocation.
-
-    #2006 fix round 1: it resolved a trusted git (so the target could never BE
-    the git that runs) but launched it with `PATH` alone -- no
-    `GIT_CONFIG_NOSYSTEM`/`GIT_CONFIG_SYSTEM`/`GIT_CONFIG_GLOBAL`, no
-    `core.fsmonitor=false`, no preflight -- for `merge-base`, `diff` and
-    `ls-files` on the reviewed tree during every delta review.
-    """
-
-    def _repo(self):
-        repo = make_git_repo(test_case=self, panopticon=True,
-                             files={"a.py": "value = 1\n"})
-        subprocess.run(["git", "-C", repo, "checkout", "-q", "-b", "feature"],
-                       check=True, capture_output=True, timeout=30)
-        with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
-            fh.write("value = 3\n")
-        subprocess.run(["git", "-C", repo, "commit", "-qam", "change"], check=True,
-                       capture_output=True, timeout=30)
-        return repo
-
-    def test_the_hunk_map_never_runs_the_targets_fsmonitor(self):
-        repo = self._repo()
-        marker = plant_fsmonitor_command(repo)
-        self.assertIn("a.py", diff_map.hunk_map(repo, "main"))
-        self.assertFalse(os.path.exists(marker))
-
-    def test_the_hunk_map_is_honest_with_a_command_filter_suppressed(self):
-        # #2013: the map is produced rather than refused, and the filter still
-        # never runs. `plant_clean_filter` commits a.py again, so the hunk the
-        # map must find is the one it adds.
-        repo = self._repo()
-        marker = plant_clean_filter(repo)
-        self.assertIn("a.py", diff_map.hunk_map(repo, "main"))
-        self.assertFalse(os.path.exists(marker))
-
-    def test_the_anchors_never_run_the_targets_fsmonitor(self):
-        repo = self._repo()
-        marker = plant_fsmonitor_command(repo)
-        anchors = diff_map.diff_anchors(repo, "main")
-        self.assertTrue(anchors["delta_end"])
-        self.assertFalse(os.path.exists(marker))
-
-    def test_the_delta_map_cannot_be_the_targets_own_git(self):
-        repo = self._repo()
-        marker = hostile_marker(repo, "shim-marker")
-        path_shim_git(os.path.join(repo, "bin"), marker)
-        # #3270 (D2): halts with the fixed reason, carried by diff_map's own
-        # loud error, before the shim can run.
-        with mock.patch.dict(os.environ,
-                             {"PATH": os.path.join(repo, "bin") + os.pathsep + os.environ["PATH"]}):
-            with self.assertRaisesRegex(diff_map.DiffMapError, "is inside the target; remove it"):
-                diff_map.hunk_map(repo, "main")
-        self.assertFalse(os.path.exists(marker))
-        self.assertIn("a.py", diff_map.hunk_map(repo, "main"))
+    def test_nothing_writes_to_a_target_repository_through_git(self):
+        """#3736: with the `--pr` worktree gone, no caller of `safe_git` writes. The
+        write door is removed, so this cannot regress without a new entry point."""
+        self.assertIs(False, hasattr(safe_git, "mutate"))
+        scripts = os.path.join(SKILL_ROOT, "scripts")
+        for folder, _dirs, names in os.walk(scripts):
+            for name in names:
+                if name.endswith(".py"):
+                    with open(os.path.join(folder, name), encoding="utf-8") as fh:
+                        self.assertNotIn("safe_git.mutate", fh.read(), name)
 
 
 class ASuppressionIsDisclosedNotARefusal(unittest.TestCase):
@@ -413,7 +297,7 @@ class ASuppressionIsDisclosedNotARefusal(unittest.TestCase):
 
     def _hostile_repo(self):
         # groups_yml is committed by the helper, so the scan has a matrix and
-        # reaches the delta computation rather than refusing earlier.
+        # reaches the listing rather than refusing earlier.
         repo = make_git_repo(test_case=self, panopticon=True,
                              groups_yml="groups:\n  App:\n    match:\n    - '**/*.py'\n")
         return repo, plant_clean_filter(repo)
@@ -422,7 +306,7 @@ class ASuppressionIsDisclosedNotARefusal(unittest.TestCase):
         repo, marker = self._hostile_repo()
         err = io.StringIO()
         with contextlib.redirect_stderr(err), contextlib.redirect_stdout(io.StringIO()):
-            rc = discovery.main(["--repo", repo, "--repo-scan", "--scope-changed"], refuse_delta=False)
+            rc = discovery.main(["--repo", repo, "--repo-scan"])
         self.assertEqual(rc, 0, err.getvalue())
         self.assertNotIn("fails closed", err.getvalue())
         self.assertNotIn("Traceback", err.getvalue())
@@ -507,17 +391,26 @@ class RepositoryHooksNeverRun(unittest.TestCase):
         marker = plant_hook(repo, "post-index-change")
         with open(os.path.join(repo, "a.py"), "w", encoding="utf-8") as fh:
             fh.write("value = 2\n")
-        self.assertIs(discovery._worktree_dirty(repo), True)
+        proc = safe_git.probe(repo, ["status", "--porcelain", "-z"])
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("a.py", proc.stdout)
         self.assertFalse(os.path.exists(marker))
 
-    def test_an_allowlisted_symbolic_ref_write_never_runs_the_ref_hook(self):
+    def test_a_symbolic_ref_write_is_refused_and_never_runs_the_ref_hook(self):
         repo = self._repo()
         marker = plant_hook(repo, "reference-transaction")
-        # A write: since #3256 `probe` refuses one, so it goes through `mutate`, which
-        # suppresses hooks on the same launch path.
-        proc = safe_git.mutate(repo, ["symbolic-ref", "refs/heads/probe-zz",
-                                      "refs/heads/main"])
-        self.assertEqual(proc.returncode, 0, proc.stderr)
+        # A write: `probe` has refused one since #3256, and since #3736 there is no
+        # write door beside it, so the ref is not written and the hook has no
+        # transaction to fire on.
+        with self.assertRaisesRegex(safe_git.RepositoryRefused, "panopticon makes no Git write"):
+            safe_git.probe(repo, ["symbolic-ref", "refs/heads/probe-zz", "refs/heads/main"])
+        self.assertFalse(os.path.exists(marker))
+        listed = subprocess.run(["git", "-C", repo, "symbolic-ref", "-q", "refs/heads/probe-zz"],
+                                capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(0, listed.returncode)
+        # The read of the same command is still served, with the hook quiet.
+        read = safe_git.probe(repo, ["symbolic-ref", "HEAD"])
+        self.assertEqual((0, "refs/heads/main"), (read.returncode, read.stdout.strip()))
         self.assertFalse(os.path.exists(marker))
 
     def test_the_baseline_probe_never_runs_the_targets_index_hook(self):
@@ -588,7 +481,7 @@ class SetupAndRunioAreConfined(unittest.TestCase):
     a defect in `run_manifest` -- against the reviewed repo during setup.
     `runio._foreign_manifest` resolved a trusted git but launched it without the
     `GIT_CONFIG_*` suppression and without `core.fsmonitor=false`, the exact
-    shape ruling 1 fixed in `diff_map`.
+    shape ruling 1 fixed in the delta map (deleted in 5.5, #3736).
     """
 
     def _repo(self, **kwargs):
@@ -644,15 +537,16 @@ class DiffDriversAreSuppressed(unittest.TestCase):
     """#2006 fix round 2, C1: the reviewer's `diff.external` reproduction.
 
     An external diff driver's output REPLACES git's, so one repo-local line
-    (`diff.external = true`) made `diff_map.hunk_map` return `{}` -- the
-    on-diff gate scoped to nothing, which is the vacuous PASS `DiffMapError`
-    exists to prevent (#5.0-08) -- while executing target-authored code.
+    (`diff.external = true`) made a diff read through the probe come back empty
+    while executing target-authored code.
 
-    #2013: the driver is emptied rather than the target refused, so the map is
-    HONEST (the hunks git would have produced) instead of either empty or
-    absent. Each test proves the fixture live first with a plain `git diff` in
-    the same repository, because an absent marker is also what an inert
-    fixture produces.
+    #2013: the driver is emptied rather than the target refused, so the diff is
+    HONEST (what git would have produced) instead of either empty or absent.
+    Each test proves the fixture live first with a plain `git diff` in the same
+    repository, because an absent marker is also what an inert fixture produces.
+
+    #3736: the caller these were written for, the delta review's hunk map, is
+    gone. The probe still runs `diff`, so the property is asked of the probe.
     """
 
     def _repo(self):
@@ -666,9 +560,15 @@ class DiffDriversAreSuppressed(unittest.TestCase):
                        capture_output=True, timeout=30)
         return repo
 
-    def test_the_map_is_honest_without_a_driver(self):
-        # Vacuity guard: the same call DOES produce hunks when nothing is set.
-        self.assertIn("a.py", diff_map.hunk_map(self._repo(), "main"))
+    @staticmethod
+    def _diff(repo):
+        proc = safe_git.probe(repo, ["diff", "--unified=0", "main"])
+        assert proc.returncode == 0, proc.stderr
+        return proc.stdout
+
+    def test_the_diff_is_honest_without_a_driver(self):
+        # Vacuity guard: the same call DOES produce the change when nothing is set.
+        self.assertIn("+value = 3", self._diff(self._repo()))
 
     def _plant(self, repo, key, attribute=None):
         marker = hostile_marker(repo, "diff-marker")
@@ -688,22 +588,22 @@ class DiffDriversAreSuppressed(unittest.TestCase):
         os.remove(marker)
         return marker
 
-    def test_diff_external_is_emptied_and_the_map_stays_honest(self):
+    def test_diff_external_is_emptied_and_the_diff_stays_honest(self):
         repo = self._repo()
         marker = self._plant(repo, "diff.external")
-        self.assertIn("a.py", diff_map.hunk_map(repo, "main"))
+        self.assertIn("+value = 3", self._diff(repo))
         self.assertFalse(os.path.exists(marker))
 
     def test_an_attribute_scoped_diff_command_is_emptied(self):
         repo = self._repo()
         marker = self._plant(repo, "diff.hostile.command", attribute="diff=hostile")
-        self.assertIn("a.py", diff_map.hunk_map(repo, "main"))
+        self.assertIn("+value = 3", self._diff(repo))
         self.assertFalse(os.path.exists(marker))
 
     def test_an_attribute_scoped_textconv_is_emptied(self):
         repo = self._repo()
         marker = self._plant(repo, "diff.hostile.textconv", attribute="diff=hostile")
-        self.assertIn("a.py", diff_map.hunk_map(repo, "main"))
+        self.assertIn("+value = 3", self._diff(repo))
         self.assertFalse(os.path.exists(marker))
 
 
@@ -849,24 +749,24 @@ class TargetGitDriversAreSuppressed(unittest.TestCase):
         os.utime(big, (self.OLD, self.OLD))
         return repo, marker
 
-    def _report(self, rows, delta):
-        """A report built over `rows`, as a delta-scoped or full-repo run."""
+    def _report(self, rows, review_type):
+        """A report built over `rows`, for a run of one review type."""
         return report_mod.build_report(report_mod.ReportInputs(
             run=report_mod.RunConfig(
                 target="src", fail_on="high", timestamp="2026-01-01T00:00:00Z",
-                review_type="changes" if delta else "repo"),
+                review_type=review_type),
             findings=findings_mod.FindingSet(findings=[]),
             plan=plan_mod.PlanInputs(git_drivers_suppressed=rows)))
 
-    def test_a_filtered_path_reads_as_modified_and_a_delta_run_is_not_certified(self):
-        """The measured cost of suppression, and what it costs certification.
+    def test_a_filtered_path_reads_as_modified_and_that_is_disclosed(self):
+        """The measured cost of suppression, and that it is disclosure-grade.
 
         With the clean filter emptied git compares the RAW worktree against the
         FILTERED index, so a path nobody touched reads as modified: dirtiness
-        for it is unknown and a delta may include it. That is disclosure-grade
-        on a full-repo scan (the findings are unaffected) and
-        certification-grade on a delta-scoped one, where the inflated
-        comparison chooses the reviewed file set and the gate's scope.
+        for it is unknown. The findings are unaffected, so the report discloses
+        the suppression and certification does not move. (#3736: the one run it
+        did move was a delta review, where that comparison chose the reviewed
+        files; a report typed `changes` armed it too and is in the loop below.)
         """
         repo, marker = self._lfsish_repo()
         suppressed = []
@@ -878,26 +778,14 @@ class TargetGitDriversAreSuppressed(unittest.TestCase):
         self.assertFalse(os.path.exists(marker))
 
         rows = [{"repo": r, "key": k} for r, k in suppressed]
-        delta = self._report(rows, delta=True)
-        self.assertIs(delta["summary"]["coverage_certified"], False)
-        self.assertIn("delta scope inflated by suppressed git drivers",
-                      delta["summary"]["coverage_note"])
-        self.assertEqual(
-            delta["meta"]["integrity"]["delta_scope_suppressed_git_drivers"],
-            ["filter.lfsish.clean"])
-        # Through the mechanism, not beside it: the caveat is in the integrity
-        # dict, so `integrity_ok` is false and the gate moves like every other
-        # integrity failure. Without this the `integrity_ok` limb could be
-        # deleted with a green board (`coverage_certified` alone would still
-        # sink) -- the shape review I2 flagged.
-        self.assertEqual(delta["summary"]["gate"], "INCONCLUSIVE")
-
-        full = self._report(rows, delta=False)
-        self.assertIs(full["summary"]["coverage_certified"], True)
-        self.assertEqual(full["summary"]["gate"], "PASS")
-        self.assertIsNone(
-            full["meta"]["integrity"]["delta_scope_suppressed_git_drivers"])
-        self.assertEqual(full["meta"]["coverage"]["git_drivers_suppressed"], rows)
+        for review_type in ("repo", "changes"):
+            with self.subTest(review_type=review_type):
+                report = self._report(rows, review_type)
+                self.assertIs(report["summary"]["coverage_certified"], True)
+                self.assertEqual(report["summary"]["gate"], "PASS")
+                self.assertNotIn("delta_scope_suppressed_git_drivers",
+                                 report["meta"]["integrity"])
+                self.assertEqual(report["meta"]["coverage"]["git_drivers_suppressed"], rows)
 
     def test_the_same_key_in_two_repositories_is_disclosed_twice(self):
         """Pins the deliberate deviation from ruling 2 (review I2).

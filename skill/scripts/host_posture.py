@@ -148,7 +148,7 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
 
     `args` is accepted and deliberately READ FOR NOTHING TREE-SHAPED. It is
     kept as a test seam: `args.target` is the operator's own checkout, which
-    under `--pr` is emphatically not the tree being reviewed, and passing it
+    from a subdirectory is not the tree being reviewed, and passing it
     to the shadow scan is C1. The regression test hands this function a
     `target` that DIFFERS from `review_root` and requires the refusal to fire
     off `review_root`, which is only a test that can fail while the parameter
@@ -186,7 +186,7 @@ def _establish_host_posture(review_root, manifest, args, *, registration_dir=Non
         # notice, not a gate -- nothing about the run below this line changes).
         print(host_disclosure.GENERIC_FALLBACK_NOTICE, file=sys.stderr)
     # THREE trees, three arguments -- see run_probes' docstring. `review_root`
-    # is the REVIEWED tree (the --pr worktree, or the git toplevel), which is
+    # is the REVIEWED tree (the git toplevel), which is
     # what the shadow scan must read; `args.target` is the operator's own
     # checkout and scanning it left a hostile PR's planted shell unread (C1).
     # The session root comes from runio.session_dir, the single expression

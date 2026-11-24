@@ -225,7 +225,7 @@ _PRIORITY_TO_CONFIDENCE = {
 # SpotBugs reports a `sourcepath` relative to the SOURCE ROOT it compiled --
 # `org/dummy/App.java`, the package path -- never a repo path. Everything
 # downstream resolves `location.file` against the REPO root instead: the
-# delta/`--pr` gate matches it to diff hunks, the tool-verify round scopes its
+# tool-verify round scopes its
 # advisor with `phases/coverage.group_files_containing` (a tool finding carries
 # no group, so its FILE is what finds the cell), `grading` attributes findings
 # to groups by it, and every exclude glob matches against it. So on a standard
@@ -513,8 +513,8 @@ class SpotBugsAdapter:
             # (com.example.App -> com/example/App.java), rather than an empty
             # location.file. (We KEEP the finding -- #1196 -- unlike the
             # SCS/#476 drop policy, which discarded compiler-diagnostic noise.)
-            # It is a package path like the sourcepath, so it is matchable by
-            # the delta/--pr gate only once `_locate` has resolved it against
+            # It is a package path like the sourcepath, so it can be placed in
+            # the repository only once `_locate` has resolved it against
             # the tree -- and the finding says so when it could not be.
             cls = bug.find("Class")
             classname = cls.get("classname", "") if cls is not None else ""

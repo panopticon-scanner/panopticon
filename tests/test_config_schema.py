@@ -69,9 +69,9 @@ class TestParseSettings(unittest.TestCase):
         self.assertEqual(p.requested["security"], "REDTEAM")   # verbatim
 
     def test_an_operator_only_key_is_refused_and_counted(self):
-        p = cs.parse_settings({"settings": {"allow_unenforced": True, "diff_context": 9}})
+        p = cs.parse_settings({"settings": {"allow_unenforced": True, "max_turns": 9}})
         self.assertEqual(p.typed, {})
-        self.assertEqual(sorted(r["key"] for r in p.refused), ["allow_unenforced", "diff_context"])
+        self.assertEqual(sorted(r["key"] for r in p.refused), ["allow_unenforced", "max_turns"])
         self.assertTrue(all("operator-only" in r["reason"] for r in p.refused))
         self.assertIn("target config asked for `allow_unenforced: true`", p.disclosures[0])
 
@@ -280,10 +280,62 @@ class TestTheClamp(unittest.TestCase):
         self.assertIn("the command line's `900` wins", r.disclosures[0])
 
 
+class TestTheRetiredDeltaKeys(unittest.TestCase):
+    """#3736: `gate_scope` and `diff_context` were settings of the delta review. A
+    committed config that still spells one is not broken by it, and it is not silent:
+    the key is valid, ignored, and disclosed as ignored."""
+
+    NOTICE = ("ignored since 5.5: delta review was removed (#3736), and every audit is "
+              "whole-repository")
+
+    def test_each_is_read_ignored_and_disclosed_with_one_notice(self):
+        for key, value, shown in (("gate_scope", "all", "all"), ("gate_scope", "on-diff", "on-diff"),
+                                  ("diff_context", 9, "9"), ("gate_scope", "nonsense", "nonsense"),
+                                  ("diff_context", True, "true")):
+            with self.subTest(key=key, value=value):
+                parsed = cs.parse_settings({"settings": {key: value}})
+                self.assertEqual({}, parsed.typed)
+                self.assertEqual([], parsed.refused)              # valid: not refused
+                self.assertEqual({key: value}, parsed.requested)  # recorded as asked
+                self.assertEqual(["target config asked for `%s: %s`; %s"
+                                  % (key, shown, self.NOTICE)], parsed.disclosures)
+                resolved = cs.resolve_settings({}, parsed)
+                self.assertEqual(({}, [], []),
+                                 (resolved.effective, resolved.refused, resolved.clamped))
+                self.assertEqual(parsed.disclosures, resolved.disclosures)
+
+    def test_the_notice_is_the_one_sentence(self):
+        self.assertEqual(self.NOTICE, cs.RETIRED_NOTICE)
+        self.assertEqual(("diff_context", "gate_scope"), cs.RETIRED_KEYS)
+
+    def test_a_value_that_is_not_a_scalar_is_disclosed_without_being_echoed(self):
+        parsed = cs.parse_settings({"settings": {"gate_scope": {"a": ["<script>"]}}})
+        self.assertEqual(({}, [], {}), (parsed.typed, parsed.refused, parsed.requested))
+        self.assertEqual(1, len(parsed.disclosures))
+        self.assertIn(self.NOTICE, parsed.disclosures[0])
+        self.assertNotIn("script", parsed.disclosures[0])
+
+    def test_it_does_not_disturb_the_keys_beside_it(self):
+        parsed = cs.parse_settings({"settings": {"gate_scope": "all", "security": "redteam",
+                                                 "fail_on": "high"}})
+        resolved = cs.resolve_settings({}, parsed)
+        self.assertEqual({"security": "redteam", "fail_on": "high"}, resolved.effective)
+        self.assertEqual([], resolved.refused)
+        self.assertNotIn("gate_scope", cs.DEFAULTS)
+        self.assertNotIn("gate_scope", cs.GATE_KEYS)
+
+    def test_the_command_line_flag_does_not_un_retire_it(self):
+        # `--gate-scope` is refused before any config is read; were a value to arrive
+        # here anyway, the file's key is still ignored and says so.
+        resolved = cs.resolve_settings({"gate_scope": "all"},
+                                       cs.parse_settings({"settings": {"gate_scope": "all"}}))
+        self.assertEqual({}, resolved.effective)
+        self.assertIn(self.NOTICE, resolved.disclosures[0])
+
+
 class TestTheRatchet(unittest.TestCase):
     def test_a_tightening_gate_value_is_honoured(self):
-        for key, value in (("security", "redteam"), ("fail_on", "high"),
-                           ("gate_scope", "all")):
+        for key, value in (("security", "redteam"), ("fail_on", "high")):
             r = _resolve({key: value})
             self.assertEqual(r.effective.get(key), value, key)
             self.assertEqual(r.refused, [], key)

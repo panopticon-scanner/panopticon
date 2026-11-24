@@ -116,7 +116,7 @@ def confine_claim_location(review_root, loc):
 def root_pin_paragraph(review_root, *, plural=False, subject=None):
     """The `Repo root:` paragraph an advisor prompt opens with (#975).
 
-    Advisors inherit the session cwd, never review_root or the `--pr` worktree,
+    Advisors inherit the session cwd, never review_root,
     and a claim's `location` stays repo-relative on disk -- so without this
     header a relative location resolves against whichever checkout the host
     happened to start in. `plural` picks the claimS wording the cell advisor

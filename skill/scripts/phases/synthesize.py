@@ -7,7 +7,6 @@ import sys
 
 from scripts import hosts
 import scripts.config_schema as config_schema
-import scripts.delta_withdrawn as delta_withdrawn
 import scripts.loop_progress as loop_progress
 import scripts.run_manifest as run_manifest
 import scripts.synth.validate_schema as validate_schema_mod
@@ -508,73 +507,11 @@ def synthesize_execute(review_root, manifest):
     drivers = manifest.get("git_drivers_suppressed")
     if drivers:
         cmd += ["--git-drivers-suppressed", json.dumps(drivers)]
-    # #3735: delta review is withdrawn. The gate scope and the hunk map are handed to
-    # the child only for a run whose manifest says it is a delta run, and no manifest
-    # the command line can write or resume does. So a committed `gate_scope:` reaches
-    # no child, and a `diff-hunks.json` left in the run folder turns nothing on: it
-    # used to be handed over whenever it was there, whatever the manifest said.
-    delta_run = delta_withdrawn.is_delta_run(manifest)
-    for flag, key in (("--fail-on", "fail_on"), ("--severity", "severity"),
-                      ("--gate-scope", "gate_scope")):
-        if flags.get(key) and (delta_run or key != "gate_scope"):
+    # #3736: a committed `gate_scope:` and a `diff-hunks.json` left in the run folder
+    # reach no child. Delta review is gone, and the child would refuse both flags.
+    for flag, key in (("--fail-on", "fail_on"), ("--severity", "severity")):
+        if flags.get(key):
             cmd += [flag, str(flags[key])]
-    # #2107: the hunk map must come from the SAME discovery child as this run's
-    # `groups.json`. The inventory decides what the review covered and the hunk
-    # map decides what the gate scopes to, so a pair from two generations
-    # reviews one surface and gates on another -- and under the default
-    # `--gate-scope on-diff` every finding the review produced then classifies
-    # off-diff against a stranger's diff, which reports a green gate over a
-    # change nothing measured. `phases/discovery.py` stamps both halves with
-    # this run's `run_id`, and what this phase does is thread the EXPECTATION
-    # (`--diff-hunks-run-id`) so the child's loader can check it.
-    #
-    # The expectation is threaded even when this phase can already see that the
-    # stamp does not match (review round 1, finding 3). Withholding the path
-    # would reach the same gate -- a rejected payload leaves no `base`, so the
-    # delta is inactive and the gate widens to whole-repo scope, the fail-closed
-    # direction a non-delta run already takes -- but it would leave
-    # `meta.coverage.delta_artifact` NULL, indistinguishable from a run that was
-    # never a delta one, and the only record of the refusal would be a stderr
-    # the driver buffers and discards on a successful run. Handing the pair over
-    # publishes `payload_malformed: generation-mismatch` in the report instead.
-    # (`evidence.match_verdict`'s run-id binding does the same: it publishes
-    # `misrouted` AND prints.) Neither INCONCLUSIVE arm can fire on it, because
-    # `delta_gate_gap` and `broken_artifact_gate_gap` both require `ctx.active`.
-    #
-    # ONE case withholds the path: a `run_id` that is not a non-empty STRING.
-    # There is nothing to thread, and the value would reach `child._run_child`
-    # unconverted -- `run_tag` slugs the id through `str()`, so a hand-edited
-    # integer `run_id` is truthy and matches the integer stamp the driver wrote
-    # with it. A non-string argv token raises TypeError, which neither
-    # `child`'s OSError conversion nor `driver.run`'s `(DriverError,
-    # ValueError)` catches: a traceback with no `status:` line (finding 2).
-    # `str()`-ing the argv value is NOT the fix -- the loader compares against
-    # the JSON-parsed stamp, so the two seams would disagree about one pair.
-    # #2525 then closed the arrival route for the whole phase set:
-    # `run_manifest.load_manifest` discards a manifest whose `run_id` is not a
-    # non-empty string, so a real run cannot hand this phase one. The branch
-    # stays, because this function is also called with a manifest dict
-    # directly.
-    diff_hunks = runio._pano(review_root, "diff-hunks.json")
-    if delta_run and os.path.isfile(diff_hunks):
-        run_id = manifest.get("run_id")
-        hunks_doc = runio._load_json(diff_hunks)
-        stamp = hunks_doc.get("run_id") if isinstance(hunks_doc, dict) else None
-        if not (isinstance(run_id, str) and run_id):
-            print("synthesize: diff-hunks.json carries run_id %s, this run is "
-                  "%s: not passed; the gate degrades to whole-repo scope "
-                  "(#2107)" % (stamp, run_id), file=sys.stderr, flush=True)
-        else:
-            cmd += ["--diff-hunks", diff_hunks, "--diff-hunks-run-id", run_id]
-            if stamp != run_id:
-                print("synthesize: diff-hunks.json carries run_id %s, this run "
-                      "is %s: refused; the gate degrades to whole-repo scope "
-                      "and the report publishes "
-                      "delta_artifact.payload_malformed = generation-mismatch "
-                      "(#2107)" % (stamp, run_id),
-                      file=sys.stderr, flush=True)
-    if delta_run and flags.get("diff_context") is not None:
-        cmd += ["--diff-context", str(flags["diff_context"])]
     if flags.get("max_verify") is not None:
         cmd += ["--max-verify", str(flags["max_verify"])]
     cmd += findings

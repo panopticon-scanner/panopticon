@@ -171,7 +171,7 @@ def _report_doc():
 
 # Fields whose non-conforming value is DROPPED rather than coerced, because the
 # coercion would not be lossless -- it would invent a claim. `location.file`
-# drives on-diff classification, group attribution and the LoC denominator, so
+# drives group attribution and the LoC denominator, so
 # `str(7)` there is not a repair, it is a fabricated path. Dropping it makes
 # the whole location fall away (findings.normalize_finding's #1522 rule), which
 # is the honest answer: the finding is real, its locus was not stated.
@@ -186,8 +186,8 @@ _DROP_NEVER_COERCE = ("location.file", "groups[].files[]")
 # pipeline and checks the artifact carries the controller's answer instead),
 # because round 1 shipped two entries that were simply false:
 #
-#   `delta` named `delta.classify_findings`, which only runs under
-#   `--diff-hunks` -- so on every other run the key was skipped here and
+#   `delta` named the delta-review classifier (removed in 5.5, #3736), which only
+#   ran on a delta run -- so on every other run the key was skipped here and
 #   touched by nothing, and an agent's `delta` reached the artifact verbatim.
 #   `evidence` named `derive_evidence`, which does rebuild the object -- out of
 #   the advisor's verdict, whose `reasoning` it copies through. True about

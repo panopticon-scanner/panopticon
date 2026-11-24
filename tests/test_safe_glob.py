@@ -28,13 +28,10 @@ from unittest import mock
 from tests._test_helpers import REPO_ROOT, adopt_panopticon
 
 import scripts.collect_usage as collect_usage
-import scripts.diff_map as diff_map
 import scripts.phases.readiness as readiness
 import scripts.probes.kimi_snapshot as kimi_snapshot
 import scripts.phases.run_artifacts as run_artifacts
 import scripts.phases.runio as runio
-import scripts.phases.validate as validate_phase
-import scripts.run_manifest as run_manifest
 import scripts.runners.kimi as kimi_runner
 import scripts.safe_glob as safe_glob
 import scripts.synthesize as synthesize_script
@@ -680,29 +677,6 @@ class TestEveryReaderOfADirectoryTakesItAsSpelled(unittest.TestCase):
         self.assertEqual([], [path for path in mine if os.path.exists(path)])
         self.assertEqual(kept, [path for path in kept if os.path.exists(path)])
 
-    def test_the_report_parts_surfaced_from_a_worktree(self):
-        target = os.path.join(self.base, "target")
-        manifest = {"run_id": "R", "worktree": self.here, "target": target}
-        tag = run_manifest.run_tag(manifest)
-        parts = ("report.json", "report_part2.json", "report-discarded.json")
-        for part in parts:
-            self.write(self.here, os.path.join(".panopticon", "%s-%s" % (tag, part)), {"p": part})
-        # The sibling holds one part of the three, and one this run never wrote: read as
-        # the list of names, it would leave two of ours behind and ask for one we lack.
-        for part in ("report.json", "report_part9.json"):
-            self.write(self.decoy, os.path.join(".panopticon", "%s-%s" % (tag, part)), {"p": "x"})
-        os.makedirs(target)
-        with mock.patch.object(diff_map, "release_worktree") as release:
-            validate_phase._finalize_worktree(self.here, manifest)
-        release.assert_called_once()
-        surfaced = sorted(name for name in os.listdir(os.path.join(target, ".panopticon"))
-                          if name.startswith(tag) and name.endswith(".json"))
-        self.assertEqual(sorted("%s-%s" % (tag, part) for part in parts), surfaced)
-        for part in parts:
-            with open(os.path.join(target, ".panopticon", "%s-%s" % (tag, part)),
-                      encoding="utf-8") as fh:
-                self.assertEqual({"p": part}, json.load(fh))
-
     def test_a_sub_skill_under_such_a_home(self):
         mine = self.write(self.here, os.path.join("plugins", "vendor", "skills", "leaf", "SKILL.md"), "#")
         self.write(self.decoy, os.path.join("plugins", "leaf", "SKILL.md"), "#")
@@ -951,23 +925,6 @@ class TestADirectoryThatCannotBeListedIsNotAnEmptyOne(unittest.TestCase):
         self.assertEqual([], [path for path in stale + kept if os.path.exists(path)])
 
     # --- the worktree's report ---------------------------------------------------------
-
-    def test_a_worktree_whose_reports_cannot_be_listed_is_kept(self):
-        """No report part was surfaced and the worktree, the only other copy, was released."""
-        worktree = os.path.join(self.base, "worktree")
-        manifest = {"run_id": "R", "worktree": worktree, "target": self.target}
-        tag = run_manifest.run_tag(manifest)
-        for part in ("report.json", "report_part2.json"):
-            self.write(worktree, os.path.join(".panopticon", "%s-%s" % (tag, part)), {"p": part})
-        pano, err = os.path.join(worktree, ".panopticon"), io.StringIO()
-        with unlistable(pano), contextlib.redirect_stderr(err), \
-                mock.patch.object(diff_map, "release_worktree") as release:
-            validate_phase._finalize_worktree(worktree, manifest)
-        release.assert_not_called()
-        self.assertIn("FAILED to surface 1 report artifact(s)", err.getvalue())
-        self.assertIn("%s could not be listed: Permission denied" % pano, err.getvalue())
-        self.assertIn("KEEPING the worktree %s" % worktree, err.getvalue())
-        self.assertEqual([], [name for name in os.listdir(self.target) if name != ".panopticon"])
 
     # --- the run folder ----------------------------------------------------------------
 

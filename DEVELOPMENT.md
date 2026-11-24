@@ -343,15 +343,13 @@ characters, and matching consumes the whole path.
   **What suppression costs, measured:** a clean filter is what makes the index
   blob equal the worktree, so emptying it leaves git comparing raw worktree
   bytes against a filtered blob — *paths under a suppressed driver compare as
-  modified: dirtiness for them is unknown and a delta may include them.* It does
+  modified: dirtiness for them is unknown.* It does
   NOT change what any reviewer read (agents read the worktree; the probe never
-  checks anything out). On a full-repo scan that costs `target_dirty` and
-  nothing the findings depend on, so the disclosure is the whole answer. On a
-  **delta-scoped** run (`--changes`, or any diff-hunks map with a base —
-  `--scope-changed` / `--pr`) the inflated comparison chose the reviewed file
-  set and the on-diff gate's scope, so `meta.integrity` carries a named caveat
-  (`delta_scope_suppressed_git_drivers`), the gate goes INCONCLUSIVE through
-  `integrity_ok` and the run is NOT certified.
+  checks anything out). That costs `target_dirty` and nothing the findings
+  depend on, so the disclosure is the whole answer. (Until 5.5 a delta-scoped
+  run was not certified under a suppressed driver, because that comparison chose
+  its reviewed files; delta review is removed, #3736, and the
+  `delta_scope_suppressed_git_drivers` key went with it.)
 - **Tolerant by design**: `load_findings` and `enrich_citations` skip/log malformed input,
   never abort the run (a bad finding must not lose a real CRITICAL or skip the CI gate).
 - **Fan-out resumes from artifacts, not an orchestrator's memory (P2 SP-A, #435,
@@ -408,8 +406,8 @@ characters, and matching consumes the whole path.
 ## Running
 Fresh session → `/panopticon` (`-f file`, `-d dir`, `-g <name>` one committed group, `--files`,
 or whole repo — see `docs/PANOPTICON.md` "Modes" for the authoritative flag list; delta review,
-`-c` and `--pr N`, is withdrawn in 5.4 and refused at the command line, #3735; its code is in the
-tree, unreachable, and its tests reach it below the refusal with `refuse_delta=False`). `--epss` enables EPSS lookups; `--fail-on high`
+`-c` and `--pr N`, was withdrawn in 5.4 (#3735) and its code removed in 5.5 (#3736): the flags are
+still parsed, only to be refused by name). `--epss` enables EPSS lookups; `--fail-on high`
 gates CI (keys off `summary.gate` in the JSON). Tool layer: build the image once (above);
 normal runs require Docker and the tools image at readiness, or `--no-tools` to
 skip the layer explicitly. `driver readiness` prints a read-only preflight.

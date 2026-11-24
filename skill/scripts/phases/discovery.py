@@ -10,8 +10,7 @@ from . import engine
 from . import runio
 
 # Scope modes whose file set is SELECTED rather than enumerated, so selecting
-# nothing is a real answer: `-c`/`--pr` review a diff, and a diff with no
-# reviewable file in it is a legitimately empty run; `--files` is an explicit
+# nothing is a real answer: `--files` is an explicit
 # list that fixture/exclude pruning can empty. Every other mode names a target
 # that must resolve, and `discovery.py` exits 2 when it does not -- unknown or
 # unmatched `--scope-group`, unmatched `--scope-dir`, untracked `--scope-file`
@@ -19,7 +18,7 @@ from . import runio
 # with `groups: []`, which arrived here as a broken artifact and blamed the
 # artifact for the flag's mistake). So an empty review under any other mode is
 # a broken artifact rather than an empty run.
-_MAY_SELECT_NOTHING = ("changed", "files")
+_MAY_SELECT_NOTHING = ("files",)
 
 # One free re-run -- a truncated write is worth retrying -- and no more: a child
 # that emits the same unusable artifact twice is deterministically broken, and
@@ -98,45 +97,13 @@ def discovery_done(review_root, manifest):
         runio._load_json(runio._pano(review_root, "groups.json")), manifest)
 
 
-def _stamp_diff_hunks(review_root, manifest):
-    """Bind `diff-hunks.json` to the `groups.json` generation just stamped
-    (#2107).
-
-    One discovery child writes both halves of a delta review -- the hunk map
-    first (`discovery.py:1852-1862`), the inventory second
-    (`discovery.py:1911-1923`) -- as two INDEPENDENT atomic writes, and only
-    the inventory carried the run binding. The two halves answer different
-    questions for the same run: `groups.json` is what the review cells cover,
-    `diff-hunks.json` is what the gate scopes to. A pair from two generations
-    therefore reviews one surface and gates on another, and under the default
-    `--gate-scope on-diff` every finding the review produced classifies
-    off-diff against a stranger's hunk map: a PASS over a change nothing
-    measured.
-
-    The #2107 probe could not reach that state through the driver -- the
-    pre-child clear above, the hunks-before-groups write order and the per-run
-    folder each stop it -- but the invariant was STRUCTURAL and undeclared:
-    one reordering of `discovery.main`, or one "the old groups.json is still
-    good" optimisation, converts it into the reachable mixed pair the probe
-    built by hand. So it becomes a FIELD, stamped by the only party that knows
-    the run (the child also serves `panopticon discovery` by hand, so it has
-    no run to stamp), and `phases/synthesize.py` requires it.
-
-    Only a JSON OBJECT is stamped. A non-object or unreadable artifact is left
-    exactly as the child wrote it, for `synth/delta.py`'s loader to reject on
-    its own terms -- rewriting it would replace one broken payload with a
-    differently broken one and lose the operator's evidence. A non-delta run
-    has no file here at all (`discovery.py:1864-1870` removes a stale one), so
-    there is nothing to stamp and nothing is created: conjuring an empty one
-    would hand synthesize a hunk map to scope by.
-    """
-    path = runio._pano(review_root, "diff-hunks.json")
-    doc = runio._load_json(path)
-    if isinstance(doc, dict):
-        doc["run_id"] = manifest.get("run_id")
-        runio._write_json(path, doc)
-
 def discovery_execute(review_root, manifest):
+    # #3736: a manifest of a delta run names a scope this phase no longer has. The driver
+    # refuses to resume one before any phase; were one to arrive here anyway, it stops
+    # here rather than run as the whole-repository scan the scope below would fall to.
+    withdrawn = delta_withdrawn.resumed_refusal(manifest)
+    if withdrawn:
+        raise runio.DriverError("discovery: " + withdrawn)
     _groups, errors = runio.load_committed_groups(review_root)
     if errors:
         raise runio.DriverError("discovery: " + "; ".join(errors))
@@ -146,34 +113,13 @@ def discovery_execute(review_root, manifest):
            review_root, "--out", out]
     scope = manifest.get("scope") or {"mode": "repo"}
     mode = scope.get("mode")
-    if mode == "changed":
-        cmd += ["--scope-changed"]
-    elif mode == "files":
+    if mode == "files":
         cmd += ["--scope-files"] + list(scope.get("target") or [])
     else:
         _scope_arg = {"file": "--scope-file", "directory": "--scope-dir",
                       "group": "--scope-group"}.get(mode or "")
         if _scope_arg and scope.get("target"):
             cmd += [_scope_arg, scope["target"]]
-    if manifest.get("base"):
-        cmd += ["--base", manifest["base"]]
-    if manifest.get("pr_base"):
-        cmd += ["--pr-base", manifest["pr_base"]]
-    if manifest.get("pr") is not None:
-        # #1681: review_root IS the --pr worktree here, and driver.run already
-        # overwrote its root config with the operator's copy (diff_map._sync_config)
-        # before this phase ever runs -- tell discovery.py's delta computation
-        # to exclude that sync from diff-hunks.json rather than attribute it to
-        # the PR. A plain -c/--base run in the primary checkout never sets
-        # manifest["pr"], so this never touches a real reviewable change there.
-        cmd += ["--pr-worktree"]
-    # #3735: the on-diff tolerance goes to the child only for a delta run's manifest, as
-    # `phases/synthesize.py` hands over the hunk map. A run started on 5.3 with
-    # `--diff-context N` and no diff is a whole-repository run: forwarded, the child
-    # refused a flag nobody had typed (#3737 review F2).
-    _dc = (manifest.get("flags") or {}).get("diff_context")
-    if _dc is not None and delta_withdrawn.is_delta_run(manifest):
-        cmd += ["--diff-context", str(_dc)]
     # Chunk size was reachable only by calling discovery.py directly, so in
     # practice every run used the 15-file default. On a mid-size repo that is
     # the difference between a scan and a non-starter: solidus (3,622 files)
@@ -214,10 +160,6 @@ def discovery_execute(review_root, manifest):
         # this run's, which is the same "looks done, reviewed nothing" shape.
         doc["run_id"] = manifest.get("run_id")
         runio._write_json(out, doc)
-        # #2107: and the sibling the same child just wrote, with the same
-        # stamp, so the pair the review and the gate read is ONE generation by
-        # construction rather than by the write order's good manners.
-        _stamp_diff_hunks(review_root, manifest)
     errors = groups_artifact_errors(doc, manifest)
     if errors:
         n = _bump_discovery_attempts(review_root)

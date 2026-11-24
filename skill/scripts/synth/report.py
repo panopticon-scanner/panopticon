@@ -20,7 +20,6 @@ import scripts.hosts as hosts
 import scripts.ocrdb as ocrdb
 import scripts.redact as redact
 from . import findings as findings_mod
-from . import delta as delta_mod
 from . import grading as grading_mod
 from . import health_basis as health_basis_mod
 from . import plan as plan_mod
@@ -35,7 +34,7 @@ from . import verdicts as verdicts_mod
 # x0x-report, tool-manifest, dispatch-request ...). Distinct from meta.version
 # (the panopticon release) and meta.ocrdb_version (the code bundle): the report
 # envelope evolves on its own clock -- 5.1 added meta.cost/meta.integrity/
-# summary.health/summary.delta with no change to the finding shape. Bump this
+# summary.health with no change to the finding shape. Bump this
 # only on a report-envelope format change. Absent (legacy pre-5.1 reports) reads
 # as version 0. #run7 DAT-F2A: gives the cross-run readers (reconcile.load_report,
 # the html compare view, per-run-folder A/B) a discriminator before per-run
@@ -89,7 +88,6 @@ class RunConfig:
     security_mode: str = "standard"
     gate_unverified: bool = False
     max_verify: int | None = None
-    gate_scope: str = "on-diff"
     # 5.1 surface 2: the posture VERBATIM off the artifact, so a consumer can
     # diff it across runs. Not summarised -- `detail` is what tells a reader
     # which of several refutation reasons applied on this run.
@@ -142,17 +140,14 @@ class RunConfig:
                   panel_tools_context=None, tools_disabled_mid_run=False, prior_run=None,
                   config=None):
         """The CLI flags resolved against the run's groups.json (WS-0 S3):
-        explicit --changes wins over a discovered mode; --repo accepts only
-        a missing mode or one mapped to repo. Without either, a missing or unsupported
-        groups.json mode refuses the report.
+        --repo accepts only a missing mode or one mapped to repo. Without it, a
+        missing or unsupported groups.json mode refuses the report.
         --security wins over the file's security_mode and defaults to standard.
         `groups_json` is {} when there is no readable file.
         `host_capabilities` is the parsed host-capabilities.json artifact (or
         {} when absent/corrupt); the caller reads it, this classmethod only
         threads it through."""
-        if args.changes:
-            review_type = "changes"
-        elif getattr(args, "repo", False):
+        if getattr(args, "repo", False):
             mode = groups_json.get("mode")
             discovered = (findings_mod.MODE_TO_REVIEW_TYPE.get(mode)
                           if isinstance(mode, str) else None)
@@ -169,8 +164,7 @@ class RunConfig:
                 reason = "missing" if mode is None else "unsupported"
                 raise ReviewScopeError(
                     "review scope refused: %s groups.json mode; pass --repo to "
-                    "declare a repository-wide review, or --changes for a changes review"
-                    % reason)
+                    "declare a repository-wide review" % reason)
             review_type = findings_mod.MODE_TO_REVIEW_TYPE[mode]
         security_mode = args.security
         if security_mode is None:
@@ -182,7 +176,6 @@ class RunConfig:
                    fail_on=args.fail_on, timestamp=timestamp,
                    review_type=review_type, security_mode=security_mode,
                    gate_unverified=args.gate_unverified, max_verify=args.max_verify,
-                   gate_scope=args.gate_scope,
                    host_capabilities=host_capabilities or {},
                    panel_tools_context=panel_tools_context or {},
                    tools_disabled_mid_run=bool(tools_disabled_mid_run),
@@ -208,10 +201,9 @@ class ReportInputs:
     """Everything build_report reads, grouped by which stage owns it (WS-0
     S2). `run` and `findings` are required; the other four default to their
     "not measured" values so a caller that predates a stage (no dispatch plan,
-    no tool layer, no delta, no cost ledger) passes nothing."""
+    no tool layer, no cost ledger) passes nothing."""
     run: RunConfig
     findings: findings_mod.FindingSet
-    delta: delta_mod.DeltaContext = field(default_factory=delta_mod.DeltaContext)
     plan: plan_mod.PlanInputs = field(default_factory=plan_mod.PlanInputs)
     tools: tool_axis_mod.ToolAxis = field(default_factory=tool_axis_mod.ToolAxis)
     cost: cost_mod.CostInputs = field(default_factory=cost_mod.CostInputs)
@@ -229,15 +221,11 @@ def build_report(inp):
     # #1701 fix round 1 (F1): the gate-counted vendored drops are handed to the
     # stage that applies the gate's filters, not appended after it.
     resolved = verdicts_mod.resolve_findings(
-        inp.findings, inp.delta, inp.run,
+        inp.findings, inp.run,
         gated_suppressed=inp.tools.gated_suppressed, groups_meta=inp.plan.groups_meta)
     reconciled = tool_axis_mod.reconcile(inp.plan, inp.tools, resolved, run=inp.run)
-    # #2178: grading needs the delta context itself, not only the classified
-    # findings -- a zero-range hunk map leaves the on-diff gate scoping
-    # against something nobody measured, which is a certification fact.
     graded = grading_mod.grade_report(
-        inp.run, resolved, reconciled, delta=inp.delta,
-        verify_ledger=inp.cost.verify_ledger)
+        inp.run, resolved, reconciled, verify_ledger=inp.cost.verify_ledger)
     cost = cost_mod.cost_section(inp.cost, inp.plan.scout_profiles_seen,
                                  resolved.verdict_stats["queued"])
     # #2951: the backstop. Findings, verdicts and scanner output are made

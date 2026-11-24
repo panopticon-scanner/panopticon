@@ -32,8 +32,7 @@ BUILD_MANIFESTS = ("pom.xml", "build.gradle", "build.gradle.kts")
 # build output: `location.file` was `angus-activation-2.0.1.jar`, a name that
 # exists nowhere in the reviewed repository, and the absolute `filePath` beside
 # it names the scanner host's layout. Neither can be placed, and placing a
-# finding is what that field is for -- the delta/`--pr` gate matches it against
-# `diff-hunks.json`, the tool-verify advisor's read grant resolves it, grading
+# finding is what that field is for -- the tool-verify advisor's read grant resolves it, grading
 # attributes findings to groups by it, every exclude glob matches it. The build
 # manifest that declared the dependency is the repo file that stands in for the
 # jar, and the shape every sibling dependency adapter already emits.

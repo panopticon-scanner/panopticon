@@ -55,6 +55,7 @@ def _resolve_part_path(base_dir, part):
 # construction (report-schema.json: repo|file|directory|group|changes|pr). A
 # run scoped to any of them cannot corroborate a repo-wide close, however many
 # files its groups happen to list.
+# `pr` is in reports from before 5.5 only (#3736); they are still compared.
 NARROWER_REVIEW_TYPES = ("file", "directory", "group", "changes", "pr")
 
 

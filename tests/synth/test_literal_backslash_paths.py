@@ -5,7 +5,6 @@ import os
 
 import pytest
 
-import scripts.diff_map as diff_map
 import scripts.evidence as evidence
 import scripts.synthesize as synthesize
 
@@ -76,20 +75,3 @@ def test_finding_identities_distinguish_literal_backslash_from_separator():
     assert evidence.matrix_finding_id(literal) != evidence.matrix_finding_id(nested)
     assert evidence.reconcile_key(literal) != evidence.reconcile_key(nested)
 
-
-@pytest.mark.skipif(os.name == "nt", reason="backslash is a literal filename byte on POSIX")
-@pytest.mark.parametrize("absolute", [False, True])
-@pytest.mark.parametrize("spelling", [r"src\x.py", "src/x.py"])
-def test_diff_gate_matches_only_the_actual_filename(tmp_path, absolute, spelling):
-    other = "src/x.py" if spelling == r"src\x.py" else r"src\x.py"
-    for name in (spelling, other):
-        path = tmp_path / name
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("value = 1\n")
-    location = str(tmp_path / spelling) if absolute else spelling
-    finding = _finding(location)
-    assert diff_map.classify(finding, {spelling: [(1, 1)]},
-                             repo_root=str(tmp_path))["on_diff"]
-    assert not diff_map.classify(finding, {other: [(1, 1)]},
-                                 repo_root=str(tmp_path))["on_diff"]
-    assert diff_map.norm_key(location, str(tmp_path)) == spelling

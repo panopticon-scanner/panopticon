@@ -39,7 +39,6 @@ def test_every_driver_scope_mode_has_a_schema_valid_review_type():
     (["--file", "app.py"], "file"),
     (["--directory", "src"], "directory"),
     (["--group", "Core"], "group"),
-    (["--changes"], "changes"),
     (["--files", "app.py", "test_app.py"], "changes"),
 ])
 def test_driver_scope_reaches_run_config(flags, expected):
@@ -51,8 +50,7 @@ def test_driver_scope_reaches_run_config(flags, expected):
 
 @pytest.mark.parametrize("mode, expected", [
     ("repo", "repo"), ("file", "file"), ("directory", "directory"),
-    ("group", "group"), ("files", "changes"), ("changes", "changes"),
-    ("changed", "changes"), ("pr", "pr"),
+    ("group", "group"), ("files", "changes"),
 ])
 def test_report_publishes_the_inventory_scope(tmp_path, monkeypatch, mode, expected):
     monkeypatch.chdir(tmp_path)
@@ -70,7 +68,12 @@ def test_report_publishes_the_inventory_scope(tmp_path, monkeypatch, mode, expec
     {"mode": "unrecognized-scope", "groups": []},
     {"mode": [], "groups": []},
     {"mode": None, "groups": []},
-], ids=["missing", "unknown", "repaired-list", "repaired-null"])
+    # #3736: the delta review's modes are no longer scopes a report can name.
+    {"mode": "changed", "groups": []},
+    {"mode": "changes", "groups": []},
+    {"mode": "pr", "groups": []},
+], ids=["missing", "unknown", "repaired-list", "repaired-null",
+        "delta-changed", "delta-changes", "delta-pr"])
 def test_unnameable_inventory_scope_halts_without_writing(
         tmp_path, monkeypatch, capsys, inventory):
     monkeypatch.chdir(tmp_path)
@@ -99,12 +102,6 @@ def test_a_missing_named_inventory_does_not_become_repo(tmp_path, monkeypatch, c
     assert not output.exists()
 
 
-def test_explicit_changes_still_names_the_scope(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    output = tmp_path / "report.json"
-    assert synthesize.main(["--changes", "--out", str(output)], refuse_delta=False) == 0
-    assert json.loads(output.read_text())["meta"]["review_type"] == "changes"
-
 
 def test_standalone_scope_must_be_explicit(tmp_path, monkeypatch, capsys):
     monkeypatch.chdir(tmp_path)
@@ -129,10 +126,13 @@ def test_explicit_repo_names_a_standalone_scope(tmp_path, monkeypatch, inventory
     assert json.loads(output.read_text())["meta"]["review_type"] == "repo"
 
 
-def test_explicit_repo_and_changes_are_mutually_exclusive():
-    with pytest.raises(SystemExit) as error:
-        synthesize.build_parser().parse_args(["--repo", "--changes"])
-    assert error.value.code == 2
+def test_repo_with_changes_is_refused_as_the_delta_flag(capsys):
+    # #3736: `--changes` is outside the scope group, so that typing it beside `--repo` is
+    # answered with the withdrawal and not with "not allowed with argument".
+    assert synthesize.main(["--repo", "--changes"]) == 2
+    err = capsys.readouterr().err
+    assert "removed in 5.5 (#3736): --changes (-c) is refused" in err
+    assert "not allowed with" not in err
 
 
 def test_scope_refusal_cannot_advance_the_driver_using_an_old_report(tmp_path, monkeypatch):
@@ -153,9 +153,11 @@ def test_scope_refusal_cannot_advance_the_driver_using_an_old_report(tmp_path, m
 
 
 @pytest.mark.parametrize("mode, reason", [
-    ("changed", "discovered changes"),
+    ("files", "discovered changes"),          # mode `files` is typed `changes`
+    ("group", "discovered group"),
+    ("changed", "unsupported mode 'changed'"),        # #3736: a delta mode is no mode
     ("weird", "unsupported mode 'weird'"),
-], ids=["changed", "unknown"])
+], ids=["files", "group", "delta-changed", "unknown"])
 def test_explicit_repo_cannot_override_a_non_repo_inventory(
         tmp_path, monkeypatch, capsys, mode, reason):
     monkeypatch.chdir(tmp_path)

@@ -10,7 +10,6 @@ import threading
 
 import scripts.claim_scope as claim_scope
 import scripts.config_schema as config_schema
-import scripts.diff_map as diff_map
 import scripts.evidence as evidence
 import scripts.executable as executable
 import scripts.groups_schema as groups_schema
@@ -282,7 +281,7 @@ def _abs_files(review_root, files):
 
 def _abs_file_list(review_root, files):
     """Bullet list of a cell's files absolutized against review_root (#975): the
-    reviewer subagent inherits the HOST's cwd, not review_root/the --pr worktree,
+    reviewer subagent inherits the HOST's cwd, not review_root,
     so a bare-relative path resolves against the wrong tree. File-list specific —
     do NOT route tests or other bullet lists through this; they stay
     repo-relative. Paths are prompt-sanitized (#1190) so a control char in a
@@ -580,29 +579,21 @@ def _load_ocrdb_bundle():
     except ValueError as exc:
         raise DriverError("OCRDb bundle unreadable: %s" % exc)
 
-def resolve_review_root(target, base=None, pr=None, runner=subprocess.run):
+def resolve_review_root(target, runner=subprocess.run):
     """`_resolve_review_root`, then the first-contact PATH check (#3270): a
     PATH entry inside the reviewed tree halts the run before any phase."""
-    resolved = _resolve_review_root(target, base, pr, runner)
-    executable.refuse_target_path(resolved[0])
-    return resolved
+    review_root = _resolve_review_root(target, runner)
+    executable.refuse_target_path(review_root)
+    return review_root
 
 
-def _resolve_review_root(target, base, pr, runner):
+def _resolve_review_root(target, runner):
     """Resolve the single review root, pinned once in the manifest (spec §5).
 
-    - pr given: acquire the deterministic PR worktree (diff_map); its path is
-      the root.
     - git repo: `git rev-parse --show-toplevel` from the target.
-    - non-git: the target directory itself, symlinks resolved (#1640) -- every
-      branch returns a resolved path, so nothing downstream has to ask.
-    Returns (review_root, worktree, pr_base): worktree is the PR worktree to
-    release at validate (else None); pr_base is the PR's base branch as read
-    by the acquire (else None), for `run()` to pin as the manifest base.
+    - non-git: the target directory itself, symlinks resolved (#1640) -- both
+      branches return a resolved path, so nothing downstream has to ask.
     """
-    if pr is not None:
-        info = diff_map.acquire_pr(pr, repo=target, runner=runner)
-        return info["worktree"], info["worktree"], info["base"]
     target = os.path.abspath(target)
     start = target if os.path.isdir(target) else os.path.dirname(target)
     try:
@@ -615,16 +606,16 @@ def _resolve_review_root(target, base, pr, runner):
         # existing non-git return.
         proc = safe_git.probe(start, ["rev-parse", "--show-toplevel"], runner=runner)
         if proc.returncode == 0 and proc.stdout.strip():
-            return os.path.realpath(proc.stdout.strip()), None, None
+            return os.path.realpath(proc.stdout.strip())
     except (OSError, subprocess.SubprocessError):
         pass
-    # #1640: RESOLVED, like the git branch above (and like the --pr branch, whose worktree sits
-    # under that resolved repo). This fallback used to hand the root back as given, so a non-git
+    # #1640: RESOLVED, like the git branch above. This fallback used to hand the root back as
+    # given, so a non-git
     # directory reviewed through a symlink (`~/work/proj -> /Volumes/x/proj`) produced findings
     # paths whose review-root component was itself a link -- which the write guard now refuses by
     # name, for what is the operator's own path rather than an attack. Resolving here is what makes
     # the guard's rule and the driver's own path derivation agree, on every branch of this function.
-    return os.path.realpath(start if os.path.isdir(start) else target), None, None
+    return os.path.realpath(start if os.path.isdir(start) else target)
 
 # The claim-path confinement lives in `scripts.claim_scope` (#1767): the CLI advisor renderer in
 # `dispatch` needs the same predicate, and `dispatch` is imported by `runners/*`, which layout rule

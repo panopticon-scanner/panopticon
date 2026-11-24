@@ -12,7 +12,6 @@ import scripts.tools_manifest as tools_manifest
 from . import backups as backups_mod
 from . import coverage_io
 from . import health_basis
-from . import delta as delta_mod
 from . import findings as findings_mod
 from . import verdict_scope as verdict_scope_mod
 
@@ -58,9 +57,7 @@ def risk_level(findings):
 def gate_verdict(findings, fail_on):
     """Return CI gate verdict (PASS/FAIL/OFF) based on findings and threshold.
 
-    The threshold itself is `findings.severity_floor_admits` (#2222), shared with
-    `delta.zero_hunk_population` -- the count of what this gate WOULD have judged
-    on a zero-hunk delta run -- so the two cannot disagree about the floor."""
+    The threshold itself is `findings.severity_floor_admits` (#2222)."""
     if not fail_on:
         return "OFF"
     # Resolve the floor BEFORE any verdict: an unknown `--fail-on` raises here
@@ -99,15 +96,6 @@ def gate_severity_roles(gate_eligible, fail_on):
     return {"fail_on": name, "in_play": in_play,
             "contributing": [sev for sev in in_play if sev in present]}
 
-# #2013 fix round 1 (review I1): the MEASURED effect of emptying a driver, in
-# one place, so the note, the HTML line, the stderr line and the schema cannot
-# drift into describing different costs. Measured on the canonical git-lfs
-# shape: index blob `ptr payload`, worktree `BIG payload`, plain `git status`
-# clean, probe `status` ` M big.bin`, and `collect_changed_files`/`hunk_map`
-# gaining a file nobody edited.
-_SUPPRESSED_DRIVER_EFFECT = ("paths under a suppressed driver compare as "
-                             "modified: dirtiness for them is unknown and a "
-                             "delta may include them")
 NO_SCA_COVERAGE_NOTE = "no SCA tool produced output on an applicable tree"
 
 
@@ -295,8 +283,8 @@ def grade_shortfalls(resolved, backups=None, verify_ledger=None):
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,
             integrity_ok=True, verdicts_unloadable=0, verdicts_unanswered=0,
             missing_floor=0, tools_manifest_invalid=None, tools_network_excluded=None,
-            delta_scope_suppressed_git_drivers=None, tools_file_partial=None,
-            delta_zero_hunks=None, dependency_audit_gap=False, custom_profile=None,
+            tools_file_partial=None,
+            dependency_audit_gap=False, custom_profile=None,
             config_notes=None, native_unparsed_gap=None, shortfalls=(),
             dependency_unaudited=(), unaudited_uncertified=False):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
@@ -324,39 +312,6 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     target-writable file the cheapest way to turn an INCONCLUSIVE run into a
     PASS, on identical findings. It stays in `coverage_certified` too, so a
     caller that passes only the reason still cannot certify.
-    `delta_scope_suppressed_git_drivers` (#2013 fix round 1) is the same
-    two-channel shape: the keys whose suppression scoped a DELTA run. Emptying
-    the target's clean filter makes git compare raw worktree bytes against a
-    filtered index blob, so paths nobody touched read as modified -- on a
-    delta-scoped run that inflated comparison chose the reviewed file set and
-    the gate's scope, which is certification-grade. `reconcile` records it in
-    `meta.integrity`, so `integrity_ok` is what moves the gate; this argument is
-    what NAMES the caveat in `coverage_note`, and it sinks
-    `coverage_certified` on its own so a caller that passes only the reason
-    cannot certify either. `None` on a full-repo run, where suppression costs
-    provenance and nothing the findings depend on.
-    `delta_zero_hunks` (#2178, owner ruling 2026-09-27) is the REASON an ACTIVE
-    delta review's diff-hunks map carried no ranges while GATE-ELIGIBLE findings
-    existed under `--gate-scope on-diff` -- `delta.zero_hunk_population`, i.e.
-    active past the evidence policy and any `--fail-on` floor, which is the
-    population this gate would have judged under the wider scope (#2222, owner
-    ruling 2026-09-28): the gate scoped against something that is not a measured
-    diff, so it must not report PASS. `delta.zero_hunk_gate_gap` owns
-    that decision and this is only its answer; None means no gap. Unlike the two
-    reasons above it is a ONE-channel fact -- nothing else in the report moves the
-    gate for it -- so it joins `gate_relevant_gap` directly (PASS -> INCONCLUSIVE,
-    FAIL and OFF untouched) and sinks `coverage_certified` through that, rather
-    than being named a second time in the expression.
-
-    Since #2405 (owner ruling 2026-10-01) this same channel also carries
-    `delta.broken_artifact_gate_gap`'s reason: a map that CARRIES ranges and is
-    provably damaged anyway -- `paths_emptied_by_drops`, `ranges_dropped`,
-    `paths_dropped` (#2517) or `payload_malformed` -- chose this gate's scope,
-    which is the same doubt about the same artifact and so the same posture.
-    `delta.delta_gate_gap` picks which rule spoke; the parameter keeps its name
-    because nothing about how `certify` treats the reason changes, and a second
-    argument would have two channels doing one job.
-
     `shortfalls` (#3667) is `grade_shortfalls`' list: undone verify work. Any
     entry is gate-relevant, holds the letter back exactly as an incomplete panel
     does, and is named in the note.
@@ -370,7 +325,7 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     gate_relevant_gap = (bool(high_value_incomplete) or bool(tools_absent)
                          or not integrity_ok or bool(verdicts_unloadable)
                          or bool(verdicts_unanswered) or bool(missing_floor)
-                         or bool(tools_network_excluded) or bool(delta_zero_hunks)
+                         or bool(tools_network_excluded)
                          or dependency_audit_gap or bool(native_unparsed_gap)
                          or bool(shortfalls)
                          # #3700: an applicable ecosystem whose auditor did not run. Its
@@ -397,8 +352,7 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         cert_grade, provisional = overall_grade, None
 
     coverage_certified = not (gate_relevant_gap or any_incomplete
-                              or tools_manifest_invalid
-                              or delta_scope_suppressed_git_drivers or tools_file_partial)
+                              or tools_manifest_invalid or tools_file_partial)
 
     note = None
     if tools_manifest_invalid:
@@ -433,29 +387,15 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     if dependency_audit_gap:
         # #3648: which ecosystem, and why, beside the bare "no SCA output".
         note = "; ".join(filter(None, (note, NO_SCA_COVERAGE_NOTE, *dependency_unaudited)))
-    if delta_zero_hunks:
-        # Directly after the manifest note and before every other caveat: an
-        # empty gate scope invalidates the gate WHOLESALE, where a missing online
-        # scanner or a partial capture qualifies it. The manifest note still
-        # reads first -- it names a BROKEN FILE, and until that is fixed no
-        # coverage number in this report means anything.
-        note = "%s; %s" % (note, delta_zero_hunks) if note else delta_zero_hunks
     if tools_network_excluded:
         gap = "safe network unavailable — online scanner coverage missing: %s" % ", ".join(
             sorted(tools_network_excluded))
-        note = "%s; %s" % (note, gap) if note else gap
-    if delta_scope_suppressed_git_drivers:
-        # Composed, never substituted: this run may also have an unreadable
-        # manifest or a missing network, and an operator needs every reason.
-        gap = ("delta scope inflated by suppressed git drivers — %s: %s"
-               % (_SUPPRESSED_DRIVER_EFFECT,
-                  ", ".join(sorted(delta_scope_suppressed_git_drivers))))
         note = "%s; %s" % (note, gap) if note else gap
     if native_unparsed_gap:
         note = "%s; %s" % (note, native_unparsed_gap) if note else native_unparsed_gap
 
     if tools_file_partial:
-        # Valid scanner captures retain their findings and delta eligibility.
+        # Valid scanner captures retain their findings.
         # File gaps qualify coverage, independently of the finding-based gate.
         gap = "partial scanner file coverage: %s" % ", ".join(sorted(tools_file_partial))
         dockerfile_unanalyzed = sum(
@@ -911,14 +851,11 @@ _GATE_ROLE_NOTE = {
 }
 
 
-def grade_report(run, resolved, reconciled, delta=None, verify_ledger=None):
+def grade_report(run, resolved, reconciled, verify_ledger=None):
     """The grading cluster (WS-0 S2): per-group panel grades, the health index,
     certification and the gate, from the resolved findings and the reconciled
     plan. Severity is never mutated here; grades and the gate are computed
-    from gate-eligible findings only.
-
-    `delta` is the run's `DeltaContext` -- needed because the GATE's own scope
-    can be un-measured (#2178). None from a caller with no delta stage."""
+    from gate-eligible findings only."""
     # #1701: under `--security redteam` a directory-NAME exclusion may keep a
     # tool finding out of the report BODY, but not out of the gate -- a payload
     # parked at `app/vendor/patched_auth.rb` passing a merge gate on the
@@ -981,22 +918,6 @@ def grade_report(run, resolved, reconciled, delta=None, verify_ledger=None):
         risk = None
     overall, grade_cap = apply_severity_cap(health_grade(health["score"]),
                                             severity_cap(gate_eligible))
-    # #2178: computed HERE, from the same delta context `resolve_findings`
-    # classified against, the same active list it partitioned, and this run's own
-    # `gate_scope` -- the three inputs the refusal is a statement about. #2222
-    # narrows the count to the population the GATE would have judged:
-    # `zero_hunk_population` re-applies this run's evidence policy and
-    # `--fail-on` floor to that active list, minus the delta scoping the empty
-    # map broke.
-    # #2405: `delta_gate_gap` composes the two rules over the same three inputs
-    # -- the zero-hunk refusal, and the broken-artifact one when the map carries
-    # a range and is damaged anyway -- and answers with one reason.
-    delta_zero_hunks = None
-    if delta is not None:
-        would_have_judged = delta_mod.zero_hunk_population(
-            resolved.active, run.fail_on, run.gate_unverified)
-        delta_zero_hunks = delta_mod.delta_gate_gap(
-            delta, len(would_have_judged), run.gate_scope)
     coverages = getattr(reconciled, "coverages", None)
     shortfalls = grade_shortfalls(resolved, (getattr(reconciled, "coverage", None) or {})
                                   .get("backups"), verify_ledger)
@@ -1008,10 +929,7 @@ def grade_report(run, resolved, reconciled, delta=None, verify_ledger=None):
                    missing_floor=len(reconciled.cell_audit["missing_floor"]),
                    tools_manifest_invalid=reconciled.tools_manifest_invalid,
                    tools_network_excluded=reconciled.tools_network_excluded,
-                   delta_scope_suppressed_git_drivers=(
-                       reconciled.delta_scope_suppressed_git_drivers),
                    tools_file_partial=reconciled.coverage.get("tools_file_partial"),
-                   delta_zero_hunks=delta_zero_hunks,
                    dependency_audit_gap=getattr(reconciled, "dependency_audit_gap", False),
                    native_unparsed_gap=getattr(reconciled, "native_unparsed_gap", None),
                    custom_profile=health_basis.custom_profile_reasons(run, coverages),
@@ -1059,8 +977,5 @@ def grade_report(run, resolved, reconciled, delta=None, verify_ledger=None):
             "discarded": len(resolved.rejected),
             "total": len(resolved.findings),
         },
-        "delta": ({"on_diff": severity_stats(resolved.on_diff_active),
-                   "pre_existing": severity_stats(resolved.pre_existing_active)}
-                  if resolved.delta_mode else None),
     }
     return Graded(summary=summary, groups=group_objs)

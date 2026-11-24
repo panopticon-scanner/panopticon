@@ -726,12 +726,17 @@ class TestTheVerbIsWiredLikeRunAndLoop(_VerbCase):
         self.assertEqual("claude", args.host)
         self.assertIs(True, args.json)
         # Not a run: none of `run`'s flags are accepted here.
-        for flag in ("--no-tools", "--reset", "--security", "--pr"):
+        for flag in ("--no-tools", "--reset", "--security"):
             with self.subTest(flag=flag):
                 with self.assertRaises(SystemExit):
                     with contextlib.redirect_stderr(io.StringIO()):
                         driver.build_parser().parse_args(
                             ["readiness", "/tmp", flag, "x"])
+        # #3736: a delta flag is parsed, with any value, so that it is refused by name.
+        err = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(err):
+            driver.parse_cli(["readiness", "/tmp", "--pr", "x"])
+        self.assertIn("removed in 5.5 (#3736): --pr is refused", err.getvalue())
 
     def test_target_defaults_to_the_current_directory(self):
         args = driver.build_parser().parse_args(["readiness"])

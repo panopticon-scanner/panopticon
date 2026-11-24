@@ -460,32 +460,6 @@ class TestDriverPersistCLI(unittest.TestCase):
         with self.assertRaises(SystemExit):
             driver.parse_cli(["run", ".", "--host", "claude", "extra"])
 
-    def test_persist_reaches_a_pr_runs_review_root(self):
-        # I6 (plan 6 final review): a `--pr` run's review root is the PR
-        # WORKTREE, not the operator's checkout -- `driver run` resolves it
-        # with base/pr and pins it in the manifest. `driver persist` resolved
-        # `args.target` alone, so on a `--pr` run it looked for the dispatch
-        # request in the wrong tree and refused every entry with "no entry in
-        # the current dispatch request". The persist verb had no way to say
-        # which run it meant.
-        # #3735: the command line refuses `--pr` and `--base` in 5.4, so this reaches
-        # `persist_cli` below it, with the namespace the parser itself builds.
-        d = self._repo()
-        self._request(d, [])
-        # (The target before the options: argparse before 3.12 binds the optional
-        # `target` as soon as it has `entry_id`, and it is `parse_cli` that folds a
-        # trailing one in. This goes below `parse_cli`.)
-        parser_args = driver.build_parser().parse_args(
-            ["persist", "scout-app", d, "--pr", "42", "--base", "origin/main"])
-        self.assertEqual((parser_args.pr, parser_args.base), (42, "origin/main"))
-        import scripts.orchestrate as orchestrate
-        with mock.patch("scripts.phases.runio.resolve_review_root",
-                        return_value=(d, None, None)) as rr, \
-             contextlib.redirect_stderr(io.StringIO()):
-            orchestrate.persist_cli(parser_args)
-        self.assertEqual(rr.call_args.args, (d,))
-        self.assertEqual(rr.call_args.kwargs, {"base": "origin/main", "pr": 42})
-
     def test_persist_refuses_a_request_that_does_not_match_its_record(self):
         # #1727: `driver persist` is a SEPARATE process reading a file in the
         # reviewed tree, and it writes whatever that file's entry names as
