@@ -782,6 +782,22 @@ class TestTheGroupsShapeGate(unittest.TestCase):
                 self.assertEqual(({"bandit"}, 1, [], ""), (*got, unreadable, err.getvalue()),
                                  counter)
 
+    def test_only_the_counter_itself_is_left_out(self):
+        """A group may be named `login-attempts`; its scout is a scout."""
+        import scripts.plan_contract as plan_contract
+        with tempfile.TemporaryDirectory() as d:
+            for name, text in ((plan_contract.SCOUT_ATTEMPTS_NAME, '{"login-attempts": 2}'),
+                               ("scout-login-attempts.json", '{"tools": ["bandit"]}'),
+                               ("scout-attempts-api.json", "{"),
+                               ("scout-attempts.json.json", "[]")):
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            unreadable: list = []
+            with contextlib.redirect_stderr(io.StringIO()):
+                got = plan_mod.load_scout_requests(d, unreadable=unreadable)
+        self.assertEqual(({"bandit"}, 1), got)
+        self.assertEqual(["scout-attempts-api.json", "scout-attempts.json.json"], unreadable)
+
     def test_what_is_said_of_an_unusable_scout_is_inert(self):
         name = "scout-a\x1b[2Jb\u202e.json"
         for text in ("[]", json.dumps({"tools": "bandit"})):
