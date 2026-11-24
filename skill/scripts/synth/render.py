@@ -431,6 +431,41 @@ def _cfg_value(value):
     return tool_base.inert_text(value, limit=_CFG_VALUE_MAX)
 
 
+def _one_line(text):
+    """Foreign text as part of one summary line: whitespace runs are one space and
+    every other control character is spelled (`inert.inert_spelling`)."""
+    return inert.inert_spelling(" ".join(str(text).split()))
+
+
+_REJECTED_SCANNER_NOTE = ("An advisor answered REJECTED, so these are not counted by the gate "
+                          "or the grade. Each is one advisor's reading of a scanner finding; "
+                          "check it.")
+
+
+def rejected_scanner_lines(listed):
+    """The summary section for `meta.rejected_scanner_findings` (#3756), or [].
+
+    One line per row. The advisor's reasoning is an agent's text about the target
+    and the title is a scanner's, so neither may start a line of its own."""
+    if not isinstance(listed, dict) or not listed.get("rows"):
+        return []
+    rows, count = listed["rows"], listed.get("count") or len(listed["rows"])
+    lines = ["", "## Rejected scanner findings (HIGH and above): %d" % count,
+             _REJECTED_SCANNER_NOTE]
+    for row in rows:
+        hits = row.get("occurrences") or 1
+        lines.append("- `[%s]` **%s** %s:%s (%s %s%s) — advisor: %s" % (
+            row.get("severity", ""), _one_line(row.get("title", "")),
+            _one_line(row.get("file") or "?"),
+            row.get("line_start") if row.get("line_start") is not None else "?",
+            _one_line(row.get("tool", "")), _one_line(row.get("rule", "")),
+            ", %d hits" % hits if hits > 1 else "",
+            _one_line(row.get("reasoning") or "no reasoning given")))
+    if count > len(rows):
+        lines.append("... and %d more, in the report's discarded claims." % (count - len(rows)))
+    return lines
+
+
 def render_summary(report):
     """Render markdown summary of report with grades, stats, groups, and top findings."""
     s = report["summary"]
@@ -643,6 +678,7 @@ def render_summary(report):
         lines.append("- `[%s]` **%s** %s (%s) [%s·%s%s]%s" % (
             f["severity"], f.get("title", ""), where, f["confidence"], ev_status,
             f.get("panel", ""), cor, suffix))
+    lines.extend(rejected_scanner_lines(report["meta"].get("rejected_scanner_findings")))
     integ = (report.get("cross_panel") or {}).get("integration_findings") or []
     if integ:
         lines.append("")

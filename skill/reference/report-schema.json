@@ -87,6 +87,36 @@
           },
           "description": "#3582: every dispatch that ran on a profile fallback rung instead of its requested model, because the route's live model list lacked the requested one. `bound` is what ran; the run is never labelled with `requested`. Present only when non-empty."
         },
+        "rejected_scanner_findings": {
+          "type": "object",
+          "description": "#3756: the scanner findings of HIGH or CRITICAL that an advisor REJECTED. A rejection takes a finding out of the gate and the grade, so these are listed where the operator reads (the terminal summary and the page) with the advisor's reasoning, and here so that the list survives `discarded_claims` moving to a sibling file. Disclosure only: nothing counts differently. `count` is every such finding; `rows` holds at most 50, most severe first. Present only when there is at least one.",
+          "required": ["count", "rows"],
+          "additionalProperties": false,
+          "properties": {
+            "count": {"type": "integer", "minimum": 1},
+            "rows": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 50,
+              "items": {
+                "type": "object",
+                "required": ["id", "tool", "rule", "severity", "file", "line_start", "occurrences", "title", "reasoning"],
+                "additionalProperties": false,
+                "properties": {
+                  "id": {"type": "string"},
+                  "tool": {"type": "string"},
+                  "rule": {"type": "string"},
+                  "severity": {"type": "string", "enum": ["CRITICAL", "HIGH"]},
+                  "file": {"type": "string"},
+                  "line_start": {"type": ["integer", "null"]},
+                  "occurrences": {"type": "integer", "minimum": 1, "description": "How many hits of the rule in the file the finding holds."},
+                  "title": {"type": "string"},
+                  "reasoning": {"type": "string", "description": "The advisor's reasoning, cut to 600 characters with a visible mark."}
+                }
+              }
+            }
+          }
+        },
         "severity_capped": {
           "type": "object",
           "properties": {
@@ -2171,6 +2201,11 @@
                   "rejected",
                   "backup_scope_limited"
                 ]
+              },
+              "unjudged_loci": {
+                "type": "array",
+                "items": {"type": ["integer", "null"]},
+                "description": "#3756: present with status `needs_more_info` on a scanner finding that aggregates several hits of one rule in one file, when an advisor answered REJECTED and its `judged_loci` did not name every hit. The line numbers nobody judged, sorted; a final null stands for a hit that carries no line. A rejection covers only the hits it judged, so the finding stays in the report, not verified, instead of being discarded with hits the advisor never read. `reasoning` then opens with how many of the flagged lines were judged."
               },
               "missing_evidence": {
                 "type": "array",

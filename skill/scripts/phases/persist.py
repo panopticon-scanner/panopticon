@@ -121,7 +121,7 @@ ENVELOPE_SHAPES = {
     "setup-scan": "a single JSON object (the setup proposal)",
     "review-cell": '{"schema_version": 1, "findings": [ ... ], "_panopticon": {"run_id": "...", "group": "...", "domain": "..."}}',
     "verify-cell": '{"schema_version": 1, "verdicts": [ ... ], "_panopticon": {"run_id": "...", "group": "...", "domain": "...", "stage": "..."}}',
-    "tool-advisor": '{"schema_version": 1, "finding_id": "...", "verdict": "CONFIRMED|REJECTED|NEEDS_MORE_INFO", "confidence": "...", "reasoning": "...", "explored": [...], "references": [...], "citations": {...}}',
+    "tool-advisor": '{"schema_version": 1, "finding_id": "...", "verdict": "CONFIRMED|REJECTED|NEEDS_MORE_INFO", "confidence": "...", "reasoning": "...", "explored": [...], "references": [...], "citations": {...}, "judged_loci": [...]}',
 }
 
 

@@ -12,6 +12,7 @@ from scripts._version import __version__
 import scripts.app_trace as app_trace
 import scripts.config_schema as config_schema
 import scripts.evidence as evidence_mod
+import scripts.evidence_sections as evidence_sections
 import scripts.host_disclosure as host_disclosure
 import scripts.inert as inert
 import scripts.matrix_identity as matrix_identity
@@ -353,6 +354,7 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=(), model_subs
         _fill_category(f, resolved.ocrdb_bundle)
     unscored = cvss_unscored(resolved.active)
     capped = severity_cap_mod.capped_ids(resolved.active)
+    rejected_scanners = evidence_sections.rejected_scanner_findings(resolved.rejected)
     # #3270: every external app this run launched -- the host CLI off
     # host-capabilities.json, docker off the tools manifest -- repaired at both
     # reads (both are target-writable). `meta.apps` is present only when one was.
@@ -467,6 +469,8 @@ def assemble(run, resolved, reconciled, graded, cost, models_used=(), model_subs
             **({"prior_run": prior} if prior else {}),
             **({"cvss_unscored": unscored} if unscored else {}),      # #3162
             **({"severity_capped": capped} if capped else {}),        # #3231
+            **({"rejected_scanner_findings": rejected_scanners}        # #3756
+               if rejected_scanners else {}),
         },
         "summary": summary,
         "groups": graded.groups,

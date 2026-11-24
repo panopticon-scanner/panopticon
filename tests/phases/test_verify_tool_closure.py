@@ -340,7 +340,8 @@ class StrictGenerationTest(_Tree):
                     "finding_id": "SG-1", "verdict": verdict, "confidence": "LIKELY",
                     "reasoning": "r", "explored": [], "references": [],
                     "citations": {"cwe": [], "owasp": [], "cve": []},
-                    "missing_evidence": missing}
+                    "missing_evidence": missing,
+                    "judged_loci": []}         # #3756: the projection requires it
             jsonschema.validate(body, projection)
             return json.dumps(body)
 

@@ -2042,7 +2042,12 @@ class TestRemovingACellNeverMakesTheRunStricter(_Verdicts):
             if said and self.tool_asked:
                 with open(os.path.join(self.verdicts, "%s.json" % evidence_mod.finding_fingerprint(
                         finding)), "w", encoding="utf-8") as fh:
-                    json.dump({"finding_id": finding["id"], "verdict": said, "reasoning": "r"}, fh)
+                    # #3756: the advisor names every hit of the rule it judged, so
+                    # its REJECTED rejects the scanner finding, as this property means.
+                    hits = [finding] + ([self.second_hit] if self.second_hit is not None else [])
+                    json.dump({"finding_id": finding["id"], "verdict": said, "reasoning": "r",
+                               "judged_loci": [hit["location"]["line_start"] for hit in hits]},
+                              fh)
         return loaded
 
     @staticmethod
