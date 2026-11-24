@@ -177,14 +177,14 @@ class TestDriverLoopContract(unittest.TestCase):
         # headless where a runner exists, session where none does -- so a
         # reader must not be left assuming `driver loop --host generic` errors.
         self.assertIn("defaults to headless when the host has a headless", skill)
-        # #3735: delta review is withdrawn in 5.4. The line a reader copies the persist
+        # #3735, #3736: delta review is gone. The line a reader copies the persist
         # invocation from no longer offers `--pr`/`--base`, and the host is told never to
         # pass a delta flag and what to say when asked for a PR review.
         self.assertIn("`driver persist ENTRY_ID [--file PATH] [--setup] [target]`", skill)
         self.assertNotIn("[--pr N] [--base REF]", skill)
         self.assertIn("Never pass `--pr`, `--changes` (`-c`), `--base` or `--gate-scope`",
                       " ".join(skill.split()))
-        self.assertIn("say that 5.4 does not do one", skill)
+        self.assertIn("say that panopticon does not do one", " ".join(skill.split()))
 
 
 class TestTheReadinessVerbIsAdvertised(unittest.TestCase):

@@ -32,7 +32,7 @@ One real measurement, Panopticon reviewing its own repository on 2026-09-20 in i
 
 What moves the number, in order:
 
-- **Scope.** `-d dir`, `-f file` and `--files a b` review a slice. Reviewing a diff (`--pr`, `-c`, `--base`) is withdrawn in 5.4 and refused at the command line (#3735); 5.4 is a whole-repository audit.
+- **Scope.** `-d dir`, `-f file` and `--files a b` review a slice. Reviewing a diff (`--pr`, `-c`, `--base`) was withdrawn in 5.4, removed in 5.5 and is refused at the command line (#3735, #3736); panopticon is a whole-repository audit.
 - **Security posture.** `--security standard` (the default) is markedly cheaper than `redteam`.
 - **Model tier.** Advisors are the expensive seat. The host's model profile decides the tier per role.
 - **Hard stops.** `driver loop --max-budget-usd X` stops the run at a dollar figure on hosts that report cost (Claude does; Codex reports tokens only, so use `--max-iterations` and `--entry-timeout` there).

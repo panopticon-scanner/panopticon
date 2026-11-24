@@ -82,9 +82,8 @@ are honoured when well-typed, but the two size knobs are clamped to a band — `
 and `max_groups` to 4-64 — so a committed value cannot collapse the matrix into one unreadable cell
 or starve it to a handful; an out-of-band value is clamped to the nearest bound and disclosed, and a
 value too large to be an integer setting at all (beyond 53 bits) is refused as out of range rather
-than clamped. **Gate (ratchet)** keys — `security`, `fail_on`, `severity`, `gate_scope`, `tools`,
-`max_verify` — change how the review judges (`gate_scope` stays a valid key and has no effect in
-5.4: delta review is withdrawn, #3735, and with no diff it scopes nothing), and are honoured only
+than clamped. **Gate (ratchet)** keys — `security`, `fail_on`, `severity`, `tools`,
+`max_verify` — change how the review judges, and are honoured only
 when the value is at least as
 strict as panopticon's own default: a repository may tighten its own review and may never loosen it,
 so `security: redteam` is honoured and `tools: false` is refused. `fail_on` defaults to `critical`:
@@ -97,10 +96,14 @@ strictest by default, so any value that moves them is refused: `severity` (defau
 severity is reported) and `max_verify` (default uncapped — every queued finding is verified); the
 refusal says so. A value equal to the default is neither honoured nor refused — it is disclosed as a
 no-op and leaves no opinion behind, so committing `security: standard` can never conflict with a run
-already under way. **Operator-only** keys — `allow_unenforced`, `diff_context`, the
+already under way. **Operator-only** keys — `allow_unenforced`, the
 host/base/pr/reset selectors and every per-invocation bound — are refused on sight: they belong to
 the person running the review. The command line beats all three classes in both directions and is
-never clamped. Nothing here changes posture — a refused line never refutes `tool_policy_enforced` —
+never clamped. **Retired** keys — `gate_scope` and `diff_context`, which were settings of delta
+review (removed in 5.5, #3736) — are in none of the three. They stay valid, so a committed config
+that still spells one is not broken by it; each is ignored, whatever its value, and disclosed with
+one notice: `ignored since 5.5: delta review was removed (#3736), and every audit is
+whole-repository`. Nothing here changes posture — a refused line never refutes `tool_policy_enforced` —
 but nothing is silent either: every refusal and clamp is printed at run start, recorded in
 `run-manifest.json` (`config_requested` / `config_effective` / `config_refused` / `config_clamped` /
 `config_disclosures`), published as `meta.config` in the report, and summarised on a
@@ -185,9 +188,6 @@ dot-directories, plus root dot-files such as `.env*`, `.npmrc`, `.travis.yml` an
 dot-directory nested below the root.
 A claimed dot-path a group does not match lands in `Ungrouped`, which is the signal that the matrix
 has a gap — not that the file was skipped.
-`--scope-changed` (withdrawn in 5.4 and refused, #3735) narrowed that same surface through the same
-filter, so a changed tracked `.venv/lib/x.py` was pruned from a delta review exactly as it is from
-a whole-repo one (#2272).
 
 **Two ways to narrow scope in `panopticon.yml` — pick the right one.** A per-group
 `exclude: [DOMAIN, …]` is a *domain* filter: it drops named review domains for that group, but **SEC

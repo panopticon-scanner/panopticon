@@ -64,9 +64,9 @@ class TestReadmeHostAccounts(unittest.TestCase):
 
 
 class TestDeltaDocs(unittest.TestCase):
-    """#3735: delta review is withdrawn in 5.4. SKILL.md, the guide and the README say
-    so, name the refused flags, and no longer show a delta command to copy. (#449 pinned
-    the shipped delta flow here; the code is still in the tree and unreachable.)"""
+    """#3735, #3736: delta review was withdrawn in 5.4 and its code removed in 5.5.
+    SKILL.md, the guide and the README say so, name the refused flags, and show no delta
+    command to copy. (#449 pinned the shipped delta flow here.)"""
 
     FLAGS = ("--pr", "--changes", "--base", "--gate-scope")
 
@@ -78,7 +78,13 @@ class TestDeltaDocs(unittest.TestCase):
     def test_the_docs_say_delta_review_is_withdrawn(self):
         for text in (self.skill, self.readme):
             self.assertIn("#3735", text)
-            self.assertRegex(text, r"(?i)delta review is withdrawn")
+            self.assertIn("#3736", text)
+            self.assertRegex(text, r"(?i)delta review was withdrawn in 5\.4")
+            self.assertRegex(" ".join(text.split()), r"removed in 5\.5")
+            # #3736: nothing says the code is still there, or that the mode comes back.
+            for stale in ("unreachable", "is deleted in 5.5", "returns when it has been rebuilt",
+                          "It returns when", "refuse_delta"):
+                self.assertNotIn(stale, text, stale)
             for flag in self.FLAGS:
                 self.assertIn(flag, text, flag)
         self.assertIn("`--reset` starts a whole-repository run", self.readme)
@@ -110,5 +116,6 @@ class TestDeltaDocs(unittest.TestCase):
         # Reuse TestReadmeQuickStart's Quick start boundary — the brief's
         # `.split("## ")[1]` split does not match this README's layout.
         qs = _section(self.readme, "## Quick start", "## Repository layout")
-        self.assertIn("Panopticon 5.4 is a whole-repository audit. Delta review is withdrawn.", qs)
+        self.assertIn("Panopticon is a whole-repository audit. Delta review was withdrawn in 5.4 "
+                      "and removed in 5.5.", qs)
         self.assertIn("loop . --files a.py b.py", qs)

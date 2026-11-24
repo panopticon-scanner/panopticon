@@ -129,7 +129,7 @@ python3 skill/scripts/driver.py loop . -d src/payments       # one directory
 python3 skill/scripts/driver.py loop . --files a.py b.py     # the files you name
 ```
 
-**Panopticon 5.4 is a whole-repository audit. Delta review is withdrawn.** `--pr`, `--changes` (`-c`), `--base` and `--gate-scope` are refused at the command line, and a run folder that was started as a delta review is not resumed (`--reset` starts a whole-repository run). Reviewing a diff was never calibrated or stress-tested, and a wrong PASS on a pull request is the worst failure this tool can have. It returns when it has been rebuilt and measured (#3735, #3736).
+**Panopticon is a whole-repository audit. Delta review was withdrawn in 5.4 and removed in 5.5.** `--pr`, `--changes` (`-c`), `--base` and `--gate-scope` are refused at the command line, by name, and a run folder that was started as a delta review is not resumed (`--reset` starts a whole-repository run). Reviewing a diff was never calibrated or stress-tested, and a wrong PASS on a pull request is the worst failure this tool can have (#3735, #3736).
 
 Useful flags: `--security redteam` for the adversarial security posture, `--fail-on high` to tighten the gate (it fails on a confirmed CRITICAL by default; `--fail-on off` disables it, loudly), `--tools` or `--no-tools`, `--max-budget-usd` and `--max-iterations` to bound spend, `--max-verify N` to cap the verification queue. The full list is in [`docs/PANOPTICON.md`](docs/PANOPTICON.md), "Global flags".
 

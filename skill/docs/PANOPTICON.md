@@ -25,14 +25,15 @@ every mode below (`driver run [target]` is the single-step primitive it calls) �
 - `-f <path>` / `--file <path>` — single-file scope.
 - `-d <dir>` / `--directory <dir>` — directory scope.
 - `-g <name>` / `--group <name>` — one committed group.
-- **Delta review is withdrawn in 5.4 (#3735).** `-c` / `--changes`, `--pr <n>`, `--base <ref>` and
-  `--gate-scope` are refused at the command line, on every verb, before anything is launched or
-  written: exit 2, with one message. Reviewing a diff was never calibrated or stress-tested, and the
-  five-gate review found a `--pr` run that passed, certified, with a new finding on a changed line.
-  Panopticon 5.4 is a whole-repository audit; scope one with `-f`, `-d`, `-g` or `--files`. A run
-  folder that was started as a delta review is not resumed (`--reset` discards it and starts a
-  whole-repository run). The delta code is still in the tree, unreachable, and is deleted in 5.5
-  (#3736); delta review returns when it has been rebuilt and measured.
+- **Delta review was withdrawn in 5.4 (#3735) and its code removed in 5.5 (#3736).** `-c` /
+  `--changes`, `--pr <n>`, `--base <ref>` and `--gate-scope` are refused at the command line, on
+  every verb, before anything is launched or written: exit 2, with one message naming the flag.
+  Reviewing a diff was never calibrated or stress-tested, and the five-gate review found a `--pr`
+  run that passed, certified, with a new finding on a changed line. Panopticon is a
+  whole-repository audit; scope one with `-f`, `-d`, `-g` or `--files`. A run folder that was
+  started as a delta review is not resumed (`--reset` discards it and starts a whole-repository
+  run). A report an earlier version made by a delta review still renders, with one line saying
+  that it was one and that its gate judged only changed lines.
 - `driver setup [target] [--max-per-group N] [--max-groups N]` — one-time bootstrap: proposes
   `panopticon.yml.draft` at the repo root and writes `.panopticon/setup-report.md`. See Driver setup
   (5.2) below.
@@ -64,7 +65,8 @@ severity, redteam bypasses entirely, and every downgrade is disclosed at
 `--target`), spelled with no `.`, `..` or empty component and reached through no symlink, is
 downgraded; a doc-glob match that names no such file keeps its severity and is counted in
 `doc_policy.not_a_doc_file` (#3207). `--files` is a normal whole-file review of the files it names.
-`--base`, `--diff-context` and `--gate-scope` belonged to delta review and are refused (#3735).
+`--base`, `--diff-context` and `--gate-scope` belonged to delta review and are refused (#3735,
+#3736).
 
 ## Contents
 
