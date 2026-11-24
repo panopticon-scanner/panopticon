@@ -182,7 +182,8 @@ class TestDriverLoopContract(unittest.TestCase):
         # pass a delta flag and what to say when asked for a PR review.
         self.assertIn("`driver persist ENTRY_ID [--file PATH] [--setup] [target]`", skill)
         self.assertNotIn("[--pr N] [--base REF]", skill)
-        self.assertIn("Never pass `--pr`, `--changes` (`-c`), `--base` or `--gate-scope`",
+        self.assertIn("Never pass `--pr`, `--changes` (`-c`), `--base`, `--gate-scope` or "
+                      "`--diff-context`",
                       " ".join(skill.split()))
         self.assertIn("say that panopticon does not do one", " ".join(skill.split()))
 

@@ -153,7 +153,7 @@ def test_scope_refusal_cannot_advance_the_driver_using_an_old_report(tmp_path, m
 
 
 @pytest.mark.parametrize("mode, reason", [
-    ("files", "discovered changes"),          # `--files` is typed `changes`
+    ("files", "discovered changes"),          # mode `files` is typed `changes`
     ("group", "discovered group"),
     ("changed", "unsupported mode 'changed'"),        # #3736: a delta mode is no mode
     ("weird", "unsupported mode 'weird'"),

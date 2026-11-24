@@ -26,8 +26,9 @@ every mode below (`driver run [target]` is the single-step primitive it calls) �
 - `-d <dir>` / `--directory <dir>` — directory scope.
 - `-g <name>` / `--group <name>` — one committed group.
 - **Delta review was withdrawn in 5.4 (#3735) and its code removed in 5.5 (#3736).** `-c` /
-  `--changes`, `--pr <n>`, `--base <ref>` and `--gate-scope` are refused at the command line, on
-  every verb, before anything is launched or written: exit 2, with one message naming the flag.
+  `--changes`, `--pr <n>`, `--base <ref>`, `--gate-scope` and `--diff-context` are refused at the
+  command line, on every verb, before anything is launched or written: exit 2, with one message
+  naming the flag.
   Reviewing a diff was never calibrated or stress-tested, and the five-gate review found a `--pr`
   run that passed, certified, with a new finding on a changed line. Panopticon is a
   whole-repository audit; scope one with `-f`, `-d`, `-g` or `--files`. A run folder that was

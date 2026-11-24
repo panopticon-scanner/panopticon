@@ -176,15 +176,17 @@ def build_parser():
     # #3736: the delta review's flags. Its code is gone; the flags are still parsed so
     # that each is refused by name (`delta_withdrawn`), not as an unrecognized argument.
     # Every default is None: a value is one the caller typed. None takes a type or a
-    # list of choices, and `--changes` above is outside the scope group, so no value and
-    # no company turns the refusal into argparse's own error.
-    ap.add_argument("--diff-hunks", metavar="PATH", default=None,
+    # list of choices, each may be typed with no value at all (it then holds "", which is
+    # a value), and `--changes` above is outside the scope group, so no value, no missing
+    # value and no company turns the refusal into argparse's own error.
+    ap.add_argument("--diff-hunks", metavar="PATH", nargs="?", const="", default=None,
                     help=delta_withdrawn.FLAG_HELP)
-    ap.add_argument("--diff-hunks-run-id", metavar="ID", default=None,
+    ap.add_argument("--diff-hunks-run-id", metavar="ID", nargs="?", const="", default=None,
                     help=delta_withdrawn.FLAG_HELP)
-    ap.add_argument("--diff-context", default=None, metavar="N",
+    ap.add_argument("--diff-context", nargs="?", const="", default=None, metavar="N",
                     help=delta_withdrawn.FLAG_HELP)
-    ap.add_argument("--gate-scope", default=None, help=delta_withdrawn.FLAG_HELP)
+    ap.add_argument("--gate-scope", nargs="?", const="", default=None,
+                    help=delta_withdrawn.FLAG_HELP)
     ap.add_argument("files", nargs="*")
     return ap
 

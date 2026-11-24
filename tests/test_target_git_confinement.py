@@ -766,7 +766,7 @@ class TargetGitDriversAreSuppressed(unittest.TestCase):
         for it is unknown. The findings are unaffected, so the report discloses
         the suppression and certification does not move. (#3736: the one run it
         did move was a delta review, where that comparison chose the reviewed
-        files; a `--files` run was typed like one and is in the loop below.)
+        files; a report typed `changes` armed it too and is in the loop below.)
         """
         repo, marker = self._lfsish_repo()
         suppressed = []

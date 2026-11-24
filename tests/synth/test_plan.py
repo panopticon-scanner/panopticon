@@ -1764,9 +1764,9 @@ class TestSuppressedGitDriversReachTheCoverageBlock(unittest.TestCase):
         run a suppressed driver costs `target_dirty` and nothing the findings depend
         on, so it is disclosed in the coverage block and moves no certification.
 
-        A `--files` run is typed `changes`, and the removed caveat armed on that type:
-        such a run with a suppressed driver read NOT CERTIFIED. Nothing in it is
-        chosen by a comparison (the operator named the files), and it certifies now."""
+        A report typed `changes` (an inventory whose mode is `files`; no driver run
+        writes one) armed the removed caveat too: with a suppressed driver it read NOT
+        CERTIFIED, with no diff involved. It certifies now."""
         rows = [{"repo": ".", "key": "filter.lfs.clean"}]
         for review_type in ("repo", "changes", "file"):
             with self.subTest(review_type=review_type):

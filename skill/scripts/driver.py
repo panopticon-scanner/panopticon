@@ -205,10 +205,13 @@ def build_parser():
         # #3736: delta review's flags (`--base`, `--pr`, `--gate-scope`, `--diff-context`
         # and `-c` below). Its code is gone; they are still parsed so that each is refused
         # by name (`delta_withdrawn`), never as an unrecognized argument. None takes a
-        # type or a list of choices, and `-c` is outside the scope group: whatever value
-        # or company one is typed with, the answer is the refusal and not argparse's own.
-        p.add_argument("--base", default=None, help=delta_withdrawn.FLAG_HELP)
-        p.add_argument("--pr", default=None, help=delta_withdrawn.FLAG_HELP)
+        # type or a list of choices, each may be typed with no value at all (it then holds
+        # "", which is a value), and `-c` is outside the scope group: whatever value or
+        # company one is typed with, the answer is the refusal and not argparse's own.
+        p.add_argument("--base", nargs="?", const="", default=None,
+                       help=delta_withdrawn.FLAG_HELP)
+        p.add_argument("--pr", nargs="?", const="", default=None,
+                       help=delta_withdrawn.FLAG_HELP)
         p.add_argument("--reset", action="store_true")
         # Match synthesize's accepted values and case handling at the entry
         # point, before a review can spend work on an invalid child argument.
@@ -218,8 +221,10 @@ def build_parser():
                        choices=list(config_schema.FAIL_ON_CHOICES), default=None)
         p.add_argument("--severity", type=str.lower,
                        choices=["all", "medium", "high", "critical"], default=None)
-        p.add_argument("--gate-scope", default=None, help=delta_withdrawn.FLAG_HELP)
-        p.add_argument("--diff-context", default=None, help=delta_withdrawn.FLAG_HELP)
+        p.add_argument("--gate-scope", nargs="?", const="", default=None,
+                       help=delta_withdrawn.FLAG_HELP)
+        p.add_argument("--diff-context", nargs="?", const="", default=None,
+                       help=delta_withdrawn.FLAG_HELP)
         tools_group = p.add_mutually_exclusive_group()
         tools_group.add_argument("--tools", action="store_true")
         tools_group.add_argument("--no-tools", action="store_true")
@@ -323,8 +328,9 @@ def build_parser():
     pp.add_argument("--setup", action="store_true",
                     help="the entry belongs to `driver setup`'s scan checkpoint")
     # #3736: the two delta flags `persist` took for a `--pr` run. Parsed, to be refused.
-    pp.add_argument("--base", default=None, help=delta_withdrawn.FLAG_HELP)
-    pp.add_argument("--pr", default=None, help=delta_withdrawn.FLAG_HELP)
+    pp.add_argument("--base", nargs="?", const="", default=None,
+                    help=delta_withdrawn.FLAG_HELP)
+    pp.add_argument("--pr", nargs="?", const="", default=None, help=delta_withdrawn.FLAG_HELP)
     # #1681 Task 7: the one-shot legacy-tree migrator. No `--host`/scope flags
     # -- it writes one file and says what it wrote, it is not a review.
     mp = sub.add_parser("migrate-config")

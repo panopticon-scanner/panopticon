@@ -50,7 +50,7 @@
         },
         "review_type": {
           "type": "string",
-          "description": "What the run reviewed. `changes` is a `--files` run. `pr` is in no report written since 5.5, when delta review was removed (#3736); a report from before can carry it.",
+          "description": "What the run reviewed, from the inventory's `mode`. `changes` is an inventory whose `mode` is `files`; discovery writes `repo` for every scope, so only a hand-made inventory gives it. `pr` is in no report written since 5.5, when delta review was removed (#3736); a report from before can carry it.",
           "enum": [
             "repo",
             "file",

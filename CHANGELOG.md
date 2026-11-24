@@ -14,8 +14,9 @@
     launched or written: "delta review was withdrawn in 5.4 (#3735) and removed in 5.5 (#3736):
     --pr is refused. Run a whole-repository review, or scope one with -f, -d, -g or --files."
     Never "unrecognized arguments".
-    - Two spellings that used to get argparse's own error now get this message: a value the
-      flag never took (`--gate-scope changed`, `--pr abc`), and a delta flag typed beside a
+    - Three spellings that used to get argparse's own error now get this message: a value the
+      flag never took (`--gate-scope changed`, `--pr abc`), a flag typed with no value at all
+      (`driver run . --pr`, `synthesize.py --diff-hunks`), and a delta flag typed beside a
       scope flag (`-c -d src`, `synthesize.py --repo --changes`).
     - A run folder that was started as a delta review is still not resumed (`--reset` discards
       it). The discovery phase now refuses such a manifest itself as well.
@@ -35,13 +36,13 @@
     is disclosed: "ignored since 5.5: delta review was removed (#3736), and every audit is
     whole-repository". (`gate_scope: all` used to be honoured as a tightening; `diff_context`
     used to be refused as operator-only.)
-  - **A `--files` run with a suppressed Git driver is certified now.** Synthesis types a
-    `--files` run `changes`, the type a delta run had, so the delta rule applied to it: with a
-    target `filter.*.clean` or diff driver emptied by the probe it was NOT CERTIFIED, gate
-    INCONCLUSIVE. That rule existed because a delta's reviewed files were chosen by a Git
-    comparison the emptied driver inflates. A `--files` run reviews the files it is given, so
-    the suppression is disclosed (`meta.coverage.git_drivers_suppressed`), as on a
-    whole-repository run, and does not move certification.
+  - **A hand-made `mode: "files"` inventory with a suppressed Git driver certifies now.** A
+    `synthesize.py` run whose `groups.json` says `mode: "files"`, and that was passed
+    `--git-drivers-suppressed`, is typed `changes`, the type a delta run had. The delta rule
+    applied to it with no diff involved: NOT CERTIFIED, gate INCONCLUSIVE. With no diff an
+    emptied driver cannot inflate what was reviewed, so the suppression is disclosed
+    (`meta.coverage.git_drivers_suppressed`) and the run certifies. No driver run reaches this:
+    discovery writes `mode: "repo"` for every scope, `--files` included.
   - **Run manifest.** `base`, `pr`, `pr_base`, `worktree`, `flags.gate_scope` and
     `flags.diff_context` are no longer written. A manifest from before that holds them and was
     not a delta run still resumes.
@@ -52,9 +53,9 @@
   - **Wording.** The suppressed-driver disclosure (HTML page, run-start stderr) ended "and a
     delta may include them"; it now ends at "dirtiness for them is unknown". `groups.json`'s
     `discovery.surface` is always `repo`.
-  - **Not changed.** `summary.health.basis.review_type` still reads `delta` for a `--files` run,
-    as it did. The CI security gate's own "pre-existing" baseline (`security_gate.py`) is a
-    different thing and is untouched.
+  - **Not changed.** `summary.health.basis.review_type` still reads `delta` for a report typed
+    `changes` (the hand-made inventory above), as it did. The CI security gate's own
+    "pre-existing" baseline (`security_gate.py`) is a different thing and is untouched.
 - **A scout request that cannot be read no longer drops its scanners silently (#3780).** With no
   tools manifest the scouts' requests are the only required scanner set. A `scout-*.json` that
   failed to parse was warned about and ignored, so the scanners it asked for were required by

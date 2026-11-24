@@ -39,8 +39,9 @@ VERDICT_TO_CONFIDENCE = {"CONFIRMED": "CERTAIN", "PLAUSIBLE": "LIKELY"}
 
 MODE_TO_REVIEW_TYPE = {
     "repo": "repo", "file": "file", "directory": "directory",
-    # `files` is the scoped whole-file review (`--files`); its report has always been
-    # typed `changes`. The delta modes (`changed`, `changes`, `pr`) went with #3736.
+    # An inventory whose mode is `files` has always given a report typed `changes`.
+    # (Discovery writes `repo` for every scope, so only a hand-made inventory says
+    # `files`.) The delta modes (`changed`, `changes`, `pr`) went with #3736.
     "group": "group", "files": "changes",
 }
 

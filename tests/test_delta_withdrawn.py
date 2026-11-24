@@ -28,6 +28,7 @@ DRIVER_PY = os.path.join(ROOT, "skill", "scripts", "driver.py")
 WITHDRAWN = "delta review was withdrawn in 5.4 (#3735) and removed in 5.5 (#3736): "
 ADVICE = "Run a whole-repository review, or scope one with -f, -d, -g or --files."
 UNKNOWN = "unrecognized arguments"
+NO_VALUE = "expected one argument"
 
 # Each flag on its own, as an operator types it, and how the refusal names it.
 DRIVER = (("--pr", ["--pr", "7"]), ("--changes (-c)", ["--changes"]), ("--changes (-c)", ["-c"]),
@@ -44,7 +45,12 @@ DRIVER = (("--pr", ["--pr", "7"]), ("--changes (-c)", ["--changes"]), ("--change
           ("--gate-scope", ["--gate-scope", "changed"]), ("--pr", ["--pr", "abc"]),
           ("--diff-context", ["--diff-context", "many"]),
           ("--changes (-c)", ["-c", "-d", "src"]), ("--changes (-c)", ["-f", "a.py", "--changes"]),
-          ("--changes (-c)", ["--files", "a.py", "b.py", "-c"]))
+          ("--changes (-c)", ["--files", "a.py", "b.py", "-c"]),
+          # #3800 review, item 1: a flag that takes a value, typed with none. Last on the
+          # line, or before another option. Each was "expected one argument".
+          ("--pr", ["--pr"]), ("--base", ["--base"]), ("--gate-scope", ["--gate-scope"]),
+          ("--diff-context", ["--diff-context"]), ("--pr", ["--pr", "--host", "claude"]),
+          ("--base", ["--base", "--host", "claude"]), ("--pr, --base", ["--pr", "--base"]))
 
 
 def refused(call, argv):
@@ -68,15 +74,19 @@ class TestTheDriverRefusesEveryDeltaFlag(unittest.TestCase):
                         mock.patch("scripts.host_probes.run_probes") as probes:
                     code, err = refused(driver.main, [verb, "x"] + flags)
                     self.assertEqual(2, code)
-                    self.assertIn(WITHDRAWN + name + " is refused. " + ADVICE + "\n", err)
+                    self.assertIn(WITHDRAWN + name + (" are" if ", " in name else " is")
+                                  + " refused. " + ADVICE + "\n", err)
                     self.assertNotIn(UNKNOWN, err)
+                    self.assertNotIn(NO_VALUE, err)
                     for touched in (resolve, loop, probes):            # nothing was started
                         touched.assert_not_called()
 
     def test_persist_refuses_the_two_it_takes(self):
         for name, flags in (("--pr", ["--pr", "7"]), ("--base", ["--base", "main"]),
                             ("--pr", ["--pr", "0"]), ("--pr", ["--pr=0"]),
-                            ("--pr", ["--pr", "abc"]), ("--base", ["--base", ""])):
+                            ("--pr", ["--pr", "abc"]), ("--base", ["--base", ""]),
+                            ("--pr", ["--pr"]), ("--base", ["--base"]),
+                            ("--base", ["--base", "--setup"])):
             with self.subTest(flags=flags), \
                     mock.patch.object(runio, "resolve_review_root") as resolve, \
                     mock.patch("scripts.orchestrate.main_verb") as persist:
@@ -84,6 +94,7 @@ class TestTheDriverRefusesEveryDeltaFlag(unittest.TestCase):
                 self.assertEqual(2, code)
                 self.assertIn(WITHDRAWN + name + " is refused. " + ADVICE + "\n", err)
                 self.assertNotIn(UNKNOWN, err)
+                self.assertNotIn(NO_VALUE, err)
                 resolve.assert_not_called()
                 persist.assert_not_called()
 
@@ -287,7 +298,10 @@ class TestTheChildScriptsRefuseThemToo(unittest.TestCase):
                  ("--diff-context", ["--diff-context", "0"]), ("--diff-context", ["--diff-context=0"]),
                  ("--diff-context", ["--diff-context", "many"]),
                  ("--scope-changed", ["--scope-changed", "--scope-dir", "src"]),
-                 ("--scope-changed", ["--scope-files", "a.py", "--scope-changed"]))
+                 ("--scope-changed", ["--scope-files", "a.py", "--scope-changed"]),
+                 ("--base", ["--base"]), ("--pr-base", ["--pr-base"]),
+                 ("--diff-context", ["--diff-context"]),
+                 ("--pr-base", ["--pr-base", "--security", "redteam"]))
         with tempfile.TemporaryDirectory() as d:
             for name, flags in cases:
                 with self.subTest(flags=flags):
@@ -297,6 +311,7 @@ class TestTheChildScriptsRefuseThemToo(unittest.TestCase):
                     self.assertEqual(2, code)
                     self.assertIn("panopticon: " + WITHDRAWN + name + " is refused. " + ADVICE, err)
                     self.assertNotIn(UNKNOWN, err)
+                    self.assertNotIn(NO_VALUE, err)
                     self.assertEqual([], os.listdir(d))
 
     def test_synthesize_refuses_each_flag_and_writes_nothing(self):
@@ -309,7 +324,10 @@ class TestTheChildScriptsRefuseThemToo(unittest.TestCase):
                  ("--diff-context", ["--diff-context", "0"]), ("--diff-context", ["--diff-context=0"]),
                  ("--diff-context", ["--diff-context", "many"]),
                  ("--gate-scope", ["--gate-scope", "changed"]),
-                 ("--changes (-c)", ["--repo", "--changes"]), ("--changes (-c)", ["-c", "--repo"]))
+                 ("--changes (-c)", ["--repo", "--changes"]), ("--changes (-c)", ["-c", "--repo"]),
+                 ("--diff-hunks", ["--diff-hunks"]), ("--diff-hunks-run-id", ["--diff-hunks-run-id"]),
+                 ("--gate-scope", ["--gate-scope"]), ("--diff-context", ["--diff-context"]),
+                 ("--diff-hunks", ["--diff-hunks", "--repo"]))
         with tempfile.TemporaryDirectory() as d:
             for name, flags in cases:
                 with self.subTest(flags=flags):
@@ -319,6 +337,7 @@ class TestTheChildScriptsRefuseThemToo(unittest.TestCase):
                     self.assertEqual(2, code)
                     self.assertIn("synthesize: " + WITHDRAWN + name + " is refused. " + ADVICE, err)
                     self.assertNotIn(UNKNOWN, err)
+                    self.assertNotIn(NO_VALUE, err)
                     self.assertEqual([], os.listdir(d))
 
     def test_an_abbreviated_flag_is_refused_as_the_flag(self):
@@ -336,7 +355,11 @@ class TestTheChildScriptsRefuseThemToo(unittest.TestCase):
         with tempfile.TemporaryDirectory() as empty:
             for script, argv in (("discovery.py", ["--repo-scan", ".", "--scope-changed"]),
                                  ("discovery.py", ["--repo-scan", ".", "--base", "main"]),
+                                 ("discovery.py", ["--repo-scan", ".", "--base"]),
                                  ("synthesize.py", ["--repo", "--gate-scope", "on-diff"]),
+                                 ("synthesize.py", ["--repo", "--diff-hunks"]),
+                                 ("driver.py", ["run", ".", "--pr"]),
+                                 ("driver.py", ["persist", "scout-app", ".", "--base"]),
                                  ("synthesize.py", ["-c"])):
                 with self.subTest(script=script, argv=argv):
                     done = subprocess.run(["env", sys.executable, os.path.join(scripts, script),
@@ -345,6 +368,7 @@ class TestTheChildScriptsRefuseThemToo(unittest.TestCase):
                     self.assertEqual(2, done.returncode, done.stderr)
                     self.assertIn(WITHDRAWN, done.stderr)
                     self.assertNotIn(UNKNOWN, done.stderr)
+                    self.assertNotIn(NO_VALUE, done.stderr)
                     self.assertNotIn("Traceback", done.stderr)
                     self.assertEqual([], os.listdir(empty))
 

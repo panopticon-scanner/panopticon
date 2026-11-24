@@ -844,11 +844,15 @@ def _repo_scan_args(argv):
     # #3736: delta review's flags (and `--scope-changed` below). Its code is gone; they
     # are still parsed so that each is refused by name (`delta_withdrawn`), never as an
     # unrecognized argument. Every default is None or False: a value is one the caller
-    # typed. None takes a type, and `--scope-changed` is outside the scope group, so no
-    # value and no company turns the refusal into argparse's own error.
-    ap.add_argument("--base", default=None, help=delta_withdrawn.FLAG_HELP)
-    ap.add_argument("--pr-base", default=None, help=delta_withdrawn.FLAG_HELP)
-    ap.add_argument("--diff-context", default=None, help=delta_withdrawn.FLAG_HELP)
+    # typed. None takes a type, each may be typed with no value at all (it then holds "",
+    # which is a value), and `--scope-changed` is outside the scope group, so no value,
+    # no missing value and no company turns the refusal into argparse's own error.
+    ap.add_argument("--base", nargs="?", const="", default=None,
+                    help=delta_withdrawn.FLAG_HELP)
+    ap.add_argument("--pr-base", nargs="?", const="", default=None,
+                    help=delta_withdrawn.FLAG_HELP)
+    ap.add_argument("--diff-context", nargs="?", const="", default=None,
+                    help=delta_withdrawn.FLAG_HELP)
     ap.add_argument("--pr-worktree", action="store_true", help=delta_withdrawn.FLAG_HELP)
     ap.add_argument("--scope-changed", action="store_true", help=delta_withdrawn.FLAG_HELP)
     ap.add_argument("--repo-scan", action="store_true")

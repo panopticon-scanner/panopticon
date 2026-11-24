@@ -57,8 +57,8 @@ def _review_type(raw):
     if raw == "repo":
         return "full"
     if raw == "changes":
-        # A `--files` run: typed `changes` since before delta review was removed (#3736),
-        # and this value is in every such report, so it keeps its name.
+        # An inventory whose mode is `files` (`findings.MODE_TO_REVIEW_TYPE`). It read
+        # `delta` before delta review was removed (#3736) and keeps the name.
         return "delta"
     return "file-scoped"
 

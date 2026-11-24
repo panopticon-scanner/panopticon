@@ -158,8 +158,8 @@ a project, and the target's own `skill/` to test changes to panopticon itself.
 - `driver persist ENTRY_ID [--file PATH] [--setup] [target]` — persist one
   return-persist reply (session mode).
 - **Delta review was withdrawn in 5.4 (#3735) and removed in 5.5 (#3736). Never pass `--pr`,
-  `--changes` (`-c`), `--base` or `--gate-scope`**, to any verb: each is refused at the command
-  line, exit 2, before anything runs. Do not run `discovery.py` or `synthesize.py` by hand with a
+  `--changes` (`-c`), `--base`, `--gate-scope` or `--diff-context`**, to any verb: each is
+  refused at the command line, exit 2, before anything runs. Do not run `discovery.py` or `synthesize.py` by hand with a
   diff either; they refuse too. A run folder started as a delta review is not resumed: `--reset`
   starts a whole-repository run. To review less than the whole repository, scope with `-f`, `-d`,
   `-g` or `--files`. If the user asks for a PR or diff review, say that panopticon does not do

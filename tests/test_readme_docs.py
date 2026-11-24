@@ -68,7 +68,7 @@ class TestDeltaDocs(unittest.TestCase):
     SKILL.md, the guide and the README say so, name the refused flags, and show no delta
     command to copy. (#449 pinned the shipped delta flow here.)"""
 
-    FLAGS = ("--pr", "--changes", "--base", "--gate-scope")
+    FLAGS = ("--pr", "--changes", "--base", "--gate-scope", "--diff-context")
 
     def setUp(self):
         self.skill = _read_doc()
@@ -102,7 +102,7 @@ class TestDeltaDocs(unittest.TestCase):
         self.assertGreater(len(commands), 5)
         for line in commands:
             words = line.split("#")[0].split()
-            for flag in self.FLAGS + ("-c", "--diff-context"):
+            for flag in self.FLAGS + ("-c",):
                 self.assertNotIn(flag, words, line)
 
     def test_guard_install_is_session_rooted(self):
