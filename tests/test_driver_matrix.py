@@ -191,6 +191,42 @@ class TestVerifyMatrixEndToEnd(unittest.TestCase):
         # verify actually resolved the cell -- not left as an unanswered gap.
         self.assertNotEqual(report["summary"]["gate"], "INCONCLUSIVE")
 
+    def _through_synthesis(self, scout_text):
+        """A run with no tools manifest, its coverage phase done, taken through verify to
+        the real synthesize subprocess. `scout_text` is what `scout-app.json` holds by then."""
+        d = self._repo(["SEC"])
+        self._write_cell(d, "SEC")
+        manifest = dict(self._manifest(), flags={"fail_on": "critical"})
+        if scout_text is not None:
+            with open(runio._pano(d, "scout-app.json"), "w", encoding="utf-8") as fh:
+                fh.write(scout_text)
+        self.assertEqual("verify", verify.verify_execute(d, manifest).checkpoint)
+        entry = runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"][0]
+        self._self_write(entry, self._confirm_bundle(d, manifest, "SEC"))
+        self.assertEqual("advanced", verify.verify_execute(d, manifest).kind)
+        self.assertEqual("advanced", synthesize.synthesize_execute(d, manifest).kind)
+        return runio._load_json(runio._pano(d, "report.json"))
+
+    def test_a_scout_file_damaged_after_coverage_is_not_a_certified_run(self):
+        """#3780, the reachability question. The coverage phase re-dispatches a scout
+        whose file does not parse, so a torn file cannot survive to coverage. Nothing
+        re-reads the scouts between coverage and synthesis, and a run with no tools
+        manifest holds itself to the scouts' requests alone: a file damaged in between
+        dropped its request, and the run certified."""
+        intact = json.dumps({"domains": ["SEC"], "tools": ["bandit"]})
+        none = self._through_synthesis(None)
+        self.assertEqual(("PASS", True), (none["summary"]["gate"],
+                                          none["summary"]["coverage_certified"]))
+        asked = self._through_synthesis(intact)
+        self.assertEqual(("INCONCLUSIVE", False), (asked["summary"]["gate"],
+                                                   asked["summary"]["coverage_certified"]))
+        torn = self._through_synthesis(intact[:-1])
+        self.assertEqual(("INCONCLUSIVE", False), (torn["summary"]["gate"],
+                                                   torn["summary"]["coverage_certified"]))
+        self.assertEqual([], asked["meta"]["integrity"]["scout_files_unreadable"])
+        self.assertEqual(["scout-app.json"], torn["meta"]["integrity"]["scout_files_unreadable"])
+        self.assertFalse(torn["meta"]["coverage"]["scout_requested"])
+
     def test_withheld_engaged_cell_yields_inconclusive(self):
         d = self._repo(["SEC"])
         self._write_cell(d, "SEC")

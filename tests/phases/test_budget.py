@@ -24,6 +24,7 @@ import os
 import tempfile
 import unittest
 
+import scripts.plan_contract as plan_contract
 import scripts.phases.budget as budget
 import scripts.phases.coverage as coverage
 import scripts.phases.discovery as discovery
@@ -297,7 +298,7 @@ class TestEveryCallSiteRefusesAPlantedString(BudgetCase):
         verify_path = runio._pano(self.root, verify._VERIFY_ATTEMPTS_FILE)
         return (
             ("coverage._bump_scout_attempts",
-             runio._pano(self.root, "scout-attempts.json"), "Web",
+             runio._pano(self.root, plan_contract.SCOUT_ATTEMPTS_NAME), "Web",
              lambda: coverage._bump_scout_attempts(self.root, "Web")),
             ("discovery._bump_discovery_attempts",
              runio._pano(self.root, "discovery-attempts.json"), "malformed",

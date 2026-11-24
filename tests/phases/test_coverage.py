@@ -10,6 +10,7 @@ from unittest import mock
 
 from scripts import hosts
 from tests._test_helpers import write_host_evidence
+import scripts.plan_contract as plan_contract
 import scripts.phases.runio as runio
 import scripts.phases.requests as requests
 import scripts.phases.coverage as coverage
@@ -336,6 +337,97 @@ class TestCoveragePhase(unittest.TestCase):
              contextlib.redirect_stderr(io.StringIO()):
             result = coverage.coverage_execute(self.root, self.manifest)
         self.assertEqual(result.checkpoint, "scout")      # re-dispatched, no crash
+
+    # -- #3780: the scout retry counter left the scouts' file pattern ---------------------
+
+    def _counter(self):
+        return runio._load_json(runio._pano(self.root, plan_contract.SCOUT_ATTEMPTS_NAME))
+
+    def test_a_retry_does_not_touch_the_scout_of_a_group_named_attempts(self):
+        """`attempts` is a valid group name, and its scout's file was the counter's:
+        each write of one clobbered the other."""
+        reply = {"group": "attempts", "domains": ["SEC"], "tools": ["bandit"]}
+        scout = runio._pano(self.root, "scout-attempts.json")
+        runio._write_json(scout, reply)
+        self.assertEqual(1, coverage._bump_scout_attempts(self.root, "attempts"))
+        self.assertEqual(2, coverage._bump_scout_attempts(self.root, "attempts"))
+        self.assertEqual(1, coverage._bump_scout_attempts(self.root, "Web"))
+        self.assertEqual(reply, runio._load_json(scout))
+        self.assertEqual({"attempts": 2, "Web": 1}, self._counter())
+
+    def test_a_resumed_run_keeps_what_it_spent_under_the_old_name(self):
+        legacy = runio._pano(self.root, plan_contract.LEGACY_SCOUT_ATTEMPTS_NAME)
+        runio._write_json(legacy, {"Web": 2, "Auth": 1})
+        self.assertEqual(3, coverage._bump_scout_attempts(self.root, "Web"))
+        self.assertEqual({"Web": 3, "Auth": 1}, self._counter())
+        self.assertFalse(os.path.lexists(legacy))        # the path is the scout's again
+        self.assertEqual(2, coverage._bump_scout_attempts(self.root, "Auth"))
+
+    def test_what_is_not_a_counter_is_not_adopted(self):
+        legacy = runio._pano(self.root, plan_contract.LEGACY_SCOUT_ATTEMPTS_NAME)
+        for label, write in (
+                ("a scout's reply", lambda: runio._write_json(legacy, {"tools": ["bandit"]})),
+                ("main's mix of the two", lambda: runio._write_json(
+                    legacy, {"domains": ["SEC"], "tools": [], "Web": 2})),
+                ("a count under a scout's key", lambda: runio._write_json(legacy, {"tools": 2})),
+                ("a value that is not a count", lambda: runio._write_json(legacy, {"Web": True})),
+                ("one count beside something else", lambda: runio._write_json(
+                    legacy, {"Web": 2, "Auth": "x"})),
+                ("an empty object", lambda: runio._write_json(legacy, {})),
+                ("a torn file", lambda: open(legacy, "w").write('{"Web": 2')),
+                ("an array", lambda: runio._write_json(legacy, [2]))):
+            with self.subTest(case=label):
+                for name in (plan_contract.SCOUT_ATTEMPTS_NAME,
+                             plan_contract.LEGACY_SCOUT_ATTEMPTS_NAME):
+                    if os.path.lexists(runio._pano(self.root, name)):
+                        os.remove(runio._pano(self.root, name))
+                write()
+                with open(legacy, "rb") as fh:
+                    before = fh.read()
+                self.assertEqual(1, coverage._bump_scout_attempts(self.root, "Web"))
+                with open(legacy, "rb") as fh:
+                    self.assertEqual(before, fh.read())
+                self.assertEqual({"Web": 1}, self._counter())
+
+    def test_a_counter_already_under_the_new_name_is_the_one_that_counts(self):
+        legacy = runio._pano(self.root, plan_contract.LEGACY_SCOUT_ATTEMPTS_NAME)
+        runio._write_json(runio._pano(self.root, plan_contract.SCOUT_ATTEMPTS_NAME), {"Web": 1})
+        runio._write_json(legacy, {"Web": 2})
+        self.assertEqual(2, coverage._bump_scout_attempts(self.root, "Web"))
+        self.assertEqual({"Web": 2}, runio._load_json(legacy))
+
+    def test_a_link_at_the_old_name_is_not_followed(self):
+        outside = os.path.join(self.root, "outside.json")
+        runio._write_json(outside, {"Web": 2})
+        legacy = runio._pano(self.root, plan_contract.LEGACY_SCOUT_ATTEMPTS_NAME)
+        os.symlink(outside, legacy)
+        self.assertEqual(1, coverage._bump_scout_attempts(self.root, "Web"))
+        self.assertTrue(os.path.islink(legacy))
+        self.assertEqual({"Web": 2}, runio._load_json(outside))
+
+    def test_the_old_counter_is_not_taken_for_the_scout_of_a_group_named_attempts(self):
+        """On a resumed run the old counter sits where that group's scout writes. Read
+        as the scout's reply it has no domains and nothing to ask for; the phase moves
+        it first and dispatches the scout."""
+        self._groups_json([{"name": "attempts", "files": ["a.py"]}])
+        self._groups_yml("groups:\n  attempts:\n    match: ['a.py']\n")
+        legacy = runio._pano(self.root, plan_contract.LEGACY_SCOUT_ATTEMPTS_NAME)
+        runio._write_json(legacy, {"attempts": 1})
+        with mock.patch("scripts.dispatch.render_prompt", return_value="B"), \
+             mock.patch("scripts.dispatch.registered_agent_name",
+                        return_value="panopticon-scout"), \
+             contextlib.redirect_stderr(io.StringIO()):
+            result = coverage.coverage_execute(self.root, self.manifest)
+        self.assertEqual("scout", result.checkpoint)
+        self.assertFalse(os.path.lexists(legacy))
+        self.assertEqual({"attempts": 1}, self._counter())
+
+    def test_reset_clears_the_counter_under_either_name(self):
+        import fnmatch
+        import scripts.phases.run_artifacts as run_artifacts
+        for name in (plan_contract.SCOUT_ATTEMPTS_NAME, plan_contract.LEGACY_SCOUT_ATTEMPTS_NAME):
+            self.assertTrue(any(fnmatch.fnmatch(name, pattern)
+                                for pattern in run_artifacts._RESET_GLOBS), name)
 
     def test_prose_preamble_scout_is_recovered(self):
         # 3/25 run-9 scouts added a prose preamble BEFORE the fence; the tolerant

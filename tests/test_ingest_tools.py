@@ -985,6 +985,150 @@ class TestIngestDispositions(unittest.TestCase):
         self.assertEqual(first(findings)["citations"]["cve"], ["CVE-0000-0001"])
 
 
+class TestTwoCapturesForOneAdapter(unittest.TestCase):
+    """#3780: dispositions are keyed by the capture's stem, and each file assigned its
+    own. With `bandit.json` and `bandit.sarif` both present the one read last won: a
+    clean capture overwrote the record of a failed one. The runner writes one output
+    per adapter, so a second capture is not this run's and which is the scan cannot be
+    told: the adapter's disposition is `failed`, whatever each file holds."""
+
+    FAILED = b"{not json"
+
+    @staticmethod
+    def _sarif(tool, results):
+        doc = _sarif_fixture("a.py")
+        run = only(doc["runs"], "run")
+        run["tool"]["driver"]["name"] = tool
+        run["tool"]["driver"]["rules"] = [{"id": "B105"}]
+        result = dict(only(run["results"], "result"), ruleId="B105", level="error",
+                      message={"text": "x"})
+        run["results"] = [dict(result) for _ in range(results)]
+        return _json.dumps(doc).encode("utf-8")
+
+    def _ingest(self, captures, names=None):
+        """Ingest a directory holding `captures`, listed in the order of `names`."""
+        with tempfile.TemporaryDirectory() as d:
+            for name, payload in captures.items():
+                with open(os.path.join(d, name), "wb") as fh:
+                    fh.write(payload)
+            listing = None if names is None else it.ToolsListing(tuple(names), None)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                found, dispositions = it.ingest_dir_detailed(d, "g", listing=listing)
+        return found, dispositions, err.getvalue()
+
+    def test_a_clean_capture_does_not_overwrite_a_failed_one(self):
+        captures = {"bandit.json": self.FAILED, "bandit.sarif": self._sarif("bandit", 0)}
+        for names in (["bandit.json", "bandit.sarif"], ["bandit.sarif", "bandit.json"]):
+            with self.subTest(order=names):
+                _found, dispositions, err = self._ingest(captures, names)
+                self.assertEqual(["bandit"], sorted(dispositions))
+                self.assertEqual("failed", dispositions["bandit"]["status"])
+                self.assertEqual("more than one capture for one adapter: bandit.json, bandit.sarif",
+                                 dispositions["bandit"]["reason"])
+                self.assertIn("bandit.json", err)
+                self.assertIn("bandit.sarif", err)
+
+    def test_two_clean_captures_are_a_failure_too(self):
+        captures = {"bandit.json": self._sarif("bandit", 0),
+                    "bandit.sarif": self._sarif("bandit", 0)}
+        for names in (["bandit.json", "bandit.sarif"], ["bandit.sarif", "bandit.json"]):
+            with self.subTest(order=names):
+                _found, dispositions, _err = self._ingest(captures, names)
+                self.assertEqual(
+                    {"bandit": {"status": "failed", "findings": 0, "reason":
+                                "more than one capture for one adapter: bandit.json, bandit.sarif"}},
+                    dispositions)
+
+    def test_the_findings_of_every_capture_that_parsed_are_kept(self):
+        captures = {"bandit.json": self._sarif("bandit", 2),
+                    "bandit.sarif": self._sarif("bandit", 1)}
+        for names in (["bandit.json", "bandit.sarif"], ["bandit.sarif", "bandit.json"]):
+            with self.subTest(order=names):
+                found, dispositions, _err = self._ingest(captures, names)
+                self.assertEqual(3, len(found))
+                self.assertEqual(("failed", 3), (dispositions["bandit"]["status"],
+                                                 dispositions["bandit"]["findings"]))
+        found, dispositions, _err = self._ingest(
+            {"bandit.json": self.FAILED, "bandit.sarif": self._sarif("bandit", 2)})
+        self.assertEqual(2, len(found))
+        self.assertEqual(("failed", 2), (dispositions["bandit"]["status"],
+                                         dispositions["bandit"]["findings"]))
+
+    def test_three_captures_are_all_named(self):
+        captures = {"bandit.json": self.FAILED, "bandit.sarif": self._sarif("bandit", 0),
+                    "bandit.txt": b"x"}
+        _found, dispositions, _err = self._ingest(
+            captures, ["bandit.txt", "bandit.sarif", "bandit.json"])
+        self.assertEqual("more than one capture for one adapter: bandit.json, bandit.sarif, bandit.txt",
+                         dispositions["bandit"]["reason"])
+
+    def test_one_capture_per_adapter_is_untouched(self):
+        captures = {"bandit.sarif": self._sarif("bandit", 1),
+                    "gitleaks.sarif": self._sarif("gitleaks", 0),
+                    "semgrep.sarif": self.FAILED}
+        found, dispositions, _err = self._ingest(captures)
+        self.assertEqual({"bandit": "ok", "gitleaks": "empty", "semgrep": "failed"},
+                         {tool: row["status"] for tool, row in dispositions.items()})
+        self.assertNotIn("reason", dispositions["bandit"])
+        self.assertIn("unparseable", dispositions["semgrep"]["reason"])
+        self.assertEqual(1, len(found))
+
+    def test_a_second_capture_for_one_adapter_leaves_the_others_alone(self):
+        captures = {"bandit.json": self._sarif("bandit", 0),
+                    "bandit.sarif": self._sarif("bandit", 0),
+                    "gitleaks.sarif": self._sarif("gitleaks", 0)}
+        _found, dispositions, _err = self._ingest(captures)
+        self.assertEqual({"bandit": "failed", "gitleaks": "empty"},
+                         {tool: row["status"] for tool, row in dispositions.items()})
+
+    def test_the_other_facts_of_a_capture_do_not_outlive_the_failure(self):
+        """`failed` carries a status, a count and a reason, as every other failure
+        does: no file coverage or cap count that would read as a completed scan."""
+        _found, dispositions, _err = self._ingest(
+            {"bandit.json": self._sarif("bandit", 1), "bandit.sarif": self._sarif("bandit", 1)})
+        self.assertEqual({"status", "findings", "reason"}, set(dispositions["bandit"]))
+        # osv-scanner's record carries its file coverage; one capture of it still does.
+        osv = _json.dumps({"results": [{"source": {"path": "/src/poetry.lock"}, "packages": [
+            {"package": {"name": "p", "version": "1.0", "ecosystem": "PyPI"},
+             "vulnerabilities": [{"id": "GHSA-aaaa-0001", "summary": "s"}], "groups": []}]}]}
+                          ).encode("utf-8")
+        _found, alone, _err = self._ingest({"osv-scanner.json": osv})
+        self.assertIn("file_coverage", alone["osv-scanner"])
+        for names in (["osv-scanner.json", "osv-scanner.sarif"],
+                      ["osv-scanner.sarif", "osv-scanner.json"]):
+            _found, both, _err = self._ingest(
+                {"osv-scanner.json": osv, "osv-scanner.sarif": osv}, names)
+            self.assertEqual({"status", "findings", "reason"}, set(both["osv-scanner"]), names)
+            self.assertEqual(("failed", 2), (both["osv-scanner"]["status"],
+                                             both["osv-scanner"]["findings"]))
+
+    def test_the_names_are_bounded_and_made_inert(self):
+        # A caller's own listing can name more than the two suffixes the directory
+        # listing admits, so the reason does not trust there to be two.
+        captures = {"bandit.x%02d" % n: b"x" for n in range(40)}
+        _found, dispositions, _err = self._ingest(captures, sorted(captures))
+        reason = dispositions["bandit"]["reason"]
+        self.assertEqual("more than one capture for one adapter: bandit.x00, bandit.x01, "
+                         "bandit.x02, bandit.x03 +36 more", reason)
+        # A stem is whatever precedes the last dot, so it can carry an escape.
+        stem = "ban\x1b[2Jdit"
+        _found, dispositions, err = self._ingest({stem + ".json": b"x", stem + ".sarif": b"x"})
+        reason = dispositions[stem]["reason"]
+        self.assertNotIn("\x1b", reason)
+        self.assertIn("\\x1b[2Jdit.json", reason)
+        # This change's own line. (The loop's "ingest skip <path>" lines print the path as
+        # it is; that is on #3785's list.)
+        mine = [line for line in err.splitlines() if "more than one capture" in line]
+        self.assertEqual(1, len(mine))
+        self.assertNotIn("\x1b", mine[0])
+
+    def test_an_adapter_nobody_registered_is_still_named_once(self):
+        _found, dispositions, _err = self._ingest({"nosuch.json": b"{}", "nosuch.sarif": b"{}"})
+        self.assertEqual("failed", dispositions["nosuch"]["status"])
+        self.assertIn("more than one capture for one adapter", dispositions["nosuch"]["reason"])
+
+
 class TestAdapterFindingCap(unittest.TestCase):
     """#1236 (OPS-D1B): an adapter's parse() emitted every advisory block with
     no result cap. Filed against bundler-audit, but nothing capped ANY adapter,

@@ -325,7 +325,19 @@ this same fail-closed path. It is deliberately NOT softer than that:
 exempting it from the gate would have made corrupting one byte of a target-writable file the
 cheapest way to turn an INCONCLUSIVE run into a PASS on identical findings. An ABSENT manifest when
 no run-bound tool ingest was requested (a pre-#1031 run, `--no-tools`) is a different fact and keeps
-the scout-derived gate. What a call with no `--run-id` certifies over a tools directory (#3766): nothing. A
+the scout-derived gate.
+**A scout file that cannot be read is an integrity failure (#3780).** With no tools manifest, the
+scanners the scouts asked for are the only required set. A `scout-*.json` whose request cannot be
+told (the read or parse fails, the content is not an object, or `tools` is there and is not a
+list of names) is listed in `meta.integrity.scout_files_unreadable`, the run is not certified, a
+PASS gate is INCONCLUSIVE, and the `**Integrity:**` line names the files. This holds with a
+manifest too: the file is a damaged run artifact. A scout that asks for no tools (`tools: []`, or
+no `tools` at all) is a decline, as before. The coverage phase's retry counter is
+`scout_attempts.json`, outside the scouts' `scout-<group>.json` pattern, so it is never read as
+one. A counter an earlier build left as `scout-attempts.json` (also the scout file of a group
+named `attempts`) is recognised by its shape, an object of counts with no `tools` or `domains`
+key, and passed over.
+What a call with no `--run-id` certifies over a tools directory (#3766): nothing. A
 `synthesize` call given a tools directory that is there, without `--tools-skipped` and without a run
 id (absent, or the empty `--run-id ""` the driver sends for a run manifest that carries no
 `run_id`), has nothing that binds the directory's output to it, and a manifest in the run directory
@@ -337,7 +349,12 @@ reported, and `meta.coverage` still says what was produced, failed or absent: wi
 capture that could not be used is `produced_unusable` whoever asked for it. "Capture" means a file
 ingest reads and has an adapter for: ingest reads the names in the tools directory that do not start
 with a dot and end in `.sarif` or `.json`, and matches each by its name without the extension
-against the registered adapters. On a call with no run id, a file with no adapter (a report written
+against the registered adapters. The runner writes one output per adapter, so more than one
+capture for an adapter (`bandit.json` beside `bandit.sarif`) is that adapter's failure (#3780):
+its record is `failed`, reason "more than one capture for one adapter: …", whatever each file
+holds, because which one is this run's scan cannot be told. The findings of each capture that
+parsed are still reported.
+On a call with no run id, a file with no adapter (a report written
 into the directory, a `tools-manifest.json` put there; the manifest is looked for in the run
 directory, never in the tools directory) is listed under `meta.coverage.adapters` as `failed`, "no
 registered adapter", and is not named as lost coverage. With a run id and its receipt it is not read

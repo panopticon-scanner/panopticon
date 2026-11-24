@@ -8,6 +8,26 @@ from scripts import native_language
 # is the vetted path to it; code that needs only the NAME (a dir_fd-relative
 # open, a prefix check, an operator message) reads this.
 ARTIFACT_DIR = ".panopticon"
+# The coverage phase's per-group scout retry counter (`{"<group>": n}`). #3780: its name
+# is outside the scouts' `scout-<group>.json` pattern. It used to be `scout-attempts.json`,
+# which is also the scout output of a group named `attempts` (a valid name): the two
+# shared a file, and any reader of the pattern met the counter as a scout's reply.
+SCOUT_ATTEMPTS_NAME = "scout_attempts.json"
+LEGACY_SCOUT_ATTEMPTS_NAME = "scout-attempts.json"
+# What a scout's reply carries and a counter never does.
+_SCOUT_REPLY_KEYS = ("tools", "domains")
+
+
+def is_legacy_scout_attempts(document):
+    """Is `document`, read from `LEGACY_SCOUT_ATTEMPTS_NAME`, the old retry counter and
+    not group `attempts`'s scout reply? A counter is an object whose every value is a
+    count and that has no `tools` or `domains` key. Anything else is taken for a scout
+    reply, so a file that could be either is read, never passed over: the cost is that
+    the old counter of a group named `tools` or `domains` reads as a damaged scout."""
+    return (isinstance(document, dict) and bool(document)
+            and not any(key in document for key in _SCOUT_REPLY_KEYS)
+            and all(isinstance(value, int) and not isinstance(value, bool)
+                    for value in document.values()))
 
 
 def artifact_root(root):

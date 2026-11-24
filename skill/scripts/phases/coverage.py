@@ -9,6 +9,7 @@ import scripts.groups_schema as groups_schema
 # to CHECK the dispatch request this module writes, so both sides must
 # read the same function or a run can refuse itself.
 import scripts.loop_batch as loop_batch
+import scripts.plan_contract as plan_contract
 import scripts.repo_config as repo_config
 import scripts.run_tools as run_tools
 from scripts import read_guard_hook
@@ -237,15 +238,39 @@ def _scout_shape_errors(scout):
                         % (field, ", ".join(sorted({type(x).__name__ for x in bad}))))
     return errs
 
+def _adopt_legacy_scout_attempts(review_root):
+    """Carry a run's old retry counter over to its new name, once (#3780).
+
+    A run started before the rename kept the counter in `scout-attempts.json`, which is
+    also where a group named `attempts` has its scout write. When that file holds a
+    counter (`plan_contract.is_legacy_scout_attempts`) and the new one is not there yet,
+    the counts move and the old file goes: the resumed run keeps what it spent, and the
+    path is free for the scout it belongs to. Anything else at that path is a scout's
+    reply, or nothing this can read, and is left where it is."""
+    path = runio._pano(review_root, plan_contract.SCOUT_ATTEMPTS_NAME)
+    legacy = runio._pano(review_root, plan_contract.LEGACY_SCOUT_ATTEMPTS_NAME)
+    if os.path.lexists(path) or not os.path.isfile(legacy) or os.path.islink(legacy):
+        return
+    counts = runio._load_json(legacy)        # None when it cannot be read
+    if not plan_contract.is_legacy_scout_attempts(counts):
+        return
+    runio._write_json(path, counts)
+    try:
+        os.remove(legacy)
+    except OSError:
+        pass                # still a counter by its shape: the report's reader passes it over
+
+
 def _bump_scout_attempts(review_root, group):
     """Persisted per-group re-dispatch counter that bounds #3's retry loop.
-    Lives alongside the scout outputs, so --reset clears it with them. A
+    Run-scoped, so --reset clears it (`run_artifacts._RESET_GLOBS`). A
     PRESENT but unreadable counter refuses rather than reading as empty
     (#1809), which would refund every re-dispatch the run already spent -- and
     since #1767 a VALUE that is not a count refuses the same way, through the
     one owner of the arithmetic (`budget`), which this module's own copy of it
     answered with a bare ValueError from `int()`."""
-    return budget.bump(runio._pano(review_root, "scout-attempts.json"),
+    _adopt_legacy_scout_attempts(review_root)
+    return budget.bump(runio._pano(review_root, plan_contract.SCOUT_ATTEMPTS_NAME),
                        group, "the scout retry budget")
 
 def coverage_execute(review_root, manifest):
@@ -267,6 +292,9 @@ def coverage_execute(review_root, manifest):
     # round-trips. Emit EVERY pending scout in one checkpoint so the host
     # dispatches them concurrently; on a crash/resume this re-emits only the
     # scouts that still have no output (durable state = the entries' out_files).
+    # #3780: before any scout output is looked for, so a group named `attempts` does
+    # not find the old counter where its scout's reply belongs.
+    _adopt_legacy_scout_attempts(review_root)
     pending_scouts = []
     for g, f in groups:
         if _coverage_ready(review_root, g, manifest):

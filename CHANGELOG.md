@@ -2,6 +2,45 @@
 
 ## Unreleased
 
+- **A scout request that cannot be read no longer drops its scanners silently (#3780).** With no
+  tools manifest the scouts' requests are the only required scanner set. A `scout-*.json` that
+  failed to parse was warned about and ignored, so the scanners it asked for were required by
+  no one: the run passed, certified, where the intact file gives INCONCLUSIVE. Reachable on a
+  driver run with no tools manifest whose scout file is damaged after the coverage phase, and
+  on any direct `synthesize` call.
+  - Such a file is now an integrity failure: `meta.integrity.scout_files_unreadable` lists it,
+    the run is NOT CERTIFIED, a PASS gate is INCONCLUSIVE, and the terminal and the HTML name
+    the files ("SCOUT FILES UNREADABLE — …"). With a manifest too.
+  - "Cannot be read" is: the read or parse fails, the content is not an object, or `tools` is
+    present and is not a list of names. `tools: []` and a missing `tools` are still a decline.
+  - What the other scout files asked for still counts.
+  - **The coverage phase's scout retry counter is renamed** `scout_attempts.json` (it was
+    `scout-attempts.json`). The old name matched the scouts' file pattern and is the scout
+    output of a group named `attempts`, a valid name: the two shared one file and overwrote
+    each other, and the counter was counted as a scout profile. So
+    `meta.coverage.scout_profiles_seen` is lower by one on a run that retried a scout.
+    - A run resumed across the upgrade keeps what it spent: the coverage phase moves a
+      counter it finds under the old name to the new one.
+    - Synthesis tells a counter left under the old name by its shape (an object of counts
+      with no `tools` or `domains` key) and passes it over; anything else there is read as a
+      scout's reply.
+    - The one case that reads worse: a run in flight at the upgrade, with a group named
+      `tools` or `domains` whose scout had been retried. Its old counter (`{"tools": 1}`)
+      cannot be told from a scout's reply and is named as unreadable. Delete
+      `scout-attempts.json` from the run folder, or re-run with `--reset`.
+  - In the Integrity line and on the page, each name in a named list (these files, the
+    groups with no SEC cell, the findings with an unknown severity) is now spelled inert and
+    cut at 80 characters.
+- **More than one capture for one scanner is that scanner's failure (#3780).** Ingest keyed
+  its record by the capture's name without the extension, so with `bandit.json` and
+  `bandit.sarif` both present the file read last decided: a clean capture overwrote the record
+  of a failed one.
+  - The runner writes one output per scanner, so a second capture is not this run's and which
+    one is the scan cannot be told. The scanner's record is `failed`, reason "more than one
+    capture for one adapter: bandit.json, bandit.sarif", in whatever order the files are read.
+  - **This changes results on direct ingestion:** two captures that both parse cleanly now read
+    `failed`. The findings of every capture that parsed are still reported.
+
 - **The letter grade leaves everything a person reads; the health score leads (#3672).** Owner's
   ruling, 2026-11-23. Measured runs scoring from the mid-30s to 70 all landed on C, D or F, so
   the letter hid progress and headed nearly every first report with a low mark. Nothing is

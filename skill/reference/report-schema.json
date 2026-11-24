@@ -1224,6 +1224,13 @@
                 "type": "string"
               }
             },
+            "scout_files_unreadable": {
+              "type": "array",
+              "description": "#3780: scout file basenames whose tool request could not be read: the read or parse failed, the content is not an object, or `tools` is present and is not a list of strings. With no tools manifest the scouts' requests are the only required scanner set, so an unreadable one leaves its scanners required by no one; with a manifest it is still a damaged run artifact. Any entry prevents certification. Absent on a report written before this.",
+              "items": {
+                "type": "string"
+              }
+            },
             "duplicate_out_files": {
               "type": "array"
             },

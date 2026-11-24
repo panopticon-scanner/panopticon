@@ -1,6 +1,7 @@
 """Tests for scripts.synth.plan: dispatch plans, coverage cells, out-of-scope, the tool
 axis and its loaders.
 """
+import fnmatch
 import contextlib
 import io
 import os
@@ -711,6 +712,153 @@ class TestTheGroupsShapeGate(unittest.TestCase):
             requested, seen = plan_mod.load_scout_requests(d)
             self.assertEqual(requested, {"semgrep", "gitleaks"})
             self.assertEqual(seen, 2)
+
+    def test_a_scout_file_that_cannot_be_used_is_named(self):
+        """#3780: a scout request that cannot be read was warned about and dropped, and
+        the scanners it asked for were then required by no one."""
+        good = json.dumps({"tools": ["semgrep"]})
+        cases = {
+            "scout-a-torn.json": good[:-1],                   # its last byte missing
+            "scout-b-array.json": "[]",
+            "scout-c-text.json": json.dumps("semgrep"),
+            "scout-d-tools-text.json": json.dumps({"tools": "semgrep"}),
+            "scout-e-tools-object.json": json.dumps({"tools": {"semgrep": True}}),
+            "scout-f-tools-mixed.json": json.dumps({"tools": ["gitleaks", 3]}),
+            "scout-g-empty.json": "",
+            # Falsy and not a list: still a request nobody can read (only an absent or
+            # null `tools` is a decline).
+            "scout-m-tools-empty-text.json": json.dumps({"tools": ""}),
+            "scout-n-tools-false.json": json.dumps({"tools": False}),
+            "scout-o-tools-zero.json": json.dumps({"tools": 0}),
+            "scout-p-tools-empty-object.json": json.dumps({"tools": {}}),
+        }
+        fine = {
+            "scout-h-good.json": good,
+            "scout-i-declined.json": json.dumps({"tools": []}),
+            "scout-j-no-tools.json": json.dumps({"domains": ["COD"]}),
+            "scout-k-null-tools.json": json.dumps({"tools": None}),
+            "scout-l-fenced.json": "```json\n%s\n```\n" % json.dumps({"tools": ["bandit"]}),
+        }
+        with tempfile.TemporaryDirectory() as d:
+            for name, text in {**cases, **fine}.items():
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    fh.write(text)
+            unreadable: list = []
+            with contextlib.redirect_stderr(io.StringIO()):
+                requested, seen = plan_mod.load_scout_requests(d, unreadable=unreadable)
+        self.assertEqual(sorted(cases), unreadable)
+        # What could be read still counts, the mixed list's good entry included.
+        self.assertEqual({"semgrep", "bandit", "gitleaks"}, requested)
+        # A profile is a file that parsed to an object, as before.
+        self.assertEqual(len(fine) + 7, seen)
+
+    def test_the_retry_counter_is_outside_the_scouts_pattern(self):
+        """Seat review of #3797, then its delta. The coverage phase kept its retry
+        counter, `{"<group>": n}`, in `scout-attempts.json`: a name the scouts' pattern
+        matches, and the scout output of a group named `attempts`. It was counted as a
+        scout profile, and for a group named `tools` it read as a request of the wrong
+        type. The counter has a name of its own now."""
+        import scripts.phases.coverage as coverage_phase
+        import scripts.plan_contract as plan_contract
+        self.assertFalse(fnmatch.fnmatch(plan_contract.SCOUT_ATTEMPTS_NAME, "scout-*.json"))
+        self.assertEqual("scout-attempts.json", plan_contract.LEGACY_SCOUT_ATTEMPTS_NAME)
+        with tempfile.TemporaryDirectory() as d:
+            run = os.path.join(d, plan_contract.ARTIFACT_DIR)
+            os.makedirs(run)
+            self.assertEqual(1, coverage_phase._bump_scout_attempts(d, "tools"))
+            self.assertEqual([plan_contract.SCOUT_ATTEMPTS_NAME], os.listdir(run))
+            unreadable: list = []
+            self.assertEqual((set(), 0), plan_mod.load_scout_requests(run, unreadable=unreadable))
+            self.assertEqual([], unreadable)
+
+    def test_a_group_named_attempts_has_its_scout_read(self):
+        """The delta's case: `attempts` is a valid group name, and its scout writes
+        `scout-attempts.json`. Skipping that name dropped the group's request in silence."""
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "scout-attempts.json"), "w", encoding="utf-8") as fh:
+                json.dump({"domains": ["SEC"], "tools": ["bandit"]}, fh)
+            unreadable: list = []
+            self.assertEqual(({"bandit"}, 1), plan_mod.load_scout_requests(d, unreadable=unreadable))
+            self.assertEqual([], unreadable)
+            # Torn, it is named like any other scout.
+            with open(os.path.join(d, "scout-attempts.json"), "w", encoding="utf-8") as fh:
+                fh.write('{"tools": ["bandit"]')
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual((set(), 0), plan_mod.load_scout_requests(d, unreadable=unreadable))
+            self.assertEqual(["scout-attempts.json"], unreadable)
+
+    def test_a_counter_left_under_the_old_name_is_told_by_its_shape(self):
+        """A run from before the rename can still hold the counter at the old name. A
+        counter is an object of counts with no `tools` or `domains` key; anything else
+        there is a scout's reply and is judged as one."""
+        import scripts.plan_contract as plan_contract
+        legacy = plan_contract.LEGACY_SCOUT_ATTEMPTS_NAME
+        counters = ({"Web": 1}, {"Web": 2, "login-attempts": 3}, {"attempts": 1})
+        replies = (
+            ({"tools": ["bandit"]}, {"bandit"}, 1, []),
+            ({"domains": ["SEC"]}, set(), 1, []),
+            ({"domains": ["SEC"], "tools": ["bandit"], "Web": 1}, {"bandit"}, 1, []),  # main's mix
+            ({}, set(), 1, []),
+            # A count under a key a scout's reply has: it could be either, so it is read.
+            ({"tools": 1}, set(), 1, [legacy]),
+            ({"domains": 2, "Web": 1}, set(), 1, []),
+            ({"Web": True}, set(), 1, []),
+            ({"Web": "1"}, set(), 1, []),
+            ({"Web": 1.5}, set(), 1, []),
+            ({"Web": [1]}, set(), 1, []),
+            # Every value must be a count: one that is not, and it is no counter.
+            ({"Web": 1, "Auth": "x"}, set(), 1, []),
+            ({"Web": 1, "Auth": None}, set(), 1, []),
+            ([1], set(), 0, [legacy]),
+        )
+        for counter in counters:
+            with self.subTest(counter=counter), tempfile.TemporaryDirectory() as d:
+                self.assertTrue(plan_contract.is_legacy_scout_attempts(counter))
+                with open(os.path.join(d, legacy), "w", encoding="utf-8") as fh:
+                    json.dump(counter, fh)
+                with open(os.path.join(d, "scout-Web.json"), "w", encoding="utf-8") as fh:
+                    json.dump({"tools": ["semgrep"]}, fh)
+                unreadable: list = []
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    got = plan_mod.load_scout_requests(d, unreadable=unreadable)
+                self.assertEqual(({"semgrep"}, 1, [], ""), (*got, unreadable, err.getvalue()))
+        for reply, requested, seen, named in replies:
+            with self.subTest(reply=reply), tempfile.TemporaryDirectory() as d:
+                self.assertFalse(plan_contract.is_legacy_scout_attempts(reply))
+                with open(os.path.join(d, legacy), "w", encoding="utf-8") as fh:
+                    json.dump(reply, fh)
+                unreadable = []
+                with contextlib.redirect_stderr(io.StringIO()):
+                    got = plan_mod.load_scout_requests(d, unreadable=unreadable)
+                self.assertEqual((requested, seen, named), (*got, unreadable))
+        # Only at that name: the same counts in any other scout file are a scout's.
+        with tempfile.TemporaryDirectory() as d:
+            for name in ("scout-attempts-api.json", "scout-login-attempts.json"):
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    json.dump({"Web": 1}, fh)
+            self.assertEqual((set(), 2), plan_mod.load_scout_requests(d))
+
+    def test_what_is_said_of_an_unusable_scout_is_inert(self):
+        name = "scout-a\x1b[2Jb\u202e.json"
+        for text in ("[]", json.dumps({"tools": "bandit"})):
+            with self.subTest(scout=text), tempfile.TemporaryDirectory() as d:
+                with open(os.path.join(d, name), "w", encoding="utf-8") as fh:
+                    fh.write(text)
+                unreadable: list = []
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    plan_mod.load_scout_requests(d, unreadable=unreadable)
+                self.assertEqual([name], unreadable)
+                said = err.getvalue()
+                self.assertIn("scout-a\\x1b[2Jb\\u202e.json", said)
+                self.assertNotIn("\x1b", said)
+                self.assertNotIn("\u202e", said)
+
+    def test_the_list_is_optional_and_the_answer_is_the_same_without_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            with open(os.path.join(d, "scout-a.json"), "w", encoding="utf-8") as fh:
+                fh.write("{{{")
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual((set(), 0), plan_mod.load_scout_requests(d))
 
     def test_load_scout_requests_announces_a_silent_decline(self):
         with tempfile.TemporaryDirectory() as d:
