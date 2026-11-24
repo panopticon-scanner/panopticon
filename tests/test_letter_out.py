@@ -212,6 +212,14 @@ def test_a_result_held_back_by_its_profile_says_so_on_its_own_line():
     assert "<div class='provisional-health'>%s</div>" % html_lib.escape(note) in page
 
 
+def test_only_a_leading_prefix_is_left_off_the_provisional_line():
+    """A note that names another reason first keeps every word: "health provisional"
+    in the middle of it is part of what it says."""
+    note = "an earlier reason; " + grading_mod.PROVISIONAL_PREFIX + "a custom scan profile"
+    report = _with(KINDS["held back by its profile"], coverage_note=note)
+    assert "**Health provisional:** " + note in render_mod.render_summary(report).splitlines()
+
+
 def test_the_provisional_line_is_inert_in_the_terminal_and_escaped_on_the_page():
     note = grading_mod.PROVISIONAL_PREFIX + "a\x1b[2Jb <script>x</script>\nc"
     report = _with(KINDS["held back by its profile"], coverage_note=note)
