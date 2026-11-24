@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- **A tree with an ecosystem no auditor ran on is no longer certified (#3700).** A tree whose
+  JavaScript lockfile osv-scanner audited, and whose `pyproject.toml` only pip-audit reads and
+  only under `--online`, certified offline with PASS: the unaudited ecosystem was named in
+  `coverage_note`, which the terminal and the HTML show only beside NOT CERTIFIED.
+  - An applicable ecosystem recorded as `needs_online` or `not_run` is now a gate-relevant gap
+    (owner's ruling, 2026-11-20): coverage is NOT CERTIFIED, a PASS gate is INCONCLUSIVE (exit
+    2). The letter stands, as for a missing scanner or the whole-tree gap. A FAIL stays FAIL.
+  - `no_auditable_file` (a `package.json` with no lockfile) is still disclosure only.
+  - **This changes results:** an offline run of such a tree is INCONCLUSIVE until it runs with
+    `--online`.
+  - `security_gate.py` (the CI gate) does not read the dependency-audit receipt and is not
+    changed (#3791).
+
 - **An advisor's rejection no longer discards scanner hits it did not judge (#3756).** A scanner
   rule that fires several times in one file is one finding with several lines. The advisor was
   given all of them with nothing saying they were one claim, and one REJECTED discarded them all.

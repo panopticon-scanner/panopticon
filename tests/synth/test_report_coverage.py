@@ -1119,6 +1119,276 @@ class TestDependencyAuditCoverage(unittest.TestCase):
                 bad["meta"]["coverage"]["dependency_audit"]["unaudited"] = unaudited
                 self.assertNotEqual([], validate_schema_mod.schema_errors(bad))
 
+    # -- #3700: an ecosystem whose auditor did not run stops certification ----------------
+
+    PIP_ONLINE = "python not audited: pip-audit needs --online"
+    RUST = "rust not audited: no dependency auditor ran on it"
+    OSV = {"osv-scanner": {"status": "empty", "findings": 0}}
+
+    def _mixed_tree(self, unaudited):
+        """osv-scanner answered for one ecosystem; `unaudited` is the rest of the record.
+        Real files, so there is a letter and a certification to lose."""
+        receipt = {"applicable": sorted(set(unaudited) | {"javascript"}),
+                   "selected": ["osv-scanner"], "produced": ["osv-scanner"]}
+        groups = [{"name": "g1", "files": ["a.py"]}]
+        with _target_with_files(groups, lines=5000) as tgt:
+            plan = plan_mod.PlanInputs(groups_meta=groups)
+            before = self._report(dict(receipt), ["osv-scanner"], ["osv-scanner"], self.OSV,
+                                  target=tgt, plan=plan)
+            after = self._report(dict(receipt, unaudited=unaudited), ["osv-scanner"],
+                                 ["osv-scanner"], self.OSV, target=tgt, plan=plan)
+        return before["summary"], after["summary"], after
+
+    def test_an_ecosystem_that_needed_online_stops_certification(self):
+        """Owner's ruling, 2026-11-20, option (c). The tree certified, with a note that
+        only the JSON showed, while nothing had audited one of its ecosystems."""
+        before, after, report = self._mixed_tree({"python": "needs_online"})
+        self.assertEqual(("PASS", True, None), (
+            before["gate"], before["coverage_certified"], before["coverage_note"]))
+        self.assertEqual(("INCONCLUSIVE", False), (after["gate"], after["coverage_certified"]))
+        self.assertIn(self.PIP_ONLINE, after["coverage_note"])
+        self.assertIn(self.PIP_ONLINE, render_mod.render_summary(report))
+        import html
+        import scripts.html_report as html_report
+        self.assertIn(self.PIP_ONLINE, html.unescape(html_report.render(report)))
+        self.assertEqual([], validate_schema_mod.schema_errors(report))
+
+    def test_an_ecosystem_no_auditor_ran_on_stops_certification(self):
+        _before, after, _report = self._mixed_tree({"rust": "not_run"})
+        self.assertEqual(("INCONCLUSIVE", False), (after["gate"], after["coverage_certified"]))
+        self.assertIn(self.RUST, after["coverage_note"])
+
+    def test_an_ecosystem_with_nothing_to_audit_is_still_disclosure_only(self):
+        before, after, _report = self._mixed_tree({"javascript": "no_auditable_file"})
+        self.assertEqual(("PASS", True, self.JS), (
+            after["gate"], after["coverage_certified"], after["coverage_note"]))
+        self.assertEqual(dict(before, coverage_note=None), dict(after, coverage_note=None))
+
+    def test_one_such_ecosystem_among_others_is_enough_and_all_are_named(self):
+        _before, after, _report = self._mixed_tree(
+            {"javascript": "no_auditable_file", "python": "needs_online", "rust": "not_run"})
+        self.assertEqual(("INCONCLUSIVE", False), (after["gate"], after["coverage_certified"]))
+        for sentence in (self.JS, self.PIP_ONLINE, self.RUST):
+            self.assertEqual(1, after["coverage_note"].count(sentence), sentence)
+
+    def test_the_letter_stands_as_for_any_other_gate_relevant_gap(self):
+        """Nothing grade-specific: what the whole-tree gap does to the summary, this does.
+        A gate-relevant gap moves the gate and certification and leaves the letter where
+        it is; only an incomplete panel, a custom profile or a shortfall holds it back."""
+        import scripts.synth.grading as grading_mod
+        cert = grading_mod.certify("B", [], "high", set(), set(), unaudited_uncertified=True)
+        self.assertEqual(("B", None, "INCONCLUSIVE", False), (
+            cert["overall_grade"], cert["provisional_grade"], cert["gate"],
+            cert["coverage_certified"]))
+        _b, unaudited, _r = self._mixed_tree({"python": "needs_online"})
+        groups = [{"name": "g1", "files": ["a.py"]}]
+        with _target_with_files(groups, lines=5000) as tgt:
+            whole = self._report({"applicable": ["python"], "selected": [], "produced": []},
+                                 ["trivy"], ["trivy"], self.TRIVY, target=tgt,
+                                 plan=plan_mod.PlanInputs(groups_meta=groups))["summary"]
+        for key in ("gate", "coverage_certified", "overall_grade", "provisional_grade",
+                    "risk_level", "grade_cap"):
+            self.assertEqual(whole[key], unaudited[key], key)
+
+    def test_a_failed_gate_stays_failed(self):
+        import scripts.synth.grading as grading_mod
+        high = [{"severity": "HIGH"}]
+        for gap in (False, True):
+            cert = grading_mod.certify("A", high, "high", set(), set(), unaudited_uncertified=gap)
+            self.assertEqual("FAIL", cert["gate"], gap)
+
+    def test_certify_reads_the_fact_and_nothing_else(self):
+        import scripts.synth.grading as grading_mod
+        clean = grading_mod.certify("A", [], "high", set(), set())
+        sunk = grading_mod.certify("A", [], "high", set(), set(), unaudited_uncertified=True,
+                                   dependency_unaudited=[self.PIP_ONLINE])
+        named = grading_mod.certify("A", [], "high", set(), set(),
+                                    dependency_unaudited=[self.JS])
+        self.assertEqual(("PASS", True), (clean["gate"], clean["coverage_certified"]))
+        self.assertEqual(("INCONCLUSIVE", False, self.PIP_ONLINE),
+                         (sunk["gate"], sunk["coverage_certified"], sunk["coverage_note"]))
+        self.assertEqual(("PASS", True, self.JS),
+                         (named["gate"], named["coverage_certified"], named["coverage_note"]))
+
+    def test_with_a_custom_profile_the_gaps_own_sentence_leads(self):
+        """The note used to open with the generic "gate-relevant coverage did not
+        complete" and name the ecosystem last, after the profile's reason."""
+        import scripts.synth.grading as grading_mod
+        profile = "custom scan profile"
+        cert = grading_mod.certify("B", [], "high", set(), set(), unaudited_uncertified=True,
+                                   dependency_unaudited=[self.PIP_ONLINE, self.JS],
+                                   custom_profile=profile)
+        self.assertEqual("%s; %s; %s%s" % (self.PIP_ONLINE, self.JS,
+                                           grading_mod.PROVISIONAL_PREFIX, profile),
+                         cert["coverage_note"])
+        # Each sentence once, and the generic one not at all: the gap has a name.
+        self.assertNotIn(grading_mod.GATE_GAP_NOTE, cert["coverage_note"])
+        # Disclosure only (no gap): the profile's reason leads, as before.
+        named = grading_mod.certify("B", [], "high", set(), set(),
+                                    dependency_unaudited=[self.JS], custom_profile=profile)
+        self.assertEqual("%s%s; %s" % (grading_mod.PROVISIONAL_PREFIX, profile, self.JS),
+                         named["coverage_note"])
+        # The whole-tree gap keeps the order it has had since #3648.
+        whole = grading_mod.certify("B", [], "high", set(), set(), dependency_audit_gap=True,
+                                    unaudited_uncertified=True,
+                                    dependency_unaudited=[self.PIP_ONLINE],
+                                    custom_profile=profile)
+        self.assertEqual("; ".join([grading_mod.GATE_GAP_NOTE,
+                                    grading_mod.PROVISIONAL_PREFIX + profile,
+                                    self.NOTE, self.PIP_ONLINE]), whole["coverage_note"])
+        # Another reason already leads: the ecosystem follows it, once.
+        broken = grading_mod.certify("B", [], "high", set(), set(), unaudited_uncertified=True,
+                                     dependency_unaudited=[self.PIP_ONLINE],
+                                     custom_profile=profile, tools_manifest_invalid="torn")
+        self.assertTrue(broken["coverage_note"].startswith("tools manifest unreadable"))
+        self.assertEqual(1, broken["coverage_note"].count(self.PIP_ONLINE))
+        self.assertTrue(broken["coverage_note"].endswith(self.PIP_ONLINE))
+        # The fact with no sentence to say (a direct call): the generic one, as before.
+        bare = grading_mod.certify("B", [], "high", set(), set(), unaudited_uncertified=True,
+                                   custom_profile=profile)
+        self.assertEqual("%s; %s%s" % (grading_mod.GATE_GAP_NOTE,
+                                       grading_mod.PROVISIONAL_PREFIX, profile),
+                         bare["coverage_note"])
+
+    def test_which_reasons_stop_certification_is_one_definition(self):
+        import scripts.synth.grading as grading_mod
+        import scripts.tools_manifest as tools_manifest
+        self.assertEqual(("needs_online", "not_run"), tools_manifest.UNAUDITED_UNCERTIFIED)
+        self.assertEqual({"no_auditable_file"}, set(tools_manifest.UNAUDITED_REASONS)
+                         - set(tools_manifest.UNAUDITED_UNCERTIFIED))
+        gap = grading_mod.unaudited_gap
+        self.assertEqual(["python", "rust"], gap({"unaudited": {
+            "rust": "not_run", "python": "needs_online", "javascript": "no_auditable_file"}}))
+        self.assertEqual([], gap({"unaudited": {"javascript": "no_auditable_file"}}))
+
+    def test_a_record_that_cannot_be_read_sinks_nothing_and_raises_nothing(self):
+        """In `certify`'s own inputs. Through a report, the read repairs a bad record to
+        the whole-tree fallback, which is INCONCLUSIVE on its own (#3648)."""
+        import scripts.synth.grading as grading_mod
+        for receipt in (None, {}, "rust", ["rust"], {"unaudited": None},
+                        {"unaudited": ["rust"]}, {"unaudited": "not_run"},
+                        {"unaudited": {"rust": "some other reason"}},
+                        {"unaudited": {"rust": ["not_run"]}}, {"unaudited": {"rust": None}},
+                        {"unaudited": {"cobol": "not_run"}}, {"unaudited": {7: "not_run"}},
+                        {"unaudited": {"unknown": "not_run"}}):
+            with self.subTest(receipt=receipt):
+                self.assertEqual([], grading_mod.unaudited_gap(receipt))
+        # Keys of two kinds cannot be put in order; the ones that are text still count.
+        self.assertEqual(["python", "rust"], grading_mod.unaudited_gap({"unaudited": {
+            "rust": "not_run", 7: "not_run", None: "needs_online", "python": "needs_online"}}))
+
+    def test_a_forged_record_cannot_buy_certification(self):
+        for unaudited in ({"python": "audited"}, {"python": None}, ["python"], "python"):
+            with self.subTest(unaudited=unaudited):
+                report = self._report({"applicable": ["javascript", "python"],
+                                       "selected": ["osv-scanner"], "produced": ["osv-scanner"],
+                                       "unaudited": unaudited}, ["osv-scanner"], ["osv-scanner"],
+                                      self.OSV)
+                self.assertEqual(("INCONCLUSIVE", False), (
+                    report["summary"]["gate"], report["summary"]["coverage_certified"]))
+
+    def test_when_nothing_was_audited_each_ecosystem_is_still_named_once(self):
+        receipt = {"applicable": ["python", "rust"], "selected": [], "produced": [],
+                   "unaudited": {"rust": "not_run", "python": "needs_online"}}
+        summary = self._report(receipt, ["trivy"], ["trivy"], self.TRIVY)["summary"]
+        self.assertEqual("; ".join([self.NOTE, self.PIP_ONLINE, self.RUST]),
+                         summary["coverage_note"])
+        self.assertEqual(("INCONCLUSIVE", False), (summary["gate"], summary["coverage_certified"]))
+
+
+class TestAnUnauditedEcosystemThroughARealManifest(unittest.TestCase):
+    """#3700, end to end: the runner's own record of which ecosystems went unaudited
+    (`tools_manifest.dependency_audit_unaudited`), written by `write_manifest`, read by
+    `synthesize`. Only the tree differs between the cases."""
+
+    def _synthesize(self, files, online=False, selected=("osv-scanner",)):
+        import contextlib
+        import contextvars
+        import io
+        import scripts.synthesize as synthesize
+        import scripts.tools_manifest as tools_manifest
+        from tests._test_helpers import adopt_panopticon
+        base = tempfile.TemporaryDirectory()
+        self.addCleanup(base.cleanup)
+        target = os.path.join(base.name, "target")
+        run = os.path.join(target, ".panopticon")
+        os.makedirs(os.path.join(run, "tools"))
+        for name in files:
+            with open(os.path.join(target, name), "w", encoding="utf-8") as fh:
+                fh.write("{}" if name.endswith(".json") else "x==1\n")
+        adopt_panopticon(target)
+        written = []
+        for tool in selected:
+            written.append(os.path.join(run, "tools", "%s.json" % tool))
+            with open(written[-1], "w", encoding="utf-8") as fh:
+                json.dump({"results": []} if tool == "osv-scanner"
+                          else {"fixes": [], "dependencies": []}, fh)
+        unaudited = tools_manifest.dependency_audit_unaudited(target, list(selected), online)
+        tools_manifest.write_manifest(
+            os.path.join(run, "tools-manifest.json"), list(selected), written, run_id="R",
+            dependency_applicable=tools_manifest.dependency_audit_applicable(target),
+            dependency_unaudited=unaudited)
+        findings = os.path.join(base.name, "findings-g1-COD.json")
+        with open(findings, "w", encoding="utf-8") as fh:
+            json.dump({"findings": []}, fh)
+        out, err = os.path.join(base.name, "report.json"), io.StringIO()
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+            rc = contextvars.Context().run(synthesize.main, [
+                "--repo", "--root", target, "--target", "t", "--run-dir", run,
+                "--tools-dir", os.path.join(run, "tools"), "--fail-on", "high",
+                "--run-id", "R", "--out", out, findings])
+        with open(out, encoding="utf-8") as fh:
+            return rc, unaudited, json.load(fh)["summary"], err.getvalue()
+
+    def test_the_record_decides_and_only_the_tree_differs(self):
+        audited = ("requirements.txt", "package.json", "package-lock.json")
+        cases = (
+            # every ecosystem read by the selected, offline auditor
+            (audited, False, ("osv-scanner",), {}),
+            # a `package.json` with no lockfile: nothing for any auditor to read
+            (("requirements.txt", "package.json"), False, ("osv-scanner",),
+             {"javascript": "no_auditable_file"}),
+            # only a `pyproject.toml` for Python: pip-audit reads it, and only online
+            (("pyproject.toml", "package.json", "package-lock.json"), False, ("osv-scanner",),
+             {"python": "needs_online"}),
+            # the same tree with `--online` and pip-audit selected
+            (("pyproject.toml", "package.json", "package-lock.json"), True,
+             ("osv-scanner", "pip-audit"), {}),
+        )
+        seen = {}
+        for files, online, selected, expected in cases:
+            with self.subTest(files=files, online=online):
+                rc, unaudited, summary, err = self._synthesize(files, online, selected)
+                self.assertEqual(expected, unaudited)
+                seen[(files, online)] = (rc, summary["gate"], summary["coverage_certified"],
+                                         summary["coverage_note"])
+        baseline = seen[(audited, False)]
+        self.assertEqual("PASS" if baseline[0] == 0 else "INCONCLUSIVE", baseline[1])
+        # Nothing to read: disclosed, and the gate and certification are the audited tree's.
+        no_lock = seen[(("requirements.txt", "package.json"), False)]
+        self.assertEqual(baseline[:3], no_lock[:3])
+        self.assertIn("javascript not audited: no npm-shrinkwrap.json", no_lock[3])
+        # An auditor reads it and did not run: not certified, exit 2, and the remedy named.
+        offline = seen[(("pyproject.toml", "package.json", "package-lock.json"), False)]
+        self.assertEqual((2, "INCONCLUSIVE", False), offline[:3])
+        self.assertIn("python not audited: pip-audit needs --online", offline[3])
+        # With `--online` and the auditor selected, it is the audited tree again.
+        online = seen[(("pyproject.toml", "package.json", "package-lock.json"), True)]
+        self.assertEqual(baseline[:3], online[:3])
+        self.assertNotIn("not audited", online[3] or "")
+
+    def test_an_ecosystem_whose_auditor_was_not_selected_is_not_certified(self):
+        """`not_run`: a lockfile is there, osv-scanner would read it offline, and it was
+        not selected. pip-audit answered for Python, so the whole-tree rule is silent."""
+        rc, unaudited, summary, _err = self._synthesize(
+            ("requirements.txt", "package.json", "package-lock.json"), online=True,
+            selected=("pip-audit",))
+        self.assertEqual({"javascript": "not_run"}, unaudited)
+        self.assertEqual((2, "INCONCLUSIVE", False),
+                         (rc, summary["gate"], summary["coverage_certified"]))
+        self.assertIn("javascript not audited: no dependency auditor ran on it",
+                      summary["coverage_note"])
+
 
 class TestAWithheldTargetBuildIsDisclosedNotGated(unittest.TestCase):
     """#3265: roslyn-secguard off by default is the intended posture. It is

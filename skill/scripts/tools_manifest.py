@@ -116,6 +116,10 @@ def dependency_audit_applicable(target):
 #                      under --online, and --online was not given;
 #   not_run:           anything else (an auditor reads it and was not selected).
 UNAUDITED_REASONS = ("no_auditable_file", "needs_online", "not_run")
+# #3700 (owner's ruling, 2026-11-20, option (c)): the reasons that stop certification.
+# An auditor reads the ecosystem's file and did not run. `no_auditable_file` is not
+# one: the target gives no auditor anything to read, and that is only disclosed.
+UNAUDITED_UNCERTIFIED = ("needs_online", "not_run")
 
 
 def dependency_auditors(ecosystem):

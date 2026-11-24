@@ -101,14 +101,29 @@ NO_SCA_COVERAGE_NOTE = "no SCA tool produced output on an applicable tree"
 
 def unaudited_notes(dependency_audit):
     """#3648: one fixed sentence per ecosystem the repaired SCA receipt records as
-    unaudited, in ecosystem order; [] for a receipt without the record. Disclosure
-    only: nothing here moves the gate or certification."""
+    unaudited, in ecosystem order; [] for a receipt without the record. The words
+    only: which of them stop certification is `unaudited_gap`'s."""
     rows = (dependency_audit or {}).get("unaudited") if isinstance(dependency_audit, dict) else None
     if not isinstance(rows, dict):
         return []
     sentences = (tools_manifest.unaudited_sentence(ecosystem, rows[ecosystem])
                  for ecosystem in sorted(rows))
     return [sentence for sentence in sentences if sentence]
+
+
+def unaudited_gap(dependency_audit):
+    """#3700: the ecosystems that stop certification, in ecosystem order: recorded as
+    unaudited for a reason in `tools_manifest.UNAUDITED_UNCERTIFIED`, and one the fixed
+    sentences can name. [] for a receipt without the record, or one this cannot read
+    (the read repairs a malformed record to the whole-tree fallback, which is a gap of
+    its own). Owner's ruling, 2026-11-20: an applicable ecosystem whose auditor did not
+    run, or needed `--online`, is a tree nobody audited in part."""
+    rows = (dependency_audit or {}).get("unaudited") if isinstance(dependency_audit, dict) else None
+    if not isinstance(rows, dict):
+        return []
+    return [ecosystem for ecosystem in sorted(key for key in rows if isinstance(key, str))
+            if rows[ecosystem] in tools_manifest.UNAUDITED_UNCERTIFIED
+            and tools_manifest.unaudited_sentence(ecosystem, rows[ecosystem])]
 
 
 # What NOT CERTIFIED says when a gate-relevant gap names no reason of its own.
@@ -271,7 +286,7 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
             delta_scope_suppressed_git_drivers=None, tools_file_partial=None,
             delta_zero_hunks=None, dependency_audit_gap=False, custom_profile=None,
             config_notes=None, native_unparsed_gap=None, shortfalls=(),
-            dependency_unaudited=()):
+            dependency_unaudited=(), unaudited_uncertified=False):
     """Coverage-aware certification. Gate keys on high-value-panel completeness
     (+ requested-absent tools + artifact integrity + verdict loadability +
     missing FLOOR review cells); grade is holistic (provisional on ANY gap).
@@ -345,7 +360,10 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
                          or bool(verdicts_unanswered) or bool(missing_floor)
                          or bool(tools_network_excluded) or bool(delta_zero_hunks)
                          or dependency_audit_gap or bool(native_unparsed_gap)
-                         or bool(shortfalls))
+                         or bool(shortfalls)
+                         # #3700: an applicable ecosystem whose auditor did not run. Its
+                         # sentence is in `dependency_unaudited`, which the note carries.
+                         or bool(unaudited_uncertified))
     any_incomplete = bool(panels_incomplete)
 
     if base_gate == "PASS" and gate_relevant_gap:
@@ -390,6 +408,11 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
         # A gate-relevant gap with no named reason gets the generic one here, or the profile text
         # would become the whole NOT CERTIFIED reason and blame the gate on the group size.
         lead = note if note is not None or not gate_relevant_gap else GATE_GAP_NOTE
+        if note is None and unaudited_uncertified and not dependency_audit_gap:
+            # #3700: this gap has a name, so its own sentences lead and the generic one
+            # is not said. (The whole-tree gap keeps its #3648 order, below.)
+            lead = "; ".join(dependency_unaudited) or GATE_GAP_NOTE
+            dependency_unaudited = ()
         reason = (custom_profile if lead and PROVISIONAL_PREFIX.rstrip(": ") in lead
                   else PROVISIONAL_PREFIX + custom_profile)
         note = "; ".join(filter(None, (lead, reason)))
@@ -459,7 +482,8 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
     note = coverage_model.with_asset_skip_note(note, asset_skips)     # #3283: disclosed, not counted
     if not dependency_audit_gap:
         # #3648 (ruling b): an ecosystem no auditor read is named even when another
-        # ecosystem's auditor answered and the tree certifies. It moves nothing.
+        # ecosystem's auditor answered. Naming it moves nothing; whether the tree still
+        # certifies is `unaudited_uncertified`'s (#3700).
         note = "; ".join(filter(None, (note, *dependency_unaudited))) or None
     # #3548: config disclosures that move nothing (a scout-only exclude, `exclude_paths:`).
     note = "; ".join(filter(None, (note, *(config_notes or ())))) or None
@@ -990,7 +1014,9 @@ def grade_report(run, resolved, reconciled, delta=None, verify_ledger=None):
                    config_notes=health_basis.config_notes(run, coverages),
                    shortfalls=shortfalls,
                    dependency_unaudited=unaudited_notes(
-                       (getattr(reconciled, "coverage", None) or {}).get("dependency_audit")))
+                       (getattr(reconciled, "coverage", None) or {}).get("dependency_audit")),
+                   unaudited_uncertified=bool(unaudited_gap(
+                       (getattr(reconciled, "coverage", None) or {}).get("dependency_audit"))))
     summary = {
         "overall_grade": cert["overall_grade"],
         "provisional_grade": cert["provisional_grade"],
