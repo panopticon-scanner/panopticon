@@ -68,7 +68,6 @@ h2 { font-size: 18px; font-weight: 600; }
 .sev-medium { background: #b98d28; color: #131418; }
 .sev-low { background: #3d6da8; color: #faf8f2; }
 .sev-info { background: #4e6375; color: #faf8f2; }
-.badge.grade { background: transparent; color: var(--accent); border: 1px solid var(--accent-border); }
 .badge.health { background: transparent; color: var(--muted); border: 1px solid var(--border2); }
 .health-basis { margin-top: .45rem; color: var(--muted); font-size: .78rem; }
 /* Health explainer. CSS-only, and keyed on :focus-within as well as :hover so it
@@ -287,19 +286,14 @@ _JS = """(function () {
 _JS_SHA256 = base64.b64encode(hashlib.sha256(_JS.encode("utf-8")).digest()).decode("ascii")
 
 
-def _grade_badge(summary):
-    """The grade badge text. #490: never the literal "None", and an uncertified grade says
-    PROVISIONAL. #1495: a letter held back as `provisional_grade` (an incomplete panel, a
-    non-default scan profile) is shown with that label, as the terminal summary shows it."""
-    certified, provisional = summary.get("overall_grade"), summary.get("provisional_grade")
-    letter = certified or provisional or "-"
-    held = (not certified and bool(provisional)) or summary.get("coverage_certified") is False
-    # #3667: undone verify work is named beside the letter, as in the terminal.
-    reasons = render_mod.shortfall_list(summary) if held else []
-    # #3652: the band letter a confirmed CRITICAL/HIGH lowered, beside the cap.
-    cap = grading.grade_cap_note(summary) if letter != "-" else None
-    qualifiers = (["provisional"] if held else []) + reasons + ([cap] if cap else [])
-    return letter + (" (%s)" % "; ".join(qualifiers) if qualifiers else "")
+def _health_badge(summary):
+    """The health badge text (#3672: the headline, where the letter was): "63.2 / 100",
+    or "n/a" when the report has no score, never the literal "None" (#490). A result held
+    back (#1495: an incomplete panel, a non-default scan profile; #3667: undone verify
+    work, named) or one whose coverage is not certified says PROVISIONAL beside the score,
+    as the letter did."""
+    held = render_mod.held_back(summary) or summary.get("coverage_certified") is False
+    return "Health: " + render_mod.health_score_text(summary, held)
 
 
 def _escape(value):
@@ -566,20 +560,18 @@ def _render_header(report):
         *("<div class='gate-notice' role='alert'>%s</div>" % _escape(notice)
           for notice in config_schema.gate_notices(summary, meta.get("config"))),
         "<div class='badges'>",
-        # #490: a report with no grade must not render the literal "None",
-        # and an uncertified grade is PROVISIONAL, not settled.
-        f"<span class='badge grade'>Grade: {_escape(_grade_badge(summary))}</span>",
-        f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO') or 'unknown')}'>Risk: {_escape(summary.get('risk_level', '-') or 'unknown')}</span>",
-        f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>",
     ]
-    # Health never affects the gate (#1057). Across six calibration targets every grade was D/F while
-    # health ranged 35.68-70.45, too small a sample for healthy/fair/poor bands, so the number and
-    # inputs show how much of the measured codebase is clean without a qualitative label.
+    # #3672: the health score leads; no letter. Health never affects the gate (#1057). Across
+    # six calibration targets health ranged 35.68-70.45, too small a sample for
+    # healthy/fair/poor bands, so the number and inputs show how much of the measured
+    # codebase is clean without a qualitative label.
     health = summary.get("health")
-    if isinstance(health, dict) and health.get("score") is not None:
+    if not (isinstance(health, dict) and health.get("score") is not None):
+        parts.append("<span class='badge health'>%s</span>" % _escape(_health_badge(summary)))
+    else:
         parts.append(
             "<span class='health-help'>"
-            "<span class='badge health'>Health: %s / 100</span>"
+            "<span class='badge health'>%s</span>"
             "<button type='button' class='health-q' aria-label='What is the health score?'>?</button>"
             "<span class='health-pop' role='note'>"
             "<b>Health</b> is the share of the reviewed codebase not under "
@@ -593,20 +585,23 @@ def _render_header(report):
             "Each finding contributes its weight multiplied by the lines it spans%s, "
             "so a wide CRITICAL costs far more than a one-line LOW."
             "<span class='hp-note'>Counts gate-eligible findings only &mdash; "
-            "rejected and unverified ones do not drag it down. It is reported "
-            "beside the grade but <b>never affects the gate</b>: the letter grade "
-            "is a worst-severity rollup and stays the pass/fail signal, while "
+            "rejected and unverified ones do not drag it down. It "
+            "<b>never affects the gate</b>: the gate is the pass/fail signal and "
+            "keys on the severity of confirmed findings, while "
             "health shows how localised the damage is. There are deliberately no "
             "healthy/fair/poor bands yet &mdash; too few measured codebases to "
             "draw thresholds honestly.</span>"
             "</span></span>" % (
-                _escape(str(health["score"])),                      # badge
+                _escape(_health_badge(summary)),                    # badge
                 _escape("{:,}".format(health.get("total_loc", 0))),
                 _escape("{:,}".format(health.get("weighted_defect", 0))),
                 _escape(str(health["score"])),                      # popover
                 _escape(" (at most %s)" % cap if isinstance(cap := health.get("span_cap"), int) else "")))
-    parts.append("</div>")
-    # #3528: this stays in the header, beside every displayed letter/score.
+    parts.extend([
+        f"<span class='badge {_severity_class(summary.get('risk_level', 'INFO') or 'unknown')}'>Risk: {_escape(summary.get('risk_level', '-') or 'unknown')}</span>",
+        f"<span class='badge {_gate_class(summary.get('gate', 'OFF'))}'>Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>",
+        "</div>"])
+    # #3528: this stays in the header, beside every displayed score.
     # Older report envelopes remain renderable and say why no basis exists.
     parts.append("<div class='health-basis'>%s</div>" % _escape(
         health_basis.rendered_note(health)))
@@ -620,11 +615,14 @@ def _render_header(report):
             for sentence in integrity_messages.sinking_sentences(meta.get("integrity")))
         parts.append("<div class='not-certified'>NOT CERTIFIED &mdash; %s%s</div>"
                      % (_escape(note), details))
-    elif (summary.get("provisional_grade") and not summary.get("overall_grade")
-          and summary.get("coverage_note")):
-        # #1495: certified coverage, letter held back (a non-default scan profile).
-        parts.append("<div class='provisional-grade'>%s</div>"
+    elif render_mod.held_back(summary) and summary.get("coverage_note"):
+        # #1495: certified coverage, result held back (a non-default scan profile).
+        parts.append("<div class='provisional-health'>%s</div>"
                      % _escape(summary["coverage_note"]))
+    elif render_mod.coverage_note_text(summary):
+        # #3672 (from #3648): a certified run's note, which only the JSON showed.
+        parts.append("<div class='coverage-note'>Coverage note: %s</div>"
+                     % _escape(tool_base.inert_text(render_mod.coverage_note_text(summary))))
     # #3667: the JSON report beside this page was split; say where its findings sit.
     split = render_mod.parts_line(report)
     if split:
@@ -993,15 +991,17 @@ def _suppressed_rows(value):
             and not isinstance(n, bool) and n > 0]
 
 
+_UNPINNED_BLOCK = ("<div class='coverage'>Unpinned requirements (<code>%s</code>): %s. These "
+                   "are not findings: pin the requirement to have it audited</div>")
+
+
 def _render_unpinned(meta):
     """#3749: the advisories a scanner matched against a version nobody has, per
     manifest. The sentences are `synth.render.unpinned_rows`', so the page and the
     terminal say the same thing; everything in them is escaped here."""
     rows = render_mod.unpinned_rows((meta.get("coverage") or {}).get("tools_unpinned"))
-    return "".join(
-        "<div class='coverage'>Unpinned requirements (<code>%s</code>): %s. These are not "
-        "findings: pin the requirement to have it audited</div>"
-        % (html.escape(tool), html.escape(sentence)) for tool, sentence in rows)
+    return "".join(_UNPINNED_BLOCK % (html.escape(tool), html.escape(sentence))
+                   for tool, sentence in rows)
 
 
 def _render_context_not_gated(meta):
@@ -1013,8 +1013,8 @@ def _render_context_not_gated(meta):
         return ""
     total = sum(n for _rule, n in rows)
     return ("<div class='coverage'>Not counted toward the gate: %d scanner finding%s in a "
-            "test path or dev-only manifest %s reported and not counted toward the gate, "
-            "grade or health (%s). <code>--security redteam</code> counts those that are "
+            "test path or dev-only manifest %s reported and not counted toward the gate "
+            "or health (%s). <code>--security redteam</code> counts those that are "
             "CRITICAL or secret-class</div>"
             % (total, "" if total == 1 else "s", "is" if total == 1 else "are",
                "; ".join("<code>%s</code>: %d" % (html.escape(rule), n) for rule, n in rows)))
@@ -1034,7 +1034,7 @@ def _render_suppressed_gated_tools(meta):
     return ("<div class='coverage'>Tool findings suppressed but GATED: %s "
             "&mdash; withheld from the report body by controlled source-scope "
             "rules, and counted toward <strong>this run's</strong> gate, "
-            "risk level and health grade anyway "
+            "risk level and health anyway "
             "(<code>--security redteam</code>, and CRITICAL or secret-class "
             "per #1578 policy C). A gate verdict here may rest on "
             "findings this report does not list</div>"
@@ -1130,7 +1130,7 @@ def _render_compare_summary(label, report):
 {"".join("<div class='gate-notice' role='alert'>%s</div>" % _escape(notice)
          for notice in config_schema.gate_notices(summary, meta.get("config")))}
 <div class="badges">
-<span class="badge grade">{_escape(_grade_badge(summary))}</span>
+<span class="badge health">{_escape(_health_badge(summary))}</span>
 <span class="badge {_severity_class(summary.get('risk_level', 'INFO') or 'unknown')}">Risk: {_escape(summary.get('risk_level', '-') or 'unknown')}</span>
 <span class="badge {_gate_class(summary.get('gate', 'OFF'))}">Gate: {_escape(summary.get('gate', 'OFF'))}{_gate_mode_label(meta)}</span>
 </div>

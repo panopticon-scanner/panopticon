@@ -523,10 +523,13 @@ class TestUnansweredBackupsHoldTheLetterBack(unittest.TestCase):
     def test_the_terminal_and_html_name_the_backups(self):
         r = _build(self.ALL_FAILED)
         text = render_mod.render_summary(r)
-        self.assertIn("**Grade:** S (provisional; 5 backup advisors unanswered)", text)
+        score = r["summary"]["health"]["score"]       # #3672: beside the score
+        self.assertIn("**Health:** %s / 100 (provisional; 5 backup advisors unanswered)" % score,
+                      text)
         self.assertIn("**Coverage:** NOT CERTIFIED — 5 backup advisors unanswered", text)
         page = html_report.render(r)
-        self.assertIn("Grade: S (provisional; 5 backup advisors unanswered)", page)
+        self.assertIn("Health: %s / 100 (provisional; 5 backup advisors unanswered)" % score,
+                      page)
         self.assertIn("NOT CERTIFIED &mdash; 5 backup advisors unanswered", page)
 
     def test_the_block_matches_the_report_schema(self):

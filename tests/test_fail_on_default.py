@@ -191,11 +191,11 @@ class TestTurningTheGateOffIsLoud(_Synthesized):
         self.assertEqual({"disabled_by_operator": True, "source": "--fail-on off"},
                          report["summary"]["gate_disabled"])
 
-    def test_the_terminal_summary_says_it_before_the_grade(self):
+    def test_the_terminal_summary_says_it_before_the_headline(self):
         _code, _report, terminal, _page = self._off()
         lines = terminal.splitlines()
         notice = lines.index("**%s**" % OFF_NOTICE)
-        grade = next(n for n, line in enumerate(lines) if line.startswith("**Grade:**"))
+        grade = next(n for n, line in enumerate(lines) if line.startswith("**Health:**"))
         self.assertLess(notice, grade)
         self.assertIn("**Gate:** OFF", lines[grade])
 
@@ -342,11 +342,11 @@ class TestACommittedOffIsRefusedLoudly(_Synthesized):
                          report["meta"]["config"]["refused"])
         self.assertTrue(cs.gate_off_refused(report["meta"]["config"]))
 
-    def test_the_terminal_summary_says_it_before_the_grade(self):
+    def test_the_terminal_summary_says_it_before_the_headline(self):
         _code, _report, terminal, _page = self._committed_off()
         lines = terminal.splitlines()
         notice = lines.index("**%s**" % REFUSED_NOTICE)
-        grade = next(n for n, line in enumerate(lines) if line.startswith("**Grade:**"))
+        grade = next(n for n, line in enumerate(lines) if line.startswith("**Health:**"))
         self.assertLess(notice, grade)
         self.assertNotIn("GATE DISABLED", terminal)
 
@@ -397,7 +397,7 @@ class TestRenderingAnOlderReport(unittest.TestCase):
 
     def test_an_armed_report_without_the_field_is_still_silent(self):
         self.assertNotIn("GATE", render_mod.render_summary(self._report("PASS")).split(
-            "**Grade:**")[0])
+            "**Health:**")[0])
         self.assertNotIn("gate-notice'", html_report._render_header(self._report("PASS")))
 
 

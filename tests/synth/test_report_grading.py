@@ -224,13 +224,18 @@ class TestSeverityCapOverTheBandGrade(unittest.TestCase):
                 self.assertEqual(letter, grading_mod.health_grade(r["summary"]["health"]["score"]))
                 self.assertIsNone(r["summary"]["grade_cap"])
 
-    def test_the_cap_shows_in_the_terminal_and_html_summaries(self):
+    def test_the_cap_stays_in_the_json_and_is_not_shown(self):
+        # #3672: the cap is about the letter. A person is shown the score, and Risk names
+        # the worst confirmed severity.
         r = _graded_report([], confirmed=[_at_line("AG-001", "CRITICAL")])
-        self.assertIn("**Grade:** D (capped from A by 1 confirmed CRITICAL)",
-                      render_mod.render_summary(r))
+        self.assertEqual("capped from A by 1 confirmed CRITICAL", r["summary"]["grade_cap"]["note"])
+        score = r["summary"]["health"]["score"]
         import scripts.html_report as html_report
-        self.assertIn("Grade: D (capped from A by 1 confirmed CRITICAL)",
-                      html_report.render(r))
+        for text in (render_mod.render_summary(r), html_report.render(r)):
+            self.assertNotIn("capped from", text)
+        self.assertIn("**Health:** %s / 100  **Risk:** CRITICAL" % score,
+                      render_mod.render_summary(r))
+        self.assertIn("Health: %s / 100<" % score, html_report.render(r))
 
     def test_per_group_grades_are_already_severity_bound(self):
         # A group's panel grade is the max-severity rollup of its own gate-eligible
@@ -284,8 +289,10 @@ class TestSeverityCapReadsTheGatePopulation(unittest.TestCase):
         self.assertEqual("D", summary["provisional_grade"])
         self.assertEqual(("A", "D"), (summary["grade_cap"]["band_grade"],
                                       summary["grade_cap"]["grade"]))
-        self.assertIn("D (provisional; capped from A by 1 confirmed CRITICAL)",
-                      render_mod.render_summary(r))
+        # #3672: the score is shown provisional; the capped letter is the JSON's.
+        self.assertIn("**Health:** %s / 100 (provisional)  **Risk:** CRITICAL"
+                      % summary["health"]["score"], render_mod.render_summary(r))
+        self.assertNotIn("capped from", render_mod.render_summary(r))
 
     def test_a_capped_report_matches_the_report_schema(self):
         import copy
@@ -363,19 +370,20 @@ class TestSeverityCapUnits(unittest.TestCase):
                 self.assertEqual(expected != band, disclosure is not None)
         self.assertEqual(("A", None), grading_mod.apply_severity_cap("A", None))
 
-    def test_the_text_surfaces_carry_the_band_and_the_cap(self):
+    def test_the_text_surfaces_carry_the_score_and_neither_the_band_nor_the_cap(self):
+        # #3672: the same four summaries, which used to read "D (capped from A by ...)".
         cap = {"band_grade": "A", "grade": "D", "severity": "CRITICAL", "count": 2,
                "note": "capped from A by 2 confirmed CRITICAL"}
+        health = {"score": 63.2}
         import scripts.html_report as html_report
-        for summary, terminal, badge in (
-                ({"overall_grade": "D", "grade_cap": cap},
-                 "D (capped from A by 2 confirmed CRITICAL)",
-                 "D (capped from A by 2 confirmed CRITICAL)"),
+        for summary, text in (
+                ({"overall_grade": "D", "grade_cap": cap}, "63.2 / 100"),
                 ({"overall_grade": None, "provisional_grade": "D", "grade_cap": cap},
-                 "D (provisional; capped from A by 2 confirmed CRITICAL)",
-                 "D (provisional; capped from A by 2 confirmed CRITICAL)"),
-                ({"overall_grade": "C", "grade_cap": None}, "C", "C"),
-                ({"overall_grade": "C"}, "C", "C")):
+                 "63.2 / 100 (provisional)"),
+                ({"overall_grade": "C", "grade_cap": None}, "63.2 / 100"),
+                ({"overall_grade": "C"}, "63.2 / 100")):
+            summary = dict(summary, health=health)
             with self.subTest(summary=summary):
-                self.assertEqual(terminal, render_mod._grade_text(summary))
-                self.assertEqual(badge, html_report._grade_badge(summary))
+                self.assertEqual(text, render_mod.health_score_text(
+                    summary, render_mod.held_back(summary)))
+                self.assertEqual("Health: " + text, html_report._health_badge(summary))

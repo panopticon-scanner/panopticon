@@ -832,7 +832,7 @@ on Claude hooks, and always uses the return-persist path.
   cell's `group/domain` in the message. The key is ABSENT, not zero, when nothing was lost, so a
   clean run's status is unchanged for everything that already parses it. When EVERY review cell is
   exhausted the status also carries `review_axis_empty: true` and the run exits 1 (#3220): it is
-  still `complete`, and the report is written, but no review cell answered, so its health, grade and
+  still `complete`, and the report is written, but no review cell answered, so its health and
   risk read unknown (risk keeps only the worst tool finding, a lower bound). Before that point, a
   batch whose every self-writing entry came back with a permission denial naming its own `out_file`
   stops the loop with an `error` after that attempt, rather than spending the other two rounds on

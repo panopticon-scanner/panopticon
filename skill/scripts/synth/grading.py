@@ -36,6 +36,18 @@ def grade(findings):
         return "B"
     return "A"
 
+# #3672: the rollup letter back to what it stands for. A person is shown the severity;
+# the report JSON keeps the letter (`panel_grades`) for one release.
+_WORST_SEVERITY = {"F": "CRITICAL", "D": "HIGH", "C": "MEDIUM", "B": "LOW", "A": "none"}
+
+
+def worst_severity_of(letter):
+    """The worst gate-eligible severity a `grade()` letter stands for: CRITICAL, HIGH,
+    MEDIUM, LOW, or "none" (nothing at LOW or above). "unknown" for anything `grade`
+    does not assign, so a damaged report never reads as clean."""
+    return _WORST_SEVERITY.get(letter, "unknown") if isinstance(letter, str) else "unknown"
+
+
 def risk_level(findings):
     """Determine overall risk level (CRITICAL/HIGH/MEDIUM/LOW) from findings."""
     for sev in ("CRITICAL", "HIGH", "MEDIUM"):
@@ -128,7 +140,7 @@ def unaudited_gap(dependency_audit):
 
 # What NOT CERTIFIED says when a gate-relevant gap names no reason of its own.
 GATE_GAP_NOTE = "gate-relevant coverage did not complete"
-PROVISIONAL_PREFIX = "grade provisional: "
+PROVISIONAL_PREFIX = "health provisional: "
 
 
 _VERIFY_CELL_STAGE = re.compile(r"(?:primary|backup)(?:-part[0-9]+)?$")
@@ -401,7 +413,7 @@ def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_abse
                 "computed: %s" % tools_manifest_invalid)
     elif any_incomplete and not gate_relevant_gap:
         tail = sorted(p for p in panels_incomplete if p not in findings_mod.HIGH_VALUE_PANELS)
-        note = ("gate certified; grade provisional — low-value panel(s) incomplete: %s"
+        note = ("gate certified; health provisional — low-value panel(s) incomplete: %s"
                 % ", ".join(tail))
     if custom_profile:
         # #1495 review: the profile reason sits BESIDE any coverage reason, never in its place.
@@ -892,14 +904,6 @@ def _roll_up_to_parent(group_objs, groups_meta, by_panel):
         node["key_findings"] = key_findings[:5]
         node["subgroups"] = subs
     return rolled
-
-def grade_cap_note(summary):
-    """#3652: "capped from A by 2 confirmed CRITICAL" for a summary whose letter the
-    severity cap lowered, else None. One sentence for the terminal and HTML."""
-    cap = summary.get("grade_cap")
-    note = cap.get("note") if isinstance(cap, dict) else None
-    return note if isinstance(note, str) and note else None
-
 
 _GATE_ROLE_NOTE = {
     "contributing": "**FAILS THE GATE**",

@@ -2,6 +2,46 @@
 
 ## Unreleased
 
+- **The letter grade leaves everything a person reads; the health score leads (#3672).** Owner's
+  ruling, 2026-11-23. Measured runs scoring from the mid-30s to 70 all landed on C, D or F, so
+  the letter hid progress and headed nearly every first report with a low mark. Nothing is
+  recomputed: the health score, the gate and certification are what they were.
+  - **Terminal summary:** the headline is `**Health:** 63.2 / 100  **Risk:** HIGH  **Gate:** FAIL`
+    (was `**Grade:** D …  **Risk:** …  **Gate:** …  **Health:** 63.2 / 100`). `**Grade basis:**`
+    is `**Health basis:**` and `**Grade provisional:**` is `**Health provisional:**`.
+  - **HTML report:** no Grade badge; the Health badge is first, in the header and in each
+    `--compare` panel. A report with no score shows `Health: n/a`.
+  - **A held-back result still says so, beside the score,** on the condition the letter used and
+    with the same reasons: `63.2 / 100 (provisional; 145 tool findings unanswered by their
+    advisors)`.
+  - **The cap sentence is gone** ("capped from A by 2 confirmed CRITICAL"). It described the
+    letter; Risk names the worst confirmed severity.
+  - **Groups section:** each panel shows the worst gate-eligible severity
+    (`security CRITICAL / code none`) where it showed an A to F rollup letter.
+  - **New:** a certified run that carries a `coverage_note` prints it as `**Coverage note:**`
+    (terminal) and `Coverage note:` (HTML). Before, only the JSON showed it.
+  - **The JSON keeps the letter for one release.** `summary.overall_grade`, `provisional_grade`,
+    `grade_cap`, `grade_shortfalls` and each group's `panel_grades` are unchanged in name and
+    value. **The letter fields are removed in 5.6**; anything scripted against them should read
+    `summary.health.score`, `summary.gate` and `summary.coverage_certified`.
+  - **Stored sentences reworded.** No key changed, but these string values did, in
+    `summary.coverage_note` and wherever it is printed. Anything matching on the old text:
+    - `grade provisional: <reason>` is now `health provisional: <reason>`;
+    - `gate certified; grade provisional — low-value panel(s) incomplete: …` is now
+      `gate certified; health provisional — low-value panel(s) incomplete: …`;
+    - `no review cell answered: health and grade are unknown, and …` is now
+      `no review cell answered: health is unknown, and …`;
+    - `… A letter is certified only at the default scan settings, …` and
+      `… A letter is certified only when every applicable review area ran, …` now begin
+      `A health score is certified only …`.
+  - **Printed lines reworded:** "not counted toward the gate, grade or health" is "… the gate or
+    health"; "risk level and health grade anyway" is "risk level and health anyway"; the HTML
+    class `provisional-grade` is `provisional-health` and `badge grade` is gone; `synthesize
+    --help` no longer says "grades".
+  - Not in this change: the health bar, the trend since the last run and the next-step list.
+    They follow in their own change once their spec is approved. `devtools/compare_runs.py` and
+    `devtools/matrix_stability.py` still print the letter from the JSON until 5.6.
+
 - **A tree with an ecosystem no auditor ran on is no longer certified (#3700).** A tree whose
   JavaScript lockfile osv-scanner audited, and whose `pyproject.toml` only pip-audit reads and
   only under `--online`, certified offline with PASS: the unaudited ecosystem was named in

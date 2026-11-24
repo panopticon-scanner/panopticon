@@ -2284,7 +2284,7 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
             rc, stdout, stderr = self._run(["--target", "src", "--out", out, fp])
         self.assertEqual(rc, 0)
         self.assertNotIn("artifact invalid", stderr)
-        self.assertIn("Grade:", stdout)
+        self.assertIn("**Health:**", stdout)
 
     def test_duplicate_id_policy_error_remains_recorded_in_the_artifact(self):
         # #3535 review r1: policy stays advisory for the exit code, but its
@@ -2414,7 +2414,7 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         self.assertIn("SEVERE", stderr)
         # The gate/certification story is untouched: a different question,
         # separately answered, still printed.
-        self.assertIn("Grade:", stdout)
+        self.assertIn("**Health:**", stdout)
         self.assertIn("Gate:", stdout)
 
     def test_an_invalid_x0x_artifact_fails_the_run(self):
@@ -2429,7 +2429,7 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         self.assertEqual(rc, 4)
         self.assertIn("artifact invalid:", stderr)
         self.assertIn("report-x0x.json", stderr)
-        self.assertIn("Grade:", stdout)
+        self.assertIn("**Health:**", stdout)
 
     def test_an_invalid_x0x_failure_log_fails_the_run(self):
         import scripts.x0x_report as x0x_report
@@ -2446,7 +2446,7 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
         self.assertEqual(rc, 4)
         self.assertIn("artifact invalid:", stderr)
         self.assertIn("report-x0x-failures.json", stderr)
-        self.assertIn("Grade:", stdout)
+        self.assertIn("**Health:**", stdout)
 
     def test_a_locus_free_gap_is_logged_while_the_rest_of_x0x_is_emitted(self):
         # #2713 revised owner ruling: discard only the unrepresentable finding,

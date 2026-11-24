@@ -109,21 +109,28 @@ class TestCompareParts(unittest.TestCase):
                 self.assertIsNone(render_mod._read_json_report(main))   # not a silent partial
             self.assertIn("incomplete", err.getvalue())
 
-class TestGradeTextRendering(unittest.TestCase):
-    def test_a_letter_renders_bare(self):
-        self.assertEqual(render_mod._grade_text({"overall_grade": "B"}), "B")
+class TestHealthScoreTextRendering(unittest.TestCase):
+    """#3672: the headline states the health score where it stated the letter."""
+    HEALTH = {"health": {"score": 63.2}}
 
-    def test_a_held_letter_renders_provisional(self):
-        self.assertEqual(render_mod._grade_text({"overall_grade": None,
-                                          "provisional_grade": "C"}),
-                         "C (provisional)")
+    def test_a_score_renders_bare(self):
+        summary = dict(self.HEALTH, overall_grade="B")
+        self.assertFalse(render_mod.held_back(summary))
+        self.assertEqual(render_mod.health_score_text(summary, False), "63.2 / 100")
 
-    def test_no_letter_at_all_renders_n_a_not_the_word_none(self):
+    def test_a_held_back_result_renders_provisional(self):
+        summary = dict(self.HEALTH, overall_grade=None, provisional_grade="C")
+        self.assertTrue(render_mod.held_back(summary))
+        self.assertEqual(render_mod.health_score_text(summary, True),
+                         "63.2 / 100 (provisional)")
+
+    def test_no_score_at_all_renders_n_a_not_the_word_none(self):
         # The old two-way format produced "None (provisional)" here, which reads
-        # as a grade rather than as the absence of one.
-        text = render_mod._grade_text({"overall_grade": None, "provisional_grade": None})
-        self.assertNotIn("None", text)
-        self.assertIn("n/a", text)
+        # as a result rather than as the absence of one.
+        for summary in ({"overall_grade": None, "provisional_grade": None},
+                        {"health": {"score": None}}, {"health": "63.2"}):
+            for provisional in (False, True):
+                self.assertEqual(render_mod.health_score_text(summary, provisional), "n/a")
 
 class TestRenderDelta(unittest.TestCase):
     """#449 Task 9: render_summary surfaces summary.delta -- on-diff counts,
@@ -869,7 +876,7 @@ class TestTargetConfigLine(unittest.TestCase):
 
     def test_a_report_without_meta_config_still_renders(self):
         # A pre-Plan-2 report.json re-rendered by a current synthesize.
-        self.assertIn("**Grade:**", render_mod.render_summary(self._report(None)))
+        self.assertIn("**Health:**", render_mod.render_summary(self._report(None)))
 
 
 class TestTheSummaryPrintsNoLiveControlBytes(unittest.TestCase):
@@ -932,7 +939,7 @@ class TestTheSummaryPrintsNoLiveControlBytes(unittest.TestCase):
     def test_every_neutralized_field_is_still_legible_as_evidence(self):
         out = render_mod.render_summary(self._report())
         for expected in (r"# panopticon — /t\x1b[2Karget",        # meta.target
-                         r"- **G\x1b[31mX** — code C",            # groups[].name
+                         r"- **G\x1b[31mX** — code MEDIUM",       # groups[].name (#3672: the severity)
                          r"**ok\x1b[2J\x1b[H** clean **\x07\x00**",  # finding title
                          r"a\x1b[2Kb.py:3",                       # location.file
                          r"`k\x1b[2J: v\x07` refused",            # target config

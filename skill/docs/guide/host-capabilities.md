@@ -379,7 +379,7 @@ carries no Bash-path gap while remaining return-persist.
 
 **The posture is disclosed, and the disclosure is not gating.** An unproven capability does not sink
 `summary.gate`, `summary.coverage_certified` or `meta.integrity.integrity_ok`, and no combination of
-them moves a grade. Claude's read guard, Codex's headless scoped tools and Kimi's per-run-home hook
+them moves the health score. Claude's read guard, Codex's headless scoped tools and Kimi's per-run-home hook
 can prove `read_scope_confined`; other hosts still lack that proof, so the ratchet to gating remains
 a later decision. Two refusals *do* exist and are separate machinery, not this — the shadow-shell
 refusal and the unproven artifact-write-boundary refusal, both under Notes.
@@ -490,7 +490,7 @@ host cleared spec 8.1's bar; D1 retired F5 instead, so the row's presence is no 
 later evidence can reopen. It claims nothing, so every run under it is unenforced and ack-gated
 exactly as described above, and it prints a one-line `NOTICE` to stderr — once per `driver run`
 invocation and once per `driver setup` invocation, from the *resolved* host, so a resumed run that
-omits `--host` prints it too. It is a notice, not a gate: no flag, exit code, grade or gate changes
+omits `--host` prints it too. It is a notice, not a gate: no flag, exit code, health score or gate changes
 because of it. **It remains the path for any host without a family runner**, which is why it is kept.
 Spec 8.1's bar (every remaining driver-selectable host has
 `tool_policy_enforced` and `read_scope_confined` PROVEN; `artifact_write_guard` bridged by

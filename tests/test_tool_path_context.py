@@ -365,7 +365,7 @@ def test_in_standard_mode_it_is_reported_and_the_verdict_does_not_move_the_gate(
     assert confirmed["meta"]["coverage"]["tools_context_not_gated"] == {rule: 1}
     assert rejected["meta"]["coverage"]["tools_context_not_gated"] == {}
     line = ("1 scanner finding in a test path or dev-only manifest is reported and not counted "
-            "toward the gate, grade or health (")
+            "toward the gate or health (")
     assert line + "%s: 1)" % rule in confirmed["_said"]
     assert line + "<code>%s</code>: 1)" % rule in confirmed["_page"]
     for quiet in (rejected["_said"], rejected["_page"]):
@@ -402,7 +402,7 @@ def test_in_redteam_anything_less_there_is_reported_and_not_counted(tmp_path, mo
     assert report["meta"]["coverage"]["tools_context_not_gated"] == {
         "dev-manifest": 1, "test-path": 1}
     line = ("2 scanner findings in a test path or dev-only manifest are reported and not "
-            "counted toward the gate, grade or health (")
+            "counted toward the gate or health (")
     assert line + "dev-manifest: 1; test-path: 1)" in report["_said"]
     assert line + "<code>dev-manifest</code>: 1; <code>test-path</code>: 1)" in report["_page"]
 

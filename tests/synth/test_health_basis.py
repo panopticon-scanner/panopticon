@@ -252,13 +252,16 @@ def test_a_full_review_at_a_custom_cap_carries_its_letter_as_provisional():
     assert custom["health"]["basis"]["profile"] == "custom"
     assert custom["health"]["score"] == default["health"]["score"]
     note = custom["coverage_note"]
-    assert note.startswith("grade provisional: this scan used a non-default group size of 15 "
+    assert note.startswith("health provisional: this scan used a non-default group size of 15 "
                            "files (set by the run's --max-per-group flag; the default is %d)"
                            % DEFAULT_CAP)
     assert "non-default" not in (default["coverage_note"] or "")
-    assert render_mod._grade_text(custom) == "%s (provisional)" % default["overall_grade"]
-    assert html_report._grade_badge(custom) == "%s (provisional)" % default["overall_grade"]
-    assert html_report._grade_badge(default) == default["overall_grade"]
+    # #3672: a person is shown the score, provisional where the letter was.
+    score = "%s / 100" % default["health"]["score"]
+    assert render_mod.held_back(custom) and not render_mod.held_back(default)
+    assert render_mod.health_score_text(custom, True) == score + " (provisional)"
+    assert html_report._health_badge(custom) == "Health: %s (provisional)" % score
+    assert html_report._health_badge(default) == "Health: " + score
 
 
 def test_both_human_outputs_say_why_a_custom_profile_letter_is_provisional():
@@ -270,9 +273,9 @@ def test_both_human_outputs_say_why_a_custom_profile_letter_is_provisional():
             plan=plan_mod.PlanInputs(groups_meta=GROUPS)))
     note = report["summary"]["coverage_note"]
     assert report["summary"]["coverage_certified"] is True
-    assert "**Grade provisional:** " + note in render_mod.render_summary(report)
+    assert "**Health provisional:** " + note in render_mod.render_summary(report)
     header = html_report._render_header(report)
-    assert "<div class='provisional-grade'>" in header and "group size of 15 files" in header
+    assert "<div class='provisional-health'>" in header and "group size of 15 files" in header
     assert "NOT CERTIFIED" not in header
 
 
@@ -356,8 +359,12 @@ def test_a_stored_report_without_the_profile_stamp_keeps_its_stored_letter():
     report["summary"]["health"]["basis"].pop("profile")
     report["summary"]["overall_grade"], report["summary"]["provisional_grade"] = "D", None
     assert validate_schema_mod.schema_errors(report) == []
-    assert "**Grade:** D  **Risk:**" in render_mod.render_summary(report)
-    assert "Grade: D<" in html_report._render_header(report)
+    # #3672: the stored letter stays in the JSON; a person is shown the score, and a
+    # report with a certified letter is not marked provisional.
+    assert report["summary"]["overall_grade"] == "D"
+    score = report["summary"]["health"]["score"]
+    assert "**Health:** %s / 100  **Risk:**" % score in render_mod.render_summary(report)
+    assert "Health: %s / 100<" % score in html_report._render_header(report)
 
 
 def _certified(panels_incomplete, custom):
@@ -375,9 +382,9 @@ def test_a_custom_cap_beside_a_low_value_panel_gap_keeps_both_reasons_once():
     cert = _certified({"docs"}, _custom_run())
     assert (cert["overall_grade"], cert["provisional_grade"], cert["gate"]) == (None, "B", "PASS")
     note = cert["coverage_note"]
-    assert note.startswith("gate certified; grade provisional \u2014 low-value panel(s) "
+    assert note.startswith("gate certified; health provisional \u2014 low-value panel(s) "
                            "incomplete: docs; this scan used a non-default group size of 15")
-    assert note.count("grade provisional") == 1
+    assert note.count("health provisional") == 1
 
 
 def test_a_custom_cap_beside_a_gate_relevant_gap_keeps_the_gate_reason_first():
@@ -386,7 +393,7 @@ def test_a_custom_cap_beside_a_gate_relevant_gap_keeps_the_gate_reason_first():
     assert (cert["provisional_grade"], cert["gate"], cert["coverage_certified"]) == (
         "B", "INCONCLUSIVE", False)
     assert cert["coverage_note"].startswith(
-        grading.GATE_GAP_NOTE + "; grade provisional: this scan used a non-default group size")
+        grading.GATE_GAP_NOTE + "; health provisional: this scan used a non-default group size")
     plain = grading.certify("B", [], "high", {"security"}, [])
     assert plain["coverage_note"] is None          # unchanged without a custom cap
     # and both human outputs show the gate reason, not the group size alone
@@ -400,7 +407,7 @@ def test_a_custom_cap_beside_a_gate_relevant_gap_keeps_the_gate_reason_first():
                 "coverage_note"):
         report["summary"][key] = cert[key]
     header = html_report._render_header(report)
-    assert "NOT CERTIFIED &mdash; " + grading.GATE_GAP_NOTE + "; grade provisional: " in header
+    assert "NOT CERTIFIED &mdash; " + grading.GATE_GAP_NOTE + "; health provisional: " in header
     terminal = render_mod.render_summary(report)
     assert "**Coverage:** NOT CERTIFIED" in terminal and grading.GATE_GAP_NOTE in terminal
     assert "group size of 15 files" in terminal

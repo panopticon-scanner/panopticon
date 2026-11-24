@@ -160,7 +160,7 @@ class TestHtmlReport(unittest.TestCase):
     def test_dashboard_renders_summary(self):
         report = _minimal_report()
         out = hr.render(report)
-        self.assertIn("Grade: A", out)
+        self.assertNotIn("Grade:", out)                 # #3672: the score leads
         self.assertIn("Risk: LOW", out)
         self.assertIn("Gate: PASS", out)
         self.assertIn("<div class='stat-label'>CRITICAL</div>", out)
@@ -937,14 +937,16 @@ class TestHtmlReport(unittest.TestCase):
         out = hr.render(report)
         self.assertIn("Health: 100.0 / 100", out)
 
-    def test_no_health_badge_when_score_is_absent(self):
-        # A score of None now means nothing was reviewed at all (both inputs 0),
-        # so render nothing rather than a misleading "0" or "-".
+    def test_the_health_badge_says_n_a_when_score_is_absent(self):
+        # A score of None now means nothing was reviewed at all (both inputs 0).
+        # #3672: health is the headline, so the badge is there and says n/a, never a
+        # misleading "0" or "-"; the explanation pop-up has no score to explain.
         for health in (None, {"score": None, "total_loc": 0, "weighted_defect": 0}):
             report = _minimal_report()
             report["summary"]["health"] = health
             out = hr.render(report)
-            self.assertNotIn("badge health", out)
+            self.assertIn("<span class='badge health'>Health: n/a</span>", out)
+            self.assertNotIn("/ 100", out)
             # the CSS rule `.health-pop` is always in the stylesheet; assert the
             # ELEMENT is not emitted, not that the token never appears
             self.assertNotIn("<span class='health-pop'", out)
@@ -1312,17 +1314,18 @@ class TestCoverageHonesty(unittest.TestCase):
         out = hr.render(self._report(gate="INCONCLUSIVE", coverage_certified=False))
         self.assertIn("gate-inconclusive", out)  # not the benign gate-off slate
 
-    def test_uncertified_run_shows_banner_and_provisional_grade(self):
+    def test_uncertified_run_shows_banner_and_provisional_score(self):
         out = hr.render(
             self._report(
                 gate="INCONCLUSIVE",
                 coverage_certified=False,
                 coverage_note="tool layer incomplete: semgrep absent",
+                health={"score": 71.0},
             )
         )
         self.assertIn("NOT CERTIFIED", out)
         self.assertIn("tool layer incomplete: semgrep absent", out)
-        self.assertIn("(provisional)", out)
+        self.assertIn("Health: 71.0 / 100 (provisional)", out)     # #3672: was "B (provisional)"
 
     def test_an_unreadable_tools_manifest_is_named_in_the_html(self):
         # #1644: the gate is what the findings say (PASS here), so the banner
@@ -1450,10 +1453,12 @@ class TestCoverageHonesty(unittest.TestCase):
         self.assertEqual([("lib", "ARC")], hr.unreviewed_cells(
             {"coverage": {"cells": {"missing_floor": [("lib", "ARC")]}}}))
 
-    def test_grade_none_never_renders_literal_none(self):
+    def test_a_missing_score_never_renders_literal_none(self):
+        # #490 for the letter ("Grade: -"); #3672: the same for the score that replaced it.
         out = hr.render(self._report(overall_grade=None, coverage_certified=False))
-        self.assertNotIn("Grade: None", out)
-        self.assertIn("Grade: -", out)
+        self.assertNotIn("None", out[out.index("<div class='badges'>"):].split("</div>")[0])
+        self.assertIn("Health: n/a", out)
+        self.assertNotIn("Grade:", out)
 
     def test_certified_pass_run_unchanged(self):
         out = hr.render(self._report())

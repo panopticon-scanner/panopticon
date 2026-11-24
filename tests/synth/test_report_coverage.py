@@ -577,7 +577,7 @@ class TestResumeDisclosure(unittest.TestCase):
                 cost=cost_mod.CostInputs(verify_ledger=ledger),
             ))
 
-    def test_host_cut_short_verify_is_not_certified_on_every_grade_surface(self):
+    def test_host_cut_short_verify_is_not_certified_on_every_headline_surface(self):
         report = self._cut_short_report(outage_mod.HOST_FAILURE)
         summary = report["summary"]
         self.assertFalse(summary["coverage_certified"])
@@ -590,10 +590,10 @@ class TestResumeDisclosure(unittest.TestCase):
         self.assertIn("re-run the same command", note)
 
         terminal = render_mod.render_summary(report)
-        self.assertIn("**Grade:**", terminal)
+        self.assertIn("**Health:**", terminal)
         self.assertIn(note, terminal)
         html = html_report_mod.render(report)
-        self.assertIn("Grade:", html)
+        self.assertIn("Health:", html)
         self.assertIn("NOT CERTIFIED", html)
         self.assertIn("1 verify cell", html)
         self.assertIn("2 tool-advisor entries", html)

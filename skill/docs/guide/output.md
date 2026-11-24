@@ -1,5 +1,17 @@
 ## Output
-Terminal markdown summary + JSON artifact at `--out`. CI gate key: `summary.gate` (`PASS` / `FAIL` /
+Terminal markdown summary + JSON artifact at `--out`.
+**What a person reads leads with the health score, and shows no letter grade (#3672, owner's
+ruling 2026-11-23).** The terminal summary's headline is
+`**Health:** 63.2 / 100  **Risk:** HIGH  **Gate:** FAIL`, and the HTML report's first badge is the
+same score. A result that is held back says so beside the score, with each reason:
+`**Health:** 63.2 / 100 (provisional; 145 tool findings unanswered by their advisors)`. A report
+with no score reads `**Health:** n/a`, and the health line below says why. The Groups section
+shows, per panel, the worst gate-eligible severity (`security CRITICAL / code none`), where it
+showed an A to F rollup letter. A certified run that carries a `coverage_note` prints it as
+`**Coverage note:**`. The letter fields stay in the JSON for one release, with the values they
+had (`summary.overall_grade`, `provisional_grade`, `grade_cap`, and each group's
+`panel_grades`), and are removed in 5.6. The paragraphs below that speak of "the letter" describe
+those JSON fields. CI gate key: `summary.gate` (`PASS` / `FAIL` /
 `OFF` / `INCONCLUSIVE`). `INCONCLUSIVE` means gate-relevant coverage did not complete (a high-value
 panel ran partial, a scout-requested tool produced no output, or an integrity check fired — an
 undeclared or content-substituted findings file, which on the driver path is caught by the driver's
@@ -31,14 +43,15 @@ exists. Consumers should key certification on `summary.gate` and `summary.covera
 on `overall_grade` alone — a tool-only coverage gap yields `INCONCLUSIVE` with a real grade still
 attached. The letter is the health band with a severity cap on top (#3652): a confirmed CRITICAL
 caps it at D and a confirmed HIGH at B, so an A never sits beside an open confirmed CRITICAL. The
-cap only lowers; `summary.grade_cap` carries the band letter and the cap that lowered it, and the
-terminal and HTML grade say "D (capped from A by 2 confirmed CRITICAL)". Confirmed means the
+cap only lowers; `summary.grade_cap` carries the band letter and the cap that lowered it. The
+terminal and the HTML no longer print the letter or its cap (#3672); Risk names the worst
+confirmed severity. Confirmed means the
 default gate's population (`tool_confirmed`, `advisor_confirmed` or `backup_scope_limited`) under
 every gate policy, so an unconfirmed finding never caps, even under `--gate-unverified`.
 Per-group panel grades are already the max-severity rollup of the group's own gate-eligible
 findings, so they need no cap.
 When `meta.coverage.resume` shows pending work in either phase, the terminal summary also
-prints a `**Resume:**` line (fan-out/verify done vs. total) directly under the Grade/Gate line; a
+prints a `**Resume:**` line (fan-out/verify done vs. total) directly under the Health/Risk/Gate line; a
 fully-complete or resume-absent run prints no such line, so a resumed run never reads as a fresh
 full scan. Every `meta.integrity` key that sinks certification is also NAMED on that summary, as an
 `**Integrity:**` line saying what the key measured and that the run is not certified (#1761):
@@ -80,8 +93,9 @@ main file carries what matters most. `meta.coverage.tool_axis.by_tool` reconcile
 whose advisor never answered stays in the report as `tool_reported` (not gate-eligible), and the
 letter is held back, as it is for an owed agent claim no verify advisor answered (when every verify
 launch fails, nothing is confirmed and health alone would read S): `overall_grade` is null,
-`provisional_grade` carries it, and `summary.grade_shortfalls` names why ("D (provisional; 145
-tool findings unanswered by their advisors)"). That list is one shared rule: any reason in it
+`provisional_grade` carries it, and `summary.grade_shortfalls` names why (the terminal and the
+HTML read "63.2 / 100 (provisional; 145 tool findings unanswered by their advisors)"). That
+list is one shared rule: any reason in it
 holds the letter back, sinks `coverage_certified`, moves a PASS gate to INCONCLUSIVE and is named
 in `coverage_note`. The shortfall's "N tool findings" counts the queued tool-sourced findings owed a
 verdict that got none; `tool_axis.unanswered` counts every `tool_reported` finding, which also
@@ -215,14 +229,15 @@ SCA tool produced output on an applicable tree".
 An ecosystem that is `needs_online` or `not_run` stops certification (#3700), even when another
 ecosystem's auditor answered: an auditor reads its file and did not run, so part of the tree's
 dependencies went unaudited. Coverage is NOT CERTIFIED, a PASS gate becomes INCONCLUSIVE (exit 2)
-and the letter stands, as for a missing scanner or the whole-tree gap; a FAIL stays FAIL.
+and the result is not held back (in the JSON the letter stands), as for a missing scanner or the
+whole-tree gap; a FAIL stays FAIL.
 `tools_manifest.UNAUDITED_UNCERTIFIED` is the one list of those reasons. The visible change: an
 offline run of a tree with a JavaScript lockfile and a `pyproject.toml` is now INCONCLUSIVE until
 it runs with `--online`, where it used to PASS with a note only the JSON showed.
 `no_auditable_file` is still disclosure only and moves neither the gate nor `coverage_certified`:
 the target gives no auditor anything to read. When the tree otherwise certifies, that sentence is
-the only sign: read `coverage_note` in the JSON, since the terminal and the HTML show it only
-beside NOT CERTIFIED or a provisional letter.
+the only sign, and since #3672 a person sees it: a certified run prints its `coverage_note` as a
+`**Coverage note:**` line in the terminal summary and a `Coverage note:` line in the HTML.
 `security_gate.py`, the CI gate over raw scanner output, does not read this receipt: neither this
 rule nor the whole-tree one applies there (#3791).
 `meta.coverage.scanner_config_excluded` (#3708) names the scanner's own root config file, which a
