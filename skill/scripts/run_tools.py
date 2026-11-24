@@ -15,7 +15,7 @@ if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
     import runpy
     runpy.run_path(os.path.join(os.path.dirname(os.path.realpath(__file__)), "_bootstrap.py"))
 from scripts import groups_schema
-from scripts import app_trace, executable, tools_image
+from scripts import advisory_data, app_trace, executable, tools_image
 from scripts import language_detection
 from scripts.tools import ADAPTERS, ONLINE_ONLY, withhold_target_builds
 from scripts.tools import egress
@@ -216,6 +216,33 @@ def docker_available(image=None, runner=None, target=None):
         print("docker probe for image %r failed: %s: %s"
               % (image, type(e).__name__, e), file=sys.stderr)
         return False
+
+
+def read_advisory_data(target, image, runner=None):
+    """How old the image's advisory data is, as the manifest's `advisory_data` (#3798).
+
+    One short launch of the image that prints the file its build recorded
+    (`advisory_data.read_argv`: no network, read-only, nothing mounted, the scanners'
+    own privilege drop). It can never fail the scan: a launch that cannot start, times
+    out or exits non-zero, and a file that is absent or not the recorder's, all read as
+    every source unknown, which the report then says."""
+    runner = runner or subprocess.run
+    try:
+        resolved = executable.resolve("docker", target, os.environ.get("PATH", ""))
+        env = executable.sanitize_startup_environment(os.environ)
+        env["PATH"] = resolved.path_env
+        done = runner(advisory_data.read_argv(resolved.path, image,
+                                              scanner_config.privilege_drop_flags()),
+                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                      timeout=advisory_data.READ_TIMEOUT, env=env)
+        return advisory_data.from_launch(getattr(done, "returncode", None),
+                                         getattr(done, "stdout", None))
+    except executable.TargetPathEntry:
+        raise           # #3270: a docker inside the target halts, here as everywhere
+    except (OSError, subprocess.SubprocessError, executable.ExecutableResolutionError) as exc:
+        print("run_tools: the image's advisory-data dates could not be read (%s); "
+              "reported as unknown" % type(exc).__name__, file=sys.stderr)
+        return advisory_data.from_launch(None, None)
 
 
 def detect_languages(target, skipped=None):
@@ -855,7 +882,8 @@ def main(argv=None):
             language_detection_skips=language_detection_skips, image=image, apps=apps,
             dependency_applicable=tools_manifest.dependency_audit_applicable(a.target),
             dependency_unaudited=tools_manifest.dependency_audit_unaudited(
-                a.target, effective, a.online))
+                a.target, effective, a.online),
+            advisory_data=read_advisory_data(a.target, image["id"]))
     print("\n".join(paths))
     return 0
 

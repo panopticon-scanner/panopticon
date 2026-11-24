@@ -164,6 +164,11 @@ a project, and the target's own `skill/` to test changes to panopticon itself.
   starts a whole-repository run. To review less than the whole repository, scope with `-f`, `-d`,
   `-g` or `--files`. If the user asks for a PR or diff review, say that panopticon does not do
   one, and offer a whole-repository review or a scoped one.
+- **Show the run's `warnings` before you dispatch.** A status may carry a `warnings` list: for
+  example, that the advisory data in the tools image is older than 7 days, so newer advisories
+  will not be reported (#3798). Show each warning to the operator before you dispatch any agent.
+  A warning does not stop the run: go on unless the operator stops it (they can refresh the
+  image and re-run with `--reset`).
 - **Session mode on Claude Code is templated, never ad hoc.** Dispatch the printed batch with the
   shipped workflow: `Workflow({scriptPath: "skill/workflows/dispatch.js", args: {checkpoint,
   entries}})`, `entries` being the request's entries reduced to `id, agent, enforced, model,

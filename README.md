@@ -79,6 +79,14 @@ If you would rather build than pull, the build compiles several scanners from pi
 docker build -t panopticon-tools .
 ```
 
+The scanners run offline against advisory data frozen in the image when it was built (NVD, OSV, Trivy, RustSec, ruby-advisory-db), so a scan can only report an advisory that data already held. The report says how old each source was (`Advisory data: NVD 2026-11-23, OSV 2026-11-23, …`), and a run warns before it dispatches any agent when a source is older than 7 days or its date cannot be read. The published image is rebuilt daily, so pulling it again is the refresh. A local build reuses its cached data layers and the NVD data pinned in the `Dockerfile` unless told otherwise; to refresh one:
+
+```bash
+docker build --build-arg ASSET_REFRESH="$(date -u +%F)" \
+  --build-arg NVD_DATA_REF="ghcr.io/panopticon-scanner/panopticon-tools-nvd:dc-$(sed -n 's/^ARG DEPENDENCY_CHECK_VERSION=//p' Dockerfile)" \
+  -t panopticon-tools .
+```
+
 Without the image, `driver readiness` fails closed and says so; re-run with `--no-tools` to review agent-only. That choice is recorded in the report, so it is never silent.
 
 ### Kimi Code CLI

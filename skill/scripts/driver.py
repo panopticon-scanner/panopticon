@@ -629,7 +629,19 @@ def _run_held(args, runner, phases, review_root):
         result = _complete_message(result, review_root, manifest)
         if result.get("status") == "error":
             return result
-    return synthesize.complete_status(result, review_root, manifest)
+    return _with_warnings(synthesize.complete_status(result, review_root, manifest), review_root)
+
+
+def _with_warnings(status, review_root):
+    """`status` with this run's readiness warnings as `warnings` (#3798), on a checkpoint
+    and on `complete` alike, so the host sees them before its first dispatch and again
+    at the end. Added only when there are any: every other status is unchanged. Reading
+    them cannot turn a status into an error; an artifact that cannot be read has none."""
+    try:
+        found = readiness.warnings(review_root)
+    except (runio.DriverError, ValueError, OSError):
+        return status
+    return dict(status, warnings=found) if found else status
 
 
 def parse_cli(argv=None):

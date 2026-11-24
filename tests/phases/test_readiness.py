@@ -478,6 +478,131 @@ class TestMatrixRowNamesTheResolvedConfig(unittest.TestCase):
         self.assertIn("fix it or re-run `driver setup`", row["detail"])
 
 
+
+class TestAdvisoryDataIsAskedBeforeTheFirstDispatch(_ReadinessCase):
+    """#3798: the scanners run offline against data frozen in the tools image. How old it
+    is gets asked at readiness, which is before `coverage` dispatches the first scout,
+    and a stale or unreadable answer is a WARNING the status carries: never a refusal."""
+
+    FILE = ('{"schema_version": 1, "recorded_at": "%(d)sT06:10:00Z", "sources": {'
+            '"nvd": {"last_modified": "%(d)sT03:59:10Z"}, "trivy": {"updated_at": "%(d)sT02:00:00Z"}, '
+            '"osv": {"ecosystems": {"npm": "%(d)sT06:05:11Z", "PyPI": "%(d)sT06:05:11Z", '
+            '"Go": "%(d)sT06:05:11Z", "RubyGems": "%(d)sT06:05:11Z", "crates.io": "%(d)sT06:05:11Z", '
+            '"Maven": "%(d)sT06:05:11Z"}}, '
+            '"rustsec": {"downloaded_at": "%(d)sT06:04:00Z"}, "ruby": {"downloaded_at": "%(d)sT06:04:30Z"}}}')
+
+    def _run(self, read, *flags):
+        d = self._repo()
+        launches = []
+
+        def runner(cmd, **_kw):
+            if list(cmd[:2]) == ["docker", "run"]:
+                launches.append(list(cmd))
+                answer = _Probe(0 if read is not None else 1)
+                answer.stdout = read or ""
+                return answer
+            return _Probe(0)
+        err = io.StringIO()
+        with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER", runner), contextlib.redirect_stderr(err):
+            status = driver.run(self._args(d, *flags))
+        return d, status, launches, err.getvalue()
+
+    def test_current_data_is_a_passing_row_and_the_status_has_no_warnings(self):
+        import datetime
+        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        d, status, launches, err = self._run(self.FILE % {"d": today})
+        self.assertEqual(status["checkpoint"], "scout", status)
+        self.assertNotIn("warnings", status)
+        row = self._rows(d)["advisory-data"]
+        self.assertIs(row["ok"], True)
+        self.assertEqual(row["detail"], "NVD %s, OSV %s, Trivy %s, RustSec %s, ruby-advisory-db %s"
+                         % ((today,) * 5))
+        self.assertNotIn("advisory-data", err)
+        self.assertEqual(1, len(launches))                    # one launch, at readiness
+        self.assertEqual(launches[0][:6], ["docker", "run", "--rm", "--network", "none", "--read-only"])
+        self.assertNotIn(d, " ".join(launches[0]))            # the target is not mounted
+
+    def test_stale_data_warns_on_stderr_and_on_the_first_checkpoint_and_the_run_goes_on(self):
+        d, status, _launches, err = self._run(self.FILE % {"d": "2020-01-01"})
+        self.assertEqual(status["checkpoint"], "scout", status)    # not refused
+        self.assertEqual(status["status"], "checkpoint")
+        (warning,) = status["warnings"]
+        self.assertTrue(warning.startswith(
+            "[advisory-data] advisory data is older than 7 days or of unknown age: NVD 2020-01-01 ("))
+        self.assertIn("it does not change the gate or certification", warning)
+        self.assertIn("readiness: WARN " + warning, err)
+        row = self._rows(d)["advisory-data"]
+        self.assertEqual((row["ok"], row["level"]), (None, "warn"))
+        self.assertTrue(self._readiness_json(d)["ready"])
+
+    def test_an_image_with_no_file_reads_unknown_and_warns(self):
+        _d, status, _launches, err = self._run(None)
+        self.assertEqual(status["checkpoint"], "scout", status)
+        self.assertIn("NVD unknown; OSV unknown; Trivy unknown; RustSec unknown; "
+                      "ruby-advisory-db unknown", status["warnings"][0])
+        self.assertIn("readiness: WARN [advisory-data]", err)
+
+    def test_an_absent_image_is_refused_as_before_and_nothing_is_launched(self):
+        d = self._repo()
+        launches = []
+
+        def runner(cmd, **_kw):
+            if list(cmd[:2]) == ["docker", "run"]:
+                launches.append(list(cmd))
+            return _Probe(1 if list(cmd[:3]) == ["docker", "image", "inspect"] else 0)
+        with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER", runner), \
+                contextlib.redirect_stderr(io.StringIO()):
+            status = driver.run(self._args(d))
+        self.assertEqual(status["status"], "error", status)
+        self.assertEqual([], launches)                        # no image: nothing to launch
+        row = self._rows(d)["advisory-data"]
+        self.assertEqual((row["ok"], row["detail"]),
+                         (None, "not read: the tools image is not available"))
+        self.assertNotIn("level", row)
+        self.assertNotIn("advisory", status["message"])       # the refusal names the image only
+
+    def test_bytes_that_are_not_text_in_the_image_file_warn_and_do_not_fail_the_run(self):
+        """#3802 seat review. The launch's output was read as text, so one byte that is not
+        UTF-8 raised out of the read, the run ended `error` before `readiness.json` was
+        written, and every re-run failed the same way. Through a REAL child process here,
+        because the decoding that raised is `subprocess`'s own."""
+        import subprocess
+        import sys
+        d = self._repo()
+        script = "import sys; sys.stdout.buffer.write(b'{\"schema_version\": 1, \xff\xfe')"
+
+        def runner(cmd, **kw):
+            if list(cmd[:2]) == ["docker", "run"]:
+                return subprocess.run(["env", sys.executable, "-c", script], **kw)
+            return _Probe(0)
+        err = io.StringIO()
+        with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER", runner), contextlib.redirect_stderr(err):
+            status = driver.run(self._args(d))
+        self.assertEqual(status["checkpoint"], "scout", status)      # the run goes on
+        self.assertIn("NVD unknown; OSV unknown; Trivy unknown", status["warnings"][0])
+        self.assertTrue(self._readiness_json(d)["ready"])
+        self.assertEqual("warn", self._rows(d)["advisory-data"]["level"])
+        self.assertNotIn("Traceback", err.getvalue())
+
+    def test_no_tools_reads_nothing_and_warns_nothing(self):
+        d, status, launches, err = self._run(self.FILE % {"d": "2020-01-01"}, "--no-tools")
+        self.assertEqual(status["checkpoint"], "scout", status)
+        self.assertNotIn("warnings", status)
+        self.assertEqual([], launches)
+        self.assertIsNone(self._rows(d)["advisory-data"]["ok"])
+        self.assertNotIn("advisory-data", err)
+
+    def test_a_resumed_run_carries_the_warning_again_without_reading_again(self):
+        d, _status, launches, _err = self._run(self.FILE % {"d": "2020-01-01"})
+        self.assertEqual(1, len(launches))
+        with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER",
+                        mock.Mock(side_effect=AssertionError("readiness is done"))), \
+                contextlib.redirect_stderr(io.StringIO()):
+            again = driver.run(self._args(d))
+        self.assertEqual(again["checkpoint"], "scout", again)
+        self.assertTrue(again["warnings"][0].startswith("[advisory-data] "))
+
+
 if __name__ == "__main__":
     unittest.main()
 

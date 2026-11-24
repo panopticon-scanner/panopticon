@@ -304,6 +304,8 @@ groups:
       match:
       - requirements-tools.txt
       - tools-image/**
+      # #3798: the reader of the dates the image build records (`tools-image/advisory-data`).
+      - skill/scripts/advisory_data.py
       - devtools/bump_pins.py
       - devtools/dockerfile_args.py
       - devtools/pin_requirements.py
@@ -318,6 +320,7 @@ groups:
       - tests/test_dockerfile_closures.py
       - tests/test_dockerfile_args.py
       - tests/test_semgrep_rule_corrections.py
+      - tests/test_advisory_data.py
       - tests/test_bump_pins.py
       - tests/test_report_pin_bump.py
       - tests/test_issue_bot.py
