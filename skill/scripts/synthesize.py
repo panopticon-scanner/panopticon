@@ -64,7 +64,7 @@ def build_parser():
     ap = argparse.ArgumentParser(description="panopticon synthesizer")
     ap.add_argument("--target", default="unknown")
     ap.add_argument("--root", metavar="PATH", default=None,
-                    help="Filesystem root for LOC grading (defaults to an existing "
+                    help="Filesystem root for the health score's line count (defaults to an existing "
                          "--target, else the --tools-dir repository ancestor)")
     ap.add_argument("--groups", metavar="PATH")
     ap.add_argument("--security", choices=["standard", "redteam"], default=None,
@@ -171,7 +171,7 @@ def build_parser():
                     help="Pass 2: ingest advisor verdict files from DIR")
     ap.add_argument("--gate-unverified", action="store_true",
                     help="Let corroborated/needs_more_info/unverified findings "
-                         "drive grades and the gate")
+                         "drive health and the gate")
     ap.add_argument("--max-verify", type=int, default=None, metavar="N",
                     help="Cap the verify queue at the top-priority N entries "
                          "(pass the same value to both passes)")

@@ -71,7 +71,7 @@ disclosed caps below) and **evidence.status** (how hard the claim was verified):
 requirements-file entry that has no `==` pin as version `0.0.0`, and every advisory whose range
 starts at zero then matches. Such a match is not a claim about an installed version, so it is not a
 finding: it is not in `findings[]` or `discarded_claims`, it is never put to an advisor, and the
-gate, grade and health read as if the scanner had not said it. The report says what was left out,
+gate and health read as if the scanner had not said it. The report says what was left out,
 per manifest, in `meta.coverage.tools_unpinned` and in one line of the summary and the HTML page:
 the packages, the number of advisories, and up to 20 advisory ids with the rest counted.
 Certification is unchanged.
@@ -113,7 +113,7 @@ rejected in others and that verdict decided the gate. The controller now states 
 The advisor is told this as settled and judges only whether the claim is true of what is at the
 location. The rule for the gate (owner's ruling, 2026-11-23):
 - In `--security standard` a finding with `path_context` is reported and not gate-eligible: it is
-  out of the gate, the grade and health, whatever the advisor's verdict.
+  out of the gate and health, whatever the advisor's verdict.
 - In `--security redteam` it gates only when CRITICAL or secret-class, through
   `ingest_tools.gates_when_suppressed` itself (#1578 policy C), not a copy.
 
@@ -125,7 +125,7 @@ test path is not covered by this rule: when a reviewer raises a claim at the sam
 scanner finding the two stay separate rows, the scanner's with its mark and the reviewer's standing
 on its own verdict.
 
-Grades and the CI gate count `tool_confirmed`/`advisor_confirmed` findings, plus
+Health and the CI gate count `tool_confirmed`/`advisor_confirmed` findings, plus
 `backup_scope_limited` (a primary CONFIRMED stands, #1638) — i.e. only claims an advisor verified,
 plus #3593's exact first-party Cargo advisory match. Run a verify phase (or pass
 `--gate-unverified`) or, absent that deterministic exception, the gate has nothing to fail on.
@@ -149,7 +149,7 @@ prints a `**Capped at MEDIUM:**` line.
   with `measured: false`. This cap applies under every gate policy: it is about the claim's premise,
   not its verification.
 
-Under the default policy the `unverified_tool` cap changes no health, grade or risk number — every
+Under the default policy the `unverified_tool` cap changes no health or risk number — every
 claim it caps is already outside the gate-eligible set those read. A capped coverage-absence finding
 an advisor confirmed is gate-eligible, so that cap can move health.
 

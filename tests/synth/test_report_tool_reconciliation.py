@@ -161,32 +161,40 @@ class TestUnansweredToolAdvisorsHoldTheLetterBack(unittest.TestCase):
                                               summary["provisional_grade"]))
         self.assertEqual([self.REASON], summary["grade_shortfalls"])
 
-    def test_the_terminal_and_html_name_the_reason_beside_the_letter(self):
+    def test_the_terminal_and_html_name_the_reason_beside_the_score(self):
+        # #3672: beside the health score, where the letter was.
         r = self._unanswered()
+        score = r["summary"]["health"]["score"]
         text = render_mod.render_summary(r)
-        self.assertIn("**Grade:** S (provisional; %s)" % self.REASON, text)
+        self.assertIn("**Health:** %s / 100 (provisional; %s)" % (score, self.REASON), text)
         self.assertIn("**Coverage:** NOT CERTIFIED — %s" % self.REASON, text)
-        self.assertIn("Grade: S (provisional; %s)" % self.REASON, html_report.render(r))
+        self.assertIn("Health: %s / 100 (provisional; %s)" % (score, self.REASON),
+                      html_report.render(r))
 
-    def test_a_shortfall_and_a_severity_cap_read_together(self):
-        # #3652 meets #3667: provisional, then why, then the cap.
+    def test_a_shortfall_beside_a_severity_cap_says_the_shortfall_only(self):
+        # #3652 meets #3667. #3672: provisional, then why. The cap was a statement about
+        # the letter and is not shown; `grade_cap` stays in the JSON.
         summary = {"overall_grade": None, "provisional_grade": "D", "coverage_certified": False,
+                   "health": {"score": 63.2},
                    "grade_shortfalls": ["1 tool finding unanswered by its advisor"],
                    "grade_cap": {"band_grade": "A", "grade": "D", "severity": "CRITICAL",
                                  "count": 1, "note": "capped from A by 1 confirmed CRITICAL"}}
-        text = ("D (provisional; 1 tool finding unanswered by its advisor; "
-                "capped from A by 1 confirmed CRITICAL)")
-        self.assertEqual(text, render_mod._grade_text(summary))
-        self.assertEqual(text, html_report._grade_badge(summary))
+        text = "63.2 / 100 (provisional; 1 tool finding unanswered by its advisor)"
+        self.assertTrue(render_mod.held_back(summary))
+        self.assertEqual(text, render_mod.health_score_text(summary, True))
+        self.assertEqual("Health: " + text, html_report._health_badge(summary))
 
     def test_a_non_list_shortfall_field_is_no_reasons(self):
         # Review nit 3: a string is not iterated a character at a time.
         for value in ("12 tool findings", {"a": 1}, 7, None):
             with self.subTest(value=value):
                 summary = {"overall_grade": None, "provisional_grade": "B",
+                           "health": {"score": 80.0},
                            "coverage_certified": False, "grade_shortfalls": value}
-                self.assertEqual("B (provisional)", render_mod._grade_text(summary))
-                self.assertEqual("B (provisional)", html_report._grade_badge(summary))
+                self.assertEqual("80.0 / 100 (provisional)",
+                                 render_mod.health_score_text(summary, True))
+                self.assertEqual("Health: 80.0 / 100 (provisional)",
+                                 html_report._health_badge(summary))
 
     def test_one_unanswered_tool_finding_reads_in_the_singular(self):
         summary = _build(_advisories(1, 1))["summary"]

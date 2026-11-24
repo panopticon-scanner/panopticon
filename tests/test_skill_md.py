@@ -479,13 +479,13 @@ class TestSkillMd(unittest.TestCase):
         import scripts.evidence as evidence
         chapter = _section(self.text, "## Evidence", "## Notes")
         statuses = _section(chapter, "how hard the claim was verified):",
-                            "\nGrades and the CI gate ")
+                            "\nHealth and the CI gate ")
         for name in evidence.EVIDENCE_STATUSES:
             with self.subTest(status=name):
                 self.assertIn("`%s`" % name, statuses,
                               "the evidence chapter's status list does not "
                               "name %r" % name)
-        gate = _section(chapter, "Grades and the CI gate ", "Run a verify phase")
+        gate = _section(chapter, "Health and the CI gate ", "Run a verify phase")
         for name in sorted(evidence.GATE_ELIGIBLE_DEFAULT):
             with self.subTest(gate_eligible=name):
                 self.assertIn("`%s`" % name, gate,

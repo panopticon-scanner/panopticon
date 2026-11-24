@@ -340,7 +340,7 @@ class TimeoutErrorUnderSlices(_UnderTheSlices, child_tests._ChildCase):
 
 class RelayedSummaryTest(_Installed):
     def test_an_escape_sequence_cannot_reach_the_terminal(self):
-        lp.relay_summary("**Grade:** A \x1b[2J\x1b]0;owned\x07 title\u202e\r")
+        lp.relay_summary("**Health:** 63.2 / 100 \x1b[2J\x1b]0;owned\x07 title\u202e\r")
         text = self.real.getvalue()
         for byte in ("\x1b", "\x07", "\u202e", "\r"):
             self.assertNotIn(byte, text)
@@ -443,9 +443,9 @@ class StderrOnlyTest(_HeadlessLoopCase):
         self.assertEqual(len(started), len(finished))
         self.assertIn("driver: phase synthesize started", started)
         summary = [x for x in bare if x.startswith(lp.SUMMARY_PREFIX)]
-        self.assertTrue([x for x in summary if "**Grade:**" in x], err)
+        self.assertTrue([x for x in summary if "**Health:**" in x], err)   # #3672
         self.assertLess(bare.index("driver: phase synthesize started"),
-                        bare.index(next(x for x in summary if "**Grade:**" in x)))
+                        bare.index(next(x for x in summary if "**Health:**" in x)))
 
 
 # --- #2108: `--progress` -------------------------------------------------------------------------

@@ -237,18 +237,20 @@ the scan's stderr. That is one file (#3708): `panopticon.yml`, or `.panopticon.y
 only one there. Where the root holds both names, `panopticon.yml` is the config and
 `.panopticon.yml` is an ordinary file that is reviewed. Where neither was loaded (a symlink at
 either name is refused), nothing is left out. The report names the file too, in
-`meta.coverage.scanner_config_excluded`; it does not change the letter, the certification or the
+`meta.coverage.scanner_config_excluded`; it does not change health, the certification or the
 coverage note. A nested `sub/panopticon.yml` is not the scanner's config and is reviewed as
 usual. Naming it explicitly still reviews it. The
 driver's flag is `--files panopticon.yml`; `discovery.py`, run directly, takes `--scope-files`, and
 the driver refuses that spelling. Tool scans are unchanged.
 
-**What these settings do to the letter (#3548).** On a full review, a per-group `exclude:` that
-removes a domain the run would otherwise have used makes the letter provisional, the same way a
-non-default `--max-per-group` does (#1495). Here "would otherwise have used" means the committed
+**What these settings do to the health score's standing (#3548).** On a full review, a per-group
+`exclude:` that removes a domain the run would otherwise have used makes the result provisional,
+the same way a non-default `--max-per-group` does (#1495): the score is shown as provisional
+with the reason, and in the JSON the letter moves to `provisional_grade`. Here "would otherwise
+have used" means the committed
 `panels:`, the universal floor as gated by the group's files, or the SEC floor. An `exclude:` that
-removes nothing leaves the letter certified. So does one that removes only a domain the scout asked
+removes nothing leaves the result certified. So does one that removes only a domain the scout asked
 for, because the scout's choice can change from run to run; it is named in `coverage_note` instead.
 `panels:` only adds review, and `exclude_paths:` is how vendored or generated code is left out, so
-neither moves the letter: `exclude_paths:` is named in `coverage_note` with its file counts. Each
+neither makes the result provisional: `exclude_paths:` is named in `coverage_note` with its file counts. Each
 setting is recorded under `summary.health.basis.config_levers`.

@@ -1460,7 +1460,7 @@
             "string",
             "null"
           ],
-          "description": "Letter banded over summary.health.score: S=100, A>=90, B>=80, C>=70, D>=60, F>=26, X below. S is reachable ONLY at exactly 100 (no gate-eligible weighted defect). Supersedes the max-severity rollup, which saturated -- one HIGH anywhere was a D at any codebase size. A severity cap sits on top of the band (#3652): a confirmed CRITICAL caps the letter at D and a confirmed HIGH at B, and grade_cap discloses the band letter it lowered. null when health is unmeasurable (no readable reviewed LoC) or when coverage is incomplete, in which case provisional_grade carries the letter.",
+          "description": "#3672: no longer shown in the terminal summary or the HTML report, which lead with summary.health.score; kept in the JSON for one release and removed in 5.6. Letter banded over summary.health.score: S=100, A>=90, B>=80, C>=70, D>=60, F>=26, X below. S is reachable ONLY at exactly 100 (no gate-eligible weighted defect). Supersedes the max-severity rollup, which saturated -- one HIGH anywhere was a D at any codebase size. A severity cap sits on top of the band (#3652): a confirmed CRITICAL caps the letter at D and a confirmed HIGH at B, and grade_cap discloses the band letter it lowered. null when health is unmeasurable (no readable reviewed LoC) or when coverage is incomplete, in which case provisional_grade carries the letter.",
           "enum": [
             "S",
             "A",
@@ -1477,7 +1477,7 @@
             "string",
             "null"
           ],
-          "description": "The letter overall_grade would have carried, held back because coverage did not complete or verify work was left undone (grade_shortfalls). Same bands and the same severity cap (grade_cap).",
+          "description": "#3672: no longer shown in the terminal summary or the HTML report, which lead with summary.health.score; kept in the JSON for one release and removed in 5.6. The letter overall_grade would have carried, held back because coverage did not complete or verify work was left undone (grade_shortfalls). Same bands and the same severity cap (grade_cap).",
           "enum": [
             "S",
             "A",
@@ -1501,7 +1501,7 @@
             "object",
             "null"
           ],
-          "description": "#3652: the severity cap that lowered the band grade, or null when nothing was lowered. A confirmed CRITICAL caps the letter at D and a confirmed HIGH at B (owner ruling); confirmed means the default gate's population (tool_confirmed, advisor_confirmed or backup_scope_limited), so an unconfirmed finding never caps. overall_grade / provisional_grade already carry the capped letter; band_grade is the letter the health bands gave.",
+          "description": "#3672: no longer shown in the terminal summary or the HTML report, which lead with summary.health.score; kept in the JSON for one release and removed in 5.6. #3652: the severity cap that lowered the band grade, or null when nothing was lowered. A confirmed CRITICAL caps the letter at D and a confirmed HIGH at B (owner ruling); confirmed means the default gate's population (tool_confirmed, advisor_confirmed or backup_scope_limited), so an unconfirmed finding never caps. overall_grade / provisional_grade already carry the capped letter; band_grade is the letter the health bands gave.",
           "required": [
             "band_grade",
             "grade",
@@ -1842,7 +1842,7 @@
             }
           },
           "panel_grades": {
-            "description": "Per-panel A-F, still the MAX-SEVERITY rollup and deliberately not health-banded: health needs lines of code, and LoC is not attributable per panel (one file feeds several). Do not read these on the same scale as summary.overall_grade.",
+            "description": "#3672: shown to a person as the worst severity each letter stands for (F CRITICAL, D HIGH, C MEDIUM, B LOW, A none); the letters stay in the JSON for one release. Per-panel A-F, still the MAX-SEVERITY rollup and deliberately not health-banded: health needs lines of code, and LoC is not attributable per panel (one file feeds several). Do not read these on the same scale as summary.overall_grade.",
             "type": "object"
           },
           "key_findings": {
