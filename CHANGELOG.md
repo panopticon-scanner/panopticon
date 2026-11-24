@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- **An advisor's rejection no longer discards scanner hits it did not judge (#3756).** A scanner
+  rule that fires several times in one file is one finding with several lines. The advisor was
+  given all of them with nothing saying they were one claim, and one REJECTED discarded them all.
+  In the 5.4.0 stability sweep a real command injection was lost this way in every run: nine hits,
+  five judged safe (correctly), the real one named as "outside the claim" and discarded with the
+  rest.
+  - The advisor is now told that every hit is part of the claim, and its verdict names the lines
+    it examined in a new field, `judged_loci`. REJECTED takes effect only when that list names
+    every line of the finding. Otherwise the finding stays in the report as `needs_more_info`,
+    with the lines nobody judged in `evidence.unjudged_loci` and a count at the start of
+    `evidence.reasoning`.
+  - **This changes results.** A scanner finding with more than one hit that an advisor rejected
+    without naming every line is no longer in `discarded_claims`. It is in `findings`, not
+    verified, capped at MEDIUM like any unverified pattern hit (kept at its own severity, and
+    gating, under `--gate-unverified`). That includes every verdict written before this release:
+    a resumed run or a replay of an archived run shows such findings again.
+  - Not changed: CONFIRMED and NEEDS_MORE_INFO; a finding with one hit; an agent's claim.
+  - Limits: a rule that fires on many lines of one file can be confirmed and will rarely be
+    rejected, since every line must be named. A hit with no line number cannot be named, so a
+    finding that holds one cannot be rejected.
+  - The advisor verdict schema and the Codex generation schema gain `judged_loci`; the report
+    schema gains `evidence.unjudged_loci`.
+  - **A rejected scanner HIGH or CRITICAL is now shown as rejected.** A rejection takes a
+    finding out of the gate and the grade, and it was visible only as a count on the terminal
+    and inside the collapsed "Discarded claims" block of the page. Such findings are now listed
+    in the terminal summary and, open, on the page, each with its location, scanner, rule, hit
+    count and the advisor's reasoning. The report gains `meta.rejected_scanner_findings`
+    (`count`, and up to 50 `rows`), which stays in the main report file when
+    `discarded_claims` moves to a sibling file. Nothing counts differently.
+
 - **A requirement with no pinned version is no longer scanned as version 0.0.0 (#3749).**
   osv-scanner reports a requirements-file entry that has no `==` pin as version `0.0.0`, and
   every advisory whose range starts at zero then matches. In the 5.4 batch that was 135 rows:

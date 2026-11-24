@@ -50,6 +50,8 @@
         "floor_count": {"type": "integer"}
       }
     },
+    "judged_loci": {"type": "array", "items": {"type": "integer"},
+      "description": "Tool advisor only (#3756): the line numbers, in the claim's file, of the scanner hits this advisor examined -- the claim's `location.line_start` and the `line_start` of each of its `additional_loci`. A scanner rule that fires several times in one file is ONE claim with several lines. REJECTED means every one of them is safe, and takes effect only when this list names every one; otherwise the finding stays in the report as `needs_more_info` with the lines that were not judged (`evidence.unjudged_loci`). A number that is not one of the claim's lines is ignored. Absent reads as an empty list, so a verdict written before this field existed rejects only a claim with one line. Not needed on CONFIRMED (one real hit makes the finding real) or NEEDS_MORE_INFO."},
     "missing_evidence": {"type": "array", "items": {"type": "string"},
       "description": "Files this advisor needed and was NOT granted (#1638 P16). Meaningful only on a NEEDS_MORE_INFO verdict, where it marks an evidence-SCOPE failure: the finding keeps evidence.status `backup_scope_limited`, the primary CONFIRMED stands, and the report names what the backup could not see. A NEEDS_MORE_INFO without it is a substantive one and keeps its existing meaning."}
   }

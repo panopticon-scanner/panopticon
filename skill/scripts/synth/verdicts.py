@@ -1,5 +1,6 @@
 """The verify round: emit its queue, then resolve findings against the advisor
 verdicts and the delta context."""
+import dataclasses
 from typing import Any
 from dataclasses import dataclass, field
 import copy
@@ -940,6 +941,27 @@ def _unknown_severity_ids(findings):
                    if isinstance(f, dict) and findings_mod.SEVERITY_AS_WRITTEN in f})
 
 
+def _judged_hits_only(fs, queue):
+    """`fs` with each REJECTED of an aggregated scanner finding held to the lines it
+    judged (#3756, `evidence.judged_only`).
+
+    Here, once, before anything binds a verdict: the verdict's word is read in many
+    places below (`match_verdict`, `_own_verdict`, the member rules of
+    `restore_confirmed`, `apply_verdict`), most of them without the finding in
+    hand. Rewriting the loaded answer means every one of them reads the same word.
+    The queue-id answers only: a bundle is a cell's, and no cell speaks for a
+    finding that came from none (`claim_verdict`)."""
+    verdicts = dict(fs.verdicts or {})
+    changed = False
+    for entry in queue:
+        own = verdicts.get(entry["queue_id"])
+        if isinstance(own, dict):       # one that echoes another id binds to nothing, later
+            held = evidence_mod.judged_only(entry["finding"], own)
+            changed = changed or held is not own
+            verdicts[entry["queue_id"]] = held
+    return dataclasses.replace(fs, verdicts=verdicts) if changed else fs
+
+
 def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     """The verdict-matching cluster (WS-0 S2): dedupe, queue, bind advisor
     verdicts, derive every finding's evidence object and fingerprint, then
@@ -970,6 +992,7 @@ def resolve_findings(fs, delta, run, gated_suppressed=(), groups_meta=None):
     catalog = fs.catalog if fs.catalog is not None else load_cwe_catalog()
     ocrdb_coverage = codes_mod.validate_finding_codes(findings, ocrdb_bundle)
     queue, cut = evidence_mod.build_verify_queue(findings, run.max_verify)
+    fs = _judged_hits_only(fs, queue)
     # #3707: which cells hold each claim id, from the findings as loaded: dedupe
     # is about to collapse the instances, and a verdict speaks for its own cell's.
     held = holding_cells(fs.findings)

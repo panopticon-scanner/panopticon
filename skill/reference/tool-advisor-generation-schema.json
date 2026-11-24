@@ -76,6 +76,12 @@
       "items": {
         "type": "string"
       }
+    },
+    "judged_loci": {
+      "type": "array",
+      "items": {
+        "type": "integer"
+      }
     }
   },
   "required": [
@@ -87,6 +93,7 @@
     "explored",
     "references",
     "citations",
-    "missing_evidence"
+    "missing_evidence",
+    "judged_loci"
   ]
 }

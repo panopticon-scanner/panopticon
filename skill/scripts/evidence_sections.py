@@ -37,6 +37,7 @@ that needs more room is a new module.
 """
 
 import scripts.evidence as evidence
+import scripts.redact as redact
 
 VERIFIED_STATUSES = ("tool_confirmed", "advisor_confirmed")
 UNVERIFIED_STATUSES = ("tool_reported", "needs_more_info", "unverified")
@@ -79,3 +80,64 @@ def is_unverified(status):
 def is_unverified_finding(finding):
     """Apply the fail-closed status predicate to one finding."""
     return is_unverified(finding_status(finding))
+
+
+# #3756: an advisor's REJECTED takes a scanner finding out of the gate and the
+# grade. For a scanner HIGH or CRITICAL that is one advisor's word against a
+# scanner's, and it was visible as a count on the terminal and a collapsed block on
+# the page; a large report's main file holds none of them, because
+# `discarded_claims` moves to a sibling file. `synth/report.py` publishes this
+# compact list in `meta`, which stays in the main file, and both renderers print
+# it. Disclosure only.
+REJECTED_SCANNER_SEVERITIES = ("CRITICAL", "HIGH")
+REJECTED_SCANNER_ROWS = 50
+REJECTED_REASONING_CAP = 600
+_CUT = " [cut]"
+
+
+def rejected_scanner_findings(rejected):
+    """`{count, rows}` for `meta.rejected_scanner_findings`, or None when no rejected
+    claim is a scanner's at HIGH or above. `rows` is the first
+    `REJECTED_SCANNER_ROWS`, most severe first and then in the order given; `count`
+    is all of them. Each row is the finding's own id, tool, rule, severity (a
+    rejected claim keeps the scanner's), location and hit count, and the advisor's
+    reasoning cut to `REJECTED_REASONING_CAP` characters, visibly."""
+    chosen = []
+    for finding in rejected or ():
+        if not isinstance(finding, dict) or not evidence.is_tool_sourced(finding):
+            continue
+        if (finding.get("severity") not in REJECTED_SCANNER_SEVERITIES
+                or finding_status(finding) != "rejected"):
+            continue
+        chosen.append(finding)
+    if not chosen:
+        return None
+    chosen.sort(key=lambda f: REJECTED_SCANNER_SEVERITIES.index(f["severity"]))
+    rows = []
+    for finding in chosen[:REJECTED_SCANNER_ROWS]:
+        location = evidence.location_of(finding)
+        reasoning = finding_evidence(finding).get("reasoning")
+        # Redacted BEFORE the cut (seat review of fd8f260d; redact.py's D10 F2): the
+        # private-key rule needs both delimiters, so a cut that drops the END leaves
+        # the key body unmasked. `redact_diagnostic` also drops everything from a
+        # header nothing closes.
+        reasoning = (redact.redact_diagnostic(reasoning, redact.REDACT_CAP)
+                     if isinstance(reasoning, str) else "")
+        if len(reasoning) > REJECTED_REASONING_CAP:
+            reasoning = reasoning[:REJECTED_REASONING_CAP - len(_CUT)] + _CUT
+        occurrences = finding.get("occurrences")
+        rows.append({
+            "id": str(finding.get("id") or ""),
+            "tool": evidence.tool_name(finding) or "",
+            "rule": str(evidence.tool_rule_id(finding) or ""),
+            "severity": finding["severity"],
+            "file": str(location.get("file") or ""),
+            "line_start": (location.get("line_start")
+                           if isinstance(location.get("line_start"), int)
+                           and not isinstance(location.get("line_start"), bool) else None),
+            "occurrences": (occurrences if isinstance(occurrences, int)
+                            and not isinstance(occurrences, bool) and occurrences > 0 else 1),
+            "title": str(finding.get("title") or ""),
+            "reasoning": reasoning,
+        })
+    return {"count": len(chosen), "rows": rows}
