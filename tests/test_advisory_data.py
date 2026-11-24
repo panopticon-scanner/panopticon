@@ -192,8 +192,11 @@ def test_nvd_dates_are_read_from_a_copy_of_the_database(tmp_path):
     assert url.endswith(";ACCESS_MODE_DATA=r")
     assert not url.startswith("jdbc:h2:file:" + data)               # never the real database
     assert argv[argv.index("-user") + 1:argv.index("-user") + 4] == ["dcuser", "-password", "secret-default"]
-    assert argv[-1] == ("SELECT id, value FROM properties WHERE id IN "
+    # `SELECT *`: `value` is a reserved word in H2 2.x. Naming it was a syntax error the
+    # shell printed on stdout with exit 0, and the first real build recorded NVD as null.
+    assert argv[-1] == ("SELECT * FROM properties WHERE id IN "
                         "('nvd.api.last.modified', 'nvd.api.last.checked')")
+    assert "value" not in argv[-1].lower().replace("select * from properties where id in", "")
     assert kwargs["timeout"] and kwargs["check"] is False
     assert seen[1] == ("copy held", b"H2 database bytes")
     assert sorted(os.listdir(data)) == ["odc.mv.db"]                 # no lock, no trace file
@@ -211,7 +214,13 @@ def test_an_nvd_database_that_cannot_be_read_is_named(tmp_path):
             (mock.Mock(side_effect=OSError("no java")), "could not run the H2 shell: OSError"),
             (mock.Mock(side_effect=subprocess.TimeoutExpired("java", 600)), "could not run the H2 shell"),
             (mock.Mock(return_value=subprocess.CompletedProcess([], 0, "garbage", "")),
-             "unexpected H2 shell output")):
+             "unexpected H2 shell output: 'garbage'"),
+            (mock.Mock(return_value=subprocess.CompletedProcess(
+                [], 0, "Error: org.h2.jdbc.JdbcSQLSyntaxErrorException: Syntax error in SQL "
+                       "statement \"SELECT id, [*]value\"; expected \"identifier\"\n" + "x" * 500, "")),
+             "unexpected H2 shell output: 'Error: org.h2.jdbc.JdbcSQLSyntaxErrorException: Syntax error"),
+            (mock.Mock(return_value=subprocess.CompletedProcess([], 0, "", "")),
+             "unexpected H2 shell output: ''")):
         with pytest.raises(record.Unreadable, match=reason):
             record.nvd_properties(home, data, runner=runner, scratch=str(tmp_path))
         assert sorted(os.listdir(tmp_path)) == ["dependency-check", "odc-data"]

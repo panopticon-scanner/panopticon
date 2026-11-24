@@ -180,10 +180,12 @@ def _login(dc_home):
 
 def _shell_rows(output):
     """Rows of `org.h2.tools.Shell -sql` output: a header, ` | `-separated cells, and a
-    closing `(N rows, M ms)` line."""
+    closing `(N rows, M ms)` line. The shell prints an SQL error on stdout and still
+    exits 0, so output of any other shape is named, with its first line, in the build
+    log: this runs in the image build, and that log is where it gets fixed."""
     lines = [line for line in output.splitlines() if line.strip()]
     if not lines or not lines[-1].lstrip().startswith("("):
-        raise Unreadable("unexpected H2 shell output")
+        raise Unreadable("unexpected H2 shell output: %r" % (lines[0][:200] if lines else ""))
     return [tuple(cell.strip() for cell in line.split(" | ")) for line in lines[1:-1]]
 
 
@@ -204,7 +206,10 @@ def nvd_properties(dc_home, data_dir, runner=None, scratch=None):
             # Fixed argv, no shell; `java` is the image's own.
             done = runner(["java", "-cp", h2_jar, "org.h2.tools.Shell", "-url", url,
                            "-user", user, "-password", password,
-                           "-sql", "SELECT id, value FROM properties WHERE id IN (%s)" % keys],
+                           # `SELECT *`, as nvd-cache-sync.sh asks: `value` is a reserved
+                           # word in H2 2.x and cannot be named bare (the first build of
+                           # #3798 printed a syntax error here and recorded null).
+                           "-sql", "SELECT * FROM properties WHERE id IN (%s)" % keys],
                           capture_output=True, text=True, timeout=600, check=False)
         except (OSError, subprocess.SubprocessError) as exc:
             raise Unreadable("could not run the H2 shell: %s" % type(exc).__name__) from exc
