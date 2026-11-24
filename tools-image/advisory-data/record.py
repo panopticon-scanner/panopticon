@@ -238,6 +238,12 @@ def record(dc_home, nvd_dir, trivy_cache, osv_db, rustsec_db, ruby_db, now=None,
         except Unreadable as exc:
             say("%s: not recorded: %s" % (name, exc))
             sources[name] = None
+        except (OSError, ValueError) as exc:
+            # A full disk under the database copy, a temp directory that cannot be
+            # made, shell output that is not text: a source that cannot be dated must
+            # not stop the image the daily publish depends on (#3802 seat review).
+            say("%s: not recorded: %s: %s" % (name, type(exc).__name__, exc))
+            sources[name] = None
     return {"schema_version": SCHEMA_VERSION,
             "recorded_at": _stamp(now or datetime.datetime.now(UTC)),
             "sources": sources}

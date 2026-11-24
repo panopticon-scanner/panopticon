@@ -47,6 +47,7 @@ import scripts.delta_withdrawn as delta_withdrawn
 import scripts.discovery as discovery
 import scripts.grouping_engine as grouping_engine
 import scripts.host_disclosure as host_disclosure
+import scripts.inert as inert
 import scripts.hosts as hosts
 import scripts.plan_contract as plan_contract
 import scripts.repo_config as repo_config
@@ -150,14 +151,19 @@ def warnings(review_root):
     reads the status JSON, and the phase that warned is done long before the first
     checkpoint is printed, so the rows are read back from the artifact and carried on
     each status as `warnings`: the host shows them to the operator before it dispatches
-    anything. Empty when there are none, and the status then has no such key."""
+    anything. Empty when there are none, and the status then has no such key.
+
+    The artifact is in the run folder, and the host shows these to a person, so each
+    line has its control and direction-override characters spelled out before it is
+    bounded: a row cannot carry a terminal sequence into the status."""
     body = runio._load_json(runio._pano(review_root, READINESS))
     rows = body.get("checks") if isinstance(body, dict) else None
     found = []
     for row in rows if isinstance(rows, list) else []:
         if (isinstance(row, dict) and row.get("level") == "warn"
                 and isinstance(row.get("name"), str) and isinstance(row.get("detail"), str)):
-            found.append(("[%s] %s" % (row["name"], row["detail"]))[:_WARNING_CHARS])
+            found.append(inert.inert_spelling(
+                "[%s] %s" % (row["name"], row["detail"]))[:_WARNING_CHARS])
     return found[:_WARNINGS_MAX]
 
 

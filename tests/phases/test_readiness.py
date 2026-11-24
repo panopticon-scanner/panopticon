@@ -486,7 +486,9 @@ class TestAdvisoryDataIsAskedBeforeTheFirstDispatch(_ReadinessCase):
 
     FILE = ('{"schema_version": 1, "recorded_at": "%(d)sT06:10:00Z", "sources": {'
             '"nvd": {"last_modified": "%(d)sT03:59:10Z"}, "trivy": {"updated_at": "%(d)sT02:00:00Z"}, '
-            '"osv": {"ecosystems": {"npm": "%(d)sT06:05:11Z"}}, '
+            '"osv": {"ecosystems": {"npm": "%(d)sT06:05:11Z", "PyPI": "%(d)sT06:05:11Z", '
+            '"Go": "%(d)sT06:05:11Z", "RubyGems": "%(d)sT06:05:11Z", "crates.io": "%(d)sT06:05:11Z", '
+            '"Maven": "%(d)sT06:05:11Z"}}, '
             '"rustsec": {"downloaded_at": "%(d)sT06:04:00Z"}, "ruby": {"downloaded_at": "%(d)sT06:04:30Z"}}}')
 
     def _run(self, read, *flags):
@@ -558,6 +560,29 @@ class TestAdvisoryDataIsAskedBeforeTheFirstDispatch(_ReadinessCase):
                          (None, "not read: the tools image is not available"))
         self.assertNotIn("level", row)
         self.assertNotIn("advisory", status["message"])       # the refusal names the image only
+
+    def test_bytes_that_are_not_text_in_the_image_file_warn_and_do_not_fail_the_run(self):
+        """#3802 seat review. The launch's output was read as text, so one byte that is not
+        UTF-8 raised out of the read, the run ended `error` before `readiness.json` was
+        written, and every re-run failed the same way. Through a REAL child process here,
+        because the decoding that raised is `subprocess`'s own."""
+        import subprocess
+        import sys
+        d = self._repo()
+        script = "import sys; sys.stdout.buffer.write(b'{\"schema_version\": 1, \xff\xfe')"
+
+        def runner(cmd, **kw):
+            if list(cmd[:2]) == ["docker", "run"]:
+                return subprocess.run(["env", sys.executable, "-c", script], **kw)
+            return _Probe(0)
+        err = io.StringIO()
+        with mock.patch(_READINESS_CHECKS + ".DOCKER_RUNNER", runner), contextlib.redirect_stderr(err):
+            status = driver.run(self._args(d))
+        self.assertEqual(status["checkpoint"], "scout", status)      # the run goes on
+        self.assertIn("NVD unknown; OSV unknown; Trivy unknown", status["warnings"][0])
+        self.assertTrue(self._readiness_json(d)["ready"])
+        self.assertEqual("warn", self._rows(d)["advisory-data"]["level"])
+        self.assertNotIn("Traceback", err.getvalue())
 
     def test_no_tools_reads_nothing_and_warns_nothing(self):
         d, status, launches, err = self._run(self.FILE % {"d": "2020-01-01"}, "--no-tools")

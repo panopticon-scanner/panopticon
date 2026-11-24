@@ -279,6 +279,46 @@ def test_the_record_holds_every_source_and_one_unreadable_source_does_not_stop_i
     assert "not recorded: the H2 shell exited 3" in said[0]
 
 
+@pytest.mark.parametrize("failure, named", [
+    # From the shell launch itself, an OS error is already the recorder's own refusal...
+    (OSError(28, "No space left on device"), "could not run the H2 shell: OSError"),
+    (PermissionError(13, "Permission denied"), "could not run the H2 shell: PermissionError"),
+    # ...and output that is not text was not: it escaped and failed the build.
+    (UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid start byte"), "UnicodeDecodeError: "),
+    (ValueError("not text"), "ValueError: not text"),
+])
+def test_a_source_that_fails_in_any_way_is_null_and_the_build_goes_on(tmp_path, failure, named):
+    """#3802 seat review: only the recorder's own `Unreadable` became null. A full disk
+    under the database copy, or shell output that is not text, failed the image build,
+    and the daily publish depends on it. Every source is recorded or null."""
+    record = _record()
+    home, data = _whole_image(tmp_path)
+    said = []
+    document = record.record(home, data, str(tmp_path / "trivy"), str(tmp_path / "osv"),
+                             str(tmp_path / "rustsec"), str(tmp_path / "ruby"),
+                             runner=mock.Mock(side_effect=failure), say=said.append)
+    assert document["sources"]["nvd"] is None
+    assert document["sources"]["trivy"] == {"updated_at": "2026-11-22T18:14:33Z"}     # the rest stand
+    assert document["sources"]["ruby"] and document["sources"]["rustsec"] and document["sources"]["osv"]
+    assert len(said) == 1 and said[0].startswith("nvd: not recorded: " + named)
+    with mock.patch.object(record.shutil, "copyfile", side_effect=failure):
+        said.clear()
+        document = record.record(home, data, str(tmp_path / "trivy"), str(tmp_path / "osv"),
+                                 str(tmp_path / "rustsec"), str(tmp_path / "ruby"),
+                                 runner=_h2([("nvd.api.last.modified", "2026-11-23T03:59:10Z")]),
+                                 say=said.append)
+    # The copy of the database: a full disk there is an OSError nothing caught.
+    assert document["sources"]["nvd"] is None
+    assert said == ["nvd: not recorded: %s: %s" % (type(failure).__name__, failure)]
+    with mock.patch.object(record.os, "listdir", side_effect=failure):
+        document = record.record(home, data, str(tmp_path / "trivy"), str(tmp_path / "osv"),
+                                 str(tmp_path / "rustsec"), str(tmp_path / "ruby"),
+                                 runner=_h2([("nvd.api.last.modified", "2026-11-23T03:59:10Z")]),
+                                 say=said.append)
+    assert document["sources"]["osv"] is None and document["sources"]["rustsec"] is None
+    assert document["sources"]["nvd"] == {"last_modified": "2026-11-23T03:59:10Z", "last_checked": None}
+
+
 def test_the_build_step_writes_the_file_and_prints_what_it_recorded(tmp_path):
     record = _record()
     home, data = _whole_image(tmp_path)
@@ -354,6 +394,37 @@ def test_a_file_that_is_not_the_recorders_reads_as_nothing_and_never_raises(raw)
     assert parsed == {"nvd": None, "osv": None, "trivy": None, "rustsec": None, "ruby": None,
                       "osv_ecosystems": {}}
     assert advisory_data.line(advisory_data.block(parsed, READ_AT)) == UNKNOWN_LINE
+
+
+def test_osv_with_an_ecosystem_missing_is_unknown_and_warns():
+    """#3802 seat review: the OSV date is the oldest ecosystem's. With one database
+    missing the oldest of the REST spoke for it, and the row read `current`. A missing
+    ecosystem is data of unknown age."""
+    every = {name: "2026-11-23T06:05:11Z" for name in advisory_data.OSV_ECOSYSTEMS}
+    whole = _block(osv={"ecosystems": every})
+    assert whole["sources"]["osv"]["status"] == "current" and advisory_data.warning(whole) is None
+    for missing in advisory_data.OSV_ECOSYSTEMS:
+        for broken in ({name: stamp for name, stamp in every.items() if name != missing},
+                       dict(every, **{missing: "not a time"}), dict(every, **{missing: None}),
+                       dict(every, **{missing: "2031-01-01T00:00:00Z"})):       # not believed
+            block = _block(osv={"ecosystems": broken})
+            row = block["sources"]["osv"]
+            assert (row["date"], row["age_days"], row["status"]) == (None, None, "unknown"), missing
+            assert sorted(row["ecosystems"]) == sorted(set(every) - {missing})   # the rest are kept
+            assert "OSV unknown" in advisory_data.warning(block)
+            assert advisory_data.from_manifest(json.loads(json.dumps(block))) == block
+        assert advisory_data.parse_image_file(_image_file(osv={"ecosystems": {
+            name: stamp for name, stamp in every.items() if name != missing}}))["osv"] is None
+    for none in ({}, None, [], "npm"):
+        assert _block(osv={"ecosystems": none})["sources"]["osv"]["status"] == "unknown"
+    # A manifest that plants an OSV date beside an incomplete list is not believed.
+    planted = json.loads(json.dumps(whole))
+    del planted["sources"]["osv"]["ecosystems"]["Maven"]
+    assert planted["sources"]["osv"]["date"] == "2026-11-23"
+    assert advisory_data.from_manifest(planted)["sources"]["osv"]["status"] == "unknown"
+    # One stale ecosystem makes the row stale: it is the oldest.
+    old = _block(osv={"ecosystems": dict(every, Go="2026-10-01T00:00:00Z")})
+    assert (old["sources"]["osv"]["date"], old["sources"]["osv"]["status"]) == ("2026-10-01", "stale")
 
 
 @pytest.mark.parametrize("version", [2, 0, True, 1.0, "1", None, [1]])
@@ -629,6 +700,22 @@ def test_a_report_with_no_block_has_neither_line_and_its_page_is_untouched():
     assert "alert(1)" not in html_report.render(plain)
 
 
+def test_the_page_escapes_both_lines():
+    """The two sentences hold nothing to escape today, so the page is the same with and
+    without the escape. Pinned on sentences that do: a later edit of the wording, or of
+    a label, cannot put markup on the page."""
+    report = _report(_manifest(advisory_data=_block(trivy=None)))
+    with mock.patch.object(advisory_data, "line", return_value="NVD <b>2026</b> & 'more'"), \
+            mock.patch.object(advisory_data, "warning", return_value="<script>alert(1)</script> & \"x\""):
+        parts = html_report._render_advisory_data(report["meta"])
+        page = html_report.render(report)
+    assert parts == [
+        "<div class='coverage' role='note'>Advisory data warning: "
+        "&lt;script&gt;alert(1)&lt;/script&gt; &amp; &quot;x&quot;</div>",
+        "<div class='coverage'>Advisory data: NVD &lt;b&gt;2026&lt;/b&gt; &amp; &#x27;more&#x27;</div>"]
+    assert "<script>alert(1)</script>" not in page and "<b>2026</b>" not in page
+
+
 def test_the_schema_describes_the_block_the_report_carries():
     import jsonschema
     schema = json.loads((ROOT / "skill" / "reference" / "report-schema.json").read_text())
@@ -677,6 +764,12 @@ def test_the_readiness_row_is_the_dates_or_the_warning_and_never_a_failure():
     assert argv == advisory_data.read_argv("docker", tools_image.DEFAULT_IMAGE,
                                            scanner_config.privilege_drop_flags())
     assert kwargs["timeout"] == advisory_data.READ_TIMEOUT
+    assert kwargs["text"] is False                  # bytes: this module decodes, and survives
+    for raw in (b"\xff\xfe not text", _image_file().encode() + b"\xff"):
+        with mock.patch.object(readiness_checks, "DOCKER_RUNNER", _docker(_Done(0, raw))):
+            assert readiness_checks.advisory_data_row(None, True)[1] == "warn"
+    with mock.patch.object(readiness_checks, "DOCKER_RUNNER", _docker(_Done(0, _image_file().encode()))):
+        assert readiness_checks.advisory_data_row(None, True)[1] is True
     # The launch's own bound, not the two probes' (they happen to be equal today).
     waited = []
     with mock.patch.object(advisory_data, "READ_TIMEOUT", 7), \
@@ -729,6 +822,15 @@ def test_every_status_of_the_run_carries_the_readiness_warnings(tmp_path):
                    {"status": "complete", "message": "all phases complete"}):
         assert driver._with_warnings(status, str(tmp_path)) == dict(status, warnings=expected)
         assert "warnings" not in status                               # a copy, not a mutation
+    # #3802 seat review: the artifact is in the run folder and the host shows these to
+    # a person. Control and direction-override characters are spelled, not carried.
+    _readiness_artifact(tmp_path, [{"name": "advisory-data\x1b[2J", "ok": None, "level": "warn",
+                                    "detail": "line one\nline two\x07 \u202egnp.exe\x00 done"}])
+    (carried,) = readiness.warnings(str(tmp_path))
+    assert carried == "[advisory-data\\x1b[2J] line one\\x0aline two\\x07 \\u202egnp.exe\\x00 done"
+    assert not [ch for ch in carried if ord(ch) < 32 or ch == "\u202e"]
+    assert json.loads(json.dumps(driver._with_warnings({"status": "checkpoint"}, str(tmp_path))))[
+        "warnings"] == [carried]
     _readiness_artifact(tmp_path, [{"name": "docker", "ok": True, "detail": "ok"}])
     status = {"status": "checkpoint", "message": "m"}
     assert driver._with_warnings(status, str(tmp_path)) is status        # none: the status is unchanged
@@ -737,6 +839,24 @@ def test_every_status_of_the_run_carries_the_readiness_warnings(tmp_path):
                                    for n in range(20)])
     bounded = readiness.warnings(str(tmp_path))
     assert len(bounded) == 8 and all(len(line) == 600 for line in bounded)
+
+
+def test_the_refresh_command_names_no_dependency_check_version():
+    """#3802 seat review: the README spelled `dc-10.0.3`, which goes stale the day the
+    pin moves. The command reads the version from the Dockerfile instead."""
+    import re
+    readme = (ROOT / "README.md").read_text()
+    command = readme[readme.index("docker build --build-arg ASSET_REFRESH="):]
+    command = command[:command.index("```")]
+    assert not re.search(r"dc-[0-9]", command)
+    expression = "sed -n 's/^ARG DEPENDENCY_CHECK_VERSION=//p' Dockerfile"
+    assert 'panopticon-tools-nvd:dc-$(%s)"' % expression in command
+    versions = [line[len("ARG DEPENDENCY_CHECK_VERSION="):] for line in
+                (ROOT / "Dockerfile").read_text().splitlines()
+                if line.startswith("ARG DEPENDENCY_CHECK_VERSION=")]
+    assert len(versions) == 1 and re.fullmatch(r"[0-9]+(\.[0-9]+)+", versions[0])   # what the sed prints
+    assert not re.search(r"dc-[0-9]", (ROOT / "DEVELOPMENT.md").read_text().split(
+        "### How old the image's advisory data is")[1].split("### Stable tools-image pins")[0])
 
 
 def test_the_host_is_told_to_show_the_warnings_before_it_dispatches():

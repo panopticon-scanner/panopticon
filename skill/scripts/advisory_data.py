@@ -83,7 +83,10 @@ def parse_image_file(raw):
     bytes or text.
 
     `osv` is the OLDEST ecosystem database, because a scan is as current as its oldest
-    data, and `osv_ecosystems` maps each known ecosystem that had a readable time to it.
+    data, and it is None unless EVERY ecosystem the image is meant to carry has a
+    readable time: a missing one is a database of unknown age, and the oldest of the
+    rest would speak for it. `osv_ecosystems` maps each known ecosystem that had a
+    readable time to it.
     Anything that is not the recorder's exact shape is None: this never raises on what
     the image holds."""
     empty: dict[str, Any] = dict({key: None for key, _label in SOURCES}, osv_ecosystems={})
@@ -122,7 +125,7 @@ def parse_image_file(raw):
             if moment is not None:
                 ecosystems[name] = moment
     found["osv_ecosystems"] = ecosystems
-    if ecosystems:
+    if len(ecosystems) == len(OSV_ECOSYSTEMS):
         found["osv"] = min(ecosystems.values())
     return found
 
@@ -166,10 +169,16 @@ def block(parsed, read_at):
     answer (or None, when the file could not be read at all) and the time of the read."""
     parsed = parsed or {}
     rows = {key: _row(parsed.get(key), read_at) for key, _label in SOURCES}
-    # Each ecosystem's own date (the row's is the oldest of them), for the JSON only.
-    rows["osv"]["ecosystems"] = {
-        name: _row(moment, read_at)["date"]
-        for name, moment in sorted((parsed.get("osv_ecosystems") or {}).items())}
+    # Each ecosystem's own date, for the JSON. The OSV row is the oldest of them, and is
+    # unknown unless all of them have a date that can be believed: one missing database
+    # is data of unknown age, whatever the others say.
+    # (The names are the allowlist's already: both producers of `parsed`, the image file's
+    # reader and the manifest's, keep only `OSV_ECOSYSTEMS`.)
+    dated = {name: moment for name, moment in sorted((parsed.get("osv_ecosystems") or {}).items())
+             if _row(moment, read_at)["date"] is not None}
+    rows["osv"] = _row(min(dated.values()) if len(dated) == len(OSV_ECOSYSTEMS) else None,
+                       read_at)
+    rows["osv"]["ecosystems"] = {name: moment.strftime("%Y-%m-%d") for name, moment in dated.items()}
     return {"read_at": _stamp(read_at), "stale_after_days": STALE_AFTER_DAYS, "sources": rows}
 
 

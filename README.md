@@ -83,7 +83,7 @@ The scanners run offline against advisory data frozen in the image when it was b
 
 ```bash
 docker build --build-arg ASSET_REFRESH="$(date -u +%F)" \
-  --build-arg NVD_DATA_REF=ghcr.io/panopticon-scanner/panopticon-tools-nvd:dc-10.0.3 \
+  --build-arg NVD_DATA_REF="ghcr.io/panopticon-scanner/panopticon-tools-nvd:dc-$(sed -n 's/^ARG DEPENDENCY_CHECK_VERSION=//p' Dockerfile)" \
   -t panopticon-tools .
 ```
 

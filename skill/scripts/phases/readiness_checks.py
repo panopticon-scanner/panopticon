@@ -6,8 +6,11 @@ Docker and the tools image, the Python packages the run imports, the host CLIs
 on PATH -- and returns a row. Deciding what a row means, assembling the
 artifact and rendering it stay in `readiness.py`, which is the only caller.
 
-It LAUNCHES NOTHING of its own: `shutil.which` looks at the host CLIs, and the
-docker probe goes through `setup_preflight._check_docker`.
+It starts no HOST binary: `shutil.which` looks at the host CLIs, and the docker probe
+goes through `setup_preflight._check_docker`. One function here does start a container:
+`advisory_data_row` (#3798) launches the tools image once, hardened and with nothing
+mounted, to read the dates its build recorded. Only the readiness PHASE calls it; the
+`driver readiness` verb, which promises to launch nothing, does not.
 
 `DOCKER_RUNNER` below is a TEST-ONLY injection point and moved here with the
 check that reads it. Its production value is `None` -- meaning "use
@@ -128,6 +131,11 @@ def advisory_data_row(tools_flag, image_ok):
     same docker seam the two rows above use. A launch that cannot start, times out or
     fails reads as unknown, and so warns. The `driver readiness` verb does not call
     this: it promises to launch nothing.
+
+    The output is read as BYTES and decoded by `advisory_data`. Read as text, one byte
+    that is not UTF-8 in the image's file raised out of the launch, failed the run here,
+    and failed every re-run after it (#3802 seat review): unreadable is unknown and a
+    warning, never a failed run.
     """
     if tools_flag is False:
         return (ADVISORY_DATA_ROW, None, _NOT_APPLICABLE)
@@ -137,7 +145,7 @@ def advisory_data_row(tools_flag, image_ok):
     done = setup_preflight._probe(
         runner, advisory_data.read_argv("docker", tools_image.DEFAULT_IMAGE,
                                         scanner_config.privilege_drop_flags()),
-        timeout=advisory_data.READ_TIMEOUT)
+        timeout=advisory_data.READ_TIMEOUT, text=False)
     block = advisory_data.from_launch(getattr(done, "returncode", None),
                                       getattr(done, "stdout", None))
     stale = advisory_data.warning(block)
