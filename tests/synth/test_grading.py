@@ -343,7 +343,7 @@ class TestCertify(unittest.TestCase):
         r = grading_mod.certify("A", [], "high", {"style"}, [],
                                 tools_file_partial=dict(self._skips("a.png"), eslint={"status": "partial"}))
         self.assertFalse(r["coverage_certified"])
-        self.assertEqual("; ".join(("gate certified; grade provisional \u2014 low-value panel(s) incomplete: style",
+        self.assertEqual("; ".join(("gate certified; health provisional \u2014 low-value panel(s) incomplete: style",
                                     "partial scanner file coverage: eslint",
                                     coverage_model.ASSET_SKIP_NOTE % 1)), r["coverage_note"])
 

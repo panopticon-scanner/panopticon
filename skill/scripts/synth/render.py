@@ -20,22 +20,45 @@ from . import health_basis as health_basis_mod
 from . import integrity as integrity_mod
 
 
-def _grade_text(summary):
-    """The grade as displayed: the letter, a provisional letter, or n/a.
+def held_back(summary):
+    """Is this result held back: a band the run did not earn the right to state?
 
-    Three-way because the grade now derives from health, which is None when no
-    reviewed file was readable. "None (provisional)" -- what the old two-way
-    format produced for that case -- reads as a grade rather than as the absence
-    of one.
-    """
-    cap = grading_mod.grade_cap_note(summary)
-    if summary.get("overall_grade"):
-        return summary["overall_grade"] + (" (%s)" % cap if cap else "")
-    if summary.get("provisional_grade"):
-        return "%s (provisional%s)" % (summary["provisional_grade"],
-                                       _shortfall_suffix(summary)
-                                       + ("; %s" % cap if cap else ""))
-    return "n/a (no reviewed lines of code to grade)"
+    #3672: the JSON still records that as `provisional_grade` with no `overall_grade`
+    (an incomplete panel, a non-default scan profile, undone verify work). The band is
+    no longer shown to a person; that the result is provisional, and why, still is,
+    beside the health score."""
+    return bool(summary.get("provisional_grade")) and not summary.get("overall_grade")
+
+
+def health_score_text(summary, provisional):
+    """The health score as the headline states it (#3672): "63.2 / 100", or "n/a" when
+    the report has no score, then "(provisional; <each undone piece of verify work>)"
+    when `provisional`. The reason for an n/a is the health line's to give."""
+    health = summary.get("health")
+    score = ("n/a" if not isinstance(health, dict) or health.get("score") is None
+             else "%s / 100" % health["score"])
+    # Provisional is said with or without a score: on the compare panel this text is
+    # the only sign that a result is held back.
+    return score + (" (provisional%s)" % _shortfall_suffix(summary) if provisional else "")
+
+
+def _without_prefix(text, prefix):
+    """`text` without a leading `prefix`: the line's own label already says it."""
+    return text[len(prefix):] if text.startswith(prefix) else text
+
+
+def coverage_note_text(summary):
+    """`summary.coverage_note` when it is text and not empty, as one inert line, else
+    None (#3672, from #3648). Both renderers print it as its own line only where no
+    other line carries it: after the NOT CERTIFIED line and the provisional line have
+    had their turn. Not bounded: a note can carry several reasons, and each matters."""
+    note = summary.get("coverage_note")
+    return _one_line(note) if isinstance(note, str) and note else None
+
+
+def coverage_note_line(summary):
+    note = coverage_note_text(summary)
+    return None if note is None else "**Coverage note:** %s" % note
 
 
 def parts_line(report):
@@ -67,8 +90,8 @@ def shortfall_list(summary):
 
 
 def _shortfall_suffix(summary):
-    """#3667: "; 145 tool findings unanswered by their advisors" -- why a letter
-    is held back for undone verify work, said beside the letter itself."""
+    """#3667: "; 145 tool findings unanswered by their advisors" -- why a result
+    is held back for undone verify work, said beside the health score (#3672)."""
     return "".join("; " + tool_base.inert_text(r) for r in shortfall_list(summary))
 
 def _render_severity_block(stats, roles, gate_eligible_stats=None):
@@ -101,24 +124,6 @@ def _render_severity_block(stats, roles, gate_eligible_stats=None):
         else:
             lines.append("- %s" % label)
     return lines
-
-def _health_headline(health):
-    """The health index as a headline field, or None when unavailable.
-
-    The numeric score appears beside Grade/Risk/Gate. The letter grade is
-    banded from the same health score, then capped by the worst confirmed
-    severity (#3652: CRITICAL caps at D, HIGH at B), so the letter can sit
-    below the band this score implies; the grade text discloses the cap. With no reviewed lines to grade, health
-    is unavailable and the displayed grade is n/a. The numeric score preserves
-    detail within a grade; incomplete coverage can make the grade provisional.
-
-    Rendered "N / 100" makes the scale explicit. Health and its grade bands
-    describe code health; the severity/evidence policy determines the gate.
-    This function only formats the already-computed score.
-    """
-    if not isinstance(health, dict) or health.get("score") is None:
-        return None
-    return "**Health:** %s / 100" % health["score"]
 
 def _render_health(health):
     """One-line health summary (#1146): score plus the clean-LoC and
@@ -231,7 +236,7 @@ def _suppressed_gated_line(gated):
     return ("**Tool findings suppressed but GATED:** %s \u2014 withheld from the "
             "report body by controlled source-scope rules, and counted toward THIS "
             "RUN's gate, risk level and health "
-            "grade anyway (`--security redteam`, and CRITICAL or secret-class "
+            "anyway (`--security redteam`, and CRITICAL or secret-class "
             "per #1578 policy C). A gate verdict here may rest on "
             "findings this report does not list"
             % coverage_io.venv_tally(rows, MARKER_VENV_PREFIX))
@@ -273,11 +278,14 @@ def _named(names, more):
     return ", ".join(names) + (" +%d more" % more if more else "")
 
 
+_UNPINNED_LINE = ("**Unpinned requirements (%s):** %s. These are not findings: pin the "
+                  "requirement to have it audited")
+
+
 def _unpinned_lines(block):
     """#3749: one summary line per manifest with unpinned requirements. Not findings, and
     not a change to certification: the report says what the scanner could not tell."""
-    return ["**Unpinned requirements (%s):** %s. These are not findings: pin the "
-            "requirement to have it audited" % row for row in unpinned_rows(block)]
+    return [_UNPINNED_LINE % row for row in unpinned_rows(block)]
 
 
 def _context_not_gated_line(counts):
@@ -289,7 +297,7 @@ def _context_not_gated_line(counts):
         return ""
     total = sum(n for _rule, n in rows)
     return ("**Not counted toward the gate:** %d scanner finding%s in a test path or dev-only "
-            "manifest %s reported and not counted toward the gate, grade or health (%s). "
+            "manifest %s reported and not counted toward the gate or health (%s). "
             "`--security redteam` counts those that are CRITICAL or secret-class"
             % (total, "" if total == 1 else "s", "is" if total == 1 else "are",
                "; ".join("%s: %d" % row for row in rows)))
@@ -438,7 +446,7 @@ def _one_line(text):
 
 
 _REJECTED_SCANNER_NOTE = ("An advisor answered REJECTED, so these are not counted by the gate "
-                          "or the grade. Each is one advisor's reading of a scanner finding; "
+                          "or health. Each is one advisor's reading of a scanner finding; "
                           "check it.")
 
 
@@ -467,7 +475,8 @@ def rejected_scanner_lines(listed):
 
 
 def render_summary(report):
-    """Render markdown summary of report with grades, stats, groups, and top findings."""
+    """Render the markdown summary of a report: the health score, risk and gate, then
+    stats, groups and top findings. #3672: no letter grade; the JSON keeps it."""
     s = report["summary"]
     gate_mode = report["meta"].get("gate_security_mode")
     health_line = _render_health(s.get("health"))
@@ -483,13 +492,12 @@ def render_summary(report):
         "# panopticon — %s" % tool_base.inert_text(report["meta"]["target"],
                                                  mode="path"),
         "",
-        "**Grade:** %s  **Risk:** %s  **Gate:** %s%s%s" % (
-            _grade_text(s),
+        "**Health:** %s  **Risk:** %s  **Gate:** %s%s" % (
+            health_score_text(s, held_back(s)),
             s["risk_level"] or "unknown", s["gate"],
-            " (%s)" % gate_mode if gate_mode else "",
-            ("  " + _health_headline(s.get("health"))) if _health_headline(s.get("health")) else ""),
+            " (%s)" % gate_mode if gate_mode else ""),
         "",
-        "**Grade basis:** %s" % tool_base.inert_text(basis_note),
+        "**Health basis:** %s" % tool_base.inert_text(basis_note),
         "",
     ] + _render_severity_block(s.get("stats") or {}, s.get("gate_severities")) + [
         "",
@@ -529,10 +537,13 @@ def render_summary(report):
             parts.append(s["coverage_note"])
         lines.insert(3, "**Coverage:** NOT CERTIFIED — %s"
                      % ("; ".join(parts) or "incomplete"))
-    elif s.get("provisional_grade") and not s.get("overall_grade") and s.get("coverage_note"):
-        # #1495: coverage is certified but the letter is held back (a non-default scan profile),
-        # so the reason is not in a NOT CERTIFIED line; say it beside the grade.
-        lines.insert(3, "**Grade provisional:** %s" % s["coverage_note"])
+    elif held_back(s) and s.get("coverage_note"):
+        # #1495: coverage is certified but the result is held back (a non-default scan
+        # profile), so the reason is not in a NOT CERTIFIED line; say it beside the score.
+        lines.insert(3, "**Health provisional:** %s" % _one_line(
+            _without_prefix(str(s["coverage_note"]), grading_mod.PROVISIONAL_PREFIX)))
+    elif coverage_note_line(s):
+        lines.insert(3, coverage_note_line(s))
     split = parts_line(report)
     if split:
         lines.insert(3, "**Report parts:** %s" % split)
@@ -655,9 +666,12 @@ def render_summary(report):
         groups_idx = lines.index("## Groups")
         lines[groups_idx:groups_idx] = delta_lines
     for g in report["groups"]:
-        pg = g["panel_grades"]
-        grades = " / ".join("%s %s" % (p, pg[p]) for p in findings_mod.PANEL_ORDER)
-        lines.append("- **%s** — %s" % (tool_base.inert_text(g["name"]), grades))
+        # #3672: the worst gate-eligible severity per panel, read back from the stored
+        # rollup letter. The JSON keeps `panel_grades`.
+        pg = g.get("panel_grades") if isinstance(g.get("panel_grades"), dict) else {}
+        worst = " / ".join("%s %s" % (p, grading_mod.worst_severity_of(pg.get(p)))
+                           for p in findings_mod.PANEL_ORDER)
+        lines.append("- **%s** — %s" % (tool_base.inert_text(g["name"]), worst))
     lines.append("")
     lines.append("## Top findings")
     for f in sorted(report["findings"], key=findings_mod._issue_sort)[:10]:

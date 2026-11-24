@@ -47,11 +47,11 @@ findings at or above the threshold), `--out PATH`, `--tools` (require tool scan)
 tool scan), `--reset` (discard the current run's working artifacts and start a NEW run — keeps every
 durable tag-named report on disk, only reclaims `.panopticon/runs/<tag>/` and the run-manifest, so
 it is safe to run on a finished review), `--epss` (enrich CVE citations), `--gate-unverified`
-(unverified findings drive grades/gate), `--max-verify N` (cap the verify queue; every finding is
+(unverified findings drive health and the gate), `--max-verify N` (cap the verify queue; every finding is
 queued, tool claims included, unless you cap it), `--max-per-group N` (files per review chunk
 at run time, default 48; a positive integer, pinned in the run-manifest on the first run so a resume
 never repartitions cells that are already done; a full review at any other value reports its
-letter as provisional, since the group size changes how much a scan finds (#1495) — `driver
+health score as provisional, since the group size changes how much a scan finds (#1495) — `driver
 setup` takes the same flag for the setup-time cap, see Driver setup), `--include-fixtures` (keep
 tool findings under test-fixture corpora;
 default prunes them in every mode — incl. redteam, #1055 — for parity with the review-side prune,
@@ -84,6 +84,6 @@ downgraded; a doc-glob match that names no such file keeps its severity and is c
 - [Testing scanner fixtures (optional)](guide/testing-scanner-fixtures.md) — the local Docker
   fixture suite for validating scanner adapters against intentionally vulnerable applications.
 - [Evidence](guide/evidence.md) — the two independent axes a finding carries, severity and
-  `evidence.status`; what the grades and the gate count, and how citations are treated.
+  `evidence.status`; what health and the gate count, and how citations are treated.
 - [Notes](guide/notes.md) — reviewer confinement: the write guard, the read guard, hostile-content
   review, and the two refusals that cover a prepared tree.

@@ -260,7 +260,7 @@ def sec_less_groups(coverages, groups_meta):
 
 
 # #3220: led into `summary.coverage_note` by `grading.grade_report`.
-REVIEW_MATRIX_MISSING_NOTE = ("no review cell answered: health and grade are unknown, and "
+REVIEW_MATRIX_MISSING_NOTE = ("no review cell answered: health is unknown, and "
                               "risk_level is only the tool axis's worst finding (null when "
                               "it has none)")
 

@@ -717,6 +717,7 @@ groups:
       # which holds the ingest half, is at its 40-file headroom.
       - tests/test_tool_path_context.py
       - tests/test_unpinned_requirements.py   # #3749, beside it for the same reason
+      - tests/test_letter_out.py              # #3672: what the terminal and the page show
       - tests/test_replay_report.py
       - tests/test_compare_runs.py
       - tests/test_matrix_stability.py

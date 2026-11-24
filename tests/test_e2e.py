@@ -69,7 +69,8 @@ class TestEndToEnd(unittest.TestCase):
                  "--target", ".", "--groups", gj, "--out", out, fp],
                 capture_output=True, text=True, cwd=d)
             self.assertEqual(r2.returncode, 0, r2.stderr)
-            self.assertIn("Grade:", r2.stdout)
+            self.assertIn("**Health:**", r2.stdout)
+            self.assertNotIn("Grade:", r2.stdout)        # #3672
             with open(out) as _fh:
                 report = json.load(_fh)
             # The panel-agent finding carries no verdict, so it is unverified

@@ -20,7 +20,7 @@ from tests.synth.helpers import DEFAULT_TIMESTAMP, _cli_args, _target_with_files
 DEFAULT_CAP = discovery.DEFAULT_MAX_PER_GROUP
 GROUPS = [{"name": "app", "files": ["app.py", "lib.py"]}]
 CONFIG = repo_config.CONFIG_NAMES[0]
-BITE = "grade provisional: this scan skipped review areas the target's %s excludes (" % CONFIG
+BITE = "health provisional: this scan skipped review areas the target's %s excludes (" % CONFIG
 
 
 def _cov(group="app", *, deterministic=(), scout=(), panels=()):
@@ -56,7 +56,7 @@ def test_an_exclude_that_removes_a_fixed_floor_domain_makes_the_letter_provision
     assert plain["overall_grade"] and plain["provisional_grade"] is None
     assert _outcome(bitten) == (None, plain["overall_grade"], "custom")
     assert bitten["coverage_note"] == BITE + (
-        "app:COD). A letter is certified only when every applicable review area ran, because "
+        "app:COD). A health score is certified only when every applicable review area ran, because "
         "skipping one finds less in the same code.")
     # the letter only: score, gate and coverage certification are what they were
     for key in ("gate", "coverage_certified"):
@@ -142,10 +142,10 @@ def test_delta_and_file_scoped_reviews_keep_their_letter_and_notes(review_type):
 def test_a_custom_cap_and_a_biting_exclude_give_both_reasons_under_one_prefix():
     summary = _summary([_cov(deterministic=["COD"])], cap=15)
     note = summary["coverage_note"]
-    assert note.startswith("grade provisional: this scan used a non-default group size of 15")
+    assert note.startswith("health provisional: this scan used a non-default group size of 15")
     assert ("same code. This scan skipped review areas the target's %s excludes (app:COD)"
             % CONFIG) in note
-    assert note.count("grade provisional") == 1
+    assert note.count("health provisional") == 1
     assert summary["health"]["basis"]["profile"] == "custom"
 
 
@@ -153,9 +153,9 @@ def test_a_biting_exclude_beside_panel_gaps_keeps_the_1495_composition():
     reasons = health_basis.custom_profile_reasons(_run(), [_cov(deterministic=["COD"])])
     low = grading.certify("B", [], "high", {"docs"}, [], custom_profile=reasons)
     assert low["coverage_note"].startswith(
-        "gate certified; grade provisional — low-value panel(s) incomplete: docs; "
+        "gate certified; health provisional — low-value panel(s) incomplete: docs; "
         "this scan skipped review areas")
-    assert low["coverage_note"].count("grade provisional") == 1
+    assert low["coverage_note"].count("health provisional") == 1
     gate = grading.certify("B", [], "high", {"security"}, [], custom_profile=reasons)
     assert (gate["provisional_grade"], gate["gate"]) == ("B", "INCONCLUSIVE")
     assert gate["coverage_note"].startswith(grading.GATE_GAP_NOTE + "; " + BITE)
@@ -167,7 +167,7 @@ def test_verify_shortfall_cannot_hide_an_unrelated_gate_gap_from_custom_profile_
         shortfalls=["verify phase cut short by a host-class failure"],
     )
     assert result["coverage_note"].startswith(
-        grading.GATE_GAP_NOTE + "; grade provisional: custom scan.; ")
+        grading.GATE_GAP_NOTE + "; health provisional: custom scan.; ")
     assert result["coverage_note"].endswith("host-class failure")
 
 
@@ -266,9 +266,13 @@ def test_a_report_with_levers_round_trips_the_schema():
 def test_both_human_outputs_say_why_an_exclude_made_the_letter_provisional():
     report = _report([_cov(deterministic=["COD"])])
     note = report["summary"]["coverage_note"]
-    assert "**Grade provisional:** " + note in render_mod.render_summary(report)
+    # The line's own label says "provisional"; the note's leading "health provisional: "
+    # is not printed a second time (the HTML line has no label and keeps it).
+    assert note.startswith("health provisional: ")
+    assert ("**Health provisional:** " + note[len("health provisional: "):]
+            in render_mod.render_summary(report).splitlines())
     header = html_report._render_header(report)
-    assert "<div class='provisional-grade'>" in header and "excludes (app:COD)" in header
+    assert "<div class='provisional-health'>" in header and "excludes (app:COD)" in header
     assert "NOT CERTIFIED" not in header
 
 

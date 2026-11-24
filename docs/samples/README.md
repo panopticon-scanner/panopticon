@@ -2,6 +2,8 @@
 
 A real run, not a mock-up: Panopticon reviewing its own repository on 2026-09-20 (run 14), `--security redteam --tools`, Claude Code host.
 
+The run predates 5.5. Its report still showed a letter grade, so the readout and the dashboard screenshot do. Since 5.5 the terminal summary and the HTML report lead with the health score and show no letter (#3672).
+
 - [`run14-readout.md`](run14-readout.md): the operator's readout of the run, written the same day. Verdict, populations, the thirteen HIGH findings with their catalog codes, what the run cost to keep alive, and what was filed.
 - [`run14-dashboard.png`](run14-dashboard.png): the top of the HTML report. Grade, risk, gate, health index, the certification line, the host-capabilities line, and the severity and panel breakdowns.
 - [`run14-findings.png`](run14-findings.png): further down the same report. The "top issues" list, the severity filter, and the first finding cards of one group, each with its catalog code, location, evidence status and effort.

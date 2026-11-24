@@ -73,7 +73,7 @@ def _cell_count(audit, key):
 # so an explicit `--max-per-group 48` or a config at 48 is the default profile.
 GRADED_MAX_PER_GROUP = discovery.DEFAULT_MAX_PER_GROUP
 PROFILE_REASON = ("this scan used a non-default group size of %d files (%s; the default is %d). "
-                  "A letter is certified only at the default scan settings, because the group "
+                  "A health score is certified only at the default scan settings, because the group "
                   "size changes how much a scan finds in the same code.")
 # The run manifest folds a flag and the config into one `max_per_group` (driver._flags), so when
 # the clamped config record holds the effective value, a flag of that same value can't be told
@@ -123,8 +123,8 @@ def custom_profile_reason(run):
 # would let the same pinned repo and config certify on one run and not the next). `panels:` only
 # adds review and `exclude_paths:` is how vendored code is left out, so both are disclosed only.
 # Each template's first %s is the target's config file name.
-EXCLUDE_REASON = ("this scan skipped review areas the target's %s excludes (%s). A letter is "
-                  "certified only when every applicable review area ran, because skipping one "
+EXCLUDE_REASON = ("this scan skipped review areas the target's %s excludes (%s). A health score "
+                  "is certified only when every applicable review area ran, because skipping one "
                   "finds less in the same code.")
 SCOUT_EXCLUDE_NOTE = "the scout asked for review areas the target's %s excludes (%s)"
 EXCLUDE_PATHS_NOTE = ("exclude_paths in the target's %s removed %s file(s) from review "
