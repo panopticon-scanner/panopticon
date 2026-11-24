@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- **A rejected claim no longer shows a scanner's lines as its own (#3786).** When a reviewer's claim
+  outranks an aggregated scanner finding at the same line, the claim's row carries the scanner's
+  other lines and its count, because the scanner member leaves the report. If the claim is then
+  REJECTED, or is unsure, the scanner finding comes back as its own row with all its lines (#3716),
+  and the claim kept them too.
+  - A rejected claim about one line was published in `discarded_claims` with the scanner's
+    `occurrences` and `additional_loci`: it read as a rejection of every flagged line, while those
+    lines were also in `findings[]` under the scanner's own row.
+  - Under a NEEDS_MORE_INFO claim the hits were shown on two rows, once at the claim's severity.
+  - A member that comes back now takes its lines with it: the claim's row holds its own line only.
+    A claim whose scanner member stays merged (confirmed, or not answered) carries them as before.
+  - The gate and certification do not change. #3786 as filed said the rejection discarded the
+    carried lines; it does not, and tests now pin that the scanner finding returns whole, with
+    its own tool, rule and severity, not verified.
 - **The report says how old its advisory data is, and a run warns before it starts when the data is
   stale (#3798).** The scanners run offline against advisory data frozen in the tools image when it
   was built, so a run can only report an advisory that data already held. Nothing said how old it
