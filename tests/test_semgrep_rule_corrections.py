@@ -282,6 +282,14 @@ def test_docker_build_applies_and_exercises_the_checked_corrections():
     assert "COPY tools-image/semgrep /opt/panopticon/semgrep-corrections" in dockerfile
     assert "semgrep-corrections/apply_corrections.py" in dockerfile
     assert "--rules-root /opt/semgrep-rules" in dockerfile
+    # #3762: the path-pattern check runs on the tree as it will ship: after the
+    # corrections, in the same RUN, so a failure stops the layer.
+    step = dockerfile[dockerfile.index("ARG SEMGREP_RULES_REF="):]
+    step = step[:step.index("chmod -R a+rX /opt/semgrep-rules")]
+    applied = step.index("semgrep-corrections/apply_corrections.py")
+    checked = step.index("&& python3 /opt/panopticon/semgrep-corrections/check_rule_paths.py \\\n"
+                         "       --rules-root /opt/semgrep-rules \\\n")
+    assert applied < checked
     for item in json.loads((CORRECTIONS / "corrections.json").read_text())["corrections"]:
         assert "--config /opt/semgrep-rules/%s" % item["path"] in dockerfile
     assert "semgrep-corrections/verify_controls.py" in dockerfile
@@ -291,3 +299,162 @@ def test_docker_build_applies_and_exercises_the_checked_corrections():
     assert dockerfile.index("USER scanner") < dockerfile.index(
         "# Exercise the corrected vendored files"
     )
+
+
+# --- #3762: the vendored rules' path patterns cannot be made slow -------------
+
+
+def _path_check():
+    return _load("check_rule_paths", CORRECTIONS / "check_rule_paths.py")
+
+
+def _rule_file(tmp_path, text, name="rule.yaml"):
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    (tmp_path / name).write_text(text)
+    return tmp_path
+
+
+def _rule(paths, rule_id="some.rule"):
+    return yaml.safe_dump({"rules": [{"id": rule_id, "languages": ["python"],
+                                      "pattern": "x", "paths": paths}]})
+
+
+def test_a_star_is_counted_per_path_component_and_a_globstar_is_two():
+    check = _path_check()
+    assert check.MAX_STARS == 2
+    for pattern, expected in (("*.py", [1]), ("**", [2]), ("**/*.py", [2, 1]),
+                              ("*test*", [2]), ("**/a/**", [2, 0, 2]), ("a/b.py", [0, 0]),
+                              ("*a*b*", [3]), ("***", [3]), ("**x*", [3]), ("/*/*/*/*", [0, 1, 1, 1, 1]),
+                              ("**/*_*_*_*.csv", [2, 4]), ("", [0])):
+        assert check.stars_per_component(pattern) == expected, pattern
+
+
+@pytest.mark.parametrize("paths", [
+    {"include": ["*test*"]},                       # two in one component
+    {"exclude": ["**/wp-content/plugins/**/*.php"]},
+    {"include": ["**"], "exclude": ["**/*/openssl/*.h", "*secrets.*.yaml"]},
+    {"include": ["/*/*/*/*/*"]},                   # five stars, one a component
+    {"include": []}, {}, None,
+])
+def test_patterns_within_the_limit_pass(tmp_path, paths):
+    check = _path_check()
+    root = _rule_file(tmp_path, _rule(paths))
+    files, patterns = check.check_tree(root)
+    assert files == 1
+    assert patterns == sum(len(v) for v in (paths or {}).values())
+    assert check.main(["--rules-root", str(root)]) == 0
+
+
+@pytest.mark.parametrize("key, pattern, count", [
+    ("include", "*a*b*", 3),
+    ("exclude", "***", 3),                          # a globstar is two, and one more
+    ("include", "**x*", 3),
+    ("exclude", "src/*_*_*_*.csv", 4),              # the advisory's own shape
+    ("include", "ok/*.py/*_*_*", 3),                # the last component alone
+    ("exclude", "*a*b*/x.py", 3),                   # the first alone
+    ("include", "src/*_*_*/lib/*.py", 3),           # one in the middle
+])
+def test_a_pattern_over_the_limit_fails_and_is_named(tmp_path, capsys, key, pattern, count):
+    check = _path_check()
+    paths = {"include": ["*.py"], "exclude": ["*test*"]}
+    paths[key] = paths[key] + [pattern]
+    root = _rule_file(tmp_path / "rules" / "python", _rule(paths, "python.slow-rule")).parent
+    with pytest.raises(check.RulePathError) as refused:
+        check.check_tree(root)
+    said = str(refused.value)
+    assert said.startswith("python/rule.yaml: rule 'python.slow-rule': `paths.%s` pattern %r "
+                           "has %d `*` in one path component; the limit is 2" % (key, pattern, count))
+    assert said.endswith("(#3762)")
+    with pytest.raises(SystemExit) as stopped:
+        check.main(["--rules-root", str(root)])
+    assert stopped.value.code == 1
+    err = capsys.readouterr().err
+    assert "semgrep rule path check failed: python/rule.yaml: rule 'python.slow-rule'" in err
+    assert repr(pattern) in err and "#3762" in err
+
+
+def test_one_bad_rule_among_many_files_fails_the_tree(tmp_path):
+    check = _path_check()
+    _rule_file(tmp_path / "a", _rule({"include": ["*.py"]}))
+    _rule_file(tmp_path / "b", _rule({"include": ["*.py"]}), "first.yml")
+    _rule_file(tmp_path / "b", yaml.safe_dump({"rules": [
+        {"id": "fine", "paths": {"include": ["*.js"]}},
+        {"id": "slow", "paths": {"exclude": ["*_*_*"]}}]}), "second.yaml")
+    (tmp_path / "b" / "notes.txt").write_text("rules: not yaml {")     # not a rule file's name
+    with pytest.raises(check.RulePathError, match=r"^b/second\.yaml: rule 'slow': `paths\.exclude`"):
+        check.check_tree(tmp_path)
+
+
+@pytest.mark.parametrize("text, reason", [
+    ("rules:\n  - id: x\n    paths: [unclosed\n", "cannot be read as a rule file"),
+    ("\tnot: yaml: at: all\n", "cannot be read as a rule file"),
+    ("- just\n- a list\n", "has no `rules` list"),
+    ("rules: {}\n", "has no `rules` list"),
+    ("", "has no `rules` list"),
+    ("rules:\n  - just a string\n", "rule 0 is str, not a mapping"),
+    ("rules:\n  - id: x\n    paths: '*.py'\n", "rule 'x': `paths` is str, not a mapping"),
+    ("rules:\n  - id: x\n    paths: ['*.py']\n", "rule 'x': `paths` is list, not a mapping"),
+    ("rules:\n  - id: x\n    paths:\n      include: '*.py'\n",
+     "rule 'x': `paths.include` is str, not a list"),
+    ("rules:\n  - id: x\n    paths:\n      exclude:\n        - 7\n",
+     "rule 'x': a `paths.exclude` entry is int, not a string"),
+    ("rules:\n  - id: x\n    paths:\n      include:\n        - [a, b]\n",
+     "rule 'x': a `paths.include` entry is list, not a string"),
+    ("rules:\n  - paths:\n      include: {a: b}\n", "rule 0: `paths.include` is dict, not a list"),
+])
+def test_what_cannot_be_read_as_semgrep_reads_it_fails_and_names_the_file(
+        tmp_path, capsys, text, reason):
+    check = _path_check()
+    root = _rule_file(tmp_path / "rules" / "go", text, "broken.yaml").parent
+    with pytest.raises(check.RulePathError) as refused:
+        check.check_tree(root)
+    assert str(refused.value).startswith("go/broken.yaml: ")
+    assert reason in str(refused.value)
+    assert str(refused.value).endswith("(#3762)")
+    with pytest.raises(SystemExit) as stopped:
+        check.main(["--rules-root", str(root)])
+    assert stopped.value.code == 1
+    assert "go/broken.yaml" in capsys.readouterr().err
+
+
+def test_bytes_that_are_not_text_fail_and_name_the_file(tmp_path):
+    check = _path_check()
+    (tmp_path / "bad.yml").write_bytes(b"rules:\n  - id: \xff\xfe\n")
+    with pytest.raises(check.RulePathError, match=r"^bad\.yml: cannot be read as a rule file"):
+        check.check_tree(tmp_path)
+
+
+def test_a_tree_with_no_rule_file_is_not_a_pass(tmp_path):
+    check = _path_check()
+    with pytest.raises(check.RulePathError, match="holds no rule file"):
+        check.check_tree(tmp_path)
+    with pytest.raises(check.RulePathError, match="not a directory"):
+        check.check_tree(tmp_path / "absent")
+    (tmp_path / "readme.md").write_text("no rules here\n")
+    with pytest.raises(check.RulePathError, match="holds no rule file"):
+        check.check_tree(tmp_path)
+
+
+def test_only_the_top_level_paths_of_a_rule_is_read_as_semgrep_reads_it(tmp_path):
+    """Semgrep 1.185.0 reads `paths` at the top level of a rule only (`rule.py`). A key
+    of that name elsewhere, under `options` or `metadata`, is not a path filter and is
+    not held to the limit; the rule's own is."""
+    check = _path_check()
+    text = yaml.safe_dump({"rules": [{
+        "id": "x", "options": {"paths": {"include": ["*a*b*c*"]}},
+        "metadata": {"paths": "*a*b*c*"}, "paths": {"include": ["*.py"]}}]})
+    assert check.check_tree(_rule_file(tmp_path, text)) == (1, 1)
+    alone = yaml.safe_dump({"rules": [{"id": "y", "options": {"paths": {"include": ["*a*b*c*"]}}}]})
+    assert check.check_tree(_rule_file(tmp_path / "alone", alone)) == (1, 0)
+
+
+def test_the_five_corrected_rule_files_pass(tmp_path):
+    """The vendored rule set itself is not in this repository (the image build fetches
+    it at `SEMGREP_RULES_REF`), so the whole set is checked by the build. What is here
+    is checked here: the five replacement files the image installs."""
+    check = _path_check()
+    for item in json.loads((CORRECTIONS / "corrections.json").read_text())["corrections"]:
+        target = tmp_path / item["path"]
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes((CORRECTIONS / item["replacement"]).read_bytes())
+    assert check.check_tree(tmp_path) == (5, 0)
