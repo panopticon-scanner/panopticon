@@ -29,6 +29,7 @@ import scripts.runners.base as base
 import scripts.runners.children as children
 import scripts.runners.claude as claude_runner
 import scripts.runners.codex as codex_runner
+import scripts.runners.gemini as gemini_runner
 import scripts.runners.kimi as kimi_runner
 
 # This file drives the claude family's own `run_entry` on purpose, which is
@@ -288,6 +289,36 @@ class TestTheKimiFamily(_FamilyCase):
             entry = {"id": "review-app-SEC", "agent": None, "enforced": False,
                      "model": "secondary", "prompt": "review"}
             with mock.patch.object(kimi_runner.Runner, "command",
+                                   return_value=self.tree_argv()):
+                result = runner.run_entry(entry, {})
+        self.assert_timed_out(result)
+        self.assert_died(self.grandchild())
+
+
+class TestTheGeminiFamily(_FamilyCase):
+    """#3741: gemini was the one shipped family with no case here."""
+
+    def _home(self):
+        """A fixture home with the files the runner seeds from, never the operator's."""
+        home = os.path.join(self.root, "operator-home")
+        os.makedirs(os.path.join(home, ".gemini"))
+        with open(os.path.join(home, ".gemini", "oauth_creds.json"), "w", encoding="utf-8") as fh:
+            json.dump({"refresh_token": "fixture"}, fh)
+        with open(os.path.join(home, ".gemini", "settings.json"), "w", encoding="utf-8") as fh:
+            json.dump({"security": {"auth": {"selectedType": "oauth-personal"}}}, fh)
+        return home
+
+    def test_the_entry_timeout_ends_the_whole_tree(self):
+        env = {"HOME": self._home(), "PATH": os.environ.get("PATH", "")}
+        with mock.patch.dict(os.environ, env, clear=True), \
+                self.family_default(gemini_runner), self.timeout_after_ready():
+            runner = gemini_runner.Runner("gemini")
+            runner.prepare(os.path.join(self.root, "run"), review_root=self.root)
+            self.addCleanup(runner.teardown, "complete")
+            runner.entry_timeout = 1
+            entry = {"id": "review-app-SEC", "agent": None, "enforced": False,
+                     "model": None, "prompt": "review"}
+            with mock.patch.object(gemini_runner.Runner, "command",
                                    return_value=self.tree_argv()):
                 result = runner.run_entry(entry, {})
         self.assert_timed_out(result)
