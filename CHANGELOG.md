@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+- **A finding cut by `--max-verify` is a shortfall: a run that cut anything is not certified (#3733,
+  owner's ruling 2026-11-20).** The verify queue is sorted by claimed severity and `--max-verify N`
+  cuts its tail. No advisor is asked about a cut finding, so it stays `unverified` and cannot gate,
+  and that was not counted as undone work.
+  - With `--max-verify 3`, three claims one cell filed at CRITICAL (which its own advisor rejected)
+    pushed another cell's HIGH out of the queue. That finding's CONFIRMED was never bound: the run
+    read PASS, certified, with no shortfall, where the uncapped run is FAIL.
+  - It needed no hostile cell: any cap smaller than the queue could do it, and `--max-verify 0`
+    certified a run that verified nothing.
+  - Under the default `--fail-on critical`, three confirmed HIGH findings cut from the queue took
+    the weighted defect from 75 to 0, certified.
+  - Now any cut finding is a `summary.grade_shortfalls` reason, like the other undone verify work
+    (#3667): the run is NOT CERTIFIED, its health is provisional, a PASS gate reads INCONCLUSIVE,
+    and the reason is named: `3 findings cut from verification by --max-verify (2 at or above the
+    --fail-on level)`. A FAIL stays a FAIL.
+  - `meta.coverage.verdicts.cut_at_gate_level` (new) counts the cut findings at or above the
+    `--fail-on` level, by the severity the queue was sorted on; 0 with the gate off.
+  - **This changes results.** A capped run that cut a finding and read PASS, certified, now reads
+    INCONCLUSIVE, not certified. A cap that cuts nothing changes nothing. The queue order and the
+    queue ids are unchanged.
 - **A rejected claim no longer shows a scanner's lines as its own (#3786).** When a reviewer's claim
   outranks an aggregated scanner finding at the same line, the claim's row carries the scanner's
   other lines and its count, because the scanner member leaves the report. If the claim is then

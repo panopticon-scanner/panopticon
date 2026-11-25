@@ -95,6 +95,11 @@ bundle, another run's, no part count, no run to bind to) or `unloadable`, and "5
 unanswered" holds the letter back the same way. An unreadable attempts record is a reason of its
 own; a run whose backups all answered is unchanged. A finding whose primary answered is not owed
 again, so its unanswered backup is a backup reason only, never also a verify-advisor one.
+A finding cut by `--max-verify` is a reason as well (#3733): no advisor is asked about it, so it
+cannot gate, and "3 findings cut from verification by --max-verify (2 at or above the --fail-on
+level)" makes the health provisional the same way. `meta.coverage.verdicts.cut` counts the cut
+findings and `cut_at_gate_level` those at or above the `--fail-on` level, by the severity the
+queue was sorted on (0 with the gate off). Any cut is a reason, whatever its severity.
 Backup coverage is also counted per claim (#3695). Verify records the ids of the claims it hands
 each backup, and a backup is `answered` only when every one of them has a verdict in its own
 bundles: one that answers 1 of its 20 claims is `unanswered`, and is asked again on the verify

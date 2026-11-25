@@ -419,6 +419,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
             {
                 "queued": 2,
                 "cut": 0,
+                "cut_at_gate_level": 0,
                 "supplied": 2,
                 "matched": 1,
                 "unknown": 1,
@@ -499,6 +500,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
             {
                 "queued": 1,
                 "cut": 0,
+                "cut_at_gate_level": 0,
                 "supplied": 1,
                 "matched": 0,
                 "unknown": 0,
@@ -568,6 +570,7 @@ class TestVerdictAccountingMeta(unittest.TestCase):
             {
                 "queued": 1,
                 "cut": 0,
+                "cut_at_gate_level": 0,
                 "supplied": 0,
                 "matched": 0,
                 "unknown": 0,
@@ -617,6 +620,199 @@ class TestVerdictCutAccounting(unittest.TestCase):
         v = r["meta"]["coverage"]["verdicts"]
         self.assertEqual(v["queued"], 1)
         self.assertEqual(v["cut"], 2)
+
+
+class TestACutIsAShortfall(unittest.TestCase):
+    """#3733 (owner ruling 2026-11-20): a finding `--max-verify` cut from the verify
+    queue is verify work left undone, and the run says so.
+
+    The queue is sorted by claimed severity and the cap cuts its tail. A cut finding
+    is never asked about, so it is `unverified` and cannot gate, and that was no
+    shortfall. Three claims a hostile cell filed at CRITICAL, which its own advisor
+    rejected, were enough to push another cell's HIGH past `--max-verify 3`: its
+    advisor's CONFIRMED was never bound and the run read PASS, certified, where the
+    uncapped run is FAIL. It needed no hostile cell either, only a cap smaller than
+    the queue. Now any cut is a `grade_shortfalls` reason: not certified, health
+    provisional, PASS becomes INCONCLUSIVE."""
+
+    @staticmethod
+    def _claim(fid, sev, line, **more):
+        claim = _agentic(fid=fid, sev=sev, title=fid, **more)
+        claim["location"] = {"file": "app.py", "line_start": line}
+        return claim
+
+    def _decoys(self, word="REJECTED"):
+        return [(self._claim("decoy%d" % n, "CRITICAL", 10 + n), word) for n in range(3)]
+
+    def _real(self):
+        return (self._claim("real", "HIGH", 50), "CONFIRMED")
+
+    @staticmethod
+    def _report(pairs, max_verify=None, fail_on="high"):
+        bundles = {f["id"]: [{"finding_id": f["id"], "verdict": v, "reasoning": "r",
+                              "run_id": "RID", "stage": "primary"}] for f, v in pairs if v}
+        fs = findings_mod.FindingSet(findings=[f for f, _ in pairs], verdict_run_id="RID",
+                                     verdicts_supplied=True, verdict_bundles=bundles)
+        with contextlib.redirect_stderr(io.StringIO()):
+            return report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="t", fail_on=fail_on, max_verify=max_verify,
+                                         timestamp="2026-10-20T00:00:00Z"),
+                findings=fs))
+
+    @staticmethod
+    def _read(report):
+        summary, verdicts = report["summary"], report["meta"]["coverage"]["verdicts"]
+        return (summary["gate"], summary["coverage_certified"], summary["grade_shortfalls"],
+                verdicts["cut"], verdicts["cut_at_gate_level"])
+
+    @staticmethod
+    def _status(report, title):
+        return only([f for f in report["findings"] if f["title"] == title])["evidence"]["status"]
+
+    def test_decoys_that_push_a_confirmed_high_past_the_cap_no_longer_buy_a_certified_pass(self):
+        reason = "1 finding cut from verification by --max-verify (1 at or above the --fail-on level)"
+        for order in ("decoys first", "decoys last"):
+            with self.subTest(order=order):
+                pairs = self._decoys() + [self._real()]
+                pairs = pairs if order == "decoys first" else pairs[::-1]
+                # No cap: the confirmed HIGH fails the gate.
+                self.assertEqual(("FAIL", True, [], 0, 0), self._read(self._report(pairs)))
+                capped = self._report(pairs, max_verify=3)
+                # It was: PASS, certified, no shortfall.
+                self.assertEqual(("INCONCLUSIVE", False, [reason], 1, 1), self._read(capped))
+                self.assertEqual("unverified", self._status(capped, "real"))
+                self.assertEqual(reason, capped["summary"]["coverage_note"])
+        # Without the hostile cell the same cap cuts nothing.
+        self.assertEqual(("FAIL", True, [], 0, 0),
+                         self._read(self._report([self._real()], max_verify=3)))
+
+    def test_an_honest_run_whose_cap_is_smaller_than_its_queue_is_not_certified_either(self):
+        pairs = [(self._claim("a", "CRITICAL", 10), "REJECTED"),
+                 (self._claim("b", "HIGH", 20), "REJECTED"),
+                 (self._claim("c", "HIGH", 30), "REJECTED"),
+                 (self._claim("d", "HIGH", 40), "CONFIRMED")]
+        self.assertEqual(("FAIL", True, [], 0, 0), self._read(self._report(pairs)))
+        self.assertEqual(
+            ("INCONCLUSIVE", False,
+             ["1 finding cut from verification by --max-verify (1 at or above the --fail-on level)"],
+             1, 1), self._read(self._report(pairs, max_verify=3)))
+        # A cap of 0 verifies nothing: every finding is a cut.
+        self.assertEqual(
+            ("INCONCLUSIVE", False,
+             ["4 findings cut from verification by --max-verify (4 at or above the --fail-on level)"],
+             4, 4), self._read(self._report(pairs, max_verify=0)))
+
+    def test_a_cap_that_cuts_nothing_changes_nothing(self):
+        pairs = self._decoys() + [self._real()]
+        uncapped = self._report(pairs)
+        for cap in (4, 5, 400):
+            with self.subTest(cap=cap):
+                capped = self._report(pairs, max_verify=cap)
+                self.assertEqual(self._read(uncapped), self._read(capped))
+                self.assertEqual(uncapped["summary"], capped["summary"])
+
+    def test_a_cut_below_the_gate_level_is_a_shortfall_too_and_is_not_counted_at_the_level(self):
+        """Health reads only verified findings. Under the default `--fail-on critical`,
+        three confirmed HIGH cut from the queue took the weighted defect from 75 to 0,
+        certified: the level decides what is counted beside the reason, not whether
+        there is one."""
+        pairs = [(self._claim("a", "CRITICAL", 10), "REJECTED"),
+                 (self._claim("h1", "HIGH", 20), "CONFIRMED"),
+                 (self._claim("h2", "HIGH", 30), "CONFIRMED"),
+                 (self._claim("h3", "HIGH", 40), "CONFIRMED")]
+        uncapped = self._report(pairs, fail_on="critical")
+        self.assertEqual(("PASS", True, [], 0, 0), self._read(uncapped))
+        self.assertEqual(75, uncapped["summary"]["health"]["weighted_defect"])
+        capped = self._report(pairs, max_verify=1, fail_on="critical")
+        self.assertEqual(("INCONCLUSIVE", False,
+                          ["3 findings cut from verification by --max-verify"], 3, 0),
+                         self._read(capped))
+        self.assertEqual(0, capped["summary"]["health"]["weighted_defect"])
+        # The level is the run's own: the same cut under `--fail-on high` counts all three,
+        # and under `--fail-on medium` a cut MEDIUM counts and a cut LOW does not.
+        self.assertEqual(3, self._read(self._report(pairs, 1, "high"))[4])
+        mixed = [(self._claim("a", "HIGH", 10), "REJECTED"),
+                 (self._claim("m", "MEDIUM", 20), "CONFIRMED"), (self._claim("l", "LOW", 30), None)]
+        self.assertEqual(
+            ("INCONCLUSIVE", False,
+             ["2 findings cut from verification by --max-verify (1 at or above the --fail-on level)"],
+             2, 1), self._read(self._report(mixed, 1, "medium")))
+
+    def test_with_the_gate_off_a_cut_is_still_not_certified_and_nothing_is_at_a_level(self):
+        pairs = self._decoys() + [self._real()]
+        self.assertEqual(("OFF", True, [], 0, 0), self._read(self._report(pairs, fail_on=None)))
+        self.assertEqual(("OFF", False, ["1 finding cut from verification by --max-verify"], 1, 0),
+                         self._read(self._report(pairs, max_verify=3, fail_on=None)))
+
+    def test_a_fail_stays_a_fail_and_still_names_the_cut(self):
+        pairs = [(self._claim("a", "CRITICAL", 10), "CONFIRMED"), self._real()]
+        self.assertEqual(
+            ("FAIL", False,
+             ["1 finding cut from verification by --max-verify (1 at or above the --fail-on level)"],
+             1, 1), self._read(self._report(pairs, max_verify=1)))
+
+    def test_the_level_is_read_on_the_severity_the_queue_was_sorted_by(self):
+        """An unverified scanner HIGH is published as MEDIUM. Cut, it is counted at the
+        level it was cut at: confirmed, it would have gated."""
+        scanner = self._claim("scanner", "HIGH", 50, source="tool:semgrep",
+                              tool_evidence={"tool": "semgrep", "rule_id": "r.tool"})
+        capped = self._report(self._decoys() + [(scanner, "CONFIRMED")], max_verify=3)
+        self.assertEqual(("MEDIUM", "tool_reported"), (
+            only([f for f in capped["findings"] if f["title"] == "scanner"])["severity"],
+            self._status(capped, "scanner")))
+        self.assertEqual(
+            ("INCONCLUSIVE", False,
+             ["1 finding cut from verification by --max-verify (1 at or above the --fail-on level)"],
+             1, 1), self._read(capped))
+
+    def test_under_gate_unverified_a_cut_finding_gates_and_the_cut_is_still_named(self):
+        # `--gate-unverified`: an unverified finding gates. The cut one does, and the
+        # run still says what it did not verify.
+        pairs = self._decoys() + [(self._claim("real", "HIGH", 50), None)]
+        fs = findings_mod.FindingSet(
+            findings=[f for f, _ in pairs], verdict_run_id="RID", verdicts_supplied=True,
+            verdict_bundles={f["id"]: [{"finding_id": f["id"], "verdict": v, "reasoning": "r",
+                                        "run_id": "RID", "stage": "primary"}] for f, v in pairs if v})
+        with contextlib.redirect_stderr(io.StringIO()):
+            report = report_mod.build_report(report_mod.ReportInputs(
+                run=report_mod.RunConfig(target="t", fail_on="high", max_verify=3,
+                                         gate_unverified=True, timestamp="2026-10-20T00:00:00Z"),
+                findings=fs))
+        self.assertEqual(
+            ("FAIL", False,
+             ["1 finding cut from verification by --max-verify (1 at or above the --fail-on level)"],
+             1, 1), self._read(report))
+
+    def test_the_reason_stands_beside_the_other_undone_work(self):
+        # One queued claim nobody answered, and one cut: both are named.
+        pairs = [(self._claim("a", "CRITICAL", 10), None), self._real()]
+        capped = self._report(pairs, max_verify=1)
+        self.assertEqual(
+            ["1 finding unanswered by its verify advisor",
+             "1 finding cut from verification by --max-verify (1 at or above the --fail-on level)"],
+            capped["summary"]["grade_shortfalls"])
+
+    def test_the_reason_is_built_from_the_two_counts(self):
+        for stats, expected in (
+                (None, []), ({}, []), ({"cut": 0, "cut_at_gate_level": 0}, []),
+                ({"cut": 0, "cut_at_gate_level": 3}, []), ({"cut": True}, []),
+                ({"cut": 1}, ["1 finding cut from verification by --max-verify"]),
+                ({"cut": 2, "cut_at_gate_level": 0},
+                 ["2 findings cut from verification by --max-verify"]),
+                ({"cut": 2, "cut_at_gate_level": True},
+                 ["2 findings cut from verification by --max-verify"]),
+                ({"cut": 1, "cut_at_gate_level": 1},
+                 ["1 finding cut from verification by --max-verify "
+                  "(1 at or above the --fail-on level)"]),
+                ({"cut": 5, "cut_at_gate_level": 2},
+                 ["5 findings cut from verification by --max-verify "
+                  "(2 at or above the --fail-on level)"]),
+                # Never more at the level than were cut.
+                ({"cut": 2, "cut_at_gate_level": 9},
+                 ["2 findings cut from verification by --max-verify "
+                  "(2 at or above the --fail-on level)"])):
+            with self.subTest(stats=stats):
+                self.assertEqual(expected, grading_mod.cut_reasons(stats))
 
 
 class TestStrictGate(unittest.TestCase):

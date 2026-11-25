@@ -139,7 +139,7 @@ python3 skill/scripts/driver.py loop . --files a.py b.py     # the files you nam
 
 **Panopticon is a whole-repository audit. Delta review was withdrawn in 5.4 and removed in 5.5.** `--pr`, `--changes` (`-c`), `--base`, `--gate-scope` and `--diff-context` are refused at the command line, by name, and a run folder that was started as a delta review is not resumed (`--reset` starts a whole-repository run). Reviewing a diff was never calibrated or stress-tested, and a wrong PASS on a pull request is the worst failure this tool can have (#3735, #3736).
 
-Useful flags: `--security redteam` for the adversarial security posture, `--fail-on high` to tighten the gate (it fails on a confirmed CRITICAL by default; `--fail-on off` disables it, loudly), `--tools` or `--no-tools`, `--max-budget-usd` and `--max-iterations` to bound spend, `--max-verify N` to cap the verification queue. The full list is in [`docs/PANOPTICON.md`](docs/PANOPTICON.md), "Global flags".
+Useful flags: `--security redteam` for the adversarial security posture, `--fail-on high` to tighten the gate (it fails on a confirmed CRITICAL by default; `--fail-on off` disables it, loudly), `--tools` or `--no-tools`, `--max-budget-usd` and `--max-iterations` to bound spend, `--max-verify N` to cap the verification queue (a run that cuts any finding from it is not certified). The full list is in [`docs/PANOPTICON.md`](docs/PANOPTICON.md), "Global flags".
 
 ## What a review costs
 
@@ -156,7 +156,7 @@ This is a multi-agent fan-out, so the first question is the right one. One measu
 | Wall clock | 24.5 h, of which roughly 9 h was waiting on session quota |
 | Result | 1,124 findings kept (0 critical, 13 high), 1,079 of them confirmed; coverage certified |
 
-That is the most expensive shape the tool has: adversarial mode, every tool, the largest model tier for verification, on a repository that is itself a scanner. Levers, in order of effect: scope (`-d`, `-f`, `--files`), `--security standard`, `--max-verify`, a smaller advisor tier in the host's model profile, and `--max-budget-usd` on `driver loop` as the hard stop. Every report carries its own ledger under `meta.cost`, so your second run can be budgeted from your first.
+That is the most expensive shape the tool has: adversarial mode, every tool, the largest model tier for verification, on a repository that is itself a scanner. Levers, in order of effect: scope (`-d`, `-f`, `--files`), `--security standard`, `--max-verify` (the run is then not certified when the cap cuts a finding), a smaller advisor tier in the host's model profile, and `--max-budget-usd` on `driver loop` as the hard stop. Every report carries its own ledger under `meta.cost`, so your second run can be budgeted from your first.
 
 ## What you get
 
