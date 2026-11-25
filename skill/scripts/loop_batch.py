@@ -13,6 +13,7 @@ does. Same shape, and the same reason, as `money.py` and `ledger.py`.
 """
 import os
 import re
+import stat
 import sys
 
 import scripts.batch_settlement as batch_settlement
@@ -76,6 +77,25 @@ BATCH_OWNER_UNSTAMPED = (
     "one still in flight. After confirming no other `driver loop` is working on this "
     "run folder, re-run with `--discard-batch %s` to throw away THAT batch and keep "
     "the rest of the run, or with `--reset` to throw the whole run away.")
+
+# #3741: a 0-byte record. A loop stopped between reserving the name and writing the
+# record left one (`Batch.open` creates the record whole now, so only a run folder
+# from before that, or a damaged one, holds any). It was refused as "invalid manifest",
+# with `--reset` the only remedy offered and `--discard-batch` refused as well, though
+# nothing had been launched. It carries no owner stamp at all, so it is offered the
+# remedy an unstamped record is, and is not discarded on this loop's own judgement:
+# an empty record is also what a loop on a filesystem with no hard links has on disk
+# for the instant between its two steps.
+BATCH_EMPTY = (
+    "batch record %s is empty: a `driver loop` was stopped after reserving that name and "
+    "before writing the record, so it had launched nothing. An empty record carries no "
+    "owner stamp. After confirming no other `driver loop` is working on this run folder, "
+    "re-run with `--discard-batch %s` to remove THAT record and keep the rest of the run, "
+    "or with `--reset` to throw the whole run away.")
+DISCARD_EMPTY = (
+    "driver loop: discarded batch %d on --discard-batch: the record was empty (a loop "
+    "stopped before writing it, and had launched nothing), and you accepted that no "
+    "other loop is writing it. Recorded in %s.")
 
 # #1912: `--discard-batch <n>` for a record that is not there. Loud, and it
 # names the folder it looked in: the number comes off a file name the operator
@@ -155,6 +175,17 @@ def refuse_foreign_owner(name, doc, number):
     return None
 
 
+def _empty_record(path):
+    """A 0-byte regular file at a record's name: what a loop stopped between reserving
+    the name and writing the record left (#3741). Not a link, and not a file with bytes
+    that do not read: neither is something a crash here can leave."""
+    try:
+        found = os.lstat(path)
+    except OSError:
+        return False
+    return stat.S_ISREG(found.st_mode) and found.st_size == 0
+
+
 def _owner_stamp(doc):
     """The owner fields as FOUND, plus what this loop made of them (#1912).
 
@@ -210,7 +241,7 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
                                            batch_mod.manifest_path(root, discard), root))
     if not os.path.isdir(root):
         return
-    batches, claimed = [], set()
+    batches, claimed, empties = [], set(), []
     receipt_context = batch_settlement.recovery_context(review_root, namespace, request)
     declared = {e["id"]: e for e in request.get("entries", [])
                 if isinstance(e, dict) and isinstance(e.get("id"), str)}
@@ -219,6 +250,14 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
         if not match:
             continue
         path = os.path.join(root, name)
+        if _empty_record(path):
+            # #3741: nothing to validate and nothing to roll back. Refused by name
+            # unless it is the one the operator accepted; removed in the act loop
+            # below, once every other record has been judged.
+            if discard != int(match[1]):
+                raise ValueError(BATCH_EMPTY % (name, int(match[1])))
+            empties.append((int(match[1]), path))
+            continue
         doc = None if os.path.islink(path) else runio._load_json(path)
         refusal = "cannot recover stale batch %s; use --reset: " % name
         if not isinstance(doc, dict) or doc.get("schema_version") != 1:
@@ -273,6 +312,13 @@ def recover_stale(review_root, request, host, mode, namespace=None, discard=None
         # flagged it. All this recovery owes it is the file removals.
         batches.append((batch, pending, bool(doc.get("recovering")),
                         _owner_stamp(doc) if accepted else None))
+    for number, path in empties:
+        # The acceptance first, as for any discarded record (#1912).
+        batch_mod.record_discard(root, number, _owner_stamp({}))
+        run_manifest.record_discarded_batch(review_root, manifest, number, namespace=namespace)
+        os.remove(path)
+        print(DISCARD_EMPTY % (number, batch_mod.discarded_path(root)),
+              file=sys.stderr, flush=True)
     ledger = ledger_mod.Ledger(root)
     for batch, pending, ledgered, stamp in batches:
         # #1912: the operator's acceptance goes down FIRST, and only in this

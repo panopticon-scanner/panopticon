@@ -623,6 +623,12 @@ OUT_FILE_SNAPSHOT = "out_file_snapshot"
 # Readers decide from this stamp; host-capabilities.json only displays it.
 OUTPUT_SCHEMA_SHAPE = "output_schema_shape"
 ARTIFACT_STAMPS = (DRIVER_PLAN, OUT_FILE_SNAPSHOT, OUTPUT_SCHEMA_SHAPE)
+# #3741: {"at": <iso>} -- the driver's record that it BEGAN writing an owed-once
+# artifact, made before the file is opened and kept apart from the stamp, which
+# follows the file. Begun and not stamped is a write of the driver's own that was
+# interrupted (`artifact_interrupted`). Only the snapshot has one: it is the artifact
+# whose mere presence, unstamped, is read as planted evidence (#2115).
+ARTIFACT_BEGUN = {OUT_FILE_SNAPSHOT: OUT_FILE_SNAPSHOT + "_begun"}
 
 # #1912: [{"batch": <n>, "at": <iso>}, ...] -- the batch records this run's
 # operator accepted the loss of with `--discard-batch`. The count is the fact
@@ -789,6 +795,41 @@ def record_artifact_stamp(review_root, manifest, key, at=None, *, namespace=None
     return _rewrite(review_root, manifest, namespace=namespace)
 
 
+def artifact_interrupted(manifest, key):
+    """Whether this run's driver BEGAN writing the artifact `key` and never stamped it
+    (#3741): its own write, interrupted between the two.
+
+    The fact that tells an honest crash from planted evidence. Both leave "the file is
+    there and the manifest holds no stamp for it"; only the driver's own write leaves
+    this record as well, because the driver makes it before it opens the file, and
+    returns without making it when the file was already there.
+
+    Type-checked like a stamp: the manifest is in the reviewed tree, so a value that is
+    not `{"at": <non-empty string>}` was never this driver's record."""
+    begun = (manifest or {}).get(ARTIFACT_BEGUN.get(key, ""))
+    return (isinstance(begun, dict) and isinstance(begun.get("at"), str) and bool(begun["at"])
+            and not artifact_stamp(manifest, key))
+
+
+def record_artifact_begun(review_root, manifest, key, at=None, *, namespace=None):
+    """Record that this run's driver is about to write the artifact `key` (#3741).
+
+    Another deliberate rewrite, through the same atomic write the stamp uses, so the
+    record is durable on disk before the artifact's file is opened. The first one
+    stands: a second attempt at an interrupted write leaves it as it was. With no
+    manifest on disk it records nothing, as `record_artifact_stamp` explains."""
+    if key not in ARTIFACT_BEGUN:
+        raise ValueError("no begun record for run artifact: %r" % key)
+    if manifest is None and namespace is None:
+        manifest = load_manifest(review_root)
+    if manifest is None or not os.path.isfile(manifest_path(review_root, namespace)):
+        return None
+    if manifest.get(ARTIFACT_BEGUN[key]) or artifact_stamp(manifest, key):
+        return manifest
+    manifest[ARTIFACT_BEGUN[key]] = {"at": at or _now_iso()}
+    return _rewrite(review_root, manifest, namespace=namespace)
+
+
 def record_completed_at(review_root, manifest, at=None):
     """Record when this run ended `complete`, for a reader who has only the manifest (#3367).
 
@@ -836,7 +877,8 @@ def artifact_stamp(manifest, key):
     return stamp if isinstance(stamp, dict) and stamp else None
 
 
-def claim_artifact(review_root, manifest, key, path, write, stamp_fields=None, **fields):
+def claim_artifact(review_root, manifest, key, path, write, stamp_fields=None, begin=False,
+                   **fields):
     """Write the owed-once artifact `path` under its claim (SEC-377944137, #1832).
 
     Returns whatever `write` returned once the artifact is on disk, and None
@@ -868,6 +910,11 @@ def claim_artifact(review_root, manifest, key, path, write, stamp_fields=None, *
     and names `--reset`: a run folder cleared on purpose is a NEW run, not a
     repair of this one. `stamp_fields` derives evidence from the writer's return
     after the file lands, binding its exact bytes without a second read (#2115).
+
+    `begin` (#3741) makes the "written, not yet stamped" crash above tellable from a
+    file somebody else put there: `record_artifact_begun` goes to the manifest on disk
+    BEFORE `write` is called. The snapshot's caller asks for it, and re-takes the
+    snapshot when it finds its own write interrupted (`artifact_interrupted`).
     """
     # Loaded when the caller has none: `artifact_stamp(None, ...)` is falsy, so
     # skipping this would make the guard fail OPEN for a caller that passes None.
@@ -880,6 +927,8 @@ def claim_artifact(review_root, manifest, key, path, write, stamp_fields=None, *
               "uncertified integrity; use --reset to start a fresh one."
               % os.path.basename(path), file=sys.stderr, flush=True)
         return None
+    if begin:
+        record_artifact_begun(review_root, manifest, key)
     written = write()
     if os.path.isfile(path):
         fields.update(stamp_fields(written) if stamp_fields is not None else {})

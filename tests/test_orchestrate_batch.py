@@ -256,6 +256,95 @@ class TestHeadlessLoop(_HeadlessLoopCase):
         self.assertNotIn("review-app-SEC", resumed.launched)
         self.assertIn("review-app-ACC", resumed.launched)
 
+    def _an_empty_record(self, d, floor):
+        """A run stopped before its first batch, and a 0-byte `batch-1.json` in its
+        folder: what a loop killed between reserving the name and writing the record
+        left behind (#3741). Nothing had been launched."""
+        with mock.patch.object(orchestrate.loop_setup, "batch_refusal",
+                               return_value="driver loop: stopped by the test"):
+            self._return_persist(d, floor, FakeRunner())
+        run_dir = orchestrate.persist.run_dir(d)
+        path = batch_mod.manifest_path(run_dir, 1)
+        open(path, "w").close()
+        return run_dir, path
+
+    def test_an_empty_record_is_refused_with_the_narrow_remedy(self):
+        # It said "cannot recover stale batch batch-1.json; use --reset: invalid
+        # manifest or unbound checkpoint", and the same with `--discard-batch 1`.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        _run_dir, path = self._an_empty_record(d, floor)
+        resumed = FakeRunner()
+        status = self._return_persist(d, floor, resumed)
+        self.assertEqual("error", status["status"], status)
+        self.assertEqual("driver loop: " + loop_batch.BATCH_EMPTY % ("batch-1.json", 1),
+                         status["message"])
+        self.assertLess(status["message"].index("--discard-batch 1"),
+                        status["message"].index("--reset"))
+        self.assertIn("no other", status["message"])
+        self.assertEqual([], resumed.launched)
+        self.assertEqual(0, os.path.getsize(path))                  # left as found
+
+    def test_discarding_an_empty_record_removes_it_and_the_run_goes_on(self):
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        run_dir, path = self._an_empty_record(d, floor)
+        attempts = runio._load_json(runio._pano(d, review._ATTEMPTS_FILE))
+        err = io.StringIO()
+        resumed = FakeRunner()
+        with contextlib.redirect_stderr(err):
+            status = self._return_persist(d, floor, resumed, "--discard-batch", "1")
+        self.assertEqual("complete", status["status"], status)
+        self.assertIn("driver loop: discarded batch 1 on --discard-batch: the record was empty",
+                      err.getvalue())
+        self.assertNotIn("pid None", err.getvalue())
+        self.assertEqual([{"batch": 1, "owner": {"pid": None, "host": None, "machine": None,
+                                                  "state": "unstamped"}}],
+                         [{k: row[k] for k in ("batch", "owner")} for row in self._accepted(run_dir)])
+        self.assertEqual([1], [row["batch"] for row in
+                               driver.run_manifest.load_manifest(d)["discarded_batches"]])
+        # Nothing had been launched, so nothing is rolled back or refunded: each cell
+        # is launched once, on the charge it already had.
+        self.assertEqual(["review-app-ACC", "review-app-SEC"],
+                         sorted(x for x in resumed.launched if x.startswith("review-")))
+        self.assertEqual(attempts, runio._load_json(runio._pano(d, review._ATTEMPTS_FILE)))
+        self.assertEqual([], self._manifests(run_dir))
+
+    def test_only_an_empty_regular_file_is_an_empty_record(self):
+        # A record with bytes that do not read, and a link, are not what a crash leaves.
+        stale = ("cannot recover stale batch batch-1.json; use --reset: "
+                 "invalid manifest or unbound checkpoint")
+        for name, plant, refusal in (
+                ("garbage", lambda path: open(path, "w").write("{not json"), stale),
+                ("whitespace", lambda path: open(path, "w").write(" \n"), stale),
+                # First contact refuses a link in the run folder before recovery reads it.
+                ("a link to an empty file", lambda path: (os.remove(path), os.symlink(
+                    os.path.join(os.path.dirname(path), "elsewhere"), path)),
+                 "batch-1.json is a symlink"),
+                ("a list", lambda path: open(path, "w").write("[]"), stale)):
+            with self.subTest(name):
+                d, floor = self._repo(floor=("SEC", "ACC"))
+                run_dir, path = self._an_empty_record(d, floor)
+                open(os.path.join(run_dir, "elsewhere"), "w").close()
+                plant(path)
+                for extra in ((), ("--discard-batch", "1")):
+                    status = self._return_persist(d, floor, FakeRunner(), *extra)
+                    self.assertEqual("error", status["status"], status)
+                    self.assertIn(refusal, status["message"])
+                    self.assertNotIn("is empty", status["message"])
+                    self.assertTrue(os.path.lexists(path))
+
+    def test_an_empty_record_beside_a_refused_one_is_not_removed(self):
+        # Every record is judged before anything is deleted: the acceptance of the
+        # empty one must not be acted on when a later record still refuses.
+        d, floor = self._repo(floor=("SEC", "ACC"))
+        run_dir, path = self._an_empty_record(d, floor)
+        with open(batch_mod.manifest_path(run_dir, 2), "w") as fh:
+            fh.write("{not json")
+        status = self._return_persist(d, floor, FakeRunner(), "--discard-batch", "1")
+        self.assertEqual("error", status["status"], status)
+        self.assertIn("batch-2.json", status["message"])
+        self.assertEqual(0, os.path.getsize(path))
+        self.assertFalse(os.path.exists(batch_mod.discarded_path(run_dir)))
+
     def test_a_pid_from_another_namespace_is_never_read_as_a_crash(self):
         # #2065, the destructive case: same host, same MAC (`--network host`),
         # another container's pid namespace. Its pid is dead HERE, so it read

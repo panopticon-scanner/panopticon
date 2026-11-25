@@ -687,7 +687,11 @@ on Claude hooks, and always uses the return-persist path.
   Usage is never estimated from counts. - **The loop tears the guards down** scoped after each batch
   and unconditionally on `complete`, so `driver loop`'s terminal status carries no `teardown` field
   once that disarm has succeeded (#3367). `driver run` and `driver setup` never disarm, and keep
-  it. - **The loop rolls a crashed batch back before it resumes**
+  it. A disarm that fails (a full disk, a read-only settings file) does not end the loop with a
+  traceback (#3741): the status message says `guards not disarmed: <error>`, a `complete` keeps
+  its `teardown` field, and in session mode an `error` or `paused` status is given one, because
+  the grants still up are in your own settings. - **The loop rolls a crashed batch back before it
+  resumes**
   — a `batch-<n>.json` still on disk means a run that reached no teardown at all (`SIGKILL`, an OOM
   kill, a power loss), and the next `driver loop` takes that batch back BEFORE the engine can read a
   half-written artifact as a finished cell (#1698). Since #3351, after each real row the loop
@@ -736,7 +740,13 @@ on Claude hooks, and always uses the return-persist path.
   container gets a new pid namespace, so it reads its old record as foreign too: discard it
   explicitly with `--discard-batch N`. **The record carries no owner stamp** — an absent or malformed
   owner (a pid too large for the OS to hold included) is either a record from before the field
-  existed or one the target wrote, and neither is evidence that a crash happened. A fourth refusal
+  existed or one the target wrote, and neither is evidence that a crash happened. **An empty
+  record** (#3741) is a `batch-N.json` of 0 bytes, left by a loop stopped between reserving the
+  name and writing the record, before it launched anything. The loop writes the record whole
+  now, so only a run folder from an earlier build, or a damaged one, holds any. It has no owner
+  stamp either, so the refusal names `--discard-batch N`, which removes that file and nothing
+  else: there is nothing to roll back. A record with bytes that do not read is still refused as
+  invalid. A fourth refusal
   guards the other end: **a record this batch would overwrite**, a leftover carrying the iteration
   number this batch is about to open, refused before the guards are armed rather than silently
   replaced (that `O_EXCL` used to

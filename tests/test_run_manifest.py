@@ -651,6 +651,9 @@ class TestArtifactStamps(unittest.TestCase):
     def _stamp(self, key):
         return rm.artifact_stamp(rm.load_manifest(self.root), key)
 
+    def _on_disk(self):
+        return rm.load_manifest(self.root)
+
     def test_the_stamp_persists_and_is_read_back(self):
         rm.record_artifact_stamp(self.root, None, rm.DRIVER_PLAN,
                                  at="2026-01-01T00:00:00Z", sha256="a" * 64)
@@ -731,6 +734,63 @@ class TestArtifactStamps(unittest.TestCase):
                 fh.write("[]")
             return path
         return write
+
+    def test_a_begun_record_is_written_once_and_only_beside_no_stamp(self):
+        """#3741: the driver's own "I have begun writing this" record, kept apart from
+        the stamp: begun and not stamped is a write that was interrupted."""
+        key, begun = rm.OUT_FILE_SNAPSHOT, rm.ARTIFACT_BEGUN[rm.OUT_FILE_SNAPSHOT]
+        self.assertFalse(rm.artifact_interrupted(self._on_disk(), key))
+        manifest = self._on_disk()
+        rm.record_artifact_begun(self.root, manifest, key, at="2026-11-25T00:00:00Z")
+        self.assertEqual({"at": "2026-11-25T00:00:00Z"}, self._on_disk()[begun])
+        self.assertTrue(rm.artifact_interrupted(self._on_disk(), key))
+        self.assertTrue(rm.artifact_interrupted(manifest, key))          # and in memory
+        rm.record_artifact_begun(self.root, manifest, key, at="2027-01-01T00:00:00Z")
+        self.assertEqual({"at": "2026-11-25T00:00:00Z"}, self._on_disk()[begun])   # the first stands
+        rm.record_artifact_stamp(self.root, manifest, key, sha256="a" * 64)
+        self.assertFalse(rm.artifact_interrupted(self._on_disk(), key))
+        self.assertEqual({"at": "2026-11-25T00:00:00Z"}, self._on_disk()[begun])
+        # No key of the plan's: only the snapshot has the window.
+        with self.assertRaises(ValueError):
+            rm.record_artifact_begun(self.root, manifest, rm.DRIVER_PLAN)
+        self.assertFalse(rm.artifact_interrupted(manifest, rm.DRIVER_PLAN))
+
+    def test_a_begun_record_is_type_checked_like_a_stamp(self):
+        key, begun = rm.OUT_FILE_SNAPSHOT, rm.ARTIFACT_BEGUN[rm.OUT_FILE_SNAPSHOT]
+        for planted in ("yes", ["yes"], 7, True, None, {}, {"at": ""}, {"at": 7}, {"when": "x"}):
+            with self.subTest(planted=planted):
+                self.assertFalse(rm.artifact_interrupted({begun: planted}, key))
+        self.assertTrue(rm.artifact_interrupted({begun: {"at": "2026-11-25T00:00:00Z"}}, key))
+        self.assertFalse(rm.artifact_interrupted(
+            {begun: {"at": "2026-11-25T00:00:00Z"}, key: {"at": "x", "sha256": "a" * 64}}, key))
+        self.assertFalse(rm.artifact_interrupted(None, key))
+        self.assertFalse(rm.artifact_interrupted({}, key))
+
+    def test_with_no_manifest_on_disk_nothing_is_begun(self):
+        os.remove(rm.manifest_path(self.root))
+        self.assertIsNone(rm.record_artifact_begun(self.root, {"run_id": "r"}, rm.OUT_FILE_SNAPSHOT))
+        self.assertFalse(os.path.exists(rm.manifest_path(self.root)))
+
+    def test_a_claim_that_begins_says_so_before_it_writes(self):
+        path = os.path.join(self.root, "out-file-hashes.json")
+        seen = []
+
+        def write():
+            seen.append((os.path.exists(path),
+                         rm.artifact_interrupted(self._on_disk(), rm.OUT_FILE_SNAPSHOT)))
+            with open(path, "w") as fh:
+                fh.write("{}")
+            return path
+
+        self.assertEqual(path, rm.claim_artifact(self.root, None, rm.OUT_FILE_SNAPSHOT, path,
+                                                 write, begin=True, sha256="b" * 64))
+        self.assertEqual([(False, True)], seen)
+        self.assertEqual("b" * 64, self._stamp(rm.OUT_FILE_SNAPSHOT)["sha256"])
+        # A claim that does not ask for it writes no such record (the plan's).
+        plan = os.path.join(self.root, "dispatch-plan-driver.json")
+        rm.claim_artifact(self.root, None, rm.DRIVER_PLAN, plan, self._write(plan), sha256="c" * 64)
+        self.assertEqual([rm.ARTIFACT_BEGUN[rm.OUT_FILE_SNAPSHOT]],
+                         [k for k in self._on_disk() if k.endswith("_begun")])
 
     def test_a_claim_is_refused_only_for_a_stamped_and_absent_artifact(self):
         path = os.path.join(self.root, "dispatch-plan-driver.json")
