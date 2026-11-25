@@ -239,6 +239,70 @@ class ThroughTheRealEntryPointsTest(_HeadlessLoopCase):
             self.assertTrue(os.path.isfile(status["artifacts"][key]), key)
         self.assertRegex(run_manifest.load_manifest(d)["completed_at"], r"^\d{4}-\d\d-\d\dT")
 
+    def _flat(self, d):
+        report = runio._pano(d, "report.json")
+        return report, report + ".html"
+
+    def test_a_flat_alias_that_could_not_be_linked_is_linked_by_the_next_run(self):
+        """#3741: `.panopticon/report.json` and its HTML are links to the run's own
+        tag-named report, made best-effort when synthesis ends. A link that failed
+        (the disk was full) was never tried again: the next run said "already
+        complete" and left the documented path missing, or pointing at an older run."""
+        d, floor = self._repo()
+        real = runio._relink
+
+        def relink(link_path, target_name):
+            if os.path.basename(link_path).startswith("report.json"):
+                raise OSError(28, "No space left on device")
+            return real(link_path, target_name)
+
+        with mock.patch.object(runio, "_relink", side_effect=relink):
+            status = self._run(d, floor, FakeRunner())
+        self.assertEqual("complete", status["status"], status)
+        report, page = self._flat(d)
+        self.assertFalse(os.path.lexists(report))
+        self.assertFalse(os.path.lexists(page))
+        tagged = runio._report_out(d)
+        again = self._run(d, floor, FakeRunner())
+        self.assertEqual("error", again["status"])
+        self.assertIn("run already complete (report at %s)" % report, again["message"])
+        self.assertEqual(os.path.realpath(tagged), os.path.realpath(report))
+        self.assertEqual(os.path.realpath(tagged + ".html"), os.path.realpath(page))
+        self.assertEqual(os.path.basename(tagged), os.readlink(report))      # relative, as before
+
+    def test_a_flat_alias_left_on_an_older_report_is_pointed_at_this_run_s(self):
+        d, status = self._run_to_complete()
+        report, page = self._flat(d)
+        older = runio._pano(d, "older-report.json")
+        with open(older, "w") as fh:
+            fh.write("{}")
+        for link in (report, page):
+            os.remove(link)
+            os.symlink(os.path.basename(older), link)
+        _d, floor = d, ["SEC"]
+        self._run(d, floor, FakeRunner())
+        tagged = runio._report_out(d)
+        self.assertEqual(os.path.basename(tagged), os.readlink(report))
+        self.assertEqual(os.path.basename(tagged) + ".html", os.readlink(page))
+
+    def test_an_alias_that_is_already_right_is_not_written_again(self):
+        d, _status = self._run_to_complete()
+        with mock.patch.object(runio, "_relink") as relink:
+            self._run(d, ["SEC"], FakeRunner())
+        self.assertEqual([], [call.args[0] for call in relink.call_args_list
+                              if os.path.basename(call.args[0]).startswith("report.json")])
+
+    def test_an_alias_that_still_cannot_be_linked_names_the_report_itself(self):
+        d, _status = self._run_to_complete()
+        report, _page = self._flat(d)
+        os.remove(report)
+        real = runio._relink
+        with mock.patch.object(runio, "_relink", side_effect=lambda link, name: (
+                (_ for _ in ()).throw(OSError(30, "Read-only file system"))
+                if os.path.basename(link).startswith("report.json") else real(link, name))):
+            again = self._run(d, ["SEC"], FakeRunner())
+        self.assertIn("run already complete (report at %s)" % runio._report_out(d), again["message"])
+
     def test_the_directive_stays_when_the_disarm_failed(self):
         status = {"status": "complete", "teardown": engine.TEARDOWN_DIRECTIVE}
         guards = mock.Mock(armed_entries=[])

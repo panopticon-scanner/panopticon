@@ -307,6 +307,35 @@ def _last_line(*streams):
     return "it said nothing"
 
 
+def link_flat_names(review_root, report=None):
+    """Point `.panopticon/report.json` and `report.json.html` at this run's tag-named
+    report, and `runs/latest` at its folder (§5.1). Best-effort, as it always was: the
+    tag-named report is the authoritative one. Returns whether the flat names now lead
+    to this run's report (True with no tag, where the report IS the flat name).
+
+    #3741: called again by a run that finds itself already complete. A link that failed
+    when synthesis ended (a full disk) was never retried, so the documented path stayed
+    missing, or stayed on an older run's report, while every later run said "already
+    complete". A name that is already right is not written again."""
+    tag = runio._run_tag(review_root)
+    if not tag:
+        return True
+    report = report or runio._report_out(review_root)
+    wanted = [("report.json", f"{tag}-report.json")]
+    if os.path.exists(f"{report}.html"):
+        wanted.append(("report.json.html", f"{tag}-report.json.html"))
+    linked = True
+    for name, target in wanted:
+        link = runio._pano(review_root, name)
+        try:   # compat symlinks are best-effort; the tag-named report is authoritative
+            if not (os.path.islink(link) and os.readlink(link) == target):
+                runio._relink(link, target)
+        except OSError:
+            linked = False
+    runio._ensure_run_symlinks(review_root)
+    return linked
+
+
 #: Where an earlier attempt's published files go, in the run folder (#3769).
 _EARLIER = "earlier-attempt"
 #: The two flat names a reader of "the latest report" opens (§5.1).
@@ -559,16 +588,7 @@ def synthesize_execute(review_root, manifest):
     # `meta.schema_errors`: an x0x-only failure leaves that field at 0 in a
     # report.json that is itself valid -- the invalid artifact is the other
     # file, and only the status says so.)
-    tag = runio._run_tag(review_root)
-    if tag:
-        try:   # compat symlinks are best-effort; the tag-named report is authoritative
-            runio._relink(runio._pano(review_root, "report.json"), f"{tag}-report.json")
-            if os.path.exists(f"{report}.html"):
-                runio._relink(runio._pano(review_root, "report.json.html"),
-                        f"{tag}-report.json.html")
-        except OSError:
-            pass
-        runio._ensure_run_symlinks(review_root)
+    link_flat_names(review_root, report)
     # #1639 P15 / #2952: the one non-gate non-zero status. The report parses —
     # that is why the guard above cannot see this — but an artifact could not
     # be published/removed or the report, hydrated parts, or X0X sibling does

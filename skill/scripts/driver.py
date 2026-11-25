@@ -458,8 +458,13 @@ def _manifest_for_run(args, review_root, scope, first, phases):
         # each other on the very surface this work added. A --reset run never reaches here -- it has
         # no manifest to load -- so the old `not args.reset` clause is now structural.
         if phases and phases[-1].done(review_root, manifest):
+            # #3741: the flat names are links made best-effort when synthesis ends. One
+            # that failed then is made now; one that still cannot be is not named.
+            synthesize.link_flat_names(review_root)
             report = runio._pano(review_root, "report.json")
-            loc = report if os.path.exists(report) else review_root
+            tagged = runio._report_out(review_root)
+            loc = (report if os.path.exists(report)
+                   else tagged if os.path.exists(tagged) else review_root)
             return None, runio._error_status(
                 "run already complete (report at %s) -- use `--reset` to start "
                 "a new run" % loc)
