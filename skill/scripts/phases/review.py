@@ -81,7 +81,8 @@ def _cell_attempts(review_root):
 
 def _record_attempts(review_root, keys):
     """Count one dispatch per cell, in ONE write. Written at dispatch time, not
-    completion: the whole point is to bound cells that never complete.
+    completion: the whole point is to bound cells that never complete. (#3740: for
+    the entries `budget.new_handouts` says are new hand-outs, not for one emitted again.)
 
     #1767: this loop used to swallow a value that was not a count and write the
     key back as 1 -- a RESET, which refunds every attempt already spent and is
@@ -146,7 +147,21 @@ def _cell_exhausted(review_root, group, domain):
     an exhausted cell dispatchable again, silently. It refuses now."""
     return (budget.count(_attempts_path(review_root), _cell_key(group, domain),
                          _ATTEMPTS_WHAT)
-            >= MAX_CELL_ATTEMPTS)
+            >= MAX_CELL_ATTEMPTS
+            # #3740: ...and its last dispatch has ended. One still handed out, with
+            # nothing landed since, has not failed.
+            and not budget.outstanding(review_root, _BUDGET + _cell_key(group, domain)))
+
+
+# #3740: this budget's name in the hand-out marks (`budget.mark_handouts`), which hold
+# the verify budget's keys too.
+_BUDGET = "review:"
+
+
+def _budget_key(entry):
+    if entry.get("group") and entry.get("domain"):
+        return _BUDGET + _cell_key(entry["group"], entry["domain"])
+    return None
 
 
 def _get_valid_cell_data(review_root, manifest, group, domain, targeted_by_group=None):
@@ -720,9 +735,13 @@ def review_execute(review_root, manifest):
                                          if d == "SEC" else ()))
             for d in pending)
     if all_entries:
+        # #3740: charged when handed out, not on every planning. An entry emitted again
+        # with nothing changed on disk since it was handed out is the same dispatch.
+        charged = budget.new_handouts(review_root, all_entries)
         _record_attempts(review_root, [_cell_key(e["group"], e["domain"])
-                                       for e in all_entries
+                                       for e in charged
                                        if e.get("group") and e.get("domain")])
+        budget.mark_handouts(review_root, all_entries, charged, _budget_key)
         _record_tools_context(review_root, all_entries)
         _record_test_inventory(review_root, all_entries)
         req, sha = requests.write_dispatch_request_bound(

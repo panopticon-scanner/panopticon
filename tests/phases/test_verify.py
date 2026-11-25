@@ -9,6 +9,7 @@ import unittest
 from unittest import mock
 
 import scripts.phases.runio as runio
+import scripts.phases.budget as budget
 import scripts.phases.requests as requests
 import scripts.phases.review as review
 import scripts.phases.verify as verify
@@ -659,8 +660,10 @@ class TestTheBackupPartCountIsRecordedAtDispatch(BackupDispatch):
                               "G/SEC/backup/claims": ids, "G/SEC/backup/part_size": 2},
                              self._attempts())
             # Part 0 answers and part 1 never comes back: the re-dispatch sends part 1
-            # alone, but the cell still has two parts.
+            # alone, but the cell still has two parts. (#3740: both were launched, which
+            # the loop records; part 1 emitted again without that is not charged.)
             self._answer(0)
+            budget.handouts_ended(self.root, requests.load_dispatch_request(self.root)["entries"])
             self.assertIsNotNone(self._dispatch())
             entries = requests.load_dispatch_request(self.root)["entries"]
             self.assertEqual(1, len(entries))
@@ -881,6 +884,8 @@ class TestAnAdvisorSpeaksOnlyOfTheClaimsItWasHanded(BackupDispatch):
             self._primary()
             self.assertEqual(["verify-G-SEC-primary"], self._entries())
             self.assertEqual(charged, self._attempts()["G/SEC/primary"])
+            # #3740: each round was launched and came back with the same bundle.
+            budget.handouts_ended(self.root, requests.load_dispatch_request(self.root)["entries"])
         # The budget is spent with the bundle still there: the phase moves on, and what
         # the bundle says of the claim it was not handed is left for synthesis to drop.
         self.assertTrue(verify._verify_cell_done(self.root, self.manifest, "G", "SEC",

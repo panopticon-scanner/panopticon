@@ -199,11 +199,89 @@ class TestSessionMode(LoopCase):
         with mock.patch.object(orchestrate, "_after_first_run",
                                side_effect=lambda rr: self._seed_coverage(rr, floor)):
             s1, _ = self._loop(d, "--session-dir", s)
-        s2, _ = self._loop(d, "--session-dir", s)
+        s2, out2 = self._loop(d, "--session-dir", s)
         self.assertEqual((s1["status"], s1["pending"]), (s2["status"], s2["pending"]))
         # nothing advanced, so the id must still be armed after the re-entry
         # disarms-then-rearms it (R-P6-6) -- never left armed-over-nothing.
         self.assertIn("review-app-SEC", self._armed_read_ids(s))
+        # #3740: and it is the same dispatch. Each re-entry charged the cell again
+        # with nothing launched: 1, 2, 3, and the fourth ended the run with the cell
+        # exhausted and no agent ever run.
+        self.assertEqual({"app/SEC": 1}, self._attempts(d))
+        self.assertEqual({"review-app-SEC": {"left": 2, "reemitted": 0}}, s1["dispatches"])
+        self.assertNotIn("re-emitted", s1["message"])
+        self.assertEqual({"review-app-SEC": {"left": 2, "reemitted": 1}}, s2["dispatches"])
+        self.assertTrue(s2["message"].endswith(
+            "; review-app-SEC re-emitted 1 time, unchanged since handed out"), s2["message"])
+        printed = [json.loads(line) for line in out2.splitlines() if line.startswith("{")]
+        self.assertEqual(s2["dispatches"], printed[0]["dispatches"])
+        for again in (2, 3, 4, 5):
+            status, _ = self._loop(d, "--session-dir", s)
+            self.assertEqual(("dispatch", ["review-app-SEC"]), (status["status"], status["pending"]))
+            self.assertEqual({"app/SEC": 1}, self._attempts(d))
+            self.assertEqual({"left": 2, "reemitted": again}, status["dispatches"]["review-app-SEC"])
+            self.assertIn("re-emitted %d times, unchanged" % again, status["message"])
+
+    def _attempts(self, d):
+        return runio._load_json(runio._pano(d, "cell-attempts.json"))
+
+    def _first(self, d, s, floor, *extra):
+        with mock.patch.object(orchestrate, "_after_first_run",
+                               side_effect=lambda rr: self._seed_coverage(rr, floor)):
+            return self._loop(d, "--session-dir", s, *extra)[0]
+
+    def _review_entry(self, d):
+        req = orchestrate.requests.load_dispatch_request(d)
+        return next(e for e in req["entries"] if e["id"] == "review-app-SEC")
+
+    def test_a_cell_finished_after_a_re_entry_was_charged_once(self):
+        d, floor = self._repo(); s = self._session_root(d)
+        self._first(d, s, floor)
+        self._loop(d, "--session-dir", s)                    # too early: nothing has landed
+        entry = self._review_entry(d)
+        runio._write_json(entry["out_file"], {"findings": [], "_panopticon": {
+            "run_id": entry["run_id"], "role": "domain_panel", "domain": "SEC", "group": "app"}})
+        status, _ = self._loop(d, "--session-dir", s)
+        self.assertNotIn("review-app-SEC", status.get("pending") or [])
+        self.assertEqual({"app/SEC": 1}, self._attempts(d))  # it was 2 for the one agent run
+
+    def test_a_session_agent_that_writes_a_bad_file_each_round_still_exhausts(self):
+        # The cap is still on: something landed, and the cell is still pending, so that
+        # dispatch ended and the next one is charged.
+        d, floor = self._repo(); s = self._session_root(d)
+        status = self._first(d, s, floor)
+        for charged in (1, 2, 3):
+            self.assertEqual(("dispatch", ["review-app-SEC"]), (status["status"], status["pending"]))
+            self.assertEqual({"app/SEC": charged}, self._attempts(d))
+            self.assertEqual({"left": 3 - charged, "reemitted": 0},
+                             status["dispatches"]["review-app-SEC"])
+            with open(self._review_entry(d)["out_file"], "w", encoding="utf-8") as fh:
+                fh.write("not a findings file" + "!" * charged)     # a different file each round
+            status, _ = self._loop(d, "--session-dir", s)
+        self.assertEqual(("complete", 1), (status["status"], status["cells_exhausted"]), status)
+        self.assertEqual({"app/SEC": 3}, self._attempts(d))
+
+    def test_a_reply_driver_persist_refuses_each_round_still_exhausts(self):
+        d, floor = self._repo(); s = self._session_root(d)
+        with mock.patch("scripts.host_probes.run_probes", side_effect=_write_guard_not_proven):
+            status = self._first(d, s, floor, "--allow-unenforced")
+            reply = os.path.join(d, "reply.txt")
+            with open(reply, "w", encoding="utf-8") as fh:
+                fh.write("this is not a reply the controller can take")
+            for charged in (1, 2, 3):
+                self.assertEqual(("dispatch", ["review-app-SEC"]),
+                                 (status["status"], status["pending"]))
+                self.assertEqual({"app/SEC": charged}, self._attempts(d))
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    self.assertEqual(1, driver.main(["persist", "review-app-SEC", "--file", reply, d]))
+                # Entered twice more before the next reply: the same dispatch, not charged.
+                status, _ = self._loop(d, "--session-dir", s, "--allow-unenforced")
+                if charged < 3:
+                    again, _ = self._loop(d, "--session-dir", s, "--allow-unenforced")
+                    self.assertEqual({"app/SEC": charged + 1}, self._attempts(d))
+                    self.assertEqual(1, again["dispatches"]["review-app-SEC"]["reemitted"])
+        self.assertEqual(("complete", 1), (status["status"], status["cells_exhausted"]), status)
 
     def test_the_first_arm_marks_the_session_root_and_the_next_contact_verifies_it(self):
         # #3532: first contact only checks the session root; the first arm marks

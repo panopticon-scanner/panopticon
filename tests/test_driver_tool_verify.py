@@ -19,6 +19,7 @@ import unittest
 from unittest import mock
 from tests._test_helpers import adopt_panopticon, write_host_evidence
 from scripts import hosts
+import scripts.phases.budget as budget
 import scripts.phases.runio as runio
 import scripts.phases.verify as verify
 import scripts.phases.verify_tools as verify_tools
@@ -334,6 +335,66 @@ class TestOneListForTheQueueAndTheReport(_ToolVerifyBase):
             self._asked(d, self._manifest(severity="severe"))
 
 
+class TestAReEntryChargesNothing(_ToolVerifyBase):
+    """#3740, the tool round (Gate 5 reproduced it at the budget cap): each planning of
+    a tool advisor that was never launched charged its item again, and three of them
+    left the scanner finding unanswered with no advisor ever asked."""
+
+    def _plan(self, d, m):
+        with self._bundle():
+            return verify.verify_execute(d, m)
+
+    def _entries(self, d):
+        return runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"]
+
+    def test_a_tool_advisor_planned_again_with_nothing_launched_is_charged_once(self):
+        d = self._repo([_result("r1", "src/app.py", 1, level="note")])
+        m = self._manifest()
+        qid, finding = verify_tools._tool_verify_queue(d, m)[0]
+        for again in range(5):
+            self.assertEqual(("checkpoint", "tools"), (self._plan(d, m).kind, self._plan(d, m).group))
+            self.assertEqual(1, verify._verify_attempts_key(d, "tool/%s" % qid))
+        (entry,) = self._entries(d)
+        self.assertEqual({entry["id"]: {"left": 2, "reemitted": 9}},
+                         persist.dispatch_budget(d, "verify", [entry]))
+        # Asked at last, and answered: the one dispatch is the one charge.
+        with open(entry["out_file"], "w") as fh:
+            json.dump({"finding_id": finding["id"], "verdict": "CONFIRMED", "reasoning": "r"}, fh)
+        self.assertEqual("advanced", self._plan(d, m).kind)
+        self.assertEqual(1, verify._verify_attempts_key(d, "tool/%s" % qid))
+
+    def test_an_item_at_its_cap_is_not_spent_while_its_last_dispatch_is_still_out(self):
+        d = self._repo([_result("r1", "src/app.py", 1, level="note")])
+        m = self._manifest()
+        qid, _finding = verify_tools._tool_verify_queue(d, m)[0]
+        for launched in (1, 2):                 # two dispatches that ran and left nothing
+            self._plan(d, m)
+            budget.handouts_ended(d, self._entries(d))
+        for _ in range(3):                      # the third is handed out, and not launched
+            self.assertEqual("checkpoint", self._plan(d, m).kind)
+            self.assertEqual(3, verify._verify_attempts_key(d, "tool/%s" % qid))
+            self.assertFalse(verify_tools._tool_exhausted(d, qid))
+            self.assertFalse(verify.verify_done(d, m))
+        (entry,) = self._entries(d)
+        self.assertEqual({"left": 0, "reemitted": 2},
+                         persist.dispatch_budget(d, "verify", [entry])[entry["id"]])
+        budget.handouts_ended(d, [entry])       # launched, and nothing came of it
+        self.assertTrue(verify_tools._tool_exhausted(d, qid))
+        self.assertEqual("advanced", self._plan(d, m).kind)
+
+    def test_the_status_counts_are_for_the_two_budgets_only(self):
+        d = self._repo([_result("r1", "src/app.py", 1, level="note")])
+        self.assertEqual({}, persist.dispatch_budget(d, "scout", [{"id": "scout-app"}]))
+        self.assertEqual({}, persist.dispatch_budget(d, "review", [{"id": "no-cell"}, "x", {"id": 3}]))
+        self.assertEqual({}, persist.dispatch_budget(d, "verify", [{"id": "not-a-verify-entry"}]))
+        self.assertEqual({"review-app-SEC": {"left": 3, "reemitted": 0}}, persist.dispatch_budget(
+            d, "review", [{"id": "review-app-SEC", "group": "app", "domain": "SEC"}]))
+        runio._write_json(runio._pano(d, "cell-attempts.json"), {"app/SEC": 5})
+        self.assertEqual(0, persist.dispatch_budget(
+            d, "review", [{"id": "review-app-SEC", "group": "app", "domain": "SEC"}]
+        )["review-app-SEC"]["left"])
+
+
 class TestToolQueueParity(_ToolVerifyBase):
     """The crux: the driver's tool-finding queue_ids AND finding ids equal
     synthesize's for the same .panopticon/tools/ fixture."""
@@ -633,7 +694,11 @@ class TestToolVerifyResume(_ToolVerifyBase):
     def test_a_tool_return_that_never_lands_is_dispatched_at_most_three_times(self):
         """#3185 (M2): the tool round had no budget -- a verdict never written, or
         garbled, re-dispatched forever. It is charged at dispatch now; at the cap
-        the item is done and its finding stays unanswered (tool_axis.unanswered)."""
+        the item is done and its finding stays unanswered (tool_axis.unanswered).
+
+        #3740: each round here is a dispatch that was LAUNCHED, which the loop records
+        (`budget.handouts_ended`). The same entry emitted again with no launch between
+        is one dispatch, and is charged once: `TestAReEntryChargesNothing`."""
         for shape in ("never written", "garbled"):
             with self.subTest(shape=shape):
                 d = self._repo([_result("r1", "src/app.py", 1, level="note")])
@@ -650,6 +715,8 @@ class TestToolVerifyResume(_ToolVerifyBase):
                             os.makedirs(runio._pano(d, "verdicts"), exist_ok=True)
                             with open(verify_tools._tool_verdict_out_file(d, qid), "w") as fh:
                                 fh.write("{ not valid json")
+                        budget.handouts_ended(
+                            d, runio._load_json(runio._pano(d, "dispatch-request.json"))["entries"])
                 self.assertEqual(3, dispatches)
                 self.assertEqual("advanced", result.kind)
                 self.assertTrue(verify.verify_done(d, m))

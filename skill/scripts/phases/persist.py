@@ -449,7 +449,42 @@ def rollback_markers(review_root, checkpoint, entries):
     keys = [review._cell_key(e.get("group"), e.get("domain"))
             for e in entries or [] if isinstance(e, dict)
             and e.get("group") and e.get("domain")]
+    budget.handouts_ended(review_root, entries)   # #3740: the next emission charges again
     return _give_back_attempts(runio._pano(review_root, review._ATTEMPTS_FILE), keys)
+
+
+def dispatch_budget(review_root, checkpoint, entries):
+    """{entry id: {"left": dispatches its budget still allows, "reemitted": times it
+    has been emitted again unchanged since it was handed out}} for the entries of a
+    `review` or `verify` checkpoint; {} for any other (#3740).
+
+    For the `dispatch` status. `left` counts the dispatch being handed out as spent.
+    A stuck session agent that never writes is not charged (`budget`), so its
+    `reemitted` is the only place it shows."""
+    if checkpoint == "review":
+        def left(entry):
+            if not (entry.get("group") and entry.get("domain")):
+                return None
+            return review.MAX_CELL_ATTEMPTS - budget.count(
+                runio._pano(review_root, review._ATTEMPTS_FILE),
+                review._cell_key(entry["group"], entry["domain"]), review._ATTEMPTS_WHAT)
+    elif checkpoint == "verify":
+        def left(entry):
+            key = verify._dispatch_key(entry)
+            return (None if key is None else
+                    verify._MAX_VERIFY_ATTEMPTS - verify._verify_attempts_key(review_root, key))
+    else:
+        return {}
+    again = budget.handouts_reemitted(review_root, entries)
+    out = {}
+    for entry in entries or []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), str):
+            continue
+        remaining = left(entry)
+        if remaining is not None:
+            out[entry["id"]] = {"left": max(remaining, 0),
+                                "reemitted": again.get(entry["id"], 0)}
+    return out
 
 
 def _give_back_attempts(path, keys):

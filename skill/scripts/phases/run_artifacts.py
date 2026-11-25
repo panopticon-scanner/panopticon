@@ -18,6 +18,7 @@ import scripts.run_manifest as run_manifest
 import scripts.safe_glob as safe_glob
 import scripts.safe_write as safe_write
 import scripts.tolerant_json as tolerant_json
+from . import budget
 from . import coverage
 from . import runio
 
@@ -127,6 +128,9 @@ _RESET_GLOBS = ("groups.json", "coverage-*.json", "scout-*.json", "tools-ran.jso
                 # discovery-attempts.json's own docstring already claimed it).
                 "cell-attempts.json", "verify-attempts.json",
                 "discovery-attempts.json",
+                # #3740: which dispatches are handed out and not ended. It goes with
+                # the budgets it decides the charges of.
+                budget.MARKS_FILE,
                 # #3780: the scout counter's name since it left the scouts' pattern.
                 plan_contract.SCOUT_ATTEMPTS_NAME)
 

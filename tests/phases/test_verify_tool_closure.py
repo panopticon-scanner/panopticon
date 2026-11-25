@@ -12,6 +12,7 @@ import jsonschema
 
 import scripts.evidence as evidence
 import scripts.loop_batch as loop_batch
+import scripts.phases.budget as budget
 import scripts.phases.persist as persist
 import scripts.phases.evidence_scope as evidence_scope
 import scripts.phases.runio as runio
@@ -89,8 +90,13 @@ class _Tree(unittest.TestCase):
         runio._write_json(verify_tools._tool_verdict_out_file(self.root, QID), body)
 
     def _spent(self, n):
+        # `n` dispatches that were launched: each is charged when handed out, and the
+        # loop ends the hand-out when it records the result (#3740). Without that the
+        # second would be the first emitted again, and not charged.
+        entry = {"id": verify_tools.TOOL_ENTRY_PREFIX + QID}
         for _ in range(n):
-            verify._charge_verify_dispatch(self.root, [{"id": verify_tools.TOOL_ENTRY_PREFIX + QID}])
+            verify._charge_verify_dispatch(self.root, [entry])
+            budget.handouts_ended(self.root, [entry])
 
     def _attempts(self):
         return verify._verify_attempts_key(self.root, "tool/%s" % QID)
@@ -153,6 +159,16 @@ class LiftTest(_Tree):
         with mock.patch.object(verify_tools, "_tool_verify_queue",
                                return_value=[(QID, self._child())]):
             self.assertTrue(verify_tools._verify_tools_done(self.root, {"run_id": "r"}))
+
+    def test_a_third_dispatch_still_out_earns_no_lift(self):
+        # #3740 keeps a lift owed while its own dispatch, the second, is still out. Not
+        # the third: an item that spent two has had its retry or its lift.
+        self._spent(2)
+        verify._charge_verify_dispatch(self.root, [{"id": verify_tools.TOOL_ENTRY_PREFIX + QID}])
+        self.assertEqual(3, self._attempts())
+        self.assertTrue(budget.outstanding(self.root, "verify:tool/%s" % QID))
+        self._verdict(missing=[self._abs("driver/caller.py")])
+        self.assertIsNone(verify_tools._lift_owed(self.root, QID, self._child()))
 
     def test_an_interrupted_lift_is_owed_again(self):
         self._spent(2)
@@ -271,10 +287,52 @@ class LoopSurfacesTest(_Tree):
         entry = self._lift_entry()
         ok, _reason = persist.write_reply(entry, "not json at all")
         self.assertFalse(ok)
+        budget.handouts_ended(self.root, [entry])       # #3740: launched, and it came to nothing
         self._finish()
         ev = self._evidence()
         self.assertEqual(("needs_more_info", [self._abs("driver/caller.py")]),
                          (ev["status"], ev.get("missing_evidence")))
+
+    def test_in_a_session_the_second_ask_is_charged_and_there_is_no_third(self):
+        """#3740. The second ask has the first's entry id and writes beside its answer.
+        Handed out with nothing launched by a loop to end the first (the session
+        protocol), it must still be a new dispatch: read as the first emitted again
+        it was not charged, the count stayed at one, and a lift was owed for ever."""
+        self.queue.stop()
+        self.addCleanup(self.queue.start)
+        os.remove(runio._pano(self.root, verify._VERIFY_ATTEMPTS_FILE))     # undo setUp's fixture
+        os.remove(verify_tools._tool_verdict_out_file(self.root, QID))
+        with self.queue:
+            first = self._lift_entry()                                     # the first ask
+            self.assertNotIn(verify_tools._LIFTED, first["prompt"])
+            self.assertEqual(1, self._attempts())
+            self._verdict(missing=[self._abs("driver/caller.py")])
+            entry = self._lift_entry()                                     # the second
+            self.assertEqual(first["id"], entry["id"])
+            self.assertNotEqual(first["out_file"], entry["out_file"])
+            self.assertIn(verify_tools._LIFTED, entry["prompt"])
+            self.assertEqual(2, self._attempts())
+            persist.write_reply(entry, self._reply("NEEDS_MORE_INFO", ["driver/second.py"]))
+            self._finish()
+            self.assertEqual(2, self._attempts())
+            self.assertIsNone(verify_tools._lift_owed(self.root, QID, self.finding))
+
+    def test_a_lift_planned_and_not_launched_is_still_owed(self):
+        # #3740: a run stopped at its budget cap, or a session re-entered too early. The
+        # lift's dispatch is charged once and emitted again; it was dropped.
+        entry = self._lift_entry()
+        self.assertEqual(2, self._attempts())
+        for again in (1, 2, 3):
+            self.assertIsNotNone(verify_tools._lift_owed(self.root, QID, self.finding))
+            self.assertFalse(verify_tools._verify_tools_done(self.root, {"run_id": "r"}))
+            self.assertEqual(entry["out_file"], self._lift_entry()["out_file"])
+            self.assertEqual(2, self._attempts())
+            self.assertEqual(again, budget.handouts_reemitted(self.root, [entry])[entry["id"]])
+        persist.write_reply(entry, self._reply("CONFIRMED"))       # the second answer lands
+        self.assertIsNone(verify_tools._lift_owed(self.root, QID, self.finding))
+        self._finish()
+        self.assertEqual("tool_confirmed", self._evidence()["status"])
+        self.assertEqual(2, self._attempts())
 
     def test_an_interrupt_on_the_real_rollback_path_leaves_the_lift_owed(self):
         import scripts.ledger as ledger_mod

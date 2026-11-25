@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+- **A dispatch is charged when it is handed out, not each time it is planned (#3740).** A review
+  cell, a verify cell or backup, and a tool advisor each have a three-dispatch retry budget. The
+  charge was made at planning, on every `driver run`, whether or not anything was then launched.
+  This was the known issue in the 5.4.0 notes.
+  - **Session mode:** re-running `driver loop --mode session` (or `driver run`) before the agents
+    had finished charged every pending entry again. Three re-entries and every cell read 3 with no
+    agent run; the fourth ended `complete`, `cells_exhausted`, exit 1. Only `--reset` recovered.
+  - **Headless:** a loop stopped before its launch (`--max-budget-usd` already reached,
+    `--max-iterations`, a refused request) did the same. Three stopped runs exhausted the cells,
+    and raising the cap then completed with "no review cell answered".
+  - **Now:** an entry emitted again with nothing changed on disk since it was handed out is the
+    same dispatch, and is charged once. The next one is charged when the last has ended: the
+    headless loop launched it, whatever came of it; or an output landed and the entry is still
+    pending; or `driver persist` refused its reply and kept it; or the charge was given back (a
+    pause, an outage, an interrupt); or the loop takes for done an entry the phase still emits
+    (so that disagreement is still ended by the budget, as before).
+  - **A budget is not spent while its last dispatch is still out.** A cell at 3 whose third
+    dispatch was planned and never launched, or is still running, is not exhausted.
+  - **The cap is still on:** a headless child that fails every time is exhausted after three
+    launches, and so is a session agent that writes a bad file, or whose reply is refused, each
+    round.
+  - **The limit:** in session mode an agent that returns and writes nothing is the same on disk
+    as one that has not finished. It is never charged, so the retry budget does not bound it; the
+    session host's own loop does. The `dispatch` status makes it visible: `dispatches` carries,
+    per pending entry, `left` and `reemitted`, and the message says "re-emitted N times,
+    unchanged since handed out".
+  - **On disk:** the counters (`cell-attempts.json`, `verify-attempts.json`) keep their shape. The
+    marks are a new file in the run folder, `dispatch-handouts.json`; present but unreadable it
+    refuses, naming `--reset`, like the counters. A run folder written by 5.4 has none: nothing is
+    outstanding, the next planning charges once, and an old count stands, including any a 5.4
+    re-entry over-charged.
 - **The tool-verify queue and the report are built from one list (#3739).** The driver asks an
   advisor about each scanner finding the report will carry, so it builds the queue the way
   synthesis does. Synthesis applied the docs-tree severity policy and the `--severity` floor before

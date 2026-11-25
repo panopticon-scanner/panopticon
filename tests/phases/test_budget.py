@@ -237,6 +237,219 @@ class TestTheArithmeticItself(BudgetCase):
         self.assertFalse(os.path.exists(path))
 
 
+class TestADispatchIsChargedWhenItIsHandedOut(BudgetCase):
+    """#3740: the marks that tell a new hand-out from one emitted again. The charge was
+    made on every planning, so a run stopped before its launch, and a session re-entered
+    before its agents had finished, spent a dispatch each time with nothing launched."""
+
+    def _entry(self, name="review-app-SEC"):
+        return {"id": name, "out_file": os.path.join(self.root, ".panopticon", name + ".json")}
+
+    def _marks(self):
+        with open(runio._pano(self.root, budget.MARKS_FILE), encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def _emit(self, entries):
+        """One planning, as a phase does it: which are new, (the charge), the marks."""
+        charged = budget.new_handouts(self.root, entries)
+        budget.mark_handouts(self.root, entries, charged, lambda entry: "book:" + entry["id"])
+        return [entry["id"] for entry in charged]
+
+    def _land(self, entry, text):
+        with open(entry["out_file"], "w", encoding="utf-8") as fh:
+            fh.write(text)
+
+    def test_the_first_emission_is_charged_and_the_same_one_again_is_not(self):
+        a, b = self._entry("a"), self._entry("b")
+        self.assertFalse(os.path.lexists(runio._pano(self.root, budget.MARKS_FILE)))
+        self.assertEqual(["a", "b"], self._emit([a, b]))
+        self.assertEqual({"a": 0, "b": 0}, budget.handouts_reemitted(self.root, [a, b]))
+        for again in (1, 2, 3):
+            self.assertEqual([], self._emit([a, b]))
+            self.assertEqual({"a": again, "b": again}, budget.handouts_reemitted(self.root, [a, b]))
+        # A later emission with one entry more charges that one alone.
+        c = self._entry("c")
+        self.assertEqual(["c"], self._emit([a, c]))
+        self.assertEqual({"a": 4, "b": 3, "c": 0}, budget.handouts_reemitted(self.root, [a, b, c]))
+
+    def test_an_output_that_landed_and_left_the_entry_pending_is_a_new_dispatch(self):
+        entry = self._entry()
+        self.assertEqual([entry["id"]], self._emit([entry]))
+        self._land(entry, "not what was asked for")
+        self.assertEqual([entry["id"]], self._emit([entry]))            # it came back, bad
+        self.assertEqual(0, budget.handouts_reemitted(self.root, [entry])[entry["id"]])
+        self.assertEqual([], self._emit([entry]))                       # nothing since
+        self._land(entry, "another answer, also not it")                 # a different size
+        self.assertEqual([entry["id"]], self._emit([entry]))
+        # The same bytes moved over it again are a new file: its inode changed.
+        replacement = entry["out_file"] + ".tmp"
+        with open(replacement, "w", encoding="utf-8") as fh:
+            fh.write("another answer, also not it")
+        os.utime(replacement, ns=(os.stat(entry["out_file"]).st_atime_ns,
+                                  os.stat(entry["out_file"]).st_mtime_ns))
+        os.replace(replacement, entry["out_file"])
+        self.assertEqual([entry["id"]], self._emit([entry]))
+        # ...and so is the same file with a later time.
+        found = os.stat(entry["out_file"])
+        os.utime(entry["out_file"], ns=(found.st_atime_ns, found.st_mtime_ns + 1))
+        self.assertEqual([entry["id"]], self._emit([entry]))
+        os.remove(entry["out_file"])                                     # taken away again
+        self.assertEqual([entry["id"]], self._emit([entry]))
+
+    def test_a_refused_reply_is_a_dispatch_that_ended(self):
+        import scripts.phases.rejected_replies as rejected_replies
+        entry = self._entry()
+        self.assertEqual([entry["id"]], self._emit([entry]))
+        for attempt in (1, 2):
+            kept = rejected_replies.retain_rejected(
+                persist.run_dir(self.root), entry, "a reply nobody could take", "shape",
+                kind=rejected_replies.REFUSAL, run_id="r")
+            self.assertTrue(kept)
+            self.assertEqual(attempt, budget.handout_state(self.root, entry)["rejected"])
+            self.assertEqual([entry["id"]], self._emit([entry]))
+            self.assertEqual([], self._emit([entry]))
+
+    def test_one_id_handed_out_for_another_file_is_a_new_dispatch(self):
+        # A tool advisor's second ask has the first's id and writes beside its answer.
+        first = self._entry("verify-tool-q")
+        second = dict(first, out_file=first["out_file"] + ".lift")
+        self.assertEqual(["verify-tool-q"], self._emit([first]))
+        self.assertEqual(["verify-tool-q"], self._emit([second]))
+        self.assertEqual([], self._emit([second]))
+
+    def test_an_ended_hand_out_is_charged_the_next_time_whatever_it_left(self):
+        a, b = self._entry("a"), self._entry("b")
+        self._emit([a, b])
+        self.assertEqual(["a"], budget.handouts_ended(self.root, [a, {"id": "never-marked"}]))
+        self.assertEqual(["b"], sorted(self._marks()))
+        self.assertEqual(["a"], self._emit([a, b]))
+        before = os.stat(runio._pano(self.root, budget.MARKS_FILE)).st_mtime_ns
+        self.assertEqual([], budget.handouts_ended(self.root, [{"id": "never-marked"}]))
+        self.assertEqual(before, os.stat(runio._pano(self.root, budget.MARKS_FILE)).st_mtime_ns)
+
+    def test_a_give_back_ends_the_hand_out_too(self):
+        cell = {"id": "review-app-SEC", "group": "app", "domain": "SEC",
+                "out_file": os.path.join(self.root, ".panopticon", "findings-app-SEC.json")}
+        tool = {"id": verify.verify_tools.TOOL_ENTRY_PREFIX + "q",
+                "out_file": os.path.join(self.root, ".panopticon", "q.json")}
+        for checkpoint, entry, counted in (
+                ("review", cell, lambda: review._cell_attempts(self.root).get("app/SEC")),
+                ("verify", tool, lambda: verify._verify_attempts_key(self.root, "tool/q"))):
+            with self.subTest(checkpoint=checkpoint):
+                charge = (lambda: review._record_attempts(self.root, ["app/SEC"])
+                          ) if checkpoint == "review" else None
+                if checkpoint == "review":
+                    self.assertEqual([entry["id"]], self._emit([entry]))
+                    charge()
+                else:
+                    verify._charge_verify_dispatch(self.root, [entry])
+                self.assertEqual(1, counted())
+                persist.rollback_markers(self.root, checkpoint, [entry])
+                self.assertEqual(0, counted())
+                self.assertNotIn(entry["id"], self._marks())
+
+    def test_the_mark_holds_what_was_on_disk_when_it_was_handed_out(self):
+        entry = self._entry()
+        self._emit([entry])
+        self.assertEqual({entry["id"]: {"key": "book:" + entry["id"], "reemitted": 0, "state": {
+            "file": entry["out_file"], "out": None, "rejected": 0}}}, self._marks())
+        self._land(entry, "x" * 7)
+        self._emit([entry])
+        found = os.stat(entry["out_file"])
+        self.assertEqual([7, found.st_mtime_ns, found.st_ino], self._marks()[entry["id"]]["state"]["out"])
+
+    def test_a_budget_is_outstanding_while_one_of_its_dispatches_is_still_out(self):
+        part0, part1 = self._entry("cell-part0"), self._entry("cell-part1")
+        other = self._entry("other")
+
+        def key(entry):
+            return "book:other" if entry is other else "book:cell"
+
+        charged = budget.new_handouts(self.root, [part0, part1, other])
+        budget.mark_handouts(self.root, [part0, part1, other], charged, key)
+        self.assertTrue(budget.outstanding(self.root, "book:cell"))
+        self.assertTrue(budget.outstanding(self.root, "book:other"))
+        self.assertFalse(budget.outstanding(self.root, "book:nobody"))
+        self.assertFalse(budget.outstanding(self.root, "cell"))
+        self._land(part0, "an answer")                      # one part is in; one is still out
+        self.assertTrue(budget.outstanding(self.root, "book:cell"))
+        self._land(part1, "an answer")
+        self.assertFalse(budget.outstanding(self.root, "book:cell"))
+        self.assertTrue(budget.outstanding(self.root, "book:other"))
+        budget.handouts_ended(self.root, [other])
+        self.assertFalse(budget.outstanding(self.root, "book:other"))
+
+    def test_each_budget_names_its_own_keys(self):
+        # One marks file holds both budgets' keys, so each says whose a key is.
+        self.assertEqual("review:app/SEC", review._budget_key({"group": "app", "domain": "SEC"}))
+        self.assertIsNone(review._budget_key({"group": "app"}))
+        self.assertEqual("verify:app/SEC/primary", verify._budget_key(
+            {"group": "app", "domain": "SEC", "stage": "primary"}))
+        self.assertEqual("verify:tool/q", verify._budget_key(
+            {"id": verify.verify_tools.TOOL_ENTRY_PREFIX + "q"}))
+        self.assertIsNone(verify._budget_key({"id": "review-app-SEC"}))
+
+    def test_an_entry_its_budget_gives_no_key_for_gets_no_mark(self):
+        entry = self._entry("setup-scan")
+        budget.mark_handouts(self.root, [entry], [entry], lambda entry: None)
+        self.assertFalse(os.path.lexists(runio._pano(self.root, budget.MARKS_FILE)))
+
+    def test_an_entry_with_no_id_is_neither_charged_nor_marked(self):
+        self.assertEqual([], self._emit([{"out_file": "x"}, {"id": ""}, {"id": 7}, "entry", None]))
+        self.assertEqual([], budget.new_handouts(self.root, None))
+        self.assertFalse(os.path.lexists(runio._pano(self.root, budget.MARKS_FILE)))
+
+    def test_a_mark_that_is_not_one_refuses_on_every_entry_point(self):
+        good = {"key": "book:a", "state": {"file": "f", "out": None, "rejected": 0},
+                "reemitted": 0}
+        entry = self._entry("a")
+        for planted in ("outstanding", 1, None, [], {}, dict(good, reemitted=-1),
+                        dict(good, reemitted=True), dict(good, reemitted="0"),
+                        dict(good, extra=1), {"state": good["state"], "key": "k"},
+                        {"state": good["state"], "reemitted": 0}, dict(good, key=""),
+                        dict(good, key=7),
+                        dict(good, state="unchanged"), dict(good, state={"out": None, "rejected": 0}),
+                        dict(good, state=dict(good["state"], file=7)),
+                        dict(good, state=dict(good["state"], rejected=-1)),
+                        dict(good, state=dict(good["state"], rejected=False)),
+                        dict(good, state=dict(good["state"], out=[1, 2])),
+                        dict(good, state=dict(good["state"], out=[1, 2, "3"])),
+                        dict(good, state=dict(good["state"], out=[1, 2, 3, 4])),
+                        dict(good, state=dict(good["state"], out="absent")),
+                        dict(good, state=dict(good["state"], more=1))):
+            runio._write_json(runio._pano(self.root, budget.MARKS_FILE), {"b": good, "a": planted})
+            for call in (lambda: budget.new_handouts(self.root, [entry]),
+                         lambda: budget.mark_handouts(self.root, [entry], [entry], str),
+                         lambda: budget.outstanding(self.root, "book:a"),
+                         lambda: budget.handouts_ended(self.root, [entry]),
+                         lambda: budget.handouts_reemitted(self.root, [entry])):
+                with self.subTest(planted=planted), self.assertRaises(runio.DriverError) as raised:
+                    call()
+                message = str(raised.exception)
+                self.assertIn(budget.MARKS_FILE, message)
+                self.assertIn("entry a is not a mark", message)
+                self.assertIn("--reset", message)
+        # A whole mark of the right shape reads.
+        runio._write_json(runio._pano(self.root, budget.MARKS_FILE),
+                          {"a": dict(good, state=dict(good["state"], out=[1, 2, 3]))})
+        self.assertEqual({"a": 0}, budget.handouts_reemitted(self.root, [entry]))
+
+    def test_a_torn_marks_file_refuses(self):
+        os.makedirs(os.path.dirname(runio._pano(self.root, budget.MARKS_FILE)), exist_ok=True)
+        with open(runio._pano(self.root, budget.MARKS_FILE), "w", encoding="utf-8") as fh:
+            fh.write('{"a": {"state"')
+        with self.assertRaisesRegex(runio.DriverError, "the record of dispatches handed out"):
+            budget.new_handouts(self.root, [self._entry("a")])
+
+    def test_a_record_is_written_with_no_key_charged(self):
+        # An entry emitted again is not charged, and what it was handed is still recorded.
+        path = runio._pano(self.root, "attempts.json")
+        budget.bump_many(path, ["cell"], "the budget", record={"cell/claims": ["A"]})
+        self.assertEqual({}, budget.bump_many(path, [], "the budget", record={"cell/claims": ["A", "B"]}))
+        with open(path, encoding="utf-8") as fh:
+            self.assertEqual({"cell": 1, "cell/claims": ["A", "B"]}, json.load(fh))
+
+
 class TestTheOwnerDoesNotBypassRunio(BudgetCase):
     """Both halves of the #1809 pair stay in force: the read refuses a present
     document it cannot parse, and the write refuses a symlink at the artifact

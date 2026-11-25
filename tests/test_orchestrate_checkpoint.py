@@ -15,15 +15,17 @@ import pytest
 import scripts.driver as driver
 import scripts.loop_batch as loop_batch
 import scripts.orchestrate as orchestrate
+import scripts.phases.budget as budget
 import scripts.phases.review as review
 import scripts.phases.runio as runio
 import scripts.runners.base as base
+import scripts.runners.batch as batch_mod
 from tests._test_helpers import (all_proven_artifact as _all_proven_artifact, refuted_tool_policy_artifact as _refuted_artifact)
-from tests._test_helpers import docker_probe_runner, write_host_evidence
+from tests._test_helpers import dead_pid, docker_probe_runner, write_host_evidence
 from scripts import hosts
 
 
-from tests.orchestrate_helpers import (FakeRunner, LoopCase, _ALL_PROVEN)
+from tests.orchestrate_helpers import (FakeRunner, FifteenCentRows, LoopCase, _ALL_PROVEN)
 
 def setUpModule():
     global _patch, _readiness_docker_patch
@@ -137,6 +139,171 @@ class TestNoRedundantReDeriveOnReview(LoopCase):
         review_launches = runner.launched.count("review-app-SEC")
         self.assertEqual(review_launches, 2)     # failed once, then a real retry
         self.assertEqual(attempts["app/SEC"], review_launches)
+
+
+class TestADispatchIsChargedAtItsLaunch(LoopCase):
+    """#3740, headless. The charge was made at planning, on every `driver.run`, and the
+    loop gave it back on some exits (a pause, an outage) and not on others. A run stopped
+    at `--max-budget-usd` before it launched anything charged every pending cell each
+    time: three stopped runs and the cell read as exhausted with no child ever launched,
+    and lifting the cap then completed with "no review cell answered". A dispatch is
+    charged when it is handed out, once, however many times it is planned again."""
+
+    class Silent(FakeRunner):
+        """Every review child returns cleanly and writes nothing."""
+
+        def run_entry(self, entry, env):
+            if not entry["id"].startswith("review-"):
+                return super().run_entry(entry, env)
+            self.launched.append(entry["id"])
+            return base.RunResult(entry_id=entry["id"], ok=True, text="", usage={},
+                                  cost_usd=0.0, model=None, session_id=None, denials=[],
+                                  error=None)
+
+    def _attempts(self, d):
+        return runio._load_json(runio._pano(d, "cell-attempts.json"))
+
+    def test_a_run_stopped_at_the_budget_cap_charges_once_however_often_it_is_re_run(self):
+        d, floor = self._repo()
+        for stopped in range(1, 6):
+            runner = FifteenCentRows()
+            status = self._run_loop(d, floor, runner, "--max-budget-usd", "0.30",
+                                    seed=(stopped == 1))
+            self.assertEqual("error", status["status"], status)
+            self.assertIn("--max-budget-usd 0.30 reached", status["message"])
+            self.assertEqual([], runner.launched)
+            # It was 1, 2, 3, and then `complete` with the cell exhausted.
+            self.assertEqual({"app/SEC": 1}, self._attempts(d), stopped)
+        # The cap lifted: the one launch is the one charge.
+        runner = FakeRunner()
+        status = self._run_loop(d, floor, runner, seed=False)
+        self.assertEqual("complete", status["status"], status)
+        self.assertNotIn("cells_exhausted", status)
+        self.assertEqual(1, runner.launched.count("review-app-SEC"))
+        self.assertEqual({"app/SEC": 1}, self._attempts(d))
+
+    def test_a_child_that_fails_every_time_still_exhausts_after_three_launches(self):
+        # The cap is still on. A bad file each time, and nothing at all each time.
+        for runner in (TestExhaustedReviewCellsAreNamedOnComplete.NeverAcceptable(), self.Silent()):
+            with self.subTest(runner=type(runner).__name__):
+                d, floor = self._repo()
+                status = self._run_loop(d, floor, runner)
+                self.assertEqual("complete", status["status"], status)
+                self.assertEqual(3, runner.launched.count("review-app-SEC"))
+                self.assertEqual({"app/SEC": 3}, self._attempts(d))
+                self.assertEqual(1, status["cells_exhausted"])
+
+    def test_a_stop_between_two_failed_launches_does_not_hide_either(self):
+        # Failed once (charged, ended), stopped at the cap twice, failed again, again.
+        d, floor = self._repo()
+        with mock.patch.object(orchestrate.loop_setup, "batch_refusal",
+                               side_effect=self._refuse_after(1)):
+            self._run_loop(d, floor, self.Silent())
+        self.assertEqual({"app/SEC": 2}, self._attempts(d))      # one launch, and one handed out
+        for _ in range(2):
+            with mock.patch.object(orchestrate.loop_setup, "batch_refusal",
+                                   return_value="driver loop: stopped by the test"):
+                status = self._run_loop(d, floor, self.Silent(), seed=False)
+            self.assertEqual("error", status["status"])
+            self.assertEqual({"app/SEC": 2}, self._attempts(d))
+        runner = self.Silent()
+        status = self._run_loop(d, floor, runner, seed=False)
+        self.assertEqual(("complete", 2), (status["status"], runner.launched.count("review-app-SEC")))
+        self.assertEqual({"app/SEC": 3}, self._attempts(d))
+
+    @staticmethod
+    def _refuse_after(batches):
+        real, seen = orchestrate.loop_setup.batch_refusal, []
+
+        def refusal(*args, **kwargs):
+            seen.append(1)
+            return ("driver loop: stopped by the test" if len(seen) > batches
+                    else real(*args, **kwargs))
+        return refusal
+
+    def test_an_entry_the_loop_takes_for_done_is_still_bounded_by_its_budget(self):
+        """#3806 review. The phase says a cell is not done and emits it; the loop's own
+        `_pending` says it is done and launches nothing. That disagreement has shipped
+        twice (#3698, #3709), and the retry budget was what ended it: charged at each
+        planning, the cell was exhausted after three. Charged only when handed out,
+        the entry was emitted again unchanged for ever, each loop spun to
+        `--max-iterations`, and the run never completed. An entry the loop filters out
+        has had its hand-out ended, so the next planning charges it."""
+        d, floor = self._repo()
+        real = loop_batch.persist.is_done
+        with mock.patch.object(
+                loop_batch.persist, "is_done",
+                side_effect=lambda entry: entry["id"].startswith("review-") or real(entry)):
+            runner = self.Silent()
+            status = self._run_loop(d, floor, runner)
+        self.assertEqual(("complete", 1), (status["status"], status.get("cells_exhausted")), status)
+        self.assertEqual([], [x for x in runner.launched if x.startswith("review-")])
+        self.assertEqual({"app/SEC": 3}, self._attempts(d))
+
+    def test_a_launch_whose_result_cannot_be_recorded_is_still_charged(self):
+        """#3806 review. The hand-out was ended only once everything after the launch had
+        gone well. A launch whose result was recorded (its row is in the ledger, so a
+        recovery keeps its charge) and whose loop then died kept its mark: the next
+        process launched it again, uncharged, each time."""
+        d, floor = self._repo()
+        real = loop_batch.record_entry
+
+        def recording(entry, *args, **kwargs):
+            refusal = real(entry, *args, **kwargs)
+            if entry["id"].startswith("review-"):
+                raise RuntimeError("the loop died after the row was written")
+            return refusal
+
+        for launched in (1, 2, 3):
+            runner = self.Silent()
+            with mock.patch.object(orchestrate.loop_batch, "record_entry", side_effect=recording):
+                status = self._run_loop(d, floor, runner, seed=(launched == 1))
+            self.assertEqual("error", status["status"], status)
+            self.assertIn("the loop died after the row was written", status["message"])
+            self.assertEqual(1, runner.launched.count("review-app-SEC"))
+            self.assertEqual({"app/SEC": launched}, self._attempts(d))
+            # That process is gone: the batch record it left names a dead pid.
+            for name in os.listdir(runner.run_dir):
+                if name.startswith(batch_mod.MANIFEST_PREFIX) and name.endswith(".json"):
+                    record = runio._load_json(os.path.join(runner.run_dir, name))
+                    runio._write_json(os.path.join(runner.run_dir, name),
+                                      dict(record, pid=dead_pid()))
+        runner = self.Silent()
+        status = self._run_loop(d, floor, runner, seed=False)
+        self.assertEqual(("complete", 1, 0), (status["status"], status.get("cells_exhausted"),
+                                              runner.launched.count("review-app-SEC")), status)
+
+    def test_a_run_folder_written_before_the_marks_resumes_on_its_counters(self):
+        """A 5.4 folder has counters and no marks. Nothing is outstanding, so the next
+        planning charges once, as 5.4 would have charged that emission; an old count
+        stands, whatever it was charged for."""
+        for spent, launches in ((2, 1), (3, 0)):
+            with self.subTest(spent=spent):
+                d, floor = self._repo()
+                with mock.patch.object(orchestrate.loop_setup, "batch_refusal",
+                                       return_value="driver loop: stopped by the test"):
+                    self._run_loop(d, floor, self.Silent())
+                os.remove(runio._pano(d, budget.MARKS_FILE))
+                runio._write_json(runio._pano(d, "cell-attempts.json"), {"app/SEC": spent})
+                runner = self.Silent()
+                status = self._run_loop(d, floor, runner, seed=False)
+                self.assertEqual("complete", status["status"], status)
+                self.assertEqual(launches, runner.launched.count("review-app-SEC"))
+                self.assertEqual({"app/SEC": 3}, self._attempts(d))
+                self.assertEqual(1, status["cells_exhausted"])
+
+    def test_a_reset_clears_the_marks_with_the_counters(self):
+        d, floor = self._repo()
+        with mock.patch.object(orchestrate.loop_setup, "batch_refusal",
+                               return_value="driver loop: stopped by the test"):
+            self._run_loop(d, floor, FakeRunner())
+        marks = runio._pano(d, budget.MARKS_FILE)
+        self.assertEqual(["review-app-SEC"], sorted(runio._load_json(marks)))
+        runner = FakeRunner()
+        status = self._run_loop(d, floor, runner, "--reset")
+        self.assertEqual("complete", status["status"], status)
+        self.assertFalse(os.path.lexists(marks))                 # the old run's folder is gone
+        self.assertEqual({"app/SEC": 1}, self._attempts(d))
 
 
 class TestLoopParser(unittest.TestCase):

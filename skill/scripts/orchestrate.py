@@ -18,6 +18,7 @@ import scripts.ledger as ledger_mod
 import scripts.loop_batch as loop_batch
 import scripts.loop_progress as loop_progress
 import scripts.loop_setup as loop_setup
+import scripts.phases.budget as phase_budget
 import scripts.phases.denials as denials
 import scripts.phases.engine as engine
 import scripts.phases.persist as persist
@@ -52,10 +53,11 @@ def _after_first_run(review_root):
     tests/test_orchestrate_checkpoint.py. This is load-bearing, not decorative: a resume whose very
     first `driver.run` already lands on the `review` checkpoint (coverage was
     established by an earlier, now-dead process) would, with an UNCONDITIONAL second
-    call here, re-run `review_execute` a second time with ZERO launches in between --
-    and `review_execute` bumps `cell-attempts.json` on every call that finds a cell
-    pending, launch or no launch. That burns one third of a cell's `MAX_CELL_ATTEMPTS`
-    retry budget for nothing, on every single resume that happens to land on `review`.
+    call here, re-run `review_execute` a second time with ZERO launches in between.
+    (Until #3740 that burned one third of a cell's `MAX_CELL_ATTEMPTS` retry budget for
+    nothing: `review_execute` charged `cell-attempts.json` on every call that found a
+    cell pending. A dispatch is charged when it is handed out now, so the second call
+    would only do the planning twice.)
     Only the test seam, which mutates review_root BETWEEN the two calls (seeding
     coverage so the checkpoint the test observes is `review` rather than `scout`), has a
     reason to ask for the second derive."""
@@ -265,6 +267,15 @@ def _loop(args, pause, held):
             runner.roles = loop_batch.checkpoint_roles(req.get("checkpoint"))
             entries = [e for e in req.get("entries") or [] if isinstance(e, dict)]
             pending = loop_batch._pending(entries)
+            if namespace is None:
+                # #3740: the phase emitted these as not done, and this loop takes them
+                # for done, so it will never launch them. Their hand-outs are over:
+                # left out, each would be emitted again unchanged and never charged,
+                # and the retry budget, which is what ends such a disagreement
+                # (#3698, #3709), would never be spent.
+                wanted = {id(e) for e in pending}
+                phase_budget.handouts_ended(review_root, [e for e in entries
+                                                          if id(e) not in wanted])
             # #1720 + #1727: does what it SAYS match this run's own evidence
             # and plan? Before anything is armed or launched.
             refusal = loop_batch.request_refusal(review_root, host, namespace, req, pending)
@@ -282,8 +293,13 @@ def _loop(args, pause, held):
                 # longer return: the session runner prints the batch, launches
                 # nothing, and the loop exits `dispatch` still armed (spec 4.3).
                 guards.arm(pending)
+                # #3740: what each entry's retry budget has left, and how often it has
+                # been emitted again unchanged. In the printed batch and in the status.
+                runner.dispatches = ({} if namespace == "setup" else persist.dispatch_budget(
+                    review_root, req.get("checkpoint"), pending))
                 runner.run_batch(pending, getattr(args, "concurrency", None), guards.env_for)
-                return _dispatch_exit(review_root, req, pending, namespace, runner.request_sha256)
+                return _dispatch_exit(review_root, req, pending, namespace, runner.request_sha256,
+                                      runner.dispatches)
             if pause.is_set():          # #3350: between batches -- nothing armed, no record opened
                 # The dispatch charged each pending cell's attempt; nothing launched, so give it back.
                 persist.rollback_markers(review_root, req.get("checkpoint"), pending)
@@ -333,14 +349,23 @@ def _loop(args, pause, held):
                     hold=pause.event)) as stream, loop_progress.batch(len(pending)) as watch:
                 for entry, result, timing in stream:
                     eid = entry.get("id")
-                    refusal = loop_batch.record_entry(
-                        entry, result, timing, run_dir, batch, ledger, req,
-                        mode, runner)
-                    substitution = getattr(result, "model_substitution", None)
-                    if namespace is None and isinstance(substitution, dict) and substitution:
-                        # #3582: the fallback goes on the run's own record too.
-                        run_manifest.record_model_substitution(review_root, None, eid,
-                                                               substitution)
+                    try:
+                        refusal = loop_batch.record_entry(
+                            entry, result, timing, run_dir, batch, ledger, req,
+                            mode, runner)
+                        substitution = getattr(result, "model_substitution", None)
+                        if namespace is None and isinstance(substitution, dict) and substitution:
+                            # #3582: the fallback goes on the run's own record too.
+                            run_manifest.record_model_substitution(review_root, None, eid,
+                                                                   substitution)
+                    finally:
+                        if namespace is None:
+                            # #3740: it was LAUNCHED, so this hand-out is over and the
+                            # entry's next dispatch is charged whatever it left. Also
+                            # when the recording itself fails: its row may already be in
+                            # the ledger, where a recovery keeps the charge, and with
+                            # the mark left it was launched again uncharged every time.
+                            phase_budget.handouts_ended(review_root, [entry])
                     handled.append(eid)
                     landed.append((entry, result))
                     tally.record(eid, result, refusal, seq=order.get(eid))
@@ -441,7 +466,10 @@ def _first_run(args, namespace, resolved=None):
     return _run(args, namespace, resolved)
 
 
-def _dispatch_exit(review_root, req, pending, namespace, request_sha256=None):
+REEMITTED = "%s re-emitted %d time%s, unchanged since handed out"
+
+
+def _dispatch_exit(review_root, req, pending, namespace, request_sha256=None, dispatches=None):
     """Session mode: the runner printed the batch; exit with a dispatch status and leave
     the guards armed (spec 4.3).
 
@@ -457,13 +485,20 @@ def _dispatch_exit(review_root, req, pending, namespace, request_sha256=None):
     the entry does not exist.
     """
     setup = " --setup" if namespace == "setup" else ""
+    dispatches = dispatches or {}
+    # #3740: an entry emitted again with nothing on disk is not charged, so a session
+    # agent that never writes is not bounded by the retry budget. It is said here.
+    again = "".join("; " + REEMITTED % (entry_id, row["reemitted"],
+                                        "" if row["reemitted"] == 1 else "s")
+                    for entry_id, row in sorted(dispatches.items()) if row["reemitted"])
     return _status("dispatch", "session mode: run the printed entries, persist each "
                    "return-persist reply with `driver persist <id>%s`, then re-run "
-                   "`driver loop%s --mode session`" % (setup, setup),
+                   "`driver loop%s --mode session`%s" % (setup, setup, again),
                    dispatch_request=os.path.abspath(
                        requests.request_path(review_root, namespace)),
                    request_sha256=request_sha256,
                    pending=[e.get("id") for e in pending],
+                   dispatches=dispatches,
                    checkpoint=req.get("checkpoint"))
 
 
