@@ -1748,6 +1748,107 @@ class TestPathVariantClustering(unittest.TestCase):
             self.assertEqual(len(merged), 1)
             self.assertEqual(merged[0]["location"]["line_start"], 5)
 
+class TestThePreparedList(unittest.TestCase):
+    """#3739: `prepared_list` is the one list a run judges. Synthesis and the driver's
+    tool-verify queue both start from it (`tests/test_driver_tool_verify.py` runs the
+    two end to end). Here: what is in it, and in which order it is made."""
+
+    TOOL = {"source": "tool:semgrep", "severity": "HIGH", "title": "tool hit",
+            "tool_evidence": {"tool": "semgrep", "rule_id": "r.1"},
+            "location": {"file": "docs/guide.py", "line_start": 1},
+            "panel": "security", "category": "injection", "confidence": "LIKELY"}
+
+    def _tree(self, d, findings):
+        os.makedirs(os.path.join(d, "docs"))
+        with open(os.path.join(d, "docs", "guide.py"), "w") as fh:
+            fh.write("x = 1\n")
+        path = os.path.join(d, "findings-g1-COD.json")
+        with open(path, "w") as fh:
+            json.dump({"findings": findings}, fh)
+        return path
+
+    def test_the_reviewers_files_then_the_tool_findings_then_the_policy_then_the_floor(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._tree(d, [_make_finding(severity="HIGH", id="CD-001", title="kept"),
+                                  _make_finding(severity="LOW", id="CD-002", title="low")])
+            seen = []
+
+            def enrich(loaded, catalog, epss_enabled=False):
+                # After the load, before the policy and the floor: every finding, as written.
+                seen.append(([(f["title"], f["severity"]) for f in loaded], epss_enabled))
+
+            with mock.patch.object(findings_mod.citations, "enrich_citations", enrich):
+                findings, doc_policy, catalog = findings_mod.prepared_list(
+                    [path], [dict(self.TOOL)], "standard", "medium", root=d)
+                findings_mod.prepared_list([path], [], "standard", "all", root=d, epss=True)
+            self.assertEqual([([("kept", "HIGH"), ("low", "LOW"), ("tool hit", "HIGH")], False),
+                              ([("kept", "HIGH"), ("low", "LOW")], True)], seen)
+            self.assertIn("CWE-79", json.dumps(catalog))
+            # The docs policy lowered the tool finding to INFO first, so the floor drops
+            # it with the LOW: the floor reads the severity the report would publish.
+            self.assertEqual(["kept"], [f["title"] for f in findings])
+            self.assertEqual((1, [{"file": "docs/guide.py", "from": "HIGH"}]),
+                             (doc_policy["downgraded"], doc_policy["examples"]))
+            # No floor: all three, the tool finding normalized and lowered.
+            findings, _policy, _catalog = findings_mod.prepared_list(
+                [path], [dict(self.TOOL)], "standard", None, root=d)
+            self.assertEqual([("kept", "HIGH"), ("low", "LOW"), ("tool hit", "INFO")],
+                             [(f["title"], f["severity"]) for f in findings])
+            self.assertEqual("tool hit", findings[2]["title"])
+            self.assertTrue(all("citation_quality" in f for f in findings))      # enriched
+            # Redteam: the policy is not applied, and says so with None.
+            findings, policy, _catalog = findings_mod.prepared_list(
+                [path], [dict(self.TOOL)], "redteam", "high", root=d)
+            self.assertIsNone(policy)
+            self.assertEqual([("kept", "HIGH"), ("tool hit", "HIGH")],
+                             [(f["title"], f["severity"]) for f in findings])
+            # The globs and the root are the caller's: with no file under the root the
+            # path names no doc, and with other globs it is not under one.
+            for more in ({"root": os.path.join(d, "elsewhere")}, {"root": d, "doc_globs": ["man/*"]}):
+                findings, _policy, _catalog = findings_mod.prepared_list(
+                    [path], [dict(self.TOOL)], "standard", "high", **more)
+                self.assertEqual(["kept", "tool hit"], [f["title"] for f in findings], more)
+
+    def test_synthesis_prepares_exactly_this_list(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = self._tree(d, [_make_finding(severity="HIGH", id="CD-001", title="kept",
+                                                citations={"cwe": ["CWE-79"]}),
+                                  _make_finding(severity="LOW", id="CD-002", title="low")])
+            for severity in ("all", "medium", "critical"):
+                with self.subTest(severity=severity):
+                    args = _cli_args(files=[path], severity=severity, root=d)
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        prepared, doc_policy, catalog = findings_mod.FindingSet.prepare(
+                            args, [dict(self.TOOL)], "standard")
+                        shared, shared_policy, shared_catalog = findings_mod.prepared_list(
+                            [path], [dict(self.TOOL)], "standard", severity, root=d)
+                    self.assertEqual((shared, shared_policy, shared_catalog),
+                                     (prepared, doc_policy, catalog))
+            # Its own `--doc-paths` and `--epss` reach the shared list too.
+            args = _cli_args(files=[path], severity="high", root=d, doc_paths=["man/*"])
+            with contextlib.redirect_stderr(io.StringIO()):
+                prepared, doc_policy, _catalog = findings_mod.FindingSet.prepare(
+                    args, [dict(self.TOOL)], "standard")
+            self.assertEqual((["kept", "tool hit"], 0), (
+                [f["title"] for f in prepared], doc_policy["downgraded"]))
+            with mock.patch.object(findings_mod.citations, "enrich_citations") as enrich:
+                findings_mod.FindingSet.prepare(_cli_args(files=[path], root=d, epss=True),
+                                                [], "standard")
+            self.assertIs(True, enrich.call_args.kwargs["epss_enabled"])
+
+    def test_the_floor(self):
+        by_level = [_make_finding(severity=level, title=level)
+                    for level in ("CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO")]
+        for severity, kept in ((None, 5), ("", 5), ("all", 5), ("ALL", 5), ("critical", 1),
+                               ("high", 2), ("HIGH", 2), ("medium", 3), ("Medium", 3)):
+            with self.subTest(severity=severity):
+                out = findings_mod.above_severity_floor(by_level, severity)
+                self.assertEqual([f["title"] for f in by_level[:kept]], [f["title"] for f in out])
+        for unknown in ("severe", "none", "al"):
+            with self.subTest(unknown=unknown), self.assertRaises(ValueError):
+                findings_mod.above_severity_floor(by_level, unknown)
+
+
 class FindingSetLoaderTest(unittest.TestCase):
     """WS-0 S3: FindingSet.load = files + tool findings + enrichment + policy +
     severity floor + verdicts, in main()'s original order."""

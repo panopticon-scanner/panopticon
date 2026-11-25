@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- **The tool-verify queue and the report are built from one list (#3739).** The driver asks an
+  advisor about each scanner finding the report will carry, so it builds the queue the way
+  synthesis does. Synthesis applied the docs-tree severity policy and the `--severity` floor before
+  merging findings; the driver's queue applied neither, so the two could pair, aggregate and number
+  findings differently, and a verdict written under one queue id was looked up under another. Both
+  forms failed closed. This was the known issue in the 5.4.0 notes.
+  - One rule firing LOW at line 10 and CRITICAL at line 300, CONFIRMED by its advisor: FAIL with no
+    flag, but under `--severity medium`, `high` or `critical` the run read INCONCLUSIVE, the
+    CRITICAL was shown as MEDIUM `tool_reported`, with "1 tool finding unanswered" and
+    `verdicts.misrouted` 1. It is FAIL now, `tool_confirmed`.
+  - A reviewer's CRITICAL claim on a scanner HIGH's line under `docs/`: the scanner finding read as
+    unanswered. It is asked about and bound now.
+  - A cell's claim with a scanner finding's fingerprint, plus a LOW filler at the line, moved a
+    confirmed scanner CRITICAL to another queue id under `--severity medium`. It no longer does.
+  - Both sides now call `synth.findings.prepared_list`. The driver no longer pays an advisor
+    dispatch for a finding below the floor. The report's own findings do not change.
+  - Still open, and still failing closed: a scanner finding whose path or rule id itself reads as
+    a credential (a file named `ghp_….py`) is published with that text redacted, while its advisor
+    is asked about it under the real path, so it reads as unanswered.
+  - A scanner finding under a docs tree is handed to its advisor at the severity the report
+    publishes (INFO), where the advisor's prompt used to state the scanner's.
 - **A finding cut by `--max-verify` is a shortfall: a run that cut anything is not certified (#3733,
   owner's ruling 2026-11-20).** The verify queue is sorted by claimed severity and `--max-verify N`
   cuts its tail. No advisor is asked about a cut finding, so it stays `unverified` and cannot gate,
