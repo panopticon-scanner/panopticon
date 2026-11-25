@@ -2586,6 +2586,13 @@ class TestTheCompletionPathValidatesWhatItWrote(unittest.TestCase):
                 x0x = json.load(fh)
 
             self.assertEqual(syn.validate_artifacts(out, x0x_path), [])
+            # #3741: an x0x sibling nested past the stack is an unreadable artifact,
+            # named, where its re-read raised RecursionError.
+            with open(x0x_path, "w", encoding="utf-8") as fh:
+                fh.write('{"deep": %s}' % ("[" * 100_000 + "]" * 100_000))
+            (problem,) = syn.validate_artifacts(out, x0x_path)
+            self.assertIn("report-x0x.json: schema: unreadable", problem)
+            self.assertIn("nested", problem)
 
         self.assertEqual(rc, 0, stderr)
         self.assertEqual(
