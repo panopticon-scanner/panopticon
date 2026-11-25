@@ -50,7 +50,8 @@ tool scan), `--reset` (discard the current run's working artifacts and start a N
 durable tag-named report on disk, only reclaims `.panopticon/runs/<tag>/` and the run-manifest, so
 it is safe to run on a finished review), `--epss` (enrich CVE citations), `--gate-unverified`
 (unverified findings drive health and the gate), `--max-verify N` (cap the verify queue; every finding is
-queued, tool claims included, unless you cap it), `--max-per-group N` (files per review chunk
+queued, tool claims included, unless you cap it, and a run that cut any finding is not
+certified), `--max-per-group N` (files per review chunk
 at run time, default 48; a positive integer, pinned in the run-manifest on the first run so a resume
 never repartitions cells that are already done; a full review at any other value reports its
 health score as provisional, since the group size changes how much a scan finds (#1495) — `driver

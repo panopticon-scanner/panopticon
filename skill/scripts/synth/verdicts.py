@@ -579,6 +579,22 @@ def _verify_matrix(findings, matches):
                                      if k not in verified_cells)}
 
 
+@dataclass(frozen=True)
+class _CutCounts:
+    """What `--max-verify` cut from the verify queue: how many findings, and how many
+    of those sit at or above the `--fail-on` level (0 when the gate is off)."""
+    total: int
+    at_gate_level: int
+
+
+def _at_gate_level(findings, fail_on):
+    """How many of `findings` are at or above the `--fail-on` level; 0 with the gate
+    off, where there is no level."""
+    if not fail_on:
+        return 0
+    return sum(1 for f in findings if findings_mod.severity_floor_admits(f, fail_on))
+
+
 def _verdict_stats(fs, findings, queue, cut, matches, holders):
     """Disclose lost, unknown and unmatched answers in stderr and the artifact."""
     verdicts, by_fid = fs.verdicts or {}, fs.verdict_bundles or {}
@@ -637,7 +653,11 @@ def _verdict_stats(fs, findings, queue, cut, matches, holders):
                   % (count, why), file=sys.stderr)
     return {
         "queued": len(queue),
-        "cut": cut,
+        "cut": cut.total,
+        # #3733: of `cut`, the findings at or above the `--fail-on` level: verify
+        # work that could have changed the gate and was not done. 0 with the gate
+        # off. Any cut holds certification back (`grading.cut_reasons`).
+        "cut_at_gate_level": cut.at_gate_level,
         "supplied": len(verdicts) + _bundle_supplied,
         "matched": matched_n,
         "unknown": len(unknown) + _bundle_unknown,
@@ -910,7 +930,10 @@ def resolve_findings(fs, run, gated_suppressed=(), groups_meta=None):
     absorbed_into = _absorbed_into(findings)
     catalog = fs.catalog if fs.catalog is not None else load_cwe_catalog()
     ocrdb_coverage = codes_mod.validate_finding_codes(findings, ocrdb_bundle)
-    queue, cut = evidence_mod.build_verify_queue(findings, run.max_verify)
+    queue, cut_findings = evidence_mod.verify_queue_and_cut(findings, run.max_verify)
+    # #3733: read now, on the severity the queue was sorted by. A cap or an override
+    # applied later must not decide whether a cut finding could have gated.
+    cut = _CutCounts(len(cut_findings), _at_gate_level(cut_findings, run.fail_on))
     fs = _judged_hits_only(fs, queue)
     # #3707: which cells hold each claim id, from the findings as loaded: dedupe
     # is about to collapse the instances, and a verdict speaks for its own cell's.

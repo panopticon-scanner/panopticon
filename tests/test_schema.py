@@ -50,6 +50,7 @@ def _minimal_report():
                 "verdicts": {
                     "queued": 0,
                     "cut": 0,
+                    "cut_at_gate_level": 0,
                     "supplied": 0,
                     "matched": 0,
                     "unknown": 0,

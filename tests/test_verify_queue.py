@@ -91,6 +91,24 @@ class TestBuildVerifyQueue(unittest.TestCase):
         self.assertEqual([e["finding"]["id"] for e in entries],
                          ["AG-031", "AG-032"])
 
+    def test_the_cut_findings_are_the_tail_of_the_queue_in_queue_order(self):
+        # #3733: which findings were cut, not only how many.
+        fs = [_finding("AG-030", "LOW"), _finding("AG-031", "CRITICAL"),
+              _finding("AG-032", "HIGH"), _finding("AG-033", "MEDIUM")]
+        for order in (fs, fs[::-1]):
+            entries, cut = evidence.verify_queue_and_cut(order, max_verify=1)
+            self.assertEqual(["AG-031"], [e["finding"]["id"] for e in entries])
+            self.assertEqual(["AG-032", "AG-033", "AG-030"], [f["id"] for f in cut])
+            self.assertIs(fs[0], cut[-1])                       # the findings themselves
+        for cap, kept in ((0, 0), (3, 3), (4, 4), (5, 4), (None, 4), (-1, 4)):
+            with self.subTest(cap=cap):
+                entries, cut = evidence.verify_queue_and_cut(fs, max_verify=cap)
+                self.assertEqual((kept, 4 - kept), (len(entries), len(cut)))
+                # `build_verify_queue` is the same queue and the count of the same cut.
+                same, count = evidence.build_verify_queue(fs, max_verify=cap)
+                self.assertEqual(([e["queue_id"] for e in entries], len(cut)),
+                                 ([e["queue_id"] for e in same], count))
+
     def test_stable_order_for_equal_priority(self):
         fs = [_finding("AG-040", "HIGH"), _finding("AG-041", "HIGH")]
         entries, _ = evidence.build_verify_queue(fs)

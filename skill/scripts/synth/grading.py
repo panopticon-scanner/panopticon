@@ -275,9 +275,30 @@ def grade_shortfalls(resolved, backups=None, verify_ledger=None):
     # #3702: verdicts an advisor wrote that were not counted are undone work too:
     # whatever they said, nobody the controller asked has said it.
     host = verify_host_shortfall(resolved, verify_ledger)
-    return (reasons + backups_mod.shortfall_reasons(backups)
+    return (reasons + cut_reasons(getattr(resolved, "verdict_stats", None))
+            + backups_mod.shortfall_reasons(backups)
             + verdict_scope_mod.reasons(getattr(resolved, "verdict_stats", None))
             + ([host] if host else []))
+
+
+def cut_reasons(verdict_stats):
+    """The `grade_shortfalls` reason for findings `--max-verify` cut from the verify
+    queue (#3733, owner ruling 2026-11-20); [] when nothing was cut.
+
+    A cut finding is never asked about, so it is `unverified` and cannot gate. That
+    was no shortfall: with a cap smaller than the queue, a finding its own advisor
+    would have CONFIRMED was cut behind more severe claims (three decoys a hostile
+    cell filed at CRITICAL were enough) and the run read PASS, certified, where the
+    uncapped run is FAIL. A cut is verify work the operator chose not to do; it is
+    undone all the same, and the report must not read as though it had been done."""
+    stats = verdict_stats if isinstance(verdict_stats, dict) else {}
+    cut = backups_mod._count(stats.get("cut"))
+    if not cut:
+        return []
+    gating = min(backups_mod._count(stats.get("cut_at_gate_level")) or 0, cut)
+    return ["%d finding%s cut from verification by --max-verify%s" % (
+        cut, "" if cut == 1 else "s",
+        " (%d at or above the --fail-on level)" % gating if gating else "")]
 
 
 def certify(overall_grade, gate_eligible, fail_on, panels_incomplete, tools_absent,

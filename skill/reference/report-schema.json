@@ -618,7 +618,13 @@
                   "type": "integer"
                 },
                 "cut": {
-                  "type": "integer"
+                  "type": "integer",
+                  "description": "Findings `--max-verify` left out of the verify queue. No advisor is asked about a cut finding: it stays `unverified` or `tool_reported` and cannot gate. #3733: any cut is a `summary.grade_shortfalls` reason, so a run that cut anything is not certified, its health is provisional and a PASS gate reads INCONCLUSIVE."
+                },
+                "cut_at_gate_level": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "#3733: of `cut`, the findings at or above the `--fail-on` level, by the severity the queue was sorted on: verify work that could have changed the gate and was not done. 0 when the gate is off."
                 },
                 "supplied": {
                   "type": "integer"

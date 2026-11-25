@@ -172,7 +172,8 @@ def build_parser():
                          "drive health and the gate")
     ap.add_argument("--max-verify", type=int, default=None, metavar="N",
                     help="Cap the verify queue at the top-priority N entries "
-                         "(pass the same value to both passes)")
+                         "(pass the same value to both passes). A run that cuts a "
+                         "finding from the queue is not certified (#3733)")
     # #3736: the delta review's flags. Its code is gone; the flags are still parsed so
     # that each is refused by name (`delta_withdrawn`), not as an unrecognized argument.
     # Every default is None: a value is one the caller typed. None takes a type or a

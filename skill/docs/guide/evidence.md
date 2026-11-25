@@ -164,5 +164,10 @@ Every finding that needs an advisor queues for verification, tool claims include
 an unverified tool HIGH competes with an agent HIGH for the same capped budget. The exception is an
 ingest-confirmed first-party Cargo advisory (#3593), which is already `tool_confirmed` and spends no
 advisor slot. Size N with that in mind — anything cut stays `unverified` or `tool_reported` and
-cannot gate. Citations (CWE/OWASP/CVE/EPSS) are audit metadata — they annotate findings but never
+cannot gate. A cut is verify work left undone (#3733): a run that cut any finding is NOT CERTIFIED,
+its health is provisional, a PASS gate reads INCONCLUSIVE, and the reason is named ("3 findings cut
+from verification by --max-verify (2 at or above the --fail-on level)"). A FAIL stays a FAIL.
+The queue is cut in order of claimed severity, so a cap smaller than the queue can leave out a
+finding its own advisor would have confirmed.
+Citations (CWE/OWASP/CVE/EPSS) are audit metadata — they annotate findings but never
 decide truth.

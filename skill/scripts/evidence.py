@@ -590,15 +590,26 @@ def build_verify_queue(findings, max_verify=None):
     assignment (see `_queue_tiebreak`) — so both passes of a run compute the
     same ids and a --max-verify cut cannot depend on filename order.
     """
+    entries, cut = verify_queue_and_cut(findings, max_verify)
+    return entries, len(cut)
+
+
+def verify_queue_and_cut(findings, max_verify=None):
+    """`build_verify_queue`, with the findings `--max-verify` cut instead of their
+    count (#3733): (entries, cut findings), the cut in queue order.
+
+    A cut finding is one no advisor is asked about. It stays `unverified` or
+    `tool_reported` and cannot gate, whatever it is, so what was cut has to be known
+    to the run's accounting: a count alone cannot say whether a finding that could
+    have failed the gate was among them."""
     ordered = sorted((f for f in findings if not is_first_party_advisory(f)),
                      key=lambda f: (triage_priority(f), sev_rank(f),
                                     finding_fingerprint(f),
                                     str(f.get("id") or ""),
                                     _queue_tiebreak(f)))
-    cut = 0
+    cut: list = []
     if max_verify is not None and max_verify >= 0 and len(ordered) > max_verify:
-        cut = len(ordered) - max_verify
-        ordered = ordered[:max_verify]
+        ordered, cut = ordered[:max_verify], ordered[max_verify:]
     entries = []
     seen: dict[str, int] = {}
     for f in ordered:
