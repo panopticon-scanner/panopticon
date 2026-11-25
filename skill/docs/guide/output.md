@@ -18,6 +18,12 @@ undeclared or content-substituted findings file, which on the driver path is cau
 own `dispatch-plan-driver.json` (declares every review cell → `reconcile_findings_files`) and its
 `out-file-hashes.json` fan-out snapshot (per-cell sha256 → `verify_out_file_hashes`)) — treat it as
 NOT certified, distinct from a real `FAIL`.
+The snapshot is bound to the run by a stamp in `run-manifest.json`, and a snapshot with no stamp
+reads as substituted or pre-planted evidence. A driver killed between writing the snapshot and
+stamping it used to leave exactly that (#3741). The driver now records that it has **begun** the
+snapshot (`out_file_snapshot_begun`) before it opens the file, so its own interrupted write is
+told from a file somebody else put there: begun and not stamped, the next pass takes the snapshot
+again, before any advisor runs; present with neither record, it is still reported as tampering.
 `summary.coverage_certified` and `meta.coverage.divergence` carry the detail; `main` exits `1` on
 FAIL, `2` on INCONCLUSIVE, `4` when an artifact cannot be published or fails its own published
 schema (next paragraph), `3` on an unreadable or missing OCRDb bundle, `0` otherwise. Exit `2` is also argparse's

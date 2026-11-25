@@ -359,6 +359,97 @@ class TestTheWindowBeforeTheFirstLaunch(unittest.TestCase):
         self.assertTrue(os.path.exists(batch.path))
 
 
+class TestTheRecordIsCreatedWhole(unittest.TestCase):
+    """#3741: `open` reserved the name with an exclusive create and wrote the record
+    in a second step. Killed between the two it left a 0-byte `batch-N.json`, which no
+    later run could recover without `--reset`. The record is now written beside its
+    name and linked into place: the name appears with the whole record or not at all,
+    and it is still exclusive."""
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp(prefix="batch-open-")
+        self.addCleanup(shutil.rmtree, self.root, True)
+        self.path = batch_mod.manifest_path(self.root, 3)
+
+    def _batch(self):
+        return batch_mod.Batch(self.root, 3, "review",
+                               [{"id": "a", "out_file": os.path.join(self.root, "a.json")}])
+
+    def _read(self):
+        with open(self.path, encoding="utf-8") as fh:
+            return json.load(fh)
+
+    def test_the_name_appears_with_the_whole_record(self):
+        seen = []
+        real = os.link
+
+        def link(src, dst, **kwargs):
+            seen.append((os.path.lexists(dst), os.path.getsize(src)))
+            return real(src, dst, **kwargs)
+
+        with mock.patch.object(batch_mod.os, "link", side_effect=link):
+            batch = self._batch().open()
+        (before,) = seen
+        self.assertFalse(before[0])                       # no name before the record exists
+        self.assertGreater(before[1], 0)
+        doc = self._read()
+        self.assertEqual((3, "review", batch.nonce, os.getpid()),
+                         (doc["batch"], doc["checkpoint"], doc["nonce"], doc["pid"]))
+        self.assertEqual(["batch-3.json"], os.listdir(self.root))     # nothing staged is left
+
+    def test_a_loop_killed_at_any_point_of_the_open_leaves_no_empty_record(self):
+        for where, target in (("staging the record", (batch_mod.guard_rules, "atomic_write_json")),
+                              ("linking it into place", (batch_mod.os, "link"))):
+            with self.subTest(where=where):
+                with mock.patch.object(*target, side_effect=KeyboardInterrupt), \
+                        self.assertRaises(KeyboardInterrupt):
+                    self._batch().open()
+                self.assertFalse(os.path.lexists(self.path))
+                self.assertEqual([], [n for n in os.listdir(self.root)
+                                      if batch_mod.MANIFEST_RE.fullmatch(n)])
+                self._batch().open()                      # and the next loop opens it
+                self.assertEqual(3, self._read()["batch"])
+                os.remove(self.path)
+
+    def test_the_name_is_still_exclusive(self):
+        first = self._batch().open()
+        for squatter in ("a record", "an empty file", "a dangling link"):
+            with self.subTest(squatter=squatter):
+                if squatter == "an empty file":
+                    os.remove(self.path)
+                    open(self.path, "w").close()
+                elif squatter == "a dangling link":
+                    os.remove(self.path)
+                    os.symlink(os.path.join(self.root, "nowhere"), self.path)
+                before = os.lstat(self.path)
+                with self.assertRaises(FileExistsError):
+                    self._batch().open()
+                after = os.lstat(self.path)
+                self.assertEqual((before.st_ino, before.st_size), (after.st_ino, after.st_size))
+                self.assertEqual([os.path.basename(self.path)], os.listdir(self.root))
+        self.assertRegex(first.nonce, r"^[0-9a-f]{32}$")
+
+    def test_a_filesystem_with_no_hard_links_still_opens_exclusively(self):
+        with mock.patch.object(batch_mod.os, "link", side_effect=OSError(1, "Operation not permitted")):
+            batch = self._batch().open()
+            self.assertEqual(batch.nonce, self._read()["nonce"])
+            self.assertEqual(["batch-3.json"], os.listdir(self.root))
+            with self.assertRaises(FileExistsError):
+                self._batch().open()
+
+    def test_the_staged_name_is_not_a_record_s_name(self):
+        staged = []
+        real = batch_mod.guard_rules.atomic_write_json
+        with mock.patch.object(batch_mod.guard_rules, "atomic_write_json",
+                               side_effect=lambda path, *a, **k: (staged.append(path),
+                                                                 real(path, *a, **k))[1]):
+            self._batch().open()
+        (path,) = staged
+        self.assertEqual(self.root, os.path.dirname(path))
+        self.assertIsNone(batch_mod.MANIFEST_RE.fullmatch(os.path.basename(path)))
+        self.assertTrue(os.path.basename(path).startswith("batch-3.json."))
+
+
 class TestSettlementInTheBatchRecord(unittest.TestCase):
     """#3351: an optional receipt is added atomically after a real row."""
 

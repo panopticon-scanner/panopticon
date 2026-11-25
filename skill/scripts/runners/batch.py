@@ -473,12 +473,46 @@ class Batch:
         # never to the next batch with the same iteration number.
         self._confine(self.path)
         self._validated_artifacts()
-        fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        os.close(fd)
         self.opened_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         self.nonce = secrets.token_hex(16)
-        self._write()
+        self._create()
         return self
+
+    def _create(self):
+        """Put the record at its name exclusively AND whole (#3741).
+
+        The name used to be reserved by an exclusive create and the record written in
+        a second step. A loop killed between the two left a 0-byte `batch-N.json`:
+        every later run refused it ("cannot recover stale batch"), `--discard-batch N`
+        was refused too, and only `--reset` or deleting the file by hand got past it,
+        though nothing had been launched.
+
+        So the record is written first, beside its name, and LINKED into place:
+        `os.link` fails when the name is taken (a link there included, which it does
+        not follow), exactly as the exclusive create did, and the name never exists
+        without the record. The staged name is this batch's own (its nonce), so two
+        loops racing for one number cannot stage over each other, and it is not a
+        record's name (`MANIFEST_RE`), so a leftover is never read as one.
+
+        A filesystem with no hard links refuses the link with some other `OSError`;
+        there the two-step create is used, as before."""
+        staged = "%s.%s.new" % (self.path, self.nonce)
+        try:
+            guard_rules.atomic_write_json(staged, self.document(), indent=2)
+            try:
+                os.link(staged, self.path)
+            except FileExistsError:
+                raise
+            except OSError:
+                fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.close(fd)
+                self._write()
+        finally:
+            for leftover in (staged, staged + ".tmp"):
+                try:
+                    os.unlink(leftover)
+                except OSError:
+                    pass
 
     def _write(self):
         # Through the write guard's own atomic writer, which refuses to follow

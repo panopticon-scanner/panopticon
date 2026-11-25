@@ -22,6 +22,34 @@
   - The gemini runner no longer raises when its run home cannot be written: the entry fails
     with "could not launch gemini". Its launch-failure branch and its entry timeout (the whole
     process tree ends) have tests now, as the other families' do.
+- **Three crash points recover on their own (#3741).** They were the "need a hand" items in the
+  5.4.0 notes. Each failed closed.
+  - **A write failure at the loop's teardown is a status, not a traceback.** With the disk full or
+    the run folder read-only, disarming the guards raised `OSError` out of `driver loop`: a
+    traceback and no status document. The status message now says `guards not disarmed: <error>`;
+    a `complete` keeps its `teardown` field, and a session host gets one on `error` and `paused`.
+    Nothing after the teardown can raise out of the loop either.
+  - **An empty batch record no longer needs `--reset`.** A loop killed between reserving
+    `batch-N.json` and writing it left a 0-byte record. Every later run said "cannot recover stale
+    batch", and `--discard-batch N` was refused too, though nothing had been launched. The record
+    is now created whole (written beside its name and linked into place, still exclusive), so the
+    crash leaves no record at all. An empty record already on disk is refused by name, and
+    `--discard-batch N` removes it; it is not removed automatically, because an empty record has
+    no owner stamp to judge.
+  - **A driver killed between the content snapshot and its stamp no longer reads as tampering.**
+    `out-file-hashes.json` on disk with no stamp in the run manifest is what a pre-planted
+    snapshot looks like, and it is also what that crash left: the re-run completed NOT CERTIFIED,
+    "CONTENT SNAPSHOT CHANGED ... substituted or pre-planted evidence". The driver now records
+    in the manifest that it has begun the snapshot (`out_file_snapshot_begun`) before it opens
+    the file. Begun and not stamped is its own interrupted write, and the next pass takes the
+    snapshot again and stamps it, before any advisor runs. A snapshot that is there with no
+    such record is still reported as tampering, and a stamped snapshot that is gone is still
+    never re-taken.
+  - **A run folder from 5.4 that crashed there** has no "begun" record, so it still reads as
+    tampering: it cannot be told from a planted snapshot. The remedy is the one in the 5.4
+    notes: before re-running, delete `.panopticon/runs/<run-tag>/out-file-hashes.json` when
+    `run-manifest.json` has no `out_file_snapshot` key; after a re-run that already reported
+    it, `--reset`.
 - **A dispatch is charged when it is handed out, not each time it is planned (#3740).** A review
   cell, a verify cell or backup, and a tool advisor each have a three-dispatch retry budget. The
   charge was made at planning, on every `driver run`, whether or not anything was then launched.

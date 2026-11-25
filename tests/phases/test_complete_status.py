@@ -14,6 +14,7 @@ import scripts.phases.engine as engine
 import scripts.phases.runio as runio
 import scripts.phases.synthesize as synthesize
 import scripts.run_manifest as run_manifest
+import scripts.write_guard_hook as write_guard_hook
 import scripts.synth.render as render_mod
 import scripts.x0x_report as x0x_report
 from tests._test_helpers import adopt_panopticon, our_manifest
@@ -304,12 +305,73 @@ class ThroughTheRealEntryPointsTest(_HeadlessLoopCase):
         self.assertIn("run already complete (report at %s)" % runio._report_out(d), again["message"])
 
     def test_the_directive_stays_when_the_disarm_failed(self):
-        status = {"status": "complete", "teardown": engine.TEARDOWN_DIRECTIVE}
+        # #3741: and the failure is said in the status, not raised. `_finish` is the
+        # loop's one terminal path, so an OSError here (a full disk, a read-only
+        # settings file) left the operator a traceback and no status document.
+        status = {"status": "complete", "message": "all phases complete",
+                  "teardown": engine.TEARDOWN_DIRECTIVE}
         guards = mock.Mock(armed_entries=[])
         guards.disarm.side_effect = OSError("settings unwritable")
-        with self.assertRaises(OSError):
-            orchestrate._finish(status, "/nonexistent", guards, None, None, mode="session")
-        self.assertIn("teardown", status)
+        out = orchestrate._finish(status, "/nonexistent", guards, None, None, mode="session")
+        self.assertEqual(("complete", engine.TEARDOWN_DIRECTIVE), (out["status"], out["teardown"]))
+        self.assertEqual("all phases complete; guards not disarmed: OSError: settings unwritable",
+                         out["message"])
+
+    def test_an_error_whose_disarm_failed_hands_the_teardown_to_a_session_host(self):
+        # The grants this invocation armed are still up. In session mode they are in
+        # the host's own settings, so the host is told to take them down. A headless
+        # run's are files in its run folder, which no session reads.
+        for mode, directed in (("session", True), ("headless", False)):
+            for kind in ("error", "paused"):
+                with self.subTest(mode=mode, kind=kind):
+                    guards = mock.Mock(armed_entries=[{"id": "review-app-SEC"}])
+                    guards.disarm.side_effect = OSError(28, "No space left on device")
+                    out = orchestrate._finish({"status": kind, "message": "m"}, "/nonexistent",
+                                              guards, None, None, mode=mode)
+                    guards.disarm.assert_called_once_with([{"id": "review-app-SEC"}])
+                    self.assertEqual(kind, out["status"])
+                    self.assertEqual(
+                        "m; guards not disarmed: OSError: [Errno 28] No space left on device",
+                        out["message"])
+                    self.assertEqual(engine.TEARDOWN_DIRECTIVE if directed else None,
+                                     out.get("teardown"))
+
+    def test_an_interrupt_during_the_disarm_is_said_too(self):
+        guards = mock.Mock(armed_entries=[{"id": "e"}])
+        guards.disarm.side_effect = KeyboardInterrupt
+        out = orchestrate._finish({"status": "error", "message": "m"}, "/nonexistent", guards,
+                                  None, None, mode="session")
+        self.assertEqual("m; guards not disarmed: KeyboardInterrupt: ", out["message"])
+        self.assertEqual(engine.TEARDOWN_DIRECTIVE, out["teardown"])
+
+    def test_a_loop_whose_guards_cannot_be_written_ends_in_a_status(self):
+        """#3741, through the real loop: the batch's own disarm fails (the disk is
+        full), which the loop turns into an `error`, and then the terminal disarm
+        fails the same way. It raised OSError out of `orchestrate.loop`."""
+        d, floor = self._repo()
+        real, calls = write_guard_hook.uninstall, []
+
+        def uninstall(*args, **kwargs):
+            calls.append(1)
+            if len(calls) >= 2:
+                raise OSError(28, "No space left on device")
+            return real(*args, **kwargs)
+
+        with mock.patch.object(write_guard_hook, "uninstall", side_effect=uninstall):
+            status = self._run(d, floor, FakeRunner())
+        self.assertEqual("error", status["status"], status)
+        self.assertEqual(2, status["message"].count("No space left on device"))
+        self.assertIn("driver loop: OSError: [Errno 28]", status["message"])
+        self.assertIn("; guards not disarmed: OSError: [Errno 28]", status["message"])
+
+    def test_nothing_after_the_teardown_can_raise_out_of_the_loop(self):
+        d, floor = self._repo()
+        with mock.patch.object(orchestrate, "_finish", side_effect=RuntimeError("after the teardown")):
+            status = self._run(d, floor, FakeRunner())
+        self.assertEqual("error", status["status"])
+        # What the run had come to is kept, and the teardown's failure is said after it.
+        self.assertEqual("all phases complete; teardown failed: RuntimeError: after the teardown",
+                         status["message"])
 
     def test_with_no_guards_it_stays_too(self):
         status = {"status": "complete", "teardown": engine.TEARDOWN_DIRECTIVE}

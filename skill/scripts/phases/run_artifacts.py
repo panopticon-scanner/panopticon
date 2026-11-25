@@ -61,9 +61,23 @@ def _snapshot_review_out_files(review_root, manifest):
     later substitution -- e.g. by a rogue advisor on the unenforced generic host
     -- is caught. Idempotent AND one-way: if the snapshot already exists it is
     NOT rewritten, nor re-taken once DELETED -- either masks a substitution
-    (SEC-377944137; `run_manifest.claim_artifact`)."""
+    (SEC-377944137; `run_manifest.claim_artifact`).
+
+    #3741, the one exception: a snapshot THIS DRIVER began and never stamped is taken
+    again. A driver killed after the file was written and before its stamp left
+    "present, no stamp", which is also what a snapshot planted before this point
+    looks like, and the re-run reported substituted or pre-planted evidence for an
+    honest crash. The two are told apart by the manifest's "begun" record
+    (`run_manifest.artifact_interrupted`): the driver makes it before it opens the
+    file, and never makes it for a file that was already there. So a file with no
+    such record is still returned untouched, for synthesis to report (#2115).
+    Taking it again is safe because no advisor can have run: this is the first
+    thing `verify_execute` does and nothing is dispatched until it returns, so
+    "begun and not stamped" is a pass that ended before any advisor was handed a
+    findings file. Whatever is at the path now is replaced by the driver's own."""
     path = runio._pano(review_root, "out-file-hashes.json")
-    if os.path.isfile(path):
+    if os.path.isfile(path) and not run_manifest.artifact_interrupted(
+            manifest, run_manifest.OUT_FILE_SNAPSHOT):
         return path
     entries = _driver_plan_entries(review_root, manifest)
     if not entries:
@@ -71,7 +85,7 @@ def _snapshot_review_out_files(review_root, manifest):
     written = run_manifest.claim_artifact(   # None: owed and gone -- never re-taken
         review_root, manifest, run_manifest.OUT_FILE_SNAPSHOT, path,
         lambda: group_runner.snapshot_out_files(entries, out_path=os.path.abspath(path)),
-        cells=len(entries),
+        cells=len(entries), begin=True,
         stamp_fields=lambda result: {"sha256": result[1]})
     return path if written and written[0] else None
 
