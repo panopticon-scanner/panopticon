@@ -3,8 +3,10 @@
 ## Unreleased
 
 - **Five smaller recovery faults from the 5.4 review (#3741).**
-  - "synthesize produced no usable report.json" quotes the end of what the child printed, where
-    the cause is. It quoted the first 400 characters, which are warnings.
+  - "synthesize produced no usable report.json" quotes the last line the child printed, where
+    the cause is. It quoted the first 400 characters, which are warnings. A last line over
+    400 characters keeps its start and its end, with the middle cut and marked ` [...] `;
+    "synthesize wrote no report" quotes its last line the same way.
   - A `.panopticon/report.json` (or `report.json.html`) link that could not be made when a run
     ended is made by the next run. It was never retried: the next run said "already complete"
     with the documented path missing or still on an older report. When it still cannot be

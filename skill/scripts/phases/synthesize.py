@@ -296,14 +296,33 @@ def _plan_owed(manifest):
 _PUBLISHED_STATUSES = (0, 1, 2, validate_schema_mod.ARTIFACT_INVALID)
 
 
+_LINE_BOUND = 400
+_CUT = " [...] "
+
+
 def _last_line(*streams):
     """The last line a child printed, redacted and bounded: its reason for stopping.
     The lines before it are whatever it had to say on the way there. From the first
-    of `streams` that holds a line."""
+    of `streams` that holds a line.
+
+    The line WHOLE when it fits. Over the bound its middle is cut and marked, never its
+    start: the start says who is speaking and why, and the end is where a path-heavy
+    line puts its reason (#3741; a tail of the stream began mid-word when the path was
+    long).
+
+    The STREAM is redacted first, and the line is taken from what is left. A secret can
+    span lines (a private key), and redacting only the last line would publish its
+    last line: the key's own text, with no header beside it to mask it by."""
     for stream in streams:
-        lines = [line for line in str(stream or "").splitlines() if line.strip()]
+        text = str(stream or "")
+        lines = [line for line in redact.redact_diagnostic(
+            text, len(text) + _LINE_BOUND).splitlines() if line.strip()]
         if lines:
-            return redact.redact_diagnostic(lines[-1].strip(), 400)
+            line = lines[-1].strip()
+            if len(line) <= _LINE_BOUND:
+                return line
+            keep = _LINE_BOUND - len(_CUT)
+            return line[:keep - keep // 2] + _CUT + line[len(line) - keep // 2:]
     return "it said nothing"
 
 
@@ -566,11 +585,10 @@ def synthesize_execute(review_root, manifest):
     written = _what_is_at(report)
     if not (written is not None and stat.S_ISREG(written.st_mode)
             and _usable_report(review_root)):
-        # #3741: the END of what it said. The first 400 characters are its warnings;
-        # its reason for stopping is the last thing it printed.
+        # #3741: the LAST LINE it said. The first 400 characters are its warnings; its
+        # reason for stopping is the last thing it printed.
         raise runio.DriverError("synthesize produced no usable report.json (rc=%s): %s"
-                          % (proc.returncode, redact.redact_diagnostic(
-                              proc.stderr or proc.stdout, 400, tail=True)))
+                          % (proc.returncode, _last_line(proc.stderr, proc.stdout)))
     loop_progress.relay_summary(proc.stdout)      # #3232: `loop` only; the child stdout is captured
     # §5.1: point the flat compat paths at the latest tag-named report, so every
     # existing reader of report.json / report.json.html resolves it unchanged, and

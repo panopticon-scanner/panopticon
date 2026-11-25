@@ -1790,19 +1790,44 @@ class TestSynthesizeDonePredicate(unittest.TestCase):
         with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
             with self.assertRaises(runio.DriverError) as cm:
                 synthesize.synthesize_execute(self.root, self.manifest)
-        message = str(cm.exception)
-        self.assertIn("THE CAUSE: the report has no summary", message)
-        self.assertNotIn("warning 000", message)
-        self.assertLessEqual(len(message), len("synthesize produced no usable report.json (rc=0): ") + 400)
-        # With nothing on stderr it is the end of stdout.
-        def quiet(cmd, **kw):
-            with open(cmd[cmd.index("--out") + 1], "w") as fh:
-                json.dump({"findings": []}, fh)
-            return mock.Mock(returncode=0, stdout="x" * 500 + "the last words", stderr="")
-        with mock.patch("scripts.phases.child._run_child", side_effect=quiet):
-            with self.assertRaises(runio.DriverError) as cm:
-                synthesize.synthesize_execute(self.root, self.manifest)
-        self.assertTrue(str(cm.exception).endswith("the last words"))
+        lead = "synthesize produced no usable report.json (rc=0): "
+        # The last line, whole, and nothing before it.
+        self.assertEqual(lead + "synthesize: THE CAUSE: the report has no summary",
+                         str(cm.exception))
+
+        def said(stdout="", stderr=""):
+            def run(cmd, **kw):
+                with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                    json.dump({"findings": []}, fh)
+                return mock.Mock(returncode=0, stdout=stdout, stderr=stderr)
+            with mock.patch("scripts.phases.child._run_child", side_effect=run):
+                with self.assertRaises(runio.DriverError) as raised:
+                    synthesize.synthesize_execute(self.root, self.manifest)
+            message = str(raised.exception)
+            self.assertTrue(message.startswith(lead), message)
+            return message[len(lead):]
+
+        # A last line longer than the bound keeps its START and its end: the start says
+        # who is speaking and why. (#3808 review: the last 400 characters of the stream
+        # began mid-word, "ze: artifact path refused", when the path in the line was long,
+        # as a temp path on macOS is. A short /tmp hid it.)
+        path = "/private/var/folders/" + "/".join("d%03d" % n * 8 for n in range(40))
+        line = "synthesize: artifact path refused: cannot publish artifact %r: it is a directory" % path
+        self.assertGreater(len(line), 1200)
+        quoted = said(stderr=warnings + line + "\n\n")
+        self.assertLessEqual(len(quoted), 400)
+        self.assertTrue(quoted.startswith("synthesize: artifact path refused: cannot publish artifact"))
+        self.assertTrue(quoted.endswith(": it is a directory"))
+        self.assertEqual(1, quoted.count(" [...] "))
+        self.assertNotIn("warning", quoted)
+        # A line of exactly the bound is whole; one over it is cut.
+        self.assertEqual("y" * 400, said(stderr="y" * 400))
+        self.assertEqual("y" * 197 + " [...] " + "y" * 196, said(stderr="y" * 401))
+        # With nothing on stderr it is the last line of stdout.
+        self.assertEqual("the last words", said(stdout="x" * 500 + "\nthe last words\n"))
+        self.assertEqual("it said nothing", said())
+        # A secret in the line is masked before the line is cut.
+        self.assertNotIn("ghp_", said(stderr="synthesize: token ghp_" + "A" * 36 + " " + "z" * 500))
 
 
 class TestTheConfigResolutionSeam(unittest.TestCase):

@@ -439,7 +439,14 @@ def test_a_child_that_died_silently_still_gets_a_reason(review):
                                  ("on stdout\n", "on stderr\n", "on stderr"),
                                  # Redacted and bounded, like every child line the driver relays.
                                  ("", "first\nread %s\n" % token, "read [REDACTED_TOKEN]"),
-                                 ("", "x" * 500, "x" * 400)):
+                                 # #3741: over the bound, the middle goes, not the start or the end.
+                                 ("", "x" * 500, "x" * 197 + " [...] " + "x" * 196),
+                                 # A secret that spans lines is masked before the last line is
+                                 # taken: the line was the key's own text, published as it was.
+                                 ("", "-----BEGIN PRIVATE KEY-----\n" + "A" * 64 + "\n" + "B" * 64
+                                  + "\n-----END PRIVATE KEY-----\n", "[REDACTED_PRIVATE_KEY]"),
+                                 ("", "said -----BEGIN PRIVATE KEY-----\n" + "A" * 64 + "\n" + "B" * 64,
+                                  "said [REDACTED_PRIVATE_KEY]")):
         with mock.patch.object(child, "_run_child", return_value=subprocess.CompletedProcess(
                 [], 3, stdout, stderr)), pytest.raises(runio.DriverError) as refused:
             synthesize.synthesize_execute(root, manifest)
