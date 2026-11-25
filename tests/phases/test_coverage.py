@@ -453,6 +453,12 @@ class TestCoveragePhase(unittest.TestCase):
         self.assertIsNone(runio._load_json(p))                   # strict: rejects the fence
         self.assertEqual(runio._load_return_json(p), {"a": 1})   # tolerant: unwraps
         self.assertTrue(runio._return_json_parses(p))
+        # #3741: a reply that is not UTF-8 is unrecoverable, like any other. It raised
+        # UnicodeDecodeError out of the read, which the `OSError` beside it does not catch.
+        with open(p, "wb") as fh:
+            fh.write(b'{"a": "\xff\xfe"}')
+        self.assertIsNone(runio._load_return_json(p))
+        self.assertFalse(runio._return_json_parses(p))
 
     def test_write_json_rejects_symlinked_intermediate_panopticon_dir(self):
         # #run9 SEC-X0X: artifact_root() vets only the top-level .panopticon and

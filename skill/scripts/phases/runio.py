@@ -469,7 +469,7 @@ def _load_return_json(path):
     try:
         with open(path, encoding="utf-8") as fh:
             body = fh.read()
-    except OSError:
+    except (OSError, UnicodeDecodeError):      # #3741: bytes that are not text are no reply
         return None
     try:
         return evidence.load_json_tolerant(body)

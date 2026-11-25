@@ -190,6 +190,15 @@ class TestRefusals(Workspace):
         with redirect_stderr(io.StringIO()), self.assertRaises(cr.Refused):
             cr.compare([bad, self.write("ok-report.json", report())])
 
+    def test_a_report_nested_past_the_stack_is_refused(self):
+        # #3741: a RecursionError traceback, from the shape check that reads it first.
+        bad = os.path.join(self.dir, "deep-report.json")
+        with open(bad, "w", encoding="utf-8") as fh:
+            fh.write('{"findings": %s}' % ("[" * 100_000 + "]" * 100_000))
+        with redirect_stderr(io.StringIO()), self.assertRaises(cr.Refused) as ctx:
+            cr.compare([bad, self.write("ok-report.json", report())])
+        self.assertIn("deep-report.json is malformed: cannot read it", str(ctx.exception))
+
     def test_a_missing_part_is_refused_and_present_parts_are_merged(self):
         main = report([agent(10)], meta={"parts": ["split-report_part1.json"]})
         path = self.write("split-report.json", main)

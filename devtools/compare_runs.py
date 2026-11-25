@@ -80,6 +80,7 @@ if __name__ == "__main__":  # run by path: puts skill/ on sys.path (#3505)
 import scripts.evidence as evidence
 import scripts.model_disclosure as model_disclosure
 import scripts.synth.render as render
+import scripts.tolerant_json as tolerant_json
 from scripts.tools.base import inert_text
 
 DEFAULT_LINE_WINDOW = 5
@@ -128,7 +129,7 @@ def _shape_error(path):
     reader, which assumes these shapes."""
     try:
         with open(path, encoding="utf-8") as fh:
-            raw = json.load(fh)
+            raw = json.loads(tolerant_json.depth_checked(fh.read()))   # #3741: as corrupt
     except (OSError, ValueError) as exc:
         return "cannot read it (%s)" % exc
     if not isinstance(raw, dict):

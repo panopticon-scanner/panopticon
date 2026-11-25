@@ -83,6 +83,29 @@ class TestCompareParts(unittest.TestCase):
                 self.assertIsNone(render_mod._read_json_report(main))  # not a silent partial
             self.assertIn("incomplete", err.getvalue())
 
+    def test_a_report_nested_past_the_stack_is_an_error_not_a_traceback(self):
+        # #3741: a 100,000-deep report, part or discarded-claims file raised
+        # RecursionError out of this reader: a traceback in the synthesize child, and
+        # in compare_runs and matrix_stability, which read reports through it.
+        deep = "[" * 100_000 + "]" * 100_000
+        for where in ("the report", "a part", "the discarded claims"):
+            with self.subTest(where=where), tempfile.TemporaryDirectory() as d:
+                main = os.path.join(d, "r.json")
+                body = {"meta": {"parts": ["r_part2.json"],
+                                 "discarded_claims_file": "r-discarded.json"}, "findings": []}
+                with open(main, "w") as fh:
+                    fh.write('{"deep": %s}' % deep if where == "the report" else json.dumps(body))
+                with open(os.path.join(d, "r_part2.json"), "w") as fh:
+                    fh.write('{"findings": %s}' % (deep if where == "a part" else "[]"))
+                with open(os.path.join(d, "r-discarded.json"), "w") as fh:
+                    fh.write('{"discarded_claims": %s}'
+                             % (deep if where == "the discarded claims" else "[]"))
+                err = io.StringIO()
+                with contextlib.redirect_stderr(err):
+                    self.assertIsNone(render_mod._read_json_report(main))
+                self.assertIn("ERROR:", err.getvalue())
+                self.assertIn("nested", err.getvalue())
+
     def test_read_json_report_recovers_discarded_sibling_without_parts(self):
         # #run9 ARC-D1A: discarded_claims can spill to a <stem>-discarded.json
         # sibling INDEPENDENTLY of meta.parts, so --compare must follow that pointer

@@ -23,7 +23,7 @@ import jsonschema
 # gate uses (`security_gate --exclude` -> `ingest_tools` ->
 # `groups_schema.matched_glob`), so one `--exclude` line means one scope on
 # both.
-from scripts import groups_schema, semgrep_targets
+from scripts import groups_schema, semgrep_targets, tolerant_json
 
 # Where run_tools mounts the reviewed tree inside the tools image
 # (`scanner_config.TARGET_MOUNT`, pinned equal by test): scanners write locations
@@ -148,7 +148,9 @@ def _reject_constant(_value: str) -> None:
 
 def _strict_json(raw: bytes, source: str) -> Any:
     try:
-        return json.loads(raw, object_pairs_hook=_unique_object,
+        # #3741: the depth first. The decoder recurses per bracket, and a RecursionError
+        # is none of the errors named below.
+        return json.loads(tolerant_json.depth_checked(raw), object_pairs_hook=_unique_object,
                           parse_constant=_reject_constant)
     except _DuplicateKeyError as exc:
         raise ReportError(f"{source}: duplicate object key in JSON") from exc

@@ -14,6 +14,11 @@
     checked. The driver now stops with "OCRDb bundle missing at <path>", and `synthesize.py`
     exits 3. A catalog that cannot be opened, or is nested past the stack, is "OCRDb bundle
     unreadable" like a corrupt one; it was an unnamed `PermissionError` or a `RecursionError`.
+  - JSON nested past the stack is refused as malformed where it was a `RecursionError`
+    traceback: a report, a continuation part or a discarded-claims file read back by
+    `synthesize.py` (its own re-read, and `--compare`), by `compare_runs` and
+    `matrix_stability`, and a SARIF file read by `code_scanning_reports`. A returned reply that
+    is not UTF-8 reads as no reply; it raised `UnicodeDecodeError`.
 - **A dispatch is charged when it is handed out, not each time it is planned (#3740).** A review
   cell, a verify cell or backup, and a tool advisor each have a three-dispatch retry budget. The
   charge was made at planning, on every `driver run`, whether or not anything was then launched.

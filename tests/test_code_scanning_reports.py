@@ -672,6 +672,20 @@ def test_strict_json_rejects_duplicates_and_non_json_constants_atomically(
     assert not output.exists()
 
 
+def test_strict_json_nested_past_the_stack_is_a_report_error(tmp_path):
+    # #3741: `json.loads` raised RecursionError, which nothing here catches.
+    raw = tmp_path / "raw"
+    raw.mkdir()
+    (raw / "deep.sarif").write_text(
+        '{"version":"2.1.0","runs":%s}' % ("[" * 100_000 + "]" * 100_000), encoding="utf-8")
+    output = tmp_path / "reports"
+    with pytest.raises(reports.ReportError, match="invalid JSON syntax") as caught:
+        reports.prepare_reports(raw, output)
+    assert "deep.sarif" in str(caught.value)
+    assert "nested" in str(caught.value)
+    assert not output.exists()
+
+
 def test_schema_is_the_unmodified_official_sarif_2_1_0_release():
     schema = reports.SARIF_SCHEMA_PATH.read_bytes()
     assert hashlib.sha256(schema).hexdigest() == reports.SARIF_SCHEMA_SHA256
