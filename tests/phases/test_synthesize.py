@@ -1,6 +1,7 @@
 """Tests for scripts.phases.synthesize: the synthesize child and host-usage collection.
 """
 import contextlib
+import hashlib
 import html
 import io
 import json
@@ -1552,6 +1553,149 @@ class TestTheOwedPlanOnTheLiveDriverPath(unittest.TestCase):
         self.assertEqual(integrity["content_mismatched_files"], [])
         self.assertIs(integrity["content_snapshot_mismatched"], True)
         self.assertEqual(summary["gate"], "INCONCLUSIVE")
+
+    # #3741 ------------------------------------------------------------------
+    # A driver killed after the snapshot was written and before its manifest stamp
+    # left "file present, no stamp", which is also what a pre-planted snapshot looks
+    # like (row 6). The re-run completed NOT CERTIFIED, "substituted or pre-planted
+    # evidence". What tells the two apart is whether THE DRIVER BEGAN the write: it
+    # records that in the manifest before it opens the file.
+
+    def _land_the_cells(self):
+        result = review_phase.review_execute(self.root, self.manifest)
+        self.assertEqual(result.checkpoint, "review")
+        for entry in requests.load_dispatch_request(self.root)["entries"]:
+            runio._write_json(entry["out_file"], {
+                "findings": [{"title": "nit", "severity": "LOW", "domain": "QAL",
+                              "code": "QAL-A1A", "category": "style",
+                              "location": {"file": "src/app.py", "line_start": 1}}],
+                "_panopticon": {"run_id": self.RUN_ID, "role": "domain_panel",
+                                "domain": "QAL", "group": "app"}})
+        self.assertTrue(review_phase.review_done(self.root, self.manifest))
+
+    def _killed_during(self, target, name):
+        """The first verify pass, killed at `target.name`; then the next process's
+        manifest, read off disk."""
+        with mock.patch.object(target, name, side_effect=KeyboardInterrupt), \
+                self.assertRaises(KeyboardInterrupt):
+            verify_phase.verify_execute(self.root, self.manifest)
+        self.manifest = run_manifest.load_manifest(self.root)
+
+    def _stamp(self):
+        return run_manifest.artifact_stamp(run_manifest.load_manifest(self.root),
+                                           run_manifest.OUT_FILE_SNAPSHOT)
+
+    def test_row_7_a_driver_killed_between_the_snapshot_and_its_stamp_recovers(self):
+        self._land_the_cells()
+        real = run_manifest.record_artifact_stamp
+
+        def killed(review_root, manifest, key, *args, **kwargs):
+            if key == run_manifest.OUT_FILE_SNAPSHOT:
+                raise KeyboardInterrupt
+            return real(review_root, manifest, key, *args, **kwargs)
+
+        with mock.patch.object(run_manifest, "record_artifact_stamp", side_effect=killed), \
+                self.assertRaises(KeyboardInterrupt):
+            verify_phase.verify_execute(self.root, self.manifest)
+        self.assertTrue(os.path.isfile(self.snapshot))
+        self.assertIsNone(self._stamp())
+        self.manifest = run_manifest.load_manifest(self.root)
+        self.assertTrue(run_manifest.artifact_interrupted(self.manifest,
+                                                          run_manifest.OUT_FILE_SNAPSHOT))
+        verify_phase.verify_execute(self.root, self.manifest)          # the re-run
+        with open(self.snapshot, "rb") as fh:
+            self.assertEqual(hashlib.sha256(fh.read()).hexdigest(), self._stamp()["sha256"])
+        self.assertFalse(run_manifest.artifact_interrupted(
+            run_manifest.load_manifest(self.root), run_manifest.OUT_FILE_SNAPSHOT))
+        integrity, summary = self._synthesize()
+        # It was: content_snapshot_mismatched, INCONCLUSIVE, not certified.
+        self.assertIs(integrity["content_snapshot_mismatched"], False)
+        self.assertEqual(integrity["content_mismatched_files"], [])
+        self.assertNotEqual(summary["gate"], "INCONCLUSIVE")
+        self.assertIs(summary["coverage_certified"], True)
+
+    def test_row_8_killed_after_it_began_and_before_the_file_exists_recovers_too(self):
+        self._land_the_cells()
+        self._killed_during(group_runner, "snapshot_out_files")
+        self.assertFalse(os.path.exists(self.snapshot))
+        self.assertTrue(run_manifest.artifact_interrupted(self.manifest,
+                                                          run_manifest.OUT_FILE_SNAPSHOT))
+        verify_phase.verify_execute(self.root, self.manifest)
+        self.assertTrue(os.path.isfile(self.snapshot))
+        integrity, summary = self._synthesize()
+        self.assertIs(integrity["content_snapshot_mismatched"], False)
+        self.assertIs(summary["coverage_certified"], True)
+
+    def test_the_driver_says_it_has_begun_before_it_opens_the_snapshot(self):
+        self._land_the_cells()
+        seen = []
+        real = group_runner.snapshot_out_files
+
+        def snapshot(plan, out_path):
+            on_disk = run_manifest.load_manifest(self.root)
+            seen.append((os.path.exists(out_path),
+                         run_manifest.artifact_interrupted(on_disk, run_manifest.OUT_FILE_SNAPSHOT),
+                         run_manifest.artifact_stamp(on_disk, run_manifest.OUT_FILE_SNAPSHOT)))
+            return real(plan, out_path=out_path)
+
+        with mock.patch.object(group_runner, "snapshot_out_files", side_effect=snapshot):
+            verify_phase.verify_execute(self.root, self.manifest)
+        # Durable in the manifest ON DISK, with no file yet and no stamp yet.
+        self.assertEqual([(False, True, None)], seen)
+
+    def test_row_9_a_snapshot_planted_over_the_interrupted_one_is_replaced_by_the_drivers(self):
+        """The driver had begun, so whatever is at the path on the re-run is replaced
+        by its own snapshot of the cells as they are, before any advisor runs. A
+        forged one put there in between buys nothing: the substitution it was forged
+        for is caught against the driver's."""
+        self._land_the_cells()
+        real = run_manifest.record_artifact_stamp
+        with mock.patch.object(run_manifest, "record_artifact_stamp",
+                               side_effect=lambda rr, m, key, *a, **k: (_ for _ in ()).throw(
+                                   KeyboardInterrupt) if key == run_manifest.OUT_FILE_SNAPSHOT
+                               else real(rr, m, key, *a, **k)), \
+                self.assertRaises(KeyboardInterrupt):
+            verify_phase.verify_execute(self.root, self.manifest)
+        with open(self.cell, "rb") as fh:
+            honest = fh.read()
+        self._substitute()                                          # the forgery's content
+        group_runner.snapshot_out_files([{"out_file": self.cell}], out_path=self.snapshot)
+        with open(self.cell, "wb") as fh:
+            fh.write(honest)                                        # put back for the boundary
+        self.manifest = run_manifest.load_manifest(self.root)
+        verify_phase.verify_execute(self.root, self.manifest)          # the driver's own snapshot
+        self._substitute()                                          # the substitution it was for
+        integrity, summary = self._synthesize()
+        self.assertTrue(integrity["content_mismatched_files"])
+        self.assertEqual(summary["gate"], "INCONCLUSIVE")
+
+    def test_row_6_again_a_snapshot_the_driver_never_began_is_left_as_it_is(self):
+        # The pre-plant, seen from the driver: no "begun" record is written for a
+        # file that was there first, and the file is not replaced.
+        self._land_the_cells()
+        with open(self.snapshot, "w") as fh:
+            fh.write('{"planted": "0"}')
+        verify_phase.verify_execute(self.root, self.manifest)
+        on_disk = run_manifest.load_manifest(self.root)
+        self.assertFalse(run_manifest.artifact_interrupted(on_disk, run_manifest.OUT_FILE_SNAPSHOT))
+        self.assertNotIn(run_manifest.ARTIFACT_BEGUN[run_manifest.OUT_FILE_SNAPSHOT], on_disk)
+        self.assertIsNone(run_manifest.artifact_stamp(on_disk, run_manifest.OUT_FILE_SNAPSHOT))
+        with open(self.snapshot) as fh:
+            self.assertEqual('{"planted": "0"}', fh.read())
+        integrity, summary = self._synthesize()
+        self.assertIs(integrity["content_snapshot_mismatched"], True)
+        self.assertEqual(summary["gate"], "INCONCLUSIVE")
+
+    def test_a_stamped_snapshot_that_is_gone_is_still_never_re_taken(self):
+        # Row 3's rule is untouched by the "begun" record, which is still in the manifest.
+        self._drive_to_the_snapshot()
+        on_disk = run_manifest.load_manifest(self.root)
+        self.assertIn(run_manifest.ARTIFACT_BEGUN[run_manifest.OUT_FILE_SNAPSHOT], on_disk)
+        self.assertFalse(run_manifest.artifact_interrupted(on_disk, run_manifest.OUT_FILE_SNAPSHOT))
+        os.remove(self.snapshot)
+        with contextlib.redirect_stderr(io.StringIO()):
+            verify_phase.verify_execute(self.root, on_disk)
+        self.assertFalse(os.path.exists(self.snapshot))
 
     def test_replacing_the_plan_is_caught_as_well_as_deleting_it(self):
         # The stamp carries the plan's canonical content hash, so a plan that is
