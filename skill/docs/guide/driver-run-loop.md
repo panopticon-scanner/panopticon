@@ -687,7 +687,11 @@ on Claude hooks, and always uses the return-persist path.
   Usage is never estimated from counts. - **The loop tears the guards down** scoped after each batch
   and unconditionally on `complete`, so `driver loop`'s terminal status carries no `teardown` field
   once that disarm has succeeded (#3367). `driver run` and `driver setup` never disarm, and keep
-  it. - **The loop rolls a crashed batch back before it resumes**
+  it. A disarm that fails (a full disk, a read-only settings file) does not end the loop with a
+  traceback (#3741): the status message says `guards not disarmed: <error>`, a `complete` keeps
+  its `teardown` field, and in session mode an `error` or `paused` status is given one, because
+  the grants still up are in your own settings. - **The loop rolls a crashed batch back before it
+  resumes**
   — a `batch-<n>.json` still on disk means a run that reached no teardown at all (`SIGKILL`, an OOM
   kill, a power loss), and the next `driver loop` takes that batch back BEFORE the engine can read a
   half-written artifact as a finished cell (#1698). Since #3351, after each real row the loop

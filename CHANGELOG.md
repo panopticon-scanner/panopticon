@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- **Three crash points recover on their own (#3741).** They were the "need a hand" items in the
+  5.4.0 notes. Each failed closed.
+  - **A write failure at the loop's teardown is a status, not a traceback.** With the disk full or
+    the run folder read-only, disarming the guards raised `OSError` out of `driver loop`: a
+    traceback and no status document. The status message now says `guards not disarmed: <error>`;
+    a `complete` keeps its `teardown` field, and a session host gets one on `error` and `paused`.
+    Nothing after the teardown can raise out of the loop either.
 - **A dispatch is charged when it is handed out, not each time it is planned (#3740).** A review
   cell, a verify cell or backup, and a tool advisor each have a three-dispatch retry budget. The
   charge was made at planning, on every `driver run`, whether or not anything was then launched.

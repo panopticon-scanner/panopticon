@@ -450,7 +450,11 @@ def _loop(args, pause, held):
         status = _status("error", str(exc))
     except Exception as exc:                # noqa: BLE001 -- `loop` never raises (review round 1, item 3)
         status = _status("error", "driver loop: %s: %s" % (type(exc).__name__, exc))
-    return _finish(status, review_root, guards, ledger, namespace, mode, runner)
+    try:
+        return _finish(status, review_root, guards, ledger, namespace, mode, runner)
+    except Exception as exc:                # noqa: BLE001 -- #3741: nor from its own teardown
+        return _status("error", "%s; teardown failed: %s: %s" % (
+            status.get("message"), type(exc).__name__, exc))
 
 
 def _run(args, namespace, resolved=None):
@@ -525,15 +529,27 @@ def _finish(status, review_root, guards, ledger, namespace, mode="headless", run
             if isinstance(exc, KeyboardInterrupt):     # a THIRD Ctrl-C: `loop` still never raises
                 status["message"] = "%s; teardown interrupted: KeyboardInterrupt" % status.get("message")
     if guards is not None:
-        if status.get("status") == "complete":
-            guards.disarm()                          # total (spec 5.1)
-            status.pop("teardown", None)             # #3367: just done, so not the host's to do
-        elif status.get("status") in ("error", "paused") and guards.armed_entries:
-            # I4: exactly what THIS invocation armed, and nothing else. In session mode
-            # the grants outlive an invocation, so a total teardown here would revoke a
-            # fan-out the PREVIOUS invocation started and that is still running. An
-            # invocation that armed nothing (an errored re-entry) disarms nothing.
-            guards.disarm(guards.armed_entries)
+        try:
+            if status.get("status") == "complete":
+                guards.disarm()                          # total (spec 5.1)
+                status.pop("teardown", None)             # #3367: just done, so not the host's to do
+            elif status.get("status") in ("error", "paused") and guards.armed_entries:
+                # I4: exactly what THIS invocation armed, and nothing else. In session mode
+                # the grants outlive an invocation, so a total teardown here would revoke a
+                # fan-out the PREVIOUS invocation started and that is still running. An
+                # invocation that armed nothing (an errored re-entry) disarms nothing.
+                guards.disarm(guards.armed_entries)
+        except (Exception, KeyboardInterrupt) as exc:      # noqa: BLE001 -- never mask the status
+            # #3741: a disarm writes the settings and the allowlist, so a full disk or a
+            # read-only folder fails it. This is the loop's one terminal path: raised from
+            # here it was a traceback and no status document. Said in the status instead,
+            # like the two wrapped steps around it. The grants are still up: a `complete`
+            # keeps its directive, and a session host is handed one, because those grants
+            # are in ITS settings. (A headless run's are files in its own run folder.)
+            status["message"] = "%s; guards not disarmed: %s: %s" % (
+                status.get("message"), type(exc).__name__, exc)
+            if mode == "session":
+                status["teardown"] = engine.TEARDOWN_DIRECTIVE
     # M9: the ledger-derived usage.json belongs to headless runs only. In session mode
     # the loop launches nothing, so the ledger is empty and this document is all zeros
     # -- while the run's REAL figures come from the host's own transcripts via
