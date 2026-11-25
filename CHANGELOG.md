@@ -14,9 +14,10 @@
     and raising the cap then completed with "no review cell answered".
   - **Now:** an entry emitted again with nothing changed on disk since it was handed out is the
     same dispatch, and is charged once. The next one is charged when the last has ended: the
-    headless loop launched it and recorded its result, whatever that was; or an output landed
-    and the entry is still pending; or `driver persist` refused its reply; or the charge was
-    given back (a pause, an outage, an interrupt).
+    headless loop launched it, whatever came of it; or an output landed and the entry is still
+    pending; or `driver persist` refused its reply and kept it; or the charge was given back (a
+    pause, an outage, an interrupt); or the loop takes for done an entry the phase still emits
+    (so that disagreement is still ended by the budget, as before).
   - **A budget is not spent while its last dispatch is still out.** A cell at 3 whose third
     dispatch was planned and never launched, or is still running, is not exhausted.
   - **The cap is still on:** a headless child that fails every time is exhausted after three

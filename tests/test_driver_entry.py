@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from unittest import mock
 
+import scripts.phases.budget as budget
 import scripts.phases.runio as runio
 import scripts.phases.engine as engine
 import scripts.phases.coverage as coverage
@@ -112,8 +113,12 @@ class TestResetGlobs(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             artifacts = os.path.join(root, ".panopticon")
             os.mkdir(artifacts)
+            # #3740: and the hand-out marks. They are in the run folder, which a reset
+            # removes whole; with no manifest, or a corrupt one, a run's files are flat
+            # here, and a mark left behind would read a new run's first emission as an
+            # old dispatch emitted again, and not charge it.
             stale = ("diff-hunks.json", "out-file-hashes.json",
-                     "dispatch-plan-driver.json")
+                     "dispatch-plan-driver.json", budget.MARKS_FILE)
             for name in stale:
                 with open(os.path.join(artifacts, name), "w", encoding="utf-8") as fh:
                     fh.write("stale")

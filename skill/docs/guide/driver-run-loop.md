@@ -126,7 +126,9 @@ The host contract (5.2, plan 6):
   **The limit:** an agent that returns and writes nothing looks, on disk, like one that has not
   finished, so in session mode it is never charged and the retry budget does not bound it. Your own
   loop does: an entry whose `reemitted` keeps growing after its agent has returned is stuck, and is
-  yours to stop.
+  yours to stop. The same holds for a reply `driver persist` refuses **without keeping it**: an
+  empty reply, or one whose record under `rejected/` could not be written, leaves nothing on disk,
+  so it is not charged either.
 - **`driver readiness [target] [run flags] [--json]` is the preflight, and it is not part of the
   loop.** Run it before you launch anything. It writes nothing under the target and launches nothing
   — host CLIs are located with `shutil.which` and never started, and the Docker probe is the

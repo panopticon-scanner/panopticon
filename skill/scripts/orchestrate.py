@@ -267,6 +267,15 @@ def _loop(args, pause, held):
             runner.roles = loop_batch.checkpoint_roles(req.get("checkpoint"))
             entries = [e for e in req.get("entries") or [] if isinstance(e, dict)]
             pending = loop_batch._pending(entries)
+            if namespace is None:
+                # #3740: the phase emitted these as not done, and this loop takes them
+                # for done, so it will never launch them. Their hand-outs are over:
+                # left out, each would be emitted again unchanged and never charged,
+                # and the retry budget, which is what ends such a disagreement
+                # (#3698, #3709), would never be spent.
+                wanted = {id(e) for e in pending}
+                phase_budget.handouts_ended(review_root, [e for e in entries
+                                                          if id(e) not in wanted])
             # #1720 + #1727: does what it SAYS match this run's own evidence
             # and plan? Before anything is armed or launched.
             refusal = loop_batch.request_refusal(review_root, host, namespace, req, pending)
@@ -340,18 +349,23 @@ def _loop(args, pause, held):
                     hold=pause.event)) as stream, loop_progress.batch(len(pending)) as watch:
                 for entry, result, timing in stream:
                     eid = entry.get("id")
-                    refusal = loop_batch.record_entry(
-                        entry, result, timing, run_dir, batch, ledger, req,
-                        mode, runner)
-                    substitution = getattr(result, "model_substitution", None)
-                    if namespace is None and isinstance(substitution, dict) and substitution:
-                        # #3582: the fallback goes on the run's own record too.
-                        run_manifest.record_model_substitution(review_root, None, eid,
-                                                               substitution)
-                    if namespace is None:
-                        # #3740: launched, and its result is recorded: this hand-out is
-                        # over, so the entry's next dispatch is charged whatever it left.
-                        phase_budget.handouts_ended(review_root, [entry])
+                    try:
+                        refusal = loop_batch.record_entry(
+                            entry, result, timing, run_dir, batch, ledger, req,
+                            mode, runner)
+                        substitution = getattr(result, "model_substitution", None)
+                        if namespace is None and isinstance(substitution, dict) and substitution:
+                            # #3582: the fallback goes on the run's own record too.
+                            run_manifest.record_model_substitution(review_root, None, eid,
+                                                                   substitution)
+                    finally:
+                        if namespace is None:
+                            # #3740: it was LAUNCHED, so this hand-out is over and the
+                            # entry's next dispatch is charged whatever it left. Also
+                            # when the recording itself fails: its row may already be in
+                            # the ledger, where a recovery keeps the charge, and with
+                            # the mark left it was launched again uncharged every time.
+                            phase_budget.handouts_ended(review_root, [entry])
                     handled.append(eid)
                     landed.append((entry, result))
                     tally.record(eid, result, refusal, seq=order.get(eid))

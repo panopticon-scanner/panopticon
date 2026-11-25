@@ -19,8 +19,9 @@ import scripts.phases.budget as budget
 import scripts.phases.review as review
 import scripts.phases.runio as runio
 import scripts.runners.base as base
+import scripts.runners.batch as batch_mod
 from tests._test_helpers import (all_proven_artifact as _all_proven_artifact, refuted_tool_policy_artifact as _refuted_artifact)
-from tests._test_helpers import docker_probe_runner, write_host_evidence
+from tests._test_helpers import dead_pid, docker_probe_runner, write_host_evidence
 from scripts import hosts
 
 
@@ -219,6 +220,58 @@ class TestADispatchIsChargedAtItsLaunch(LoopCase):
             return ("driver loop: stopped by the test" if len(seen) > batches
                     else real(*args, **kwargs))
         return refusal
+
+    def test_an_entry_the_loop_takes_for_done_is_still_bounded_by_its_budget(self):
+        """#3806 review. The phase says a cell is not done and emits it; the loop's own
+        `_pending` says it is done and launches nothing. That disagreement has shipped
+        twice (#3698, #3709), and the retry budget was what ended it: charged at each
+        planning, the cell was exhausted after three. Charged only when handed out,
+        the entry was emitted again unchanged for ever, each loop spun to
+        `--max-iterations`, and the run never completed. An entry the loop filters out
+        has had its hand-out ended, so the next planning charges it."""
+        d, floor = self._repo()
+        real = loop_batch.persist.is_done
+        with mock.patch.object(
+                loop_batch.persist, "is_done",
+                side_effect=lambda entry: entry["id"].startswith("review-") or real(entry)):
+            runner = self.Silent()
+            status = self._run_loop(d, floor, runner)
+        self.assertEqual(("complete", 1), (status["status"], status.get("cells_exhausted")), status)
+        self.assertEqual([], [x for x in runner.launched if x.startswith("review-")])
+        self.assertEqual({"app/SEC": 3}, self._attempts(d))
+
+    def test_a_launch_whose_result_cannot_be_recorded_is_still_charged(self):
+        """#3806 review. The hand-out was ended only once everything after the launch had
+        gone well. A launch whose result was recorded (its row is in the ledger, so a
+        recovery keeps its charge) and whose loop then died kept its mark: the next
+        process launched it again, uncharged, each time."""
+        d, floor = self._repo()
+        real = loop_batch.record_entry
+
+        def recording(entry, *args, **kwargs):
+            refusal = real(entry, *args, **kwargs)
+            if entry["id"].startswith("review-"):
+                raise RuntimeError("the loop died after the row was written")
+            return refusal
+
+        for launched in (1, 2, 3):
+            runner = self.Silent()
+            with mock.patch.object(orchestrate.loop_batch, "record_entry", side_effect=recording):
+                status = self._run_loop(d, floor, runner, seed=(launched == 1))
+            self.assertEqual("error", status["status"], status)
+            self.assertIn("the loop died after the row was written", status["message"])
+            self.assertEqual(1, runner.launched.count("review-app-SEC"))
+            self.assertEqual({"app/SEC": launched}, self._attempts(d))
+            # That process is gone: the batch record it left names a dead pid.
+            for name in os.listdir(runner.run_dir):
+                if name.startswith(batch_mod.MANIFEST_PREFIX) and name.endswith(".json"):
+                    record = runio._load_json(os.path.join(runner.run_dir, name))
+                    runio._write_json(os.path.join(runner.run_dir, name),
+                                      dict(record, pid=dead_pid()))
+        runner = self.Silent()
+        status = self._run_loop(d, floor, runner, seed=False)
+        self.assertEqual(("complete", 1, 0), (status["status"], status.get("cells_exhausted"),
+                                              runner.launched.count("review-app-SEC")), status)
 
     def test_a_run_folder_written_before_the_marks_resumes_on_its_counters(self):
         """A 5.4 folder has counters and no marks. Nothing is outstanding, so the next
