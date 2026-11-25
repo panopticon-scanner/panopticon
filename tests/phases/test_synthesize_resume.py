@@ -20,7 +20,7 @@ import scripts.safe_write as safe_write
 import scripts.synthesize as synthesize_cli
 from scripts.phases import child, engine, runio, synthesize, validate
 from scripts.synth import validate_schema
-from tests._test_helpers import adopt_panopticon, our_manifest
+from tests._test_helpers import adopt_panopticon, fake_pem, our_manifest, pem_begin
 from tests.tools.git_repo import make_git_repo
 
 
@@ -443,9 +443,10 @@ def test_a_child_that_died_silently_still_gets_a_reason(review):
                                  ("", "x" * 500, "x" * 197 + " [...] " + "x" * 196),
                                  # A secret that spans lines is masked before the last line is
                                  # taken: the line was the key's own text, published as it was.
-                                 ("", "-----BEGIN PRIVATE KEY-----\n" + "A" * 64 + "\n" + "B" * 64
-                                  + "\n-----END PRIVATE KEY-----\n", "[REDACTED_PRIVATE_KEY]"),
-                                 ("", "said -----BEGIN PRIVATE KEY-----\n" + "A" * 64 + "\n" + "B" * 64,
+                                 # (Built by the helpers, so no key header is spelled in this file.)
+                                 ("", fake_pem("A" * 64 + "\n" + "B" * 64, kind="") + "\n",
+                                  "[REDACTED_PRIVATE_KEY]"),
+                                 ("", "said " + pem_begin("") + "\n" + "A" * 64 + "\n" + "B" * 64,
                                   "said [REDACTED_PRIVATE_KEY]")):
         with mock.patch.object(child, "_run_child", return_value=subprocess.CompletedProcess(
                 [], 3, stdout, stderr)), pytest.raises(runio.DriverError) as refused:
