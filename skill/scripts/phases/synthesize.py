@@ -537,8 +537,11 @@ def synthesize_execute(review_root, manifest):
     written = _what_is_at(report)
     if not (written is not None and stat.S_ISREG(written.st_mode)
             and _usable_report(review_root)):
+        # #3741: the END of what it said. The first 400 characters are its warnings;
+        # its reason for stopping is the last thing it printed.
         raise runio.DriverError("synthesize produced no usable report.json (rc=%s): %s"
-                          % (proc.returncode, redact.redact_diagnostic(proc.stderr or proc.stdout, 400)))
+                          % (proc.returncode, redact.redact_diagnostic(
+                              proc.stderr or proc.stdout, 400, tail=True)))
     loop_progress.relay_summary(proc.stdout)      # #3232: `loop` only; the child stdout is captured
     # §5.1: point the flat compat paths at the latest tag-named report, so every
     # existing reader of report.json / report.json.html resolves it unchanged, and

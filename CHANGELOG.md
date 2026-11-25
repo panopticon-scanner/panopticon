@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- **Five smaller recovery faults from the 5.4 review (#3741).**
+  - "synthesize produced no usable report.json" quotes the end of what the child printed, where
+    the cause is. It quoted the first 400 characters, which are warnings.
 - **A dispatch is charged when it is handed out, not each time it is planned (#3740).** A review
   cell, a verify cell or backup, and a tool advisor each have a three-dispatch retry budget. The
   charge was made at planning, on every `driver run`, whether or not anything was then launched.

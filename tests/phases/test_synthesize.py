@@ -1633,6 +1633,33 @@ class TestSynthesizeDonePredicate(unittest.TestCase):
                 synthesize.synthesize_execute(self.root, self.manifest)
         self.assertIn("no usable report.json", str(cm.exception))
 
+    def test_the_message_quotes_the_end_of_what_the_child_said(self):
+        # #3741: it quoted the first 400 characters of stderr, which are warnings.
+        # The cause is the last thing the child printed.
+        warnings = "".join("synthesize: warning %03d: a line about nothing\n" % n for n in range(40))
+
+        def fake_run(cmd, **kw):
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"findings": []}, fh)
+            return mock.Mock(returncode=0, stdout="",
+                             stderr=warnings + "synthesize: THE CAUSE: the report has no summary\n")
+        with mock.patch("scripts.phases.child._run_child", side_effect=fake_run):
+            with self.assertRaises(runio.DriverError) as cm:
+                synthesize.synthesize_execute(self.root, self.manifest)
+        message = str(cm.exception)
+        self.assertIn("THE CAUSE: the report has no summary", message)
+        self.assertNotIn("warning 000", message)
+        self.assertLessEqual(len(message), len("synthesize produced no usable report.json (rc=0): ") + 400)
+        # With nothing on stderr it is the end of stdout.
+        def quiet(cmd, **kw):
+            with open(cmd[cmd.index("--out") + 1], "w") as fh:
+                json.dump({"findings": []}, fh)
+            return mock.Mock(returncode=0, stdout="x" * 500 + "the last words", stderr="")
+        with mock.patch("scripts.phases.child._run_child", side_effect=quiet):
+            with self.assertRaises(runio.DriverError) as cm:
+                synthesize.synthesize_execute(self.root, self.manifest)
+        self.assertTrue(str(cm.exception).endswith("the last words"))
+
 
 class TestTheConfigResolutionSeam(unittest.TestCase):
     """#1681 Plan 2 (final review M5): the PHASE writes the config resolution
