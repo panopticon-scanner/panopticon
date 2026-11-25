@@ -50,6 +50,15 @@ def _is_tool_sourced(finding):
 # record of a dropped member since #3202 withdrew #1476's id aliases.
 ABSORBED_FIELD = "_absorbed"
 
+# #3786: which dropped member a survivor's aggregation was carried from
+# (`_carry_aggregation`), and what the survivor's own `occurrences` was before. The
+# carry exists because the member leaves the report. When the member comes back as its
+# own finding (`verdicts.restore_confirmed`) it brings its lines with it, and the
+# survivor must give them up: a rejected claim about one line was published in
+# `discarded_claims` as a claim about every line the scanner flagged. Underscore-prefixed
+# and stripped before the report, like the carrier above.
+CARRIED_FIELD = "_carried_aggregation"
+
 
 LOAD = object()        # `bundle=LOAD`: read the vendored catalog (None is "no catalog")
 
@@ -148,8 +157,41 @@ def _carry_aggregation(best, other):
     carried = [dict(locus) for locus in loci if isinstance(locus, dict)]
     if not carried:
         return  # a list with no locus dicts is no aggregation: the count stays with it
+    best[CARRIED_FIELD] = {"member": other, "occurrences": best.get("occurrences")}
     best["additional_loci"] = carried
     best["occurrences"] = count
+
+
+def return_aggregation(finding, returned):
+    """Undo `_carry_aggregation` on `finding` when the member it carried from is one of
+    `returned` (the members coming back as their own findings), and drop the carrier
+    either way (#3786).
+
+    The member is published with its own lines and count, so the finding goes back to
+    what it was before the carry: no `additional_loci`, and the `occurrences` it had (an
+    agent claim has none; a rule-carrying tool finding that aggregated nothing has 1).
+    A carry whose member stays merged is left as it is: there the survivor's row is the
+    only place those lines are shown."""
+    carried = finding.pop(CARRIED_FIELD, None)
+    if carried is None:
+        return
+    if not any(carried["member"] is back for back in returned):
+        return
+    finding.pop("additional_loci", None)
+    if carried["occurrences"] is None:
+        finding.pop("occurrences", None)
+    else:
+        finding["occurrences"] = carried["occurrences"]
+
+def return_carried(survivor, absorbed, returned):
+    """`return_aggregation` over one merge group: the survivor and every member it
+    absorbed. A member can hold a carry of its own: it was the survivor of an earlier
+    stage of the collapse, carried a dropped scanner member's lines there, and was then
+    absorbed in turn (`_absorb` is transitive). Each is asked, and every carrier in the
+    group is stripped."""
+    for holder in [survivor] + list(absorbed):
+        return_aggregation(holder, returned)
+
 
 def _by_package(members):
     """One rule bucket split by `tool_evidence.package_name`, in first-seen order.

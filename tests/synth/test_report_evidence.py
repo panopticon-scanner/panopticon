@@ -1166,6 +1166,179 @@ class TestADiscardedSurvivorGivesBackItsMembers(unittest.TestCase):
                             row["in_report"] + row["merged_into_agent"] + row["dropped"]))
 
 
+class TestAClaimGivesBackTheScannerLinesItCarried(unittest.TestCase):
+    """#3786. A scanner's hits of one rule in one file are ONE finding on the lowest
+    line, with the other lines in `additional_loci`. When a reviewer's claim at that
+    line outranks it, dedupe keeps the claim and hands it those lines
+    (`corroborate._carry_aggregation`, #2361), because the scanner member is leaving
+    the report and its lines would leave with it.
+
+    The issue as filed said a REJECTED claim then discards the carried lines. It does
+    not: the scanner member comes back as its own finding, whole (#3716). What was
+    wrong is that the claim KEPT the lines too. A rejected claim about one line was
+    published in `discarded_claims` as a claim about three, and under an unsure claim
+    the three hits were shown on two rows. A member that comes back takes its lines
+    with it."""
+
+    LINES = (10, 16, 34)
+    WORDS = (None, "CONFIRMED", "REJECTED", "NEEDS_MORE_INFO")
+
+    def _hits(self, sev="HIGH"):
+        """One rule, three lines, as ingest hands them over: three findings. The
+        pipeline aggregates them."""
+        hits = []
+        for n, line in enumerate(self.LINES):
+            hit = _agentic(fid="TL-%d" % n, sev=sev, title="tool", category="other",
+                           source="tool:semgrep",
+                           tool_evidence={"tool": "semgrep", "rule_id": "r.tool"})
+            hit["location"] = {"file": "app.py", "line_start": line}
+            hits.append((hit, None))
+        return hits
+
+    @staticmethod
+    def _claim(sev="CRITICAL", **more):
+        return _agentic(**{**dict(fid="AG-1", sev=sev, title="claim", category="other"), **more})
+
+    _report = TestADiscardedSurvivorGivesBackItsMembers._report
+
+    @staticmethod
+    def _rows(report, title):
+        return [(where, f) for where in ("findings", "discarded_claims")
+                for f in report[where] if f["title"] == title]
+
+    @staticmethod
+    def _lines(finding):
+        return [finding["location"]["line_start"]] + [
+            locus["line_start"] for locus in finding.get("additional_loci") or []]
+
+    def test_a_rejected_claim_leaves_the_scanner_finding_whole_and_keeps_only_its_own_line(self):
+        # The shapes where the claim is the survivor and carries the lines: it outranks
+        # the scanner finding, or equals it and was loaded first. (When the scanner
+        # finding outranks the claim there is no carry: the claim is the dropped one.)
+        for by_id in (True, False):
+            for claim_sev, tool_sev in (("CRITICAL", "HIGH"), ("CRITICAL", "CRITICAL"),
+                                        ("HIGH", "HIGH")):
+                with self.subTest(by_id=by_id, claim=claim_sev, tool=tool_sev):
+                    alone = self._report(self._hits(tool_sev), by_id)
+                    report = self._report([(self._claim(claim_sev), "REJECTED")]
+                                          + self._hits(tool_sev), by_id)
+                    ((where, scanner),) = self._rows(report, "tool")
+                    # The scanner's own finding, as it is with no claim beside it: its
+                    # tool, its rule, its severity, every line, and not verified. It
+                    # takes nothing from the rejected claim and loses nothing to it.
+                    ((_, by_itself),) = self._rows(alone, "tool")
+                    self.assertEqual("findings", where)
+                    self.assertEqual(by_itself, scanner)
+                    self.assertEqual(list(self.LINES), self._lines(scanner))
+                    self.assertEqual((3, "tool:semgrep", "r.tool", "tool_reported"), (
+                        scanner["occurrences"], scanner["source"],
+                        scanner["tool_evidence"]["rule_id"], scanner["evidence"]["status"]))
+                    self.assertNotIn("reinforced", scanner)
+                    # The claim was about one line, and that is what is discarded.
+                    ((where, claim),) = self._rows(report, "claim")
+                    self.assertEqual(("discarded_claims", "rejected", claim_sev), (
+                        where, claim["evidence"]["status"], claim["severity"]))
+                    self.assertEqual([10], self._lines(claim))
+                    self.assertNotIn("additional_loci", claim)
+                    self.assertNotIn("occurrences", claim)
+                    # The gate is the scanner finding's own: never PASS on the rejection.
+                    self.assertEqual("INCONCLUSIVE", report["summary"]["gate"])
+                    self.assertEqual(alone["summary"]["gate"], report["summary"]["gate"])
+                    self.assertIs(False, report["summary"]["coverage_certified"])
+                    self.assertEqual({"active": 1, "discarded": 1, "total": 2},
+                                     report["summary"]["counts"])
+
+    def test_an_unsure_claim_beside_the_returned_scanner_finding_shows_each_hit_once(self):
+        report = self._report([(self._claim(), "NEEDS_MORE_INFO")] + self._hits())
+        ((where, claim),) = self._rows(report, "claim")
+        ((_, scanner),) = self._rows(report, "tool")
+        self.assertEqual(("findings", "needs_more_info", [10]),
+                         (where, claim["evidence"]["status"], self._lines(claim)))
+        self.assertNotIn("occurrences", claim)
+        self.assertEqual((list(self.LINES), 3), (self._lines(scanner), scanner["occurrences"]))
+        shown = [line for f in report["findings"] for line in self._lines(f)]
+        self.assertEqual(1, shown.count(16))
+        self.assertEqual(1, shown.count(34))
+
+    def test_a_claim_whose_scanner_member_stays_merged_still_carries_its_lines(self):
+        """The carry is why those lines are in the report at all when the member does
+        not come back: under a CONFIRMED claim, and under one nobody answered for."""
+        for word, status in (("CONFIRMED", "tool_confirmed"), (None, "tool_reported")):
+            with self.subTest(word=word):
+                report = self._report([(self._claim(), word)] + self._hits())
+                self.assertEqual([], self._rows(report, "tool"))
+                ((where, claim),) = self._rows(report, "claim")
+                self.assertEqual(("findings", status, list(self.LINES), 3), (
+                    where, claim["evidence"]["status"], self._lines(claim), claim["occurrences"]))
+
+    def test_with_two_claims_at_the_line_the_scanner_finding_is_whole_and_no_claim_holds_its_lines(self):
+        second = self._claim("HIGH", fid="AG-2", title="second")
+        for words in (("REJECTED", None), ("REJECTED", "REJECTED"), ("REJECTED", "NEEDS_MORE_INFO")):
+            with self.subTest(words=words):
+                report = self._report([(self._claim(), words[0]), (second, words[1])] + self._hits())
+                ((where, scanner),) = self._rows(report, "tool")
+                self.assertEqual(("findings", list(self.LINES)), (where, self._lines(scanner)))
+                for title in ("claim", "second"):
+                    for _where, row in self._rows(report, title):
+                        self.assertEqual([10], self._lines(row), title)
+                        self.assertNotIn("occurrences", row)
+
+    def test_the_carrier_never_reaches_the_report(self):
+        for word in self.WORDS:
+            for claim_sev in ("CRITICAL", "MEDIUM"):
+                with self.subTest(word=word, claim=claim_sev):
+                    report = self._report([(self._claim(claim_sev), word)] + self._hits())
+                    text = json.dumps(report)         # ...and the whole report still serialises
+                    self.assertNotIn(corroborate_mod.CARRIED_FIELD, text)
+                    self.assertNotIn(corroborate_mod.ABSORBED_FIELD, text)
+
+    def test_a_carry_is_undone_only_when_its_own_member_returns(self):
+        member = {"id": "T", "source": "tool:semgrep", "occurrences": 3,
+                  "additional_loci": [{"file": "a.py", "line_start": 9}]}
+        other = dict(member, id="U")
+
+        def carrying(**own):
+            holder = dict({"id": "A", "category": "x"}, **own)
+            corroborate_mod._carry_aggregation(holder, dict(member, category="x"))
+            carried_from = holder[corroborate_mod.CARRIED_FIELD]["member"]
+            return holder, carried_from
+
+        # An agent claim had no count of its own: none is left behind.
+        holder, source = carrying()
+        self.assertEqual((3, [{"file": "a.py", "line_start": 9}]),
+                         (holder["occurrences"], holder["additional_loci"]))
+        corroborate_mod.return_aggregation(holder, [other, source])
+        self.assertEqual({"id": "A", "category": "x"}, holder)
+        # A scanner finding that aggregated nothing is stamped 1, and gets that back.
+        holder, source = carrying(source="tool:semgrep", occurrences=1)
+        corroborate_mod.return_aggregation(holder, [source])
+        self.assertEqual({"id": "A", "category": "x", "source": "tool:semgrep", "occurrences": 1},
+                         holder)
+        # Another member returning is not this carry's owner: an equal dict is not it.
+        for returned in ([], [other], [dict(source)]):
+            holder, _source = carrying()
+            corroborate_mod.return_aggregation(holder, returned)
+            self.assertEqual((3, [{"file": "a.py", "line_start": 9}]),
+                             (holder["occurrences"], holder["additional_loci"]))
+            self.assertNotIn(corroborate_mod.CARRIED_FIELD, holder)     # stripped either way
+        # Over a merge group: the survivor and each member it absorbed are asked. A
+        # member that was an earlier stage's survivor holds a carry of its own.
+        survivor, first = carrying()
+        earlier, second = carrying(id="E")
+        bystander = {"id": "C"}
+        corroborate_mod.return_carried(survivor, [earlier, bystander, first, second], [second])
+        self.assertEqual((3, "A"), (survivor["occurrences"], survivor["id"]))   # its owner stays merged
+        self.assertEqual({"id": "E", "category": "x"}, earlier)                # its owner came back
+        self.assertEqual({"id": "C"}, bystander)
+        for row in (survivor, earlier, bystander, first, second):
+            self.assertNotIn(corroborate_mod.CARRIED_FIELD, row)
+        # A finding that carried nothing is left alone, with its own aggregation.
+        own = {"id": "B", "occurrences": 2, "additional_loci": [{"file": "b.py", "line_start": 4}]}
+        corroborate_mod.return_aggregation(own, [member])
+        self.assertEqual({"id": "B", "occurrences": 2,
+                          "additional_loci": [{"file": "b.py", "line_start": 4}]}, own)
+
+
 class TestAClaimsVerdictIsItsOwn(unittest.TestCase):
     """#3202: a survivor with no verdict of its own borrowed a dropped claim's
     verdict through #1476's id aliases. A REJECTED HIGH dismissed an unanswered

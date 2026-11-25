@@ -417,6 +417,9 @@ def restore_confirmed(fs, findings, queue, holders=None, owed=None, published=No
             queue.append({"queue_id": qid, "priority": evidence_mod.triage_priority(member),
                           "finding": member})
         _part_the_pair(survivor, absorbed, back)
+        # #3786: a member that comes back brings its own lines, so whoever carried
+        # them for it gives them up and one hit is not shown on two rows.
+        corroborate_mod.return_carried(survivor, absorbed, back)
         if published is not None:
             # The row that is in the report for each merged member: the instance of
             # its claim that came back, or the survivor.
