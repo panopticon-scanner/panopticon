@@ -740,7 +740,13 @@ on Claude hooks, and always uses the return-persist path.
   container gets a new pid namespace, so it reads its old record as foreign too: discard it
   explicitly with `--discard-batch N`. **The record carries no owner stamp** — an absent or malformed
   owner (a pid too large for the OS to hold included) is either a record from before the field
-  existed or one the target wrote, and neither is evidence that a crash happened. A fourth refusal
+  existed or one the target wrote, and neither is evidence that a crash happened. **An empty
+  record** (#3741) is a `batch-N.json` of 0 bytes, left by a loop stopped between reserving the
+  name and writing the record, before it launched anything. The loop writes the record whole
+  now, so only a run folder from an earlier build, or a damaged one, holds any. It has no owner
+  stamp either, so the refusal names `--discard-batch N`, which removes that file and nothing
+  else: there is nothing to roll back. A record with bytes that do not read is still refused as
+  invalid. A fourth refusal
   guards the other end: **a record this batch would overwrite**, a leftover carrying the iteration
   number this batch is about to open, refused before the guards are armed rather than silently
   replaced (that `O_EXCL` used to

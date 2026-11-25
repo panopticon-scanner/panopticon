@@ -9,6 +9,13 @@
     traceback and no status document. The status message now says `guards not disarmed: <error>`;
     a `complete` keeps its `teardown` field, and a session host gets one on `error` and `paused`.
     Nothing after the teardown can raise out of the loop either.
+  - **An empty batch record no longer needs `--reset`.** A loop killed between reserving
+    `batch-N.json` and writing it left a 0-byte record. Every later run said "cannot recover stale
+    batch", and `--discard-batch N` was refused too, though nothing had been launched. The record
+    is now created whole (written beside its name and linked into place, still exclusive), so the
+    crash leaves no record at all. An empty record already on disk is refused by name, and
+    `--discard-batch N` removes it; it is not removed automatically, because an empty record has
+    no owner stamp to judge.
 - **A dispatch is charged when it is handed out, not each time it is planned (#3740).** A review
   cell, a verify cell or backup, and a tool advisor each have a three-dispatch retry budget. The
   charge was made at planning, on every `driver run`, whether or not anything was then launched.
