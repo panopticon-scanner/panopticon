@@ -575,9 +575,13 @@ def _load_ocrdb_bundle():
     DriverError so a corrupt bundle is a clean status:error, not a raw traceback
     that crashes the driver mid-phase (#1034)."""
     try:
-        return ocrdb.load_bundle()
+        bundle = ocrdb.load_bundle()
     except ValueError as exc:
         raise DriverError("OCRDb bundle unreadable: %s" % exc)
+    if bundle is None:
+        # #3741: refused, not run without. See `ocrdb.MISSING`.
+        raise DriverError(ocrdb.MISSING % ocrdb.DEFAULT_BUNDLE_PATH)
+    return bundle
 
 def resolve_review_root(target, runner=subprocess.run):
     """`_resolve_review_root`, then the first-contact PATH check (#3270): a

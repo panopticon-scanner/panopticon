@@ -567,7 +567,10 @@ def main(argv=None):
     # (build_report loads it again internally) and return 3 loudly, rather than
     # letting the ValueError escape as a traceback that Python exits 1 on.
     try:
-        ocrdb.load_bundle()
+        if ocrdb.load_bundle() is None:
+            # #3741: a report with no catalog behind it was certified all the same.
+            print("synthesize: " + ocrdb.MISSING % ocrdb.DEFAULT_BUNDLE_PATH, file=sys.stderr)
+            return 3
     except ValueError as exc:
         print("synthesize: OCRDb bundle unreadable: %s" % exc, file=sys.stderr)
         return 3

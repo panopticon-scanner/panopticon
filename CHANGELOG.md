@@ -9,6 +9,11 @@
     ended is made by the next run. It was never retried: the next run said "already complete"
     with the documented path missing or still on an older report. When it still cannot be
     made, the message names the tag-named report itself.
+  - A missing OCRDb catalog is refused. The driver ran on without it and the report was
+    certified, with only `meta.ocrdb_version: null` to show that no finding's code had been
+    checked. The driver now stops with "OCRDb bundle missing at <path>", and `synthesize.py`
+    exits 3. A catalog that cannot be opened, or is nested past the stack, is "OCRDb bundle
+    unreadable" like a corrupt one; it was an unnamed `PermissionError` or a `RecursionError`.
 - **A dispatch is charged when it is handed out, not each time it is planned (#3740).** A review
   cell, a verify cell or backup, and a tool advisor each have a three-dispatch retry budget. The
   charge was made at planning, on every `driver run`, whether or not anything was then launched.

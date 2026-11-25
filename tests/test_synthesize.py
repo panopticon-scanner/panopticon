@@ -2365,6 +2365,18 @@ class TestRunDirArtifactResolution(unittest.TestCase):
             self.assertEqual(by_role.get("domain_advisor"), 1)   # 1 primary verify bundle
             self.assertNotIn("advisor", by_role)                 # legacy shape would have this
 
+    def test_a_missing_ocrdb_catalog_is_exit_3_and_no_report(self):
+        # #3741: it wrote a certified report with `meta.ocrdb_version: null`.
+        with tempfile.TemporaryDirectory() as d, _chdir(d):
+            groups, fp = self._layout(d)
+            out, err = os.path.join(d, "r.json"), io.StringIO()
+            with mock.patch("scripts.ocrdb.load_bundle", return_value=None), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
+                self.assertEqual(self._run(groups, fp, out), 3)
+            self.assertFalse(os.path.exists(out))
+            self.assertIn("synthesize: OCRDb bundle missing", err.getvalue())
+            self.assertIn("Reinstall it", err.getvalue())
+
     def test_foreign_run_id_manifest_is_a_loud_error(self):
         with tempfile.TemporaryDirectory() as d, _chdir(d):
             groups, fp = self._layout(d, manifest={

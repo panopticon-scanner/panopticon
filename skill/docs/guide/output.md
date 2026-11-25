@@ -20,7 +20,7 @@ own `dispatch-plan-driver.json` (declares every review cell → `reconcile_findi
 NOT certified, distinct from a real `FAIL`.
 `summary.coverage_certified` and `meta.coverage.divergence` carry the detail; `main` exits `1` on
 FAIL, `2` on INCONCLUSIVE, `4` when an artifact cannot be published or fails its own published
-schema (next paragraph), `3` on an unreadable OCRDb bundle, `0` otherwise. Exit `2` is also argparse's
+schema (next paragraph), `3` on an unreadable or missing OCRDb bundle, `0` otherwise. Exit `2` is also argparse's
 usage-error code and `main`'s own precondition refusals, which never reach the gate: a `--compare`
 report it cannot read (either of the two), a `--compare` with neither `--html-out` nor `--out`, and
 an artifact-root refusal. A genuine INCONCLUSIVE run still writes a full report artifact and every
