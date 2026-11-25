@@ -41,6 +41,7 @@ import scripts.loop_batch as loop_batch
 import scripts.synth.corroborate as corroborate_mod
 import scripts.synth.findings as findings_mod
 from scripts import read_guard_hook
+from . import budget
 from . import coverage
 from . import engine
 from . import evidence_scope
@@ -234,6 +235,10 @@ def _promote_lifts(review_root, queue_ids):
     for qid in queue_ids:
         lift = _tool_lift_out_file(review_root, qid)
         if os.path.isfile(lift) and _valid_verdict_at(lift):
+            # #3740: the second ask has ended, and the move puts its file back where it
+            # was when the ask was handed out. Said first: stopped between the two, the
+            # next pass still promotes; the other way round it would ask a third time.
+            budget.handouts_ended(review_root, [{"id": TOOL_ENTRY_PREFIX + qid}])
             os.replace(lift, _tool_verdict_out_file(review_root, qid))
 
 
@@ -280,7 +285,12 @@ def _tool_lift(review_root, queue_id):
     (`persist.rollback_markers`) makes it one again, so an interrupted lift is owed
     again rather than lost. An item whose first dispatch came back unusable has spent
     a second dispatch on its retry, so it gets no lift even with budget left
-    (`_MAX_VERIFY_ATTEMPTS` is 3)."""
+    (`_MAX_VERIFY_ATTEMPTS` is 3).
+
+    #3740: and owed still while the lift's own dispatch, the second, is handed out and
+    has not ended. Planned and then not launched (a run stopped at its budget cap), or
+    re-entered by a session before the second answer landed, the count read two and the
+    lift was dropped with its dispatch charged and never run."""
     try:
         with open(_tool_verdict_out_file(review_root, queue_id), encoding="utf-8") as fh:
             data = evidence.load_json_tolerant(fh.read())
@@ -290,7 +300,10 @@ def _tool_lift(review_root, queue_id):
         return None
     named = evidence.scope_limited_paths(evidence._agent_verdict(data))
     from . import verify
-    if not named or verify._verify_attempts_key(review_root, "tool/%s" % queue_id) != 1:
+    key = "tool/%s" % queue_id
+    spent = verify._verify_attempts_key(review_root, key)
+    if not named or not (spent == 1 or (
+            spent == 2 and budget.outstanding(review_root, verify._BUDGET + key))):
         return None
     return named
 

@@ -22,6 +22,10 @@ class SessionRunner(base.HostRunner):
     # resolving them.
     dispatch_request = None
     namespace = None
+    # #3740: {entry id: {"left", "reemitted"}}, set by the loop for the same reason:
+    # what each entry's retry budget has left, and how many times it has been printed
+    # again with nothing on disk changed since it was handed out.
+    dispatches = None
 
     def run_entry(self, entry, env):
         raise NotImplementedError("session mode never runs an entry itself")
@@ -41,6 +45,7 @@ class SessionRunner(base.HostRunner):
             # itself checks against -- `sha256sum` on the path above.
             "request_sha256": self.request_sha256,
             "prompt_files": {e.get("id"): e.get("prompt_file") for e in entries},
+            "dispatches": self.dispatches or {},
             "persist": "driver persist <id>%s --file <reply.txt>   "
                        "# once per return-persist id, e.g. `driver persist %s%s`"
                        % (setup, rp[0] if rp else "<id>", setup),

@@ -276,8 +276,11 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                     if status["status"] != "checkpoint":
                         break
                     self._inject_scouts(d)
-                    if not self._land_deep_return(d, depth, "review"):
-                        self._inject_review(d)
+                    # Every cell lands, and the first lands too deep. (#3740: the others
+                    # used to be left unwritten, and were charged to their cap in step
+                    # with it. A cell nothing was written for is not charged now.)
+                    self._inject_review(d)
+                    self._land_deep_return(d, depth, "review")
                     status = driver.run(args)
                 self.assertEqual(status["status"], "complete", status.get("message"))
                 report = runio._load_json(runio._pano(d, "report.json"))
@@ -323,11 +326,16 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
         return [entry["out_file"] for entry in req["entries"]]
 
     def test_a_verify_return_that_never_answers_is_dispatched_three_times_then_disclosed(self):
-        """#3185 (M1, M3). An unloadable return (past the depth bound, garbage, never written) re-dispatched its
+        """#3185 (M1, M3). An unloadable return (past the depth bound, garbage) re-dispatched its
         cell every resume, never ending the run; a labeled bundle that answers nothing stopped at 4 dispatches.
         Every dispatch is now charged, so each cell gets exactly 3 (verify's _MAX_VERIFY_ATTEMPTS), then the
-        run completes uncertified with the cell disclosed as unverified."""
-        for shape in ("too deep", "garbage", "never written", "labeled incomplete"):
+        run completes uncertified with the cell disclosed as unverified.
+
+        #3740: "never written" is not here any more. `driver run` is the session protocol, and an entry
+        emitted again with nothing on disk is the same dispatch (the next test). The headless loop, which
+        knows what it launched, still charges a child that writes nothing
+        (tests/test_orchestrate_checkpoint.py)."""
+        for shape in ("too deep", "garbage", "labeled incomplete"):
             with self.subTest(shape=shape):
                 d = self._repo()
                 args = self._args(d, "--no-tools")
@@ -347,6 +355,26 @@ class TestDriverCLIAndEndToEnd(unittest.TestCase):
                 self.assertGreaterEqual(report["meta"]["coverage"]["verdicts"]["unanswered"], 1)
                 self.assertTrue(report["meta"]["coverage"]["verify_matrix"]["unverified_engaged"])
                 self.assertFalse(report["summary"]["coverage_certified"])
+
+    def test_a_verify_entry_re_run_with_nothing_written_is_one_dispatch(self):
+        """#3740. Re-running `driver run` before an agent has written anything charged its cell again
+        each time: three re-runs and the cell was exhausted with one agent, or none, ever run. On disk
+        an agent that has not finished and one that returned nothing are the same, so neither is
+        charged: the entry is emitted again, and the session host's own loop is what bounds it."""
+        d = self._repo()
+        args = self._args(d, "--no-tools")
+        status, emitted = driver.run(args), collections.Counter()
+        for _ in range(12):
+            self.assertEqual("checkpoint", status["status"], status.get("message"))
+            self._inject_scouts(d)
+            if status["checkpoint"] == "review":
+                self._land_deep_return(d, 0, "review")      # a real finding, so verify engages
+            emitted.update(self._land_verify_shape(d, "never written"))
+            status = driver.run(args)
+        self.assertEqual(("checkpoint", "verify"), (status["status"], status["checkpoint"]))
+        self.assertGreater(min(emitted.values()), 5)
+        attempts = runio._load_json(runio._pano(d, "verify-attempts.json"))
+        self.assertEqual({1}, {v for k, v in attempts.items() if k.endswith("/primary")})
 
     def _land_pair_review(self, root):
         """#2991: one cell lands an honest HIGH and a CRITICAL decoy at ONE locus

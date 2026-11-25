@@ -40,7 +40,9 @@ module still imports standalone. Tests mirror the package in `tests/phases/test_
 `tests/test_driver.py` keeping the CLI contract; entry and integration tests live in
 `tests/test_driver_entry.py` and `tests/test_driver_*.py`. `budget` owns the arithmetic on the
 persisted retry budgets — the `*-attempts.json` counters that bound the re-dispatch loops — so a
-value that is not a count refuses in exactly one place.
+value that is not a count refuses in exactly one place. It also owns `dispatch-handouts.json`
+(#3740), the marks that say which dispatches are handed out and have not ended: a budget is
+charged when an entry is handed out, not each time it is planned.
 
 `skill/scripts/host_probes.py` is the host-posture registry and nothing else: `PROBE_IDS`,
 `PROBE_CAPABILITY`, the id→runner table `run_probes` walks, and `capabilities_of`. The probes live

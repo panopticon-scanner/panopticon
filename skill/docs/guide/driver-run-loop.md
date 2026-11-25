@@ -116,6 +116,17 @@ The host contract (5.2, plan 6):
   The loop **refuses to advance** until the
   entries' out files exist on disk and pass the phase's own done predicate — a re-entry with nothing
   done re-emits the same set; there is no way to advance on a claim.
+  A re-entry **does not spend a dispatch** (#3740): an entry emitted again with nothing changed on
+  disk since it was handed out is the same dispatch, and its three-dispatch retry budget is charged
+  once. The next dispatch is charged when the last one has ended: an output landed and the entry is
+  still pending (a findings file the controller would not take), or `driver persist` refused its
+  reply. The status and the printed batch carry `dispatches`, per pending entry:
+  `{"left": <dispatches its budget still allows>, "reemitted": <times it was emitted again
+  unchanged>}`, and the message names each entry "re-emitted N times, unchanged since handed out".
+  **The limit:** an agent that returns and writes nothing looks, on disk, like one that has not
+  finished, so in session mode it is never charged and the retry budget does not bound it. Your own
+  loop does: an entry whose `reemitted` keeps growing after its agent has returned is stuck, and is
+  yours to stop.
 - **`driver readiness [target] [run flags] [--json]` is the preflight, and it is not part of the
   loop.** Run it before you launch anything. It writes nothing under the target and launches nothing
   — host CLIs are located with `shutil.which` and never started, and the Docker probe is the
@@ -799,9 +810,10 @@ on Claude hooks, and always uses the return-persist path.
   `--max-budget-usd` cap described with the flags above — stops launching the same way, and the
   stop inside a batch charges no one; the loop's own "stopped launching after …" line names which
   of the two fired, so a budget stop does not read as a host outage. Re-running a loop that is
-  already at its cap is different (#3740): each such re-run charges every pending review cell one
-  of its three dispatches with nothing launched, so three of them exhaust the cells, and then
-  only `--reset` recovers. After a budget stop, raise `--max-budget-usd` before re-running.
+  already at its cap charges no one either (#3740): a dispatch is charged when it is handed out,
+  once, and the launch it finally gets is that charge. (Until 5.5 each such re-run charged every
+  pending cell with nothing launched, and three of them exhausted the cells.) A cell whose third
+  dispatch was planned and never launched is not exhausted: it is launched when the cap is raised.
   A **third** rule is yours: a
   **drain-and-pause** (#3350). A headless loop prints `driver loop: pid N; kill -USR1 N drains and
   pauses` when it starts; send it `SIGUSR1` and it launches nothing more — not even the next queued

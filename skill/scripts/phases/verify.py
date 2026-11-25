@@ -231,19 +231,36 @@ def _charge_verify_dispatch(review_root, entries, record=None):
     `record` (`_scope_record`: the claim ids each cell/stage was handed, in how many
     parts of what size) lands in the same write, so a charged cell always carries
     its scope."""
+    # #3740: a cell/stage or tool item is charged when one of its entries is a new
+    # hand-out. Emitted again with nothing changed on disk, it is the same dispatch;
+    # its scope record is written all the same.
+    charged = budget.new_handouts(review_root, entries)
     budget.bump_many(runio._pano(review_root, _VERIFY_ATTEMPTS_FILE),
-                     _dispatch_keys(entries), _VERIFY_ATTEMPTS_WHAT, record=record)
+                     _dispatch_keys(charged), _VERIFY_ATTEMPTS_WHAT, record=record)
+    budget.mark_handouts(review_root, entries, charged, _budget_key)
 
 def _give_back_verify_dispatch(review_root, entries):
     """Refund what `_charge_verify_dispatch` charged a checkpoint that never ran
     (persist.rollback_markers: an interrupt, a host-wide outage)."""
+    budget.handouts_ended(review_root, entries)   # #3740: the next emission charges again
     return budget.give_back(runio._pano(review_root, _VERIFY_ATTEMPTS_FILE),
                             _dispatch_keys(entries), _VERIFY_ATTEMPTS_WHAT)
 
 def _verify_exhausted(review_root, key):
-    """This cell/stage or tool item has spent every dispatch its budget allows."""
+    """This cell/stage or tool item has spent every dispatch its budget allows, and the
+    last of them has ended (#3740: one still handed out has not failed)."""
     return (budget.count(runio._pano(review_root, _VERIFY_ATTEMPTS_FILE), key,
-                         _VERIFY_ATTEMPTS_WHAT) >= _MAX_VERIFY_ATTEMPTS)
+                         _VERIFY_ATTEMPTS_WHAT) >= _MAX_VERIFY_ATTEMPTS
+            and not budget.outstanding(review_root, _BUDGET + key))
+
+
+# #3740: this budget's name in the hand-out marks (`budget.mark_handouts`).
+_BUDGET = "verify:"
+
+
+def _budget_key(entry):
+    key = _dispatch_key(entry)
+    return _BUDGET + key if key else None
 
 def _verify_attempts_key(review_root, key):
     """Attempts spent under one budget key -- `tool/<queue id>` for a tool advisor."""

@@ -63,6 +63,15 @@ def _attempt_number(value):
                      and 0 < value <= ATTEMPT_CAP) else None
 
 
+def highest_attempt(run_folder, entry_id):
+    """The number of the newest reply kept for this entry; 0 when none is (#3740).
+    `budget.handout_state` reads it: a reply refused since an entry was handed out is a
+    dispatch that ended."""
+    if not run_folder or not entry_id:
+        return 0
+    return _next_attempt(os.path.join(run_folder, persist.REJECTED_DIR), entry_id) - 1
+
+
 def last_rejection(run_folder, entry_id):
     """The most recent `rejected/` record for this entry, or None."""
     if not run_folder or not entry_id:
