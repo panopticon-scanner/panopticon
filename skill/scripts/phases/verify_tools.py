@@ -119,9 +119,6 @@ def _tool_verify_queue(review_root, manifest):
     tools_dir = runio._pano(review_root, "tools")
     if not ran or not os.path.isdir(tools_dir):
         return []
-    # Match synthesis before fingerprinting: a redacted agent title changes
-    # the combined queue's ordering and therefore its max-verify cut (#1660).
-    findings = redact.redact_tree(findings_mod.load_findings(runio._findings_files(review_root)))
     tool_findings, _disp = ingest_tools.ingest_dir_detailed(
         tools_dir, None,
         exclude_globs=runio.committed_exclude_paths(review_root),
@@ -134,10 +131,35 @@ def _tool_verify_queue(review_root, manifest):
         security_mode=manifest.get("security_mode", "standard"),
         allowed_outputs=tools.tool_output_receipt(
             review_root, manifest.get("run_id")))
-    for tf in tool_findings:
-        findings.append(findings_mod.normalize_finding(tf))
-    prepared, _integration = corroborate_mod.prepare_for_queue(findings)
     flags = manifest.get("flags") or {}
+    # #3739: synthesis's own list, by synthesis's own function: the docs-tree policy
+    # and the `--severity` floor decide which findings pair and aggregate, so a queue
+    # built without them asked about findings the report does not carry. The mode,
+    # the floor and the root are the ones `synthesize_execute` passes the child
+    # (`--security`, `--severity`, `--root`); it passes no `--doc-paths` and no `--epss`.
+    try:
+        findings, _doc_policy, _catalog = findings_mod.prepared_list(
+            runio._findings_files(review_root), tool_findings,
+            manifest.get("security_mode", "standard"), flags.get("severity"),
+            root=review_root)
+    except ValueError as exc:
+        raise runio.DriverError("the run's --severity is not a severity level: %s"
+                                % redact.redact_diagnostic(str(exc), 200)) from exc
+    # Match synthesis before fingerprinting, at the point synthesis does it (after the
+    # policy and the floor, which read a finding as it was written): a redacted agent
+    # finding changes the combined queue's ordering and therefore its max-verify cut
+    # (#1660).
+    #
+    # The REVIEWERS' findings only, as before #3739. Synthesis redacts the scanner
+    # findings as well, and here they are left as ingested on purpose: the finding in
+    # this queue is what the tool advisor is handed, and its `location.file` is the
+    # file the advisor is scoped to. A scanner finding whose path or rule id itself
+    # reads as a credential (`src/ghp_....py`) therefore still gets one queue id here
+    # and another in the report, and reads as unanswered. That fails closed, and is
+    # left so: redacting here would hand the advisor a path that names no file.
+    findings = [finding if evidence.is_tool_sourced(finding) else redact.redact_tree(finding)
+                for finding in findings]
+    prepared, _integration = corroborate_mod.prepare_for_queue(findings)
     # #18: match synthesize's --max-verify DEFAULT (None = uncapped), not a
     # hardcoded 100. build_verify_queue caps the COMBINED queue and this method
     # only then filters to tool-sourced entries -- so a 100 cap, with agent

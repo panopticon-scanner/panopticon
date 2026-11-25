@@ -123,6 +123,217 @@ class _ToolVerifyBase(unittest.TestCase):
             runio._pano(self.root, "dispatch-request.json"))["entries"][0]
 
 
+def _hit(rule, uri, line, severity):
+    """A scanner result that states its own severity."""
+    result = _result(rule, uri, line)
+    result["properties"] = {"severity": severity}
+    return result
+
+
+class TestOneListForTheQueueAndTheReport(_ToolVerifyBase):
+    """#3739: the driver's tool-verify queue is built from the list synthesis builds
+    its report from. Synthesis applied the docs-tree policy and the `--severity` floor
+    before its merge and the driver's queue applied neither, so the two could pair,
+    aggregate and number findings differently: the advisor was asked about a finding
+    the report did not carry, and the one it did carry read as unanswered though the
+    advisor had CONFIRMED. Both forms failed closed (INCONCLUSIVE, not certified)."""
+
+    def _tree(self, results, agent_findings=None, files=("src/app.py",)):
+        d = self._repo(results, agent_findings=agent_findings)
+        for rel in files:
+            os.makedirs(os.path.dirname(os.path.join(d, rel)), exist_ok=True)
+            with open(os.path.join(d, rel), "w") as fh:
+                fh.write("".join("x%d = %d\n" % (n, n) for n in range(400)))
+        runio._write_json(runio._pano(d, "groups.json"),
+                          {"mode": "repo", "groups": [{"name": "app", "files": list(files)}]})
+        return d
+
+    def _asked(self, d, manifest):
+        with contextlib.redirect_stderr(io.StringIO()):
+            return verify_tools._tool_verify_queue(d, manifest)
+
+    def _confirmed_report(self, d, manifest):
+        """Every tool finding the driver asks about is CONFIRMED under the queue id the
+        driver asked under; then the real synthesize. Returns (asked, report)."""
+        asked = self._asked(d, manifest)
+        os.makedirs(runio._pano(d, "verdicts"), exist_ok=True)
+        for qid, finding in asked:
+            with open(verify_tools._tool_verdict_out_file(d, qid), "w") as fh:
+                json.dump({"finding_id": finding["id"], "verdict": "CONFIRMED",
+                           "reasoning": "real"}, fh)
+        with contextlib.redirect_stderr(io.StringIO()):
+            synthesize.synthesize_execute(d, manifest)
+        return asked, runio._load_json(runio._pano(d, "report.json"))
+
+    @staticmethod
+    def _tools(report):
+        return [f for f in report["findings"] if evidence.is_tool_sourced(f)]
+
+    def _same_and_answered(self, asked, report):
+        """The driver asked about exactly the tool findings the report carries, and
+        each verdict was bound."""
+        tools = self._tools(report)
+        self.assertEqual({(f["fingerprint"], f["id"]) for f in tools},
+                         {(qid, f["id"]) for qid, f in asked})
+        verdicts = report["meta"]["coverage"]["verdicts"]
+        self.assertEqual((0, 0), (verdicts["misrouted"], verdicts["unknown"]))
+        self.assertEqual(["tool_confirmed"] * len(tools),
+                         [f["evidence"]["status"] for f in tools])
+        self.assertNotIn("tool finding", " ".join(report["summary"]["grade_shortfalls"]))
+
+    def test_one_rule_below_and_above_the_floor_is_asked_about_as_the_report_carries_it(self):
+        # LOW at line 10 and CRITICAL at line 300: one finding at line 10 with no floor,
+        # one at line 300 with it. The driver asked about the first under every floor.
+        for floor, line in ((None, 10), ("all", 10), ("medium", 300), ("high", 300),
+                            ("critical", 300), ("HIGH", 300)):
+            with self.subTest(floor=floor):
+                d = self._tree([_hit("r1", "src/app.py", 10, "LOW"),
+                                _hit("r1", "src/app.py", 300, "CRITICAL")])
+                manifest = self._manifest(**({"severity": floor} if floor else {}))
+                asked, report = self._confirmed_report(d, manifest)
+                self.assertEqual([("CRITICAL", line)], [
+                    (f["severity"], f["location"]["line_start"]) for _qid, f in asked])
+                self._same_and_answered(asked, report)
+                (tool,) = self._tools(report)
+                self.assertEqual(("CRITICAL", line), (tool["severity"], tool["location"]["line_start"]))
+                # It was, under a floor: INCONCLUSIVE, the CRITICAL shown as MEDIUM
+                # `tool_reported`, "1 tool finding unanswered", misrouted 1.
+                self.assertEqual("FAIL", report["summary"]["gate"])
+                self.assertEqual(0, report["meta"]["coverage"]["verdicts"]["unanswered"])
+
+    def test_a_medium_and_a_high_under_a_floor_of_high(self):
+        d = self._tree([_hit("r1", "src/app.py", 10, "MEDIUM"), _hit("r1", "src/app.py", 300, "HIGH")])
+        asked, report = self._confirmed_report(d, self._manifest(severity="high"))
+        self._same_and_answered(asked, report)
+        self.assertEqual("FAIL", report["summary"]["gate"])
+
+    def test_a_finding_below_the_floor_is_not_asked_about(self):
+        # An advisor dispatch for a finding the report will not carry is paid for nothing.
+        d = self._tree([_hit("r1", "src/app.py", 10, "LOW"), _hit("r2", "src/app.py", 20, "HIGH")])
+        self.assertEqual(2, len(self._asked(d, self._manifest())))
+        asked, report = self._confirmed_report(d, self._manifest(severity="high"))
+        self.assertEqual(["HIGH"], [f["severity"] for _qid, f in asked])
+        self._same_and_answered(asked, report)
+
+    CLAIM = {"domain": "SEC", "code": "SEC-A1A", "severity": "CRITICAL",
+             "title": "injection in the example", "category": "injection", "description": "x",
+             "location": {"file": "docs/example.py", "line_start": 10}}
+
+    def test_in_a_docs_tree_the_scanner_finding_the_report_keeps_is_asked_about(self):
+        # A CRITICAL claim on a scanner HIGH's line under docs/. The docs policy lowers
+        # both to INFO, and at equal severity the scanner finding is the one the report
+        # keeps. Without the policy the claim outranked it, so the driver asked about
+        # no tool finding and the report's read as unanswered.
+        d = self._tree([_hit("r1", "docs/example.py", 10, "HIGH")], agent_findings=[self.CLAIM],
+                       files=("src/app.py", "docs/example.py"))
+        asked, report = self._confirmed_report(d, self._manifest())
+        self.assertEqual(["INFO"], [f["severity"] for _qid, f in asked])
+        self.assertEqual({"downgraded_from": "HIGH"}, asked[0][1]["doc_policy"])
+        self._same_and_answered(asked, report)
+        self.assertEqual(0, report["meta"]["coverage"]["verdicts"]["unanswered"])
+
+    def test_under_redteam_the_docs_policy_is_off_on_both_sides(self):
+        # The mode is the run's: under redteam nothing is lowered, the claim outranks
+        # the scanner finding and takes its place, and the driver asks about no tool
+        # finding, as the report carries none of its own.
+        d = self._tree([_hit("r1", "docs/example.py", 10, "HIGH")], agent_findings=[self.CLAIM],
+                       files=("src/app.py", "docs/example.py"))
+        manifest = dict(self._manifest(), security_mode="redteam")
+        asked, report = self._confirmed_report(d, manifest)
+        self.assertEqual([], asked)
+        self.assertEqual([], self._tools(report))
+        self.assertIsNone(report["meta"]["coverage"].get("doc_policy"))
+
+    def test_a_docs_path_that_names_no_file_keeps_its_severity_on_both_sides(self):
+        # #3207: the policy lowers only a finding whose path is a real file under the
+        # root. The driver passes the root synthesis is given.
+        d = self._tree([_hit("r1", "docs/missing.py", 10, "HIGH")])
+        asked, report = self._confirmed_report(d, self._manifest())
+        self.assertEqual(["HIGH"], [f["severity"] for _qid, f in asked])
+        self._same_and_answered(asked, report)
+
+    def test_a_colliding_claim_and_a_filler_no_longer_shift_the_scanner_finding_s_queue_id(self):
+        # The hostile form. A cell files, at a scanner CRITICAL's line, a claim with the
+        # scanner finding's fingerprint (titled as the rule id, in its category) and a
+        # LOW filler. With three findings at the line the claim and the scanner finding
+        # stay apart and share a fingerprint: `fp` and `fp-1`. Under `--severity medium`
+        # synthesis dropped the filler, merged the two and looked the verdict up under
+        # `fp`; the driver, with no floor, had asked under the other id.
+        at = {"file": "src/app.py", "line_start": 10}
+        cell = [{"domain": "SEC", "code": "SEC-A1A", "severity": "CRITICAL", "title": "r1",
+                 "category": "r1", "description": "x", "location": at},
+                {"domain": "SEC", "code": "SEC-A1A", "severity": "LOW", "title": "filler",
+                 "category": "style", "description": "y", "location": at}]
+        d = self._tree([_hit("r1", "src/app.py", 10, "CRITICAL")], agent_findings=cell)
+        asked, report = self._confirmed_report(d, self._manifest(severity="medium"))
+        self._same_and_answered(asked, report)
+        (tool,) = self._tools(report)
+        # It was: INCONCLUSIVE, the CRITICAL shown as MEDIUM `tool_reported`.
+        self.assertEqual(("CRITICAL", "tool_confirmed", "FAIL"), (
+            tool["severity"], tool["evidence"]["status"], report["summary"]["gate"]))
+
+    def test_the_queue_is_the_one_synthesize_itself_emits_under_a_floor(self):
+        d = self._tree([_hit("r1", "src/app.py", 10, "LOW"), _hit("r1", "src/app.py", 300, "CRITICAL"),
+                        _hit("r2", "src/app.py", 20, "MEDIUM")])
+        for floor, count in (("all", 2), ("medium", 2), ("high", 1)):
+            with self.subTest(floor=floor):
+                asked = self._asked(d, self._manifest(severity=floor))
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    rc = synthesize_cli.main([
+                        "--repo", "--emit-verify-queue", "--severity", floor, "--target", d,
+                        "--root", d, "--run-dir", runio._pano(d),
+                        "--tools-dir", runio._pano(d, "tools")])
+                self.assertEqual(0, rc)
+                queue = runio._load_json(runio._pano(d, "verify-queue.json"))
+                self.assertEqual(count, len(asked))
+                self.assertEqual({(e["queue_id"], e["finding"]["id"]) for e in queue["entries"]},
+                                 {(qid, f["id"]) for qid, f in asked})
+
+    def test_a_reviewer_s_finding_is_redacted_as_synthesis_redacts_it(self):
+        # #1660, for a path: a claim in a file whose name reads as a token. Its
+        # fingerprint is of the redacted path in synthesis, and the cap cuts by
+        # fingerprint among equals, so which finding the one slot goes to depends on it.
+        for letter in "ABCDEFGH":
+            with self.subTest(token=letter):
+                agent = {"domain": "SEC", "code": "SEC-A1A", "severity": "HIGH", "title": "claim",
+                         "category": "authz", "description": "x",
+                         "location": {"file": "src/ghp_%s.py" % ("Z" * 36), "line_start": 5}}
+                d = self._tree([_hit("rule-" + letter, "src/app.py", 1, "HIGH")],
+                               agent_findings=[agent])
+                asked = self._asked(d, self._manifest(max_verify=1))
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    rc = synthesize_cli.main([
+                        "--repo", "--emit-verify-queue", "--max-verify", "1", "--target", d,
+                        "--root", d, "--run-dir", runio._pano(d),
+                        "--tools-dir", runio._pano(d, "tools"),
+                        runio._pano(d, "findings-app-SEC.json")])
+                self.assertEqual(0, rc)
+                queue = runio._load_json(runio._pano(d, "verify-queue.json"))
+                self.assertEqual({(e["queue_id"], e["finding"]["id"]) for e in queue["entries"]
+                                  if evidence.is_tool_sourced(e["finding"])},
+                                 {(qid, f["id"]) for qid, f in asked})
+
+    def test_a_scanner_finding_is_handed_to_its_advisor_as_ingested(self):
+        # The path the advisor is scoped to is the finding's own. A scanner finding in a
+        # file whose name reads as a token keeps that name here, where synthesis
+        # publishes it redacted: the two ids differ and the finding reads as unanswered.
+        # That fails closed, and is the price of an advisor that can open its file.
+        name = "src/ghp_%s.py" % ("Z" * 36)
+        d = self._tree([_hit("r1", name, 10, "CRITICAL")], files=("src/app.py", name))
+        asked, report = self._confirmed_report(d, self._manifest())
+        self.assertEqual([name], [f["location"]["file"] for _qid, f in asked])
+        (tool,) = self._tools(report)
+        self.assertEqual(("src/[REDACTED_TOKEN].py", "tool_reported", "INCONCLUSIVE"), (
+            tool["location"]["file"], tool["evidence"]["status"], report["summary"]["gate"]))
+
+    def test_a_severity_that_is_not_one_is_a_driver_error(self):
+        d = self._tree([_hit("r1", "src/app.py", 10, "LOW")])
+        with self.assertRaisesRegex(runio.DriverError, "--severity is not a severity level"):
+            self._asked(d, self._manifest(severity="severe"))
+
+
 class TestToolQueueParity(_ToolVerifyBase):
     """The crux: the driver's tool-finding queue_ids AND finding ids equal
     synthesize's for the same .panopticon/tools/ fixture."""

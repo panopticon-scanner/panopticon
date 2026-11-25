@@ -91,23 +91,17 @@ class FindingSet:
         previous run, so reading the queue or verdicts before that branch
         runs would let stale state leak into verdict_run_id/resume/
         invalid_verify_queue on the "nothing to queue this run" path."""
-        findings = load_findings(args.files)
-        for tf in tool_findings:
-            findings.append(normalize_finding(tf))
-        catalog = citations.load_cwe_catalog()
-        citations.enrich_citations(findings, catalog, epss_enabled=args.epss)
         # #3207: the root the files are under -- grading's own rule (`--root`, else `--target`)
-        doc_policy = apply_doc_severity_policy(
-            findings, security_mode, doc_globs=args.doc_paths,
-            root=args.root if getattr(args, "root", None) is not None else getattr(args, "target", None))
+        findings, doc_policy, catalog = prepared_list(
+            args.files, tool_findings, security_mode, args.severity,
+            doc_globs=args.doc_paths,
+            root=args.root if getattr(args, "root", None) is not None else getattr(args, "target", None),
+            epss=args.epss)
         if doc_policy and doc_policy["downgraded"]:
             print("synthesize: %d code finding(s) under doc trees soft-downgraded "
                   "to INFO (#487; secrets exempt, redteam bypasses) -- see "
                   "meta.coverage.doc_policy" % doc_policy["downgraded"],
                   file=sys.stderr)
-        if args.severity and args.severity != "all":
-            threshold = SEV_ORDER.index(args.severity.upper())
-            findings = [f for f in findings if _sev_rank(f) <= threshold]
         return findings, doc_policy, catalog
 
     @classmethod
@@ -546,6 +540,60 @@ def _regular_file_in_tree(root, path):
     finally:
         os.close(fd)
     return stat.S_ISREG(info.st_mode)
+
+
+def prepared_list(files, tool_findings, security_mode, severity, doc_globs=None, root=None,
+                  epss=False):
+    """THE list of findings a run judges: (findings, the doc policy's disclosure, the
+    CWE catalog the citations were checked against).
+
+    The reviewer findings files and the ingested tool findings, their citations
+    enriched, then the docs-tree severity policy (#487), then the `--severity` floor.
+    Everything after it -- the
+    merge of a scanner finding with a claim at its line, the aggregation of one rule's
+    hits, the verify queue's order and its ids -- is computed FROM this list, so every
+    side that computes any of that must start from it.
+
+    #3739: there were two. Synthesis applied the policy and the floor before its
+    merge; the driver's tool-verify queue (`phases/verify_tools._tool_verify_queue`),
+    which exists to ask an advisor about exactly the tool findings the report will
+    carry, applied neither. One rule firing LOW at line 10 and CRITICAL at line 300 is
+    one finding at line 10 without the floor and one at line 300 with it: under
+    `--severity medium` the driver asked about the first, the report carried the
+    second, and a CONFIRMED scanner CRITICAL read as unanswered. The docs policy
+    changed which of a claim and a scanner finding survived at one line in the same
+    way. Both failed closed. Now both sides call this.
+
+    The enrichment is here too, though nothing the queue reads comes from it today
+    (it writes `citations` and `citation_quality`): the driver's list is this list,
+    not this list less the steps someone judged not to matter. `epss` is synthesis's
+    `--epss`, a network lookup; the driver passes its child no `--epss`, and none here.
+
+    Redaction is not here. `synthesize.main` redacts this list afterwards, because the
+    policy reads a finding as it was written. The driver redacts the reviewers'
+    findings at the same point and leaves the scanner findings as ingested: its tool
+    advisor is scoped to the path it is handed (`_tool_verify_queue` says what that
+    leaves open)."""
+    findings = load_findings(files)
+    for tool_finding in tool_findings:
+        findings.append(normalize_finding(tool_finding))
+    catalog = citations.load_cwe_catalog()
+    citations.enrich_citations(findings, catalog, epss_enabled=epss)
+    doc_policy = apply_doc_severity_policy(findings, security_mode, doc_globs=doc_globs,
+                                           root=root)
+    return above_severity_floor(findings, severity), doc_policy, catalog
+
+
+def above_severity_floor(findings, severity):
+    """`findings` at or above the `--severity` floor; all of them for no floor or `all`.
+
+    Case-blind, as the flag is (`type=str.lower`). A level that is not one raises
+    `ValueError`: argparse constrains the flag, and the driver's manifest holds what
+    its own parser took."""
+    if not severity or str(severity).lower() == "all":
+        return findings
+    threshold = SEV_ORDER.index(str(severity).upper())
+    return [f for f in findings if _sev_rank(f) <= threshold]
 
 
 def apply_doc_severity_policy(findings, security_mode, doc_globs=None, root=None):
