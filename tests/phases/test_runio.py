@@ -35,6 +35,30 @@ HALTS = (r"inside the target; remove it \(deactivate the target's virtualenv or 
          r"and re-run$")
 
 
+class TestTheOcrdbCatalogIsOwed(unittest.TestCase):
+    """#3741: the catalog ships with the skill, so a missing one is a broken install.
+    The driver ran on without it, and the run completed certified with only
+    `meta.ocrdb_version: null` to show that no finding's code had been checked."""
+
+    def test_a_missing_catalog_refuses_and_names_where_it_should_be(self):
+        with mock.patch.object(runio.ocrdb, "load_bundle", return_value=None):
+            with self.assertRaises(runio.DriverError) as raised:
+                runio._load_ocrdb_bundle()
+        message = str(raised.exception)
+        self.assertIn("OCRDb bundle missing", message)
+        self.assertIn(runio.ocrdb.DEFAULT_BUNDLE_PATH, message)
+        self.assertIn("Reinstall it", message)
+
+    def test_an_unreadable_catalog_refuses_by_name(self):
+        with mock.patch.object(runio.ocrdb, "load_bundle",
+                               side_effect=ValueError("OCRDb bundle /x unreadable: denied")):
+            with self.assertRaisesRegex(runio.DriverError, "OCRDb bundle unreadable: .*denied"):
+                runio._load_ocrdb_bundle()
+
+    def test_the_catalog_that_ships_loads(self):
+        self.assertIn("domains", runio._load_ocrdb_bundle())
+
+
 class TestForeignManifest(unittest.TestCase):
     """#1093: a run-manifest whose stamped review_root isn't this tree (a target
     that committed its own .panopticon/run-manifest.json to preset flags) must be

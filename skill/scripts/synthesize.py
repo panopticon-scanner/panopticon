@@ -30,6 +30,7 @@ import scripts.safe_glob as safe_glob
 import scripts.plan_contract as plan_contract
 import scripts.redact as redact
 import scripts.safe_write as safe_write
+import scripts.tolerant_json as tolerant_json
 import scripts.x0x_report as x0x_report
 import scripts.synth.findings as findings_mod
 import scripts.synth.plan as plan_mod
@@ -232,7 +233,7 @@ def validate_artifacts(report_path, x0x_path=None, x0x_failure_path=None):
         artifact_name = os.path.basename(artifact_path)
         try:
             with open(artifact_path, encoding="utf-8") as fh:
-                artifact_doc = json.load(fh)
+                artifact_doc = json.loads(tolerant_json.depth_checked(fh.read()))
         except (OSError, ValueError) as exc:
             errors.append("%s: schema: unreadable (%s)" % (artifact_name, exc))
         else:
@@ -567,7 +568,10 @@ def main(argv=None):
     # (build_report loads it again internally) and return 3 loudly, rather than
     # letting the ValueError escape as a traceback that Python exits 1 on.
     try:
-        ocrdb.load_bundle()
+        if ocrdb.load_bundle() is None:
+            # #3741: a report with no catalog behind it was certified all the same.
+            print("synthesize: " + ocrdb.MISSING % ocrdb.DEFAULT_BUNDLE_PATH, file=sys.stderr)
+            return 3
     except ValueError as exc:
         print("synthesize: OCRDb bundle unreadable: %s" % exc, file=sys.stderr)
         return 3

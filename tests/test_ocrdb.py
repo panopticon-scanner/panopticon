@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import unittest
+from unittest import mock
 
 import scripts.ocrdb as ocrdb
 
@@ -78,6 +79,32 @@ class TestOcrdb(unittest.TestCase):
                 fh.write("{ not json")
             with self.assertRaises(ValueError):
                 ocrdb.load_bundle(p)
+
+    def test_a_bundle_that_cannot_be_read_raises_the_one_error_its_callers_name(self):
+        """#3741: a present bundle that cannot be opened (`PermissionError`), or nested
+        past the stack (`RecursionError`), or not UTF-8, escaped as itself. The two
+        entry points catch `ValueError` and say "OCRDb bundle unreadable"; anything
+        else ended the run on an unnamed error or a traceback."""
+        with tempfile.TemporaryDirectory() as d:
+            deep = os.path.join(d, "deep.json")
+            with open(deep, "w") as fh:
+                fh.write('{"domains": ' + "[" * 100_000 + "]" * 100_000 + "}")
+            binary = os.path.join(d, "binary.json")
+            with open(binary, "wb") as fh:
+                fh.write(b'{"domains": {"\xff\xfe": 1}}')
+            for path in (deep, binary):
+                with self.subTest(path=os.path.basename(path)), self.assertRaises(ValueError):
+                    ocrdb.load_bundle(path)
+            locked = os.path.join(d, "locked.json")
+            with open(locked, "w") as fh:
+                json.dump({"domains": {}}, fh)
+            with mock.patch("builtins.open", side_effect=PermissionError(13, "Permission denied", locked)):
+                with self.assertRaises(ValueError) as raised:
+                    ocrdb.load_bundle(locked)
+            self.assertIn(locked, str(raised.exception))
+            self.assertIn("Permission denied", str(raised.exception))
+            self.assertIn("unreadable", str(raised.exception))
+            self.assertEqual({"domains": {}}, ocrdb.load_bundle(locked))
 
     def test_malformed_bundle_missing_domains_raises(self):
         with tempfile.TemporaryDirectory() as d:

@@ -545,6 +545,43 @@ class TestRunEntry(unittest.TestCase):
         self.assertIn("not registered", res.error)
         self.assertIs(False, res.launched)             # #3764: refused, never launched
 
+    def _prepared(self, d, launcher):
+        user_home, agents_dir = _fixture_user_home(d)
+        patched = mock.patch.dict(os.environ, {"PATH": "/p", "HOME": user_home}, clear=True)
+        patched.start()
+        self.addCleanup(patched.stop)
+        r = gemini_runner.Runner("gemini", runner=launcher)
+        r.prepare(os.path.join(d, "run"), review_root=d, registration_dir=agents_dir)
+        self.addCleanup(r.teardown, "complete")
+        return r
+
+    def test_a_cli_that_cannot_be_launched_is_a_failed_entry(self):
+        # #3741: the launch-OSError branch had no test.
+        def missing(cmd, **kw):
+            raise FileNotFoundError(2, "No such file or directory", "gemini")
+        with tempfile.TemporaryDirectory() as d:
+            r = self._prepared(d, missing)
+            res = r.run_entry(_entry(True), self._env())
+            self.assertFalse(res.ok)
+            self.assertIn("could not launch gemini:", res.error)
+            self.assertIn("No such file or directory", res.error)
+            self.assertEqual([], [n for n in os.listdir(r.gemini_home) if n.startswith("denials-")])
+
+    def test_a_run_home_that_cannot_be_written_is_a_failed_entry_not_a_raise(self):
+        """#3741: the denial log is made with `mkstemp` in the run home, and that sat
+        outside the `try`. An unwritable run home made `run_entry` raise, against
+        "run_entry never raises": the loop saw a traceback where it expects a result."""
+        launcher = mock.Mock(side_effect=AssertionError("nothing may launch"))
+        with tempfile.TemporaryDirectory() as d:
+            r = self._prepared(d, launcher)
+            with mock.patch.object(gemini_runner.tempfile, "mkstemp",
+                                   side_effect=PermissionError(13, "Permission denied", r.gemini_home)):
+                res = r.run_entry(_entry(True), self._env())
+        self.assertFalse(res.ok)
+        self.assertIn("could not launch gemini:", res.error)
+        self.assertIn("Permission denied", res.error)
+        launcher.assert_not_called()
+
     def test_an_unprepared_runner_refuses_before_any_launch(self):
         launcher = mock.Mock(side_effect=AssertionError("nothing may launch"))
         res = gemini_runner.Runner("gemini", runner=launcher).run_entry(

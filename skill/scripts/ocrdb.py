@@ -15,6 +15,7 @@ import os
 import re
 
 from scripts import _version
+import scripts.tolerant_json as tolerant_json
 
 BUNDLE_VERSION = "0.6.0"
 _BUNDLE_NAME = "ocrdb-%s.json" % BUNDLE_VERSION
@@ -52,15 +53,34 @@ DEFAULT_BUNDLE_PATH = _bundle_path()
 
 def load_bundle(path=None):
     """The parsed OCRDb bundle dict, or None if the vendored file is absent.
-    A present-but-malformed bundle raises ValueError (loud)."""
+    A present bundle that cannot be read or is malformed raises ValueError (loud).
+
+    #3741: ValueError for EVERY way a present bundle fails, because that is the one
+    error its entry points name ("OCRDb bundle unreadable": `runio._load_ocrdb_bundle`,
+    `synthesize.main`). A bundle that could not be opened raised `PermissionError`,
+    and one nested past the stack `RecursionError`, and each ended the run on an
+    unnamed error or a traceback. An absent one is still None here, for a caller with
+    no bundle of its own to judge; the two entry points refuse it."""
     path = path or DEFAULT_BUNDLE_PATH
     if not os.path.isfile(path):
         return None
-    with open(path, encoding="utf-8") as fh:
-        data = json.load(fh)   # corrupt JSON -> JSONDecodeError (a ValueError)
+    try:
+        with open(path, "rb") as fh:
+            raw = fh.read()
+    except OSError as exc:
+        raise ValueError("OCRDb bundle %s unreadable: %s" % (path, exc)) from exc
+    # Not UTF-8, corrupt JSON and too deep are each a ValueError already.
+    data = json.loads(tolerant_json.depth_checked(raw.decode("utf-8")))
     if not (isinstance(data, dict) and isinstance(data.get("domains"), dict)):
         raise ValueError("OCRDb bundle %s malformed: missing 'domains' map" % path)
     return data
+
+
+#: What an entry point says of a bundle that is not there (#3741). The catalog ships
+#: with the skill, so its absence is a broken install, and a run without it checks no
+#: finding's code: it completed certified with only `meta.ocrdb_version: null` to show.
+MISSING = ("OCRDb bundle missing at %s: the catalog ships with the skill, so this install "
+           "is incomplete. Reinstall it")
 
 
 def _safe_get_dict(mapping, key):

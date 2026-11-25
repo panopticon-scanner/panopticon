@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- **Five smaller recovery faults from the 5.4 review (#3741).**
+  - "synthesize produced no usable report.json" quotes the last line the child printed, where
+    the cause is. It quoted the first 400 characters, which are warnings. A last line over
+    400 characters keeps its start and its end, with the middle cut and marked ` [...] `;
+    "synthesize wrote no report" quotes its last line the same way.
+  - A `.panopticon/report.json` (or `report.json.html`) link that could not be made when a run
+    ended is made by the next run. It was never retried: the next run said "already complete"
+    with the documented path missing or still on an older report. When it still cannot be
+    made, the message names the tag-named report itself.
+  - A missing OCRDb catalog is refused. The driver ran on without it and the report was
+    certified, with only `meta.ocrdb_version: null` to show that no finding's code had been
+    checked. The driver now stops with "OCRDb bundle missing at <path>", and `synthesize.py`
+    exits 3. A catalog that cannot be opened, or is nested past the stack, is "OCRDb bundle
+    unreadable" like a corrupt one; it was an unnamed `PermissionError` or a `RecursionError`.
+  - JSON nested past the stack is refused as malformed where it was a `RecursionError`
+    traceback: a report, a continuation part or a discarded-claims file read back by
+    `synthesize.py` (its own re-read, and `--compare`), by `compare_runs` and
+    `matrix_stability`, and a SARIF file read by `code_scanning_reports`. A returned reply that
+    is not UTF-8 reads as no reply; it raised `UnicodeDecodeError`.
+  - The gemini runner no longer raises when its run home cannot be written: the entry fails
+    with "could not launch gemini". Its launch-failure branch and its entry timeout (the whole
+    process tree ends) have tests now, as the other families' do.
 - **Three crash points recover on their own (#3741).** They were the "need a hand" items in the
   5.4.0 notes. Each failed closed.
   - **A write failure at the loop's teardown is a status, not a traceback.** With the disk full or

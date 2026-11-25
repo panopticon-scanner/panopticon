@@ -12,6 +12,7 @@ import scripts.redact as redact
 import scripts.safe_write as safe_write
 import scripts.build_disclosure as build_disclosure
 import scripts.config_schema as config_schema
+import scripts.tolerant_json as tolerant_json
 import scripts.tool_cleanup as tool_cleanup
 import scripts.tools.base as tool_base
 from . import coverage_io as coverage_io
@@ -899,6 +900,13 @@ def _derive_html_path(json_path):
         return json_path + ".html"
     return os.path.join(json_path, "report.html")
 
+def _loads(text):
+    """`json.loads`, refusing a document nested past the depth bound FIRST (#3741): the
+    decoder recurses per bracket, so a 100,000-deep report raised RecursionError, which
+    no reader of a report catches. The refusal is a `ValueError` like any bad JSON."""
+    return json.loads(tolerant_json.depth_checked(text))
+
+
 def _read_json_report(path):
     """Load a JSON report for --compare, MERGING meta.parts continuation files.
 
@@ -913,7 +921,7 @@ def _read_json_report(path):
     import scripts.reconcile as reconcile
     try:
         with open(path, encoding="utf-8") as fh:
-            report = json.load(fh)
+            report = _loads(fh.read())
     except OSError as e:
         print("ERROR: cannot read %s: %s" % (path, e), file=sys.stderr)
         return None
@@ -936,7 +944,7 @@ def _read_json_report(path):
             try:
                 ppath = reconcile._resolve_part_path(base_dir, part)
                 with open(ppath, encoding="utf-8") as fh:
-                    pdata = json.load(fh)
+                    pdata = _loads(fh.read())
             except (OSError, ValueError) as e:
                 print("ERROR: --compare report %s references part %r that could not "
                       "be read (%s); the comparison would be incomplete"
@@ -948,7 +956,7 @@ def _read_json_report(path):
             try:
                 dpath = reconcile._resolve_part_path(base_dir, disc_file)
                 with open(dpath, encoding="utf-8") as fh:
-                    ddata = json.load(fh)
+                    ddata = _loads(fh.read())
             except (OSError, ValueError) as e:
                 print("ERROR: --compare report %s references discarded_claims_file %r "
                       "that could not be read (%s); the comparison would be incomplete"

@@ -399,6 +399,15 @@ class TestWhatItRefusesAndDiscloses(_Measured):
             ms.measure([path, self.write("other-report.json", run(matrix=FB))], [path, path])
         self.assertIn("--line-window", self.refused([run(matrix=FA), run(matrix=FB)], window=-1))
 
+    def test_a_report_nested_past_the_stack_is_refused(self):
+        # #3741: it reads reports through `compare_runs.load`, and got its traceback.
+        deep = os.path.join(self.dir, "deep-report.json")
+        with open(deep, "w", encoding="utf-8") as fh:
+            fh.write('{"findings": %s}' % ("[" * 100_000 + "]" * 100_000))
+        with redirect_stderr(io.StringIO()), self.assertRaises(cr.Refused) as ctx:
+            ms.measure([deep, self.write("other-report.json", run(matrix=FB))])
+        self.assertIn("deep-report.json is malformed", str(ctx.exception))
+
     def test_a_baseline_must_be_one_matrix(self):
         message = self.refused([run(matrix=FA), run(matrix=FB)],
                                [run(matrix=FA), run(matrix=FC)])

@@ -521,12 +521,16 @@ class Runner(base.HostRunner):
         launcher = (DEFAULT_RUNNER
                     if (self.runner == self.launch and DEFAULT_RUNNER is not None)
                     else self.launcher(self.runner, DEFAULT_RUNNER))
-        fd, denial_log = tempfile.mkstemp(
-            prefix="denials-", suffix=".jsonl", dir=self.gemini_home)
-        os.close(fd)
         result = None
         proc = None
+        denial_log = None
         try:
+            # #3741: inside the `try`. An unwritable run home made `mkstemp` raise out of
+            # `run_entry`, which never raises (spec 4.4); it is a launch that could not
+            # be made, like any other `OSError` here.
+            fd, denial_log = tempfile.mkstemp(
+                prefix="denials-", suffix=".jsonl", dir=self.gemini_home)
+            os.close(fd)
             child_env = self.launch_env(env)
             hazard = gemini_home.auth_hazard(env=child_env, real_user_home=self.user_home)
             if hazard:
@@ -555,10 +559,11 @@ class Runner(base.HostRunner):
                 redact.redact("gemini -p launch raised %s: %s" % (type(exc).__name__, exc)))
         finally:
             hook_denials = self._read_hook_denials(denial_log)
-            try:
-                os.unlink(denial_log)
-            except OSError:
-                pass
+            if denial_log is not None:
+                try:
+                    os.unlink(denial_log)
+                except OSError:
+                    pass
 
         if result is None:
             result = self.parse_envelope(

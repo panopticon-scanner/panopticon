@@ -296,15 +296,63 @@ def _plan_owed(manifest):
 _PUBLISHED_STATUSES = (0, 1, 2, validate_schema_mod.ARTIFACT_INVALID)
 
 
+_LINE_BOUND = 400
+_CUT = " [...] "
+
+
 def _last_line(*streams):
     """The last line a child printed, redacted and bounded: its reason for stopping.
     The lines before it are whatever it had to say on the way there. From the first
-    of `streams` that holds a line."""
+    of `streams` that holds a line.
+
+    The line WHOLE when it fits. Over the bound its middle is cut and marked, never its
+    start: the start says who is speaking and why, and the end is where a path-heavy
+    line puts its reason (#3741; a tail of the stream began mid-word when the path was
+    long).
+
+    The STREAM is redacted first, and the line is taken from what is left. A secret can
+    span lines (a private key), and redacting only the last line would publish its
+    last line: the key's own text, with no header beside it to mask it by."""
     for stream in streams:
-        lines = [line for line in str(stream or "").splitlines() if line.strip()]
+        text = str(stream or "")
+        lines = [line for line in redact.redact_diagnostic(
+            text, len(text) + _LINE_BOUND).splitlines() if line.strip()]
         if lines:
-            return redact.redact_diagnostic(lines[-1].strip(), 400)
+            line = lines[-1].strip()
+            if len(line) <= _LINE_BOUND:
+                return line
+            keep = _LINE_BOUND - len(_CUT)
+            return line[:keep - keep // 2] + _CUT + line[len(line) - keep // 2:]
     return "it said nothing"
+
+
+def link_flat_names(review_root, report=None):
+    """Point `.panopticon/report.json` and `report.json.html` at this run's tag-named
+    report, and `runs/latest` at its folder (§5.1). Best-effort, as it always was: the
+    tag-named report is the authoritative one. Returns whether the flat names now lead
+    to this run's report (True with no tag, where the report IS the flat name).
+
+    #3741: called again by a run that finds itself already complete. A link that failed
+    when synthesis ended (a full disk) was never retried, so the documented path stayed
+    missing, or stayed on an older run's report, while every later run said "already
+    complete". A name that is already right is not written again."""
+    tag = runio._run_tag(review_root)
+    if not tag:
+        return True
+    report = report or runio._report_out(review_root)
+    wanted = [("report.json", f"{tag}-report.json")]
+    if os.path.exists(f"{report}.html"):
+        wanted.append(("report.json.html", f"{tag}-report.json.html"))
+    linked = True
+    for name, target in wanted:
+        link = runio._pano(review_root, name)
+        try:   # compat symlinks are best-effort; the tag-named report is authoritative
+            if not (os.path.islink(link) and os.readlink(link) == target):
+                runio._relink(link, target)
+        except OSError:
+            linked = False
+    runio._ensure_run_symlinks(review_root)
+    return linked
 
 
 #: Where an earlier attempt's published files go, in the run folder (#3769).
@@ -537,8 +585,10 @@ def synthesize_execute(review_root, manifest):
     written = _what_is_at(report)
     if not (written is not None and stat.S_ISREG(written.st_mode)
             and _usable_report(review_root)):
+        # #3741: the LAST LINE it said. The first 400 characters are its warnings; its
+        # reason for stopping is the last thing it printed.
         raise runio.DriverError("synthesize produced no usable report.json (rc=%s): %s"
-                          % (proc.returncode, redact.redact_diagnostic(proc.stderr or proc.stdout, 400)))
+                          % (proc.returncode, _last_line(proc.stderr, proc.stdout)))
     loop_progress.relay_summary(proc.stdout)      # #3232: `loop` only; the child stdout is captured
     # §5.1: point the flat compat paths at the latest tag-named report, so every
     # existing reader of report.json / report.json.html resolves it unchanged, and
@@ -556,16 +606,7 @@ def synthesize_execute(review_root, manifest):
     # `meta.schema_errors`: an x0x-only failure leaves that field at 0 in a
     # report.json that is itself valid -- the invalid artifact is the other
     # file, and only the status says so.)
-    tag = runio._run_tag(review_root)
-    if tag:
-        try:   # compat symlinks are best-effort; the tag-named report is authoritative
-            runio._relink(runio._pano(review_root, "report.json"), f"{tag}-report.json")
-            if os.path.exists(f"{report}.html"):
-                runio._relink(runio._pano(review_root, "report.json.html"),
-                        f"{tag}-report.json.html")
-        except OSError:
-            pass
-        runio._ensure_run_symlinks(review_root)
+    link_flat_names(review_root, report)
     # #1639 P15 / #2952: the one non-gate non-zero status. The report parses —
     # that is why the guard above cannot see this — but an artifact could not
     # be published/removed or the report, hydrated parts, or X0X sibling does
